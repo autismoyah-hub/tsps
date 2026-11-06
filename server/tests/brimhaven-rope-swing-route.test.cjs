@@ -277,10 +277,24 @@ test('native Brimhaven hazards use real clipping, movement and session updates',
 
         const denied = actor(sub,from[0],from[1]), deniedXp = level(denied,19);
         let crossed = false;
+        const trace = [];
+        const traceRoute = span.label === 'south spikes' && !reverse && !running;
+        let attempt = 0;
+        const snapshot = (phase) => {
+          if (!traceRoute) return;
+          const queue = denied.p.getMovementQueue(), destination = queue.getDestination();
+          trace.push({attempt,phase,position:position(denied.p),
+            requested:[...to,3],queued:destination ? [destination.getX(),destination.getY(),destination.getZ()] : null,
+            evaluated:queue.wasRouteEvaluated(),found:queue.hasRoute(),alternative:queue.usedAlternativeRoute(),
+            moved:queue.didMoveThisCycle(),agility:denied.p.getSkillManager().getCurrentLevel(core.Skill.AGILITY)});
+        };
         const attempted = () => {
+          attempt++;
           denied.p.getMovementQueue().requestWalk(at(to[0],to[1]));
+          snapshot('request');
           for(let i=0;i<8;i++) {
             turn();
+            snapshot(`turn-${i+1}`);
             const value = position(denied.p)[span.axis];
             crossed ||= reverse ? value <= span.low : value >= span.high;
           }
@@ -295,6 +309,7 @@ test('native Brimhaven hazards use real clipping, movement and session updates',
         attempted();
         assert.equal(crossed,false,'a fresh click after normal placement also cannot cross');
         assert.equal(denied.p.getSkillManager().getExperience(core.Skill.AGILITY),deniedXp);
+        if (traceRoute) sub.diagnostic(`observed walk route: ${JSON.stringify(trace)}`);
       });
     }
   });
