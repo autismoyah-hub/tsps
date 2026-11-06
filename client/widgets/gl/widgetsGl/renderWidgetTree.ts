@@ -3240,11 +3240,10 @@ export function renderWidgetTreeGL(glr: GLRenderer, root: Widget, opts: GLRender
                 liveMovementFrame !== undefined ? liveMovementFrame : (w.modelFrame ?? 0) | 0;
             const animatedKey =
                 isAnimated && !cacheKey && !isPlayerDesignPreview && !isPlayerModel &&
-                ((w as any).isPlayerChathead !== true ||
-                    (!!appearanceKey && !appearanceKey.startsWith("npc:")))
+                (w as any).isPlayerChathead !== true
                     ? `wa:${modelCacheId}:${sequenceId}:${sequenceFrame}:${rx}:${ry}:${rz}:${zoom}:${offX}:${offY}:o${
                           ortho ? 1 : 0
-                      }:${width}:${height}${cacheSuffix}`
+                      }:${width}:${height}`
                     : null;
             let animatedMemo: Map<
                 number,
@@ -3321,7 +3320,6 @@ export function renderWidgetTreeGL(glr: GLRenderer, root: Widget, opts: GLRender
                     // Animated/dynamic model widgets must update a stable GPU texture each frame.
                     // Using a varying cache key here would leak textures and prevent animation updates.
                     const texKey = cacheKey ? cacheKey : `wm:dyn:${w.uid}`;
-                    if (!cacheKey && !animatedKey) animatedMemo.delete(w.uid);
                     const tex = cacheKey
                         ? glr.createTextureFromCanvas(texKey, can)
                         : glr.updateTextureFromCanvas(texKey, can);
