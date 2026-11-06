@@ -3321,7 +3321,6 @@ export function renderWidgetTreeGL(glr: GLRenderer, root: Widget, opts: GLRender
                     // Animated/dynamic model widgets must update a stable GPU texture each frame.
                     // Using a varying cache key here would leak textures and prevent animation updates.
                     const texKey = cacheKey ? cacheKey : `wm:dyn:${w.uid}`;
-                    if (!cacheKey && !animatedKey) animatedMemo.delete(w.uid);
                     const tex = cacheKey
                         ? glr.createTextureFromCanvas(texKey, can)
                         : glr.updateTextureFromCanvas(texKey, can);
