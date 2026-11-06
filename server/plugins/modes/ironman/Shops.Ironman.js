@@ -29,6 +29,5 @@ function grandExchange(request) {
 
 module.exports = function attach(api) {
   api.onCustomEvent("shop:buy-limit", buyLimit);
-  api.onCustomEvent("grand-exchange:can-open", grandExchange);
   api.onCustomEvent("presets:can-use", presets);
 };
