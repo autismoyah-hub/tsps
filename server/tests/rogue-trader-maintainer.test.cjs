@@ -188,12 +188,14 @@ test('Ali clothing stock deferral preserves a newer native shop', async t => {
       floor:core.World.getItems().filter(g => !g.isPendingRemoval() && g.getOwner() === p.getUsername()
         && g.getPrivateArea() === p.getPrivateArea() && g.getItem().getId() === id).reduce((n,g) => n + g.getItem().getAmount(), 0) });
     const resources = () => ({ coins:stores(core.ItemIdentifiers.COINS), dyes:stores(core.ItemIdentifiers.BLUE_DYE),
+      helperRewards:[core.ItemIdentifiers.DESERT_DISGUISE,core.ItemIdentifiers.CATSPEAK_AMULET,core.ItemIdentifiers.AIR_TALISMAN].map(stores),
       experience:core.Skill.values().map(skill => p.getSkillManager().getExperience(skill)) });
-    const initial = resources(); assert.equal(Object.values(initial.coins).reduce((n,v) => n+v,0), 0);
+    const initial = resources(); assert.deepEqual(initial.coins,{inventory:500,equipment:0,bank:0,floor:0},'The Feud helper completion grants 499 coins plus its generic one-coin reward');
+    assert.deepEqual(initial.helperRewards,[1,1,1].map(inventory => ({inventory,equipment:0,bank:0,floor:0})),'retain the helper disguise, catspeak amulet and air talisman');
     assert.equal(Object.values(initial.dyes).reduce((n,v) => n+v,0), 0);
     for (let i=0;i<3;i++) p.getInventory().add(new core.Item(core.ItemIdentifiers.BLUE_DYE,1),false);
     assert.equal(p.getInventory().getAmount(core.ItemIdentifiers.BLUE_DYE),3);
-    // Quest completion is this helper's declared saved prerequisite, not earned quest XP here.
+    // Saved quest completion still grants its items and invokes XP callbacks; preserve the actual resulting XP snapshot.
     for (const name of ['The Feud', "Icthlarin's Little Helper", 'Rune Mysteries']) assert.equal(H.Quests().questNamed(name).isComplete(p),true);
     assert.equal(Number(state(f)?.clothes)||0,0,'no injected stock unlock');
     await H.talk(f); const first = await H.read(f);
