@@ -3,9 +3,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { loadCacheSystem } from "../scripts/cache/cs2-sweep";
+import { loadCacheFiles } from "../scripts/cache/load-util";
+import { CacheSystem } from "../rs/cache/CacheSystem";
 import { Dat2CacheLoaderFactory } from "../rs/cache/loader/Dat2CacheLoaderFactory";
 import { PlayerAppearance } from "../rs/config/player/PlayerAppearance";
 import { PlayerModelLoader } from "../rs/config/player/PlayerModelLoader";
@@ -29,7 +30,12 @@ test("2386 native head poses: raw model, CPU submission and actor position are d
     const dir = resolve(__dirname, "../../server/caches/osrs-241_2026-10-20");
     assert.equal(digest(readFileSync(join(dir, "info.json"))),
         "a90a7f73ac2a4f0cc64f81605cfd15ebcdd53dd451b5e41cd1e12e5a170bac51", "retained r241 metadata");
-    const { cache, info } = loadCacheSystem(dir);
+    // Same native disk/metadata contract as loadCacheSystem(dir), without importing
+    // the CS2 sweep's unused VM/widget/UI graph into this model-only fixture.
+    const meta = JSON.parse(readFileSync(join(dir, "info.json"), "utf8"));
+    const info: any = { name: basename(dir), game: meta.game, environment: meta.environment,
+        revision: meta.builds[0].major, timestamp: meta.timestamp, size: meta.size };
+    const cache = CacheSystem.fromFiles(info, loadCacheFiles(info));
     assert.equal(info.revision, 241);
     const factory = new Dat2CacheLoaderFactory(info, "dat2", cache);
     const idk = factory.getIdkTypeLoader(), obj = factory.getObjTypeLoader();
