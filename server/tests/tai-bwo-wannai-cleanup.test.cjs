@@ -816,3 +816,105 @@ test('the poison victim weakens only when its hit lands and hurts', (t) => {
   assert.ok(skills.getCurrentLevel(core.Skill.ATTACK) < 50);
   assert.ok(p.messages.includes('You feel incredibly weakened.'));
 });
+
+
+process.env.DISABLE_PLAYER_BOTS = "1";
+test("native villager rewards preserve earned favour when trading sticks cannot fit", async t => {
+  const { PlayerSession } = require("../dist/net/PlayerSession");
+  const { ClientConnection } = require("../dist/net/NetworkBuilder");
+  const { SkillManager } = require("../dist/game/content/skill/SkillManager");
+  PluginManager.emitServerStartup({}); t.after(() => PluginManager.emitServerShutdown({}));
+  const MAX = 0x7fffffff, STICK = obj("village_trade_sticks"), SPAR = obj("thatching_spar_light");
+  const MURCAILY = Common.data.villagers.find(v => v.first === true); assert.equal(MURCAILY.name, "Murcaily");
+  assert.equal(STICK, 6306); assert.equal(core.ItemDefinition.forId(STICK).isStackable(), true);
+  assert.equal(Common.data.spars.find(s => s.item === "thatching_spar_light").points, 1);
+  for (const mode of ["room", "last stack space", "full pack without sticks", "capped stack"]) await t.test(mode, async t => {
+    const channel = { kind: "test", remoteAddress: "127.0.0.1", isOpen: () => true, send: () => true,
+      close() {}, onData() {}, onError() {}, onClose() {} };
+    const p = new Player(new PlayerSession(channel)); p.setIndex(index++); p.setUsername("stickclaim" + p.getIndex());
+    p.setRegistered(true); p.setLocation(new Location(FENCE[0] + 1, FENCE[1], FENCE[2])); p.needsPlacement = false;
+    const connection = new ClientConnection(channel); connection.player = p;
+    // Legal persistent quest/explanation state. Favour and repair eligibility are earned below.
+    jungleQuest.setStage(p, jungleQuest.completionValue); Common.advance(p, Common.data.progress.told);
+    assert.equal(jungleQuest.isComplete(p), true); assert.equal(Favour.points(p), 0);
+    PluginManager.emitPlayerLogin({ player: p, username: p.getUsername() }); p.closeInterruptibleInterfaces();
+    const skills = p.getSkillManager(), WC = core.Skill.WOODCUTTING;
+    skills.setExperience(WC, SkillManager.getExperienceForLevel(99)).setMaxLevel(WC, 99).setCurrentLevel(WC, 99);
+    assert.equal(skills.getMaxLevel(WC), 99); assert.equal(skills.getCurrentLevel(WC), 99);
+    const inv = p.getInventory(), machete = obj("machette_redtopaz");
+    p.getEquipment().setItem(Equipment.WEAPON_SLOT, new Item(machete)); inv.add(new Item(SPAR), false);
+    const near = mode === "last stack space" || mode === "capped stack";
+    if (near) inv.add(new Item(STICK, MAX - 1), false);
+    const npc = core.NPC.create(id("Npc", `${MURCAILY.npc}_multinpc`) ?? id("Npc", MURCAILY.npc),
+      new Location(FENCE[0] + 1, FENCE[1] + 1, FENCE[2]));
+    assert.equal(core.World.getNpcs().add(npc), true); assert.equal(npc.getCurrentDefinition(p).getName(), MURCAILY.name);
+    t.after(() => {
+      p.closeInterruptibleInterfaces(); PluginManager.emitPlayerDisconnect({ player: p, username: p.getUsername() });
+      PluginManager.emitPlayerLogout({ player: p, username: p.getUsername() }); p.setRegistered(false);
+      core.TaskManager.cancelTasks(p.getIndex()); core.TaskManager.cancelTasks(p); core.World.getNpcs().remove(npc);
+      for (const ground of core.World.getItems().filter(g => g.getOwner() === p.getUsername())) core.ItemOnGroundManager.deregister(ground);
+    });
+    const gains = [], addXp = skills.addExperience.bind(skills);
+    t.mock.method(skills, "addExperience", (skill, amount, multipliers) => {
+      gains.push({ skill: skill.getIndex(), amount, multipliers: !!multipliers }); return addXp(skill, amount, multipliers);
+    });
+    const stores = itemId => ({ inventory: inv.getAmount(itemId), equipment: p.getEquipment().getAmount(itemId),
+      bank: p.getBanks().reduce((n, b, tab) => n + (b && tab !== core.Bank.BANK_SEARCH_TAB_INDEX ? b.getAmount(itemId) : 0), 0),
+      floor: core.World.getItems().filter(g => !g.isPendingRemoval() && g.getOwner() === p.getUsername()
+        && g.getPrivateArea() === p.getPrivateArea() && g.getItem().getId() === itemId).reduce((n, g) => n + g.getItem().getAmount(), 0) });
+    const owned = itemId => Object.values(stores(itemId)).reduce((n, amount) => n + amount, 0);
+    const state = () => ({ mode, sticks: stores(STICK), favour: Favour.points(p), cooldown: Villagers.cooldownOf(p, MURCAILY),
+      progress: Common.progress(p), spar: stores(SPAR), machete: stores(machete), gains: [...gains] });
+    let turns = 0;
+    const turn = () => {
+      assert.ok(++turns <= 48, "bounded native phase budget"); p.resetUpdating();
+      cycle++; core.TaskManager.process(); connection.processTurnPackets();
+      const q = p.getMovementQueue(); q.beginCycle(); q.processEntityPursuit(); if (q.hasPendingWork()) q.process();
+      core.TaskManager.processWalkTo(p.getIndex());
+    };
+    const send = async packet => { await connection.dispatch([packet]); turn(); };
+    if (mode === "capped stack") {
+      const here = p.getLocation(); core.ItemOnGroundManager.registerLocation(p, new Item(STICK), here.clone());
+      assert.equal(stores(STICK).floor, 1);
+      await send({ type: "ground_item_action", itemId: STICK, x: here.getX(), y: here.getY(), option: "Take", optionIndex: 3 });
+      for (let n = 0; n < 6 && stores(STICK).floor; n++) turn();
+      assert.equal(inv.getAmount(STICK), MAX, "real native pickup fills the ordinary stack"); assert.equal(stores(STICK).floor, 0);
+    }
+    const fence = Locs.find(Common.data.fence.locs.map(loc), at(FENCE)); assert.ok(fence, "actual loaded fence");
+    const option = ObjectDefinition.forPlayer(fence.getId(), p).getInteractions().indexOf("Repair") + 1; assert.ok(option > 0);
+    const xpBefore = skills.getExperience(WC);
+    await send({ type: "object_option", id: fence.getId(), x: FENCE[0], y: FENCE[1], clickType: option, action: "Repair" });
+    for (let n = 0; n < 22 && Favour.points(p) === 0; n++) turn();
+    assert.equal(Favour.points(p), 1, "the real repair produces exactly one earned favour point");
+    assert.equal(owned(SPAR), 0, "the native producer consumes its light spar");
+    assert.equal(Common.progress(p), Common.data.progress.repaired, "native fence establishes the first-claim eligibility");
+    assert.ok(skills.getExperience(WC) > xpBefore); assert.equal(skills.getCurrentLevel(WC), 99); assert.equal(skills.getMaxLevel(WC), 99);
+    assert.deepEqual(gains, [{ skill: WC.getIndex(), amount: 28.1, multipliers: false }]);
+    if (mode === "full pack without sticks") while (inv.getFreeSlots() > 0) inv.add(new Item(core.ItemIdentifiers.LOGS), false);
+    const logs = stores(core.ItemIdentifiers.LOGS), repairGains = gains.map(g => ({ ...g }));
+    assert.equal(Villagers.canClaim(p, MURCAILY), true); assert.equal(Villagers.cooldownOf(p, MURCAILY), 1);
+    assert.equal(Villagers.sticksFor(Favour.points(p)), 1, "current existing invoice, no reward-rate rewrite");
+    assert.equal(inv.getAddableAmount(new Item(STICK)), mode === "capped stack" || mode === "full pack without sticks" ? 0 : 1);
+    const before = state(), valueBefore = owned(STICK) + Favour.points(p);
+    const talkOption = npc.getCurrentDefinition(p).getActions().indexOf("Talk-to") + 1; assert.ok(talkOption > 0);
+    await send({ type: "npc_option", index: npc.getIndex(), clickType: talkOption });
+    const manager = p.getDialogueManager(), sender = p.getPacketSender(), speech = manager.getCurrent();
+    assert.ok(speech instanceof core.NpcDialogue); assert.equal(speech.getText(), Common.message("firstClaim"));
+    assert.equal(manager.getOwner(), undefined); assert.equal(sender.getChatboxGroupId(), 231);
+    const mount = sender.subInterfaceTargets.get(231); assert.ok(mount); assert.equal(sender.getSubInterfaceAt(mount.targetUid), mount);
+    assert.deepEqual(state(), before, "native offer must not consume resources before its continuation");
+    await send({ type: "dialogue_continue", widgetId: (231 << 16) | 5, childIndex: -1 });
+    const after = state(), details = JSON.stringify({ before, after });
+    // First target: each spent favour point must be credited as an owned stick; owned floor counts too.
+    assert.equal(owned(STICK) + Favour.points(p), valueBefore, "earned favour/payment conservation: " + details);
+    const credited = owned(STICK) - Object.values(before.sticks).reduce((n, amount) => n + amount, 0);
+    assert.ok(credited === 0 || credited === 1, details);
+    if (mode === "room" || mode === "last stack space") assert.equal(credited, 1, details);
+    if (mode === "full pack without sticks") assert.equal(credited, 0, details);
+    assert.equal(Favour.points(p), 1 - credited, details);
+    assert.equal(Villagers.cooldownOf(p, MURCAILY), credited ? 7 : 1, details);
+    assert.equal(Common.progress(p), credited ? Common.data.progress.claimed : Common.data.progress.repaired, details);
+    assert.deepEqual(stores(core.ItemIdentifiers.LOGS), logs); assert.equal(owned(SPAR), 0); assert.equal(owned(machete), 1);
+    assert.deepEqual(gains, repairGains, "the NPC payout adds no XP beyond the native repair producer");
+  });
+});
