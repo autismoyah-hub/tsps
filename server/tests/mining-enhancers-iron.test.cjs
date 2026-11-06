@@ -177,6 +177,12 @@ for (const config of configurations) test(`native ordinary iron enhancers: ${con
   assert.ok(task); assert.equal(task.activeSessions.size,0);
   const execute=task.execute.bind(task), levels=[], getLevel=skills.getCurrentLevel.bind(skills);
   let capeDraws=0, ringDraws=0, successes=0, depletionEvents=0, extraRequests=0;
+  let taskExecutions=0, seenSession=false, firstSession=null, lastSession=null;
+  const diagnosticMessages=[];
+  if (config.hotfoot) {
+    const sendMessage=p.sendMessage.bind(p);
+    t.mock.method(p,'sendMessage',(...args)=>{ diagnosticMessages.push(String(args[0])); return sendMessage(...args); });
+  }
   // The consumed ore-roll level is checked at the existing source frame.
   t.mock.method(skills,'getCurrentLevel',skill=>{
     const result=getLevel(skill);
@@ -184,6 +190,15 @@ for (const config of configurations) test(`native ordinary iron enhancers: ${con
     return result;
   });
   t.mock.method(task,'execute',()=>{
+    if (config.hotfoot) {
+      taskExecutions++;
+      const state=task.activeSessions.get(p);
+      if (state) {
+        seenSession=true;
+        lastSession={cycle:task.cycle,nextRollTick:state.nextRollTick,swingTick:state.swingTick,levelUpPaused:!!state.levelUpPaused};
+        firstSession ??= lastSession;
+      }
+    }
     const saved=Math.random;
     try {
       Math.random=()=>{
@@ -217,7 +232,12 @@ for (const config of configurations) test(`native ordinary iron enhancers: ${con
   await f.c.dispatch([{type:'object_option',id:rockId,x:3223,y:3218,action:'Mine'}]);
   for (let i=0;i<90 && (config.hotfoot ? successes===0 : !core.MapObjects.get(emptyId,at,null));i++)
     miningCancellationTurn(f);
-  assert.ok(levels.length>0 && levels.every(level=>level===99),'the consuming roll reads visible level 99');
+  const where=p.getLocation();
+  const failureDetail=config.hotfoot ? JSON.stringify({levels,successes,depletionEvents,extraRequests,taskExecutions,seenSession,firstSession,lastSession,active:task.activeSessions.has(p),
+    x:where.getX(),y:where.getY(),registered:p.isRegistered(),hitpoints:p.getHitpoints(),needsPlacement:p.needsPlacement,
+    currentLevel:skills.getCurrentLevel(core.Skill.MINING),maxLevel:skills.getMaxLevel(core.Skill.MINING),
+    pendingMovement:p.getMovementQueue().size(),interfaceId:p.getInterfaceId(),messages:diagnosticMessages}) : '';
+  assert.ok(levels.length>0 && levels.every(level=>level===99),'the consuming roll reads visible level 99 '+failureDetail);
   assert.ok(p.getAttribute('mining:ores-mined')>0,'one real successful gather occurred');
   const baseGathers=config.bank && !config.hotfoot ? 4 : 1;
   if (config.ring) {
