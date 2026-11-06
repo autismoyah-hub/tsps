@@ -1104,7 +1104,8 @@ function automaticHerb(player, patch, state, expectedLives = state.lives) {
         grown: false, diseaseFree: false, undying: false, message: null };
     core.PluginManager.emitCustomEvent("farming:plant-rules", rules);
     if (!readyToReplant()) { discardExhausted(); return; }
-    if (rules.keepSeed !== true) farm.vault[crop.seed]--;
+    const usedSeed = rules.keepSeed !== true;
+    if (usedSeed) farm.vault[crop.seed]--;
     const plantedAt = Date.now();
     farm.patches[key] = { ...Model.emptyPatch(plantedAt, farm), crop: crop.key, compost: 3,
         plantedAt, plantedTick: Model.tickIndex(plantedAt, farm.offset),
@@ -1112,6 +1113,7 @@ function automaticHerb(player, patch, state, expectedLives = state.lives) {
         diseaseFree: rules.diseaseFree === true, undying: rules.undying === true,
         plantExperiencePending: true };
     syncAutomaticPatch(player, patch);
+    if (usedSeed) Vault.refreshOpen(player);
 }
 
 function advanceFarm(player, now = Date.now()) {
