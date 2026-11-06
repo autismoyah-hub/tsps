@@ -438,9 +438,20 @@ test('native Felkrash training control reaches naming interface after quest comp
   assert.equal(sender.getChatboxGroupId(), 217, 'normal cat-to-player transition mounts player dialogue');
   assert.equal(p.getDialogueManager().getOwner(), replyOwner, 'normal transition retains named playback owner');
   assert.equal(sender.getChatboxOwner(), replyOwner, 'normal transition retains actual chatbox owner');
-  const restored = new NativePlayer(new NativeSession(channel));
+  const restored = new NativePlayer(new NativeSession({...channel}));
+  restored.setIndex(nativeIndex++); restored.setUsername('felkrash-reloaded'); restored.setRegistered(true);
   NativePlayerSave.fromPlayer(p).applyToPlayer(restored);
   assert.equal(restored.getAttribute('ratcatchers:cat-name'), 'BAAAAA', 'real player save roundtrip retains the shared name');
+  restored.setAttribute('bot-skip-persistence', true);
+  PluginManager.emitPlayerLogin({player:restored, username:restored.getUsername(), isNewAccount:false});
+  assert.equal(restored.getAttribute('ratcatchers:cat-name'), 'BAAAAA', 'production login hooks retain the saved name');
+  recordTasks();
+  PluginManager.emitPlayerLogout({player:restored, username:restored.getUsername()});
+  restored.setRegistered(false); core.TaskManager.cancelTasks(restored); core.TaskManager.cancelTasks(restored.getIndex());
+  for (const n of [...core.World.getNpcs()]) if (n?.getOwner?.() === restored) core.World.getNpcs().remove(n);
+  for (const queue of [core.World.getAddNPCQueue(), core.World.getRemoveNPCQueue()]) {
+    for (let i=queue.length-1; i>=0; i--) if (queue[i]?.getOwner?.() === restored) queue.splice(i,1);
+  }
 
   async function openRename() {
     p.getPacketSender().sendInterfaceRemoval();
@@ -470,6 +481,29 @@ test('native Felkrash training control reaches naming interface after quest comp
     'all six columns, the reversed final arrows and a space edit the shared name');
   await openRename();
   await send(arrow);
+  assert.deepEqual(namingWrites.at(-1), {value:'A', child:10}, 'space cycles to A under TSPS UI policy');
+  for (let i=0; i<25; i++) await send(arrow);
+  assert.deepEqual(namingWrites.at(-1), {value:'Z', child:10}, 'alphabet reaches Z');
+  await send(arrow);
+  assert.deepEqual(namingWrites.at(-1), {value:' ', child:10}, 'Z cycles to space under TSPS UI policy');
+  await send(arrow);
+  assert.deepEqual(namingWrites.at(-1), {value:'A', child:10}, 'space cycles back to A');
+  await send({type:'interface_close'});
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'unconfirmed alphabet edits are discarded');
+  await openRename();
+  await send(arrow);
+  const priorFollower = p.getAttribute('pets:current');
+  const catState = p.getAttribute('pets:cat');
+  catState.lazyIn = (Number(catState.growth) || 0) + 1;
+  assert.equal(Pets.__internals.catTick(p), true, 'real cat lifecycle producer runs');
+  assert.notEqual(p.getAttribute('pets:current'), priorFollower, 'wily-to-lazy stage replaced the follower');
+  assert.equal(p.getAttribute('pets:current')?.getId(), core.NpcIdentifiers.LAZY_CAT_2, 'replacement is the lazy form');
+  assert.equal(p.getInterfaceId(), 61, 'naming remains open while the follower changes');
+  await send(enter);
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'changed candidate cannot commit a pending edit');
+  assert.notEqual(p.getInterfaceId(), 61, 'invalidated owned naming mount closes safely');
+  await openRename();
+  await send(arrow);
   await send({type:'interface_close'});
   assert.notEqual(p.getInterfaceId(), 61, 'IF_CLOSE cancels the pending edit');
   assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'cancel does not save edits');
@@ -490,6 +524,9 @@ test('native Felkrash training control reaches naming interface after quest comp
   assert.equal(p.getInterfaceId(), 61, 'wrong operation cannot close the naming interface');
   assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'wrong operation cannot save');
   assert.equal(namingWrites.length, beforeWrong, 'wrong operation does not change any displayed letter');
+  await send(enter);
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'confirm after wrong operation retains the original name');
+  await openRename();
   p.getPacketSender().sendInterface(324);
   await send(enter);
   assert.equal(p.getInterfaceId(), 324, 'stale enter cannot close a replacement modal');
@@ -503,6 +540,15 @@ test('native Felkrash training control reaches naming interface after quest comp
   await next();
   assert.equal(p.getDialogueManager().isActive(), false, 'prebuilt named continuation is cancelled after replacement');
   assert.equal(p.getPacketSender().getChatboxGroupId(), previousGroup, 'replacement chatbox remains open');
+
+  await openRename();
+  const movementPacket = {type:'movement_input', seq:1, dx:0, dy:0, rotation:0, duration:1, active:false, running:false};
+  await send(movementPacket);
+  assert.equal(p.getInterfaceId(), 61, 'inactive continuous-input heartbeat preserves naming');
+  await send({...movementPacket, seq:2, dx:1, active:true});
+  assert.notEqual(p.getInterfaceId(), 61, 'active continuous-input movement cancels naming');
+  await send(enter);
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'continuous movement leaves no stale commit');
 
   await openRename();
   await send({type:'move', worldX:3224, worldY:3218, modifierFlags:0});
@@ -558,11 +604,59 @@ test('native Felkrash training control reaches naming interface after quest comp
   assert.equal(p.getAttribute('pets:current'), null, 'the cat changed while an edit was pending');
   await send(enter);
   assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'stale edit cannot commit after cat pickup');
-  const itemId = core.ItemIdentifiers.LAZY_HELL_CAT, heldSlot = p.getInventory().getSlotForItemId(itemId);
+  const itemId = core.ItemIdentifiers.LAZY_HELL_CAT;
+  p.getInventory().deleteNumber(itemId, 1);
+  p.getPacketSender().sendInterfaceRemoval();
+  await send({type:'npc_option', index:felkrash.getIndex(), clickType:option});
+  for (let i=0; i<12; i++) tick();
+  const emptyMenu = NativePrompt.getPending(p);
+  assert.ok(emptyMenu, 'Felkrash still offers the post-quest menu with no eligible cat');
+  const emptyChoice = emptyMenu.options.indexOf('Can you rename my cat?');
+  assert.ok(emptyChoice >= 0);
+  await send({type:'dialogue_continue', widgetId:NativePrompt.OPTIONS_WIDGET_ID, childIndex:emptyChoice + 1});
+  for (let i=0; i<12 && p.getDialogueManager().isActive()
+      && !String(p.getDialogueManager().getCurrent()?.getText?.() ?? '').includes("I'll only help"); i++) await next();
+  assert.match(p.getDialogueManager().getCurrent()?.getText?.() ?? '', /only help you name wily or lazy cats/i,
+    'Felkrash refuses naming when the player has no eligible cat');
+  assert.notEqual(p.getInterfaceId(), 61, 'no eligible cat never opens the naming interface');
+
+  p.getPacketSender().sendInterfaceRemoval();
+  p.getInventory().add(new core.Item(itemId), true);
+  await openRename();
+  const beforeCarried = lines.length;
+  await send(enter);
+  assert.notEqual(p.getInterfaceId(), 61, 'a carried eligible cat can be named');
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'carried cat confirms the shared name');
+  assert.equal(lines.slice(beforeCarried).some(line => /finally got around to naming|Miaaow!/i.test(line.text)), false,
+    'a carried cat does not speak from the ground');
+  p.getPacketSender().sendInterfaceRemoval();
+  const heldSlot = p.getInventory().getSlotForItemId(itemId);
   assert.ok(heldSlot >= 0, 'picked-up cat is held');
   await send({type:'inventory_action', itemId, slot:heldSlot, widgetId:149 << 16, option:'Drop', optionIndex:5});
   for (let i=0; i<4; i++) tick();
   assert.equal(p.getAttribute('pets:current')?.getId(), core.NpcIdentifiers.LAZY_HELLCAT, 'cat is resummoned');
+  p.getEquipment().setItem(core.Equipment.AMULET_SLOT, null);
+  await openRename();
+  await send(enter);
+  assert.match(p.getDialogueManager().getCurrent()?.getText?.() ?? '', /So cat, what do you think/i,
+    'grounded cat without catspeak gets the non-catspeak conversation');
+  await next();
+  assert.match(p.getDialogueManager().getCurrent()?.getText?.() ?? '', /Miaaow!/i,
+    'grounded cat visibly replies without catspeak');
+  assert.equal(lines.findLast(line => /^Miaaow!$/i.test(line.text))?.speakerId,
+    p.getAttribute('pets:current').getId(), 'non-catspeak reply uses the actual cat head');
+  await openRename();
+  nativeRatcatchers.setStage(p, 21);
+  await send(enter);
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'quest state is rechecked at commit');
+  assert.notEqual(p.getInterfaceId(), 61, 'invalid quest state closes its own naming interface');
+  nativeRatcatchers.setStage(p, 22);
+  await openRename();
+  p.setLocation(new core.Location(3230, 3218, 0)); p.setNeedsPlacement(false);
+  await send(enter);
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'distance change prevents stale commit');
+  assert.notEqual(p.getInterfaceId(), 61, 'distance-invalid session closes its own interface');
+  p.setLocation(new core.Location(3222, 3218, 0)); p.setNeedsPlacement(false); tick();
   await openRename();
   PluginManager.emitPlayerLogout({player:p, username:p.getUsername()});
   await send(enter);

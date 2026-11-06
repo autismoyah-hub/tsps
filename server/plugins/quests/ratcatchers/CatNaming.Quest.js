@@ -1,5 +1,6 @@
 // Attach from Ratcatchers with the actual quest, Felkrash ID and catspeak query.
-// See continuation-contract.md for cache/source and TSPS UI-policy limits.
+// Component names and arrow order: pinned revision-241 cat_naming.if at
+// https://github.com/Joshua-F/osrs-dumps/blob/6e5033af6215963581a51b348f452320ff18f0f6/interface/cat_naming.if
 const CAT_NAME_ATTRIBUTE = 'ratcatchers:cat-name';
 const GROUP = 61;
 const NAME_TEXT = [10, 11, 12, 13, 14, 15];
@@ -83,9 +84,12 @@ function open(event) {
   // the cache and Wiki do not establish retail initial state or wrap timing.
   const initial = typeof old === 'string' && /^[A-Z ]{6}$/.test(old) ? old : 'AAAAAA';
   player.getPacketSender().sendInterface(GROUP);
+  const mount = player.getPacketSender().getSubInterfaceAt(MAIN_MODAL_TARGET);
+  // Another synchronous interface:opened listener may replace the mount.
+  if (player.getInterfaceId() !== GROUP || !mount || mount.groupId !== GROUP) return;
   const location = player.getLocation();
   const state = {npc, cat, stepId, letters:[...initial], x:location.getX(), y:location.getY(), z:location.getZ(),
-    area:player.getPrivateArea?.() ?? null, mount:player.getPacketSender().getSubInterfaceAt(MAIN_MODAL_TARGET)};
+    area:player.getPrivateArea?.() ?? null, mount};
   pending.set(player, state);
   showLetters(player, state.letters);
 }
