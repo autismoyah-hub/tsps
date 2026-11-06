@@ -3,7 +3,7 @@
 // casket, Felkrash's wily cats, the wily/lazy cycle and a grown cat's hellcat.
 const assert = require("node:assert/strict");
 const path = require("node:path");
-const { test, before, beforeEach } = require("node:test");
+const { test, before, beforeEach, afterEach } = require("node:test");
 require("../dist/Server").Server.installProductionPathResolver();
 const { CachePipeline } = require("../dist/game/cache/CachePipeline");
 const { PluginManager } = require("../dist/plugins/PluginManager");
@@ -19,6 +19,8 @@ const addQueue = [];
 const removeQueue = [];
 const world = { sendMessage() {}, getNpcs: () => worldNpcs, getAddNPCQueue: () => addQueue, getRemoveNPCQueue: () => removeQueue };
 let core, Pets, Caskets, fixtures = 0;
+const syntheticPlayers = [], syntheticTasks = [], syntheticLogoutHooks = [];
+let originalSubmit;
 
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
@@ -28,6 +30,7 @@ before(async () => {
     getWorld: () => world,
     getRegionManager: () => ({ blocked: () => true, canMovestart: () => true }),
     getItemOnGroundManager: () => ({ registerNonGlobal() {}, registerLocation() {} }),
+    onPlayerLogout: handler => { syntheticLogoutHooks.push(handler); },
     onCustomEvent: (name, handler) => events.set(name, [...(events.get(name) ?? []), handler]),
     emitCustomEvent: (name, request) => {
       emitted.push([name, request]);
@@ -44,6 +47,11 @@ before(async () => {
 
 const realRandom = Math.random;
 beforeEach(() => {
+  originalSubmit = core.TaskManager.submit;
+  core.TaskManager.submit = function(task) {
+    if (syntheticPlayers.length) syntheticTasks.push(task);
+    return originalSubmit.call(this, task);
+  };
   Math.random = realRandom;
   emitted.length = 0;
   worldNpcs.length = 0;
@@ -51,8 +59,22 @@ beforeEach(() => {
   removeQueue.length = 0;
 });
 
+afterEach(() => {
+  try {
+    for (const player of syntheticPlayers.splice(0)) {
+      for (const handler of syntheticLogoutHooks) handler({ player, username: player.getUsername() });
+    }
+    assert.equal(syntheticTasks.some(task => task.isRunning()), false, "synthetic fixture tasks are stopped");
+  } finally {
+    syntheticTasks.length = 0;
+    core.TaskManager.submit = originalSubmit;
+    Math.random = realRandom;
+  }
+});
+
 function realPlayer({ follower = null } = {}) {
   const player = new Player(null);
+  syntheticPlayers.push(player);
   const messages = [];
   const sender = new Proxy({}, { get: () => () => sender });
   player.setUsername(`pet-sources-${++fixtures}`);
@@ -276,3 +298,131 @@ test("a cat does not turn while the player already has a hellcat outside the men
 function pick({ overgrown, wily }) {
   return { overgrown, wily };
 }
+
+// UNEXECUTED DRAFT: append to server/tests/quest-activity-pet-sources.test.cjs.
+// That file already registers Pets with a synthetic API; this final case rebinds
+// Pets to the real API only after those cases. QuestRuntime has not been loaded
+// or stubbed by its preceding tests, so its first registration is real.
+const runtime = require('../plugins/quests/QuestRuntime');
+const { Player: NativePlayer } = require('../dist/game/entity/impl/player/Player');
+const { PlayerSession: NativeSession } = require('../dist/net/PlayerSession');
+const { ClientConnection: NativeConnection } = require('../dist/net/NetworkBuilder');
+const { NpcDefinitionLoader: NativeNpcLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
+const { MultiChatboxPrompt: NativePrompt } = require('../dist/game/model/menu/MultiChatboxPrompt');
+const { PlayerSave: NativePlayerSave } = require('../dist/game/entity/impl/player/persistence/PlayerSave');
+let nativeRatcatchers, felkrash, nativeIndex = 1800;
+
+test('native Felkrash training control reaches naming interface after quest completion', async (t) => {
+  // Register only the three needed plugins; no directory load, startup, or bots.
+  // A single test owns these registrations and all mutable world objects.
+  assert.equal(PluginManager.loadedPlugins.includes('PlayerBots'), false, 'bots are off in this selectively registered fixture');
+  const previousCycle = core.World.processCycle;
+  core.RegionManager.init();
+  core.RegionManager.loadMapFiles(3222, 3218);
+  new NativeNpcLoader().load();
+  require('../plugins/npcs/Pets.plugin').register(PluginManager.createApi('FelkrashPetsNative'));
+  require('../plugins/npcs/NpcDialogues.plugin').register(PluginManager.createApi('FelkrashDialoguesNative'));
+  require('../plugins/quests/quests/Ratcatchers.Quest')(PluginManager.createApi('FelkrashQuestNative'));
+  const lines = [];
+  PluginManager.createApi('FelkrashLineObserver').onCustomEvent('npc-dialogue:line', e => {
+    if (e.npcId === core.NpcIdentifiers.FELKRASH) lines.push({
+      text:e.text, speakerId:e.speakerId, speakerName:e.speakerName, speaker:e.step?.speaker,
+    });
+  });
+  nativeRatcatchers = runtime.getRegisteredQuests().findLast(q => q.key === 'ratcatchers');
+  assert.ok(nativeRatcatchers, 'production Ratcatchers quest registered');
+  const channel = { kind:'test', remoteAddress:'127.0.0.1', isOpen:()=>true, send:()=>true,
+    close(){}, onData(){}, onError(){}, onClose(){} };
+  const p = new NativePlayer(new NativeSession(channel));
+  p.setIndex(nativeIndex++); p.setUsername('felkrash-native'); p.setRegistered(true);
+  p.setAttribute('bot-skip-persistence', true);
+  p.setLocation(new core.Location(3222, 3218, 0)); p.setNeedsPlacement(false);
+  p.getEquipment().setItem(core.Equipment.AMULET_SLOT, new core.Item(core.ItemIdentifiers.CATSPEAK_AMULET));
+  const c = new NativeConnection(channel); c.player = p;
+  felkrash = new core.NPC(core.NpcIdentifiers.FELKRASH, new core.Location(3223, 3218, 0));
+  assert.equal(core.World.getNpcs().add(felkrash, true), true, 'Felkrash registered');
+  assert.equal(felkrash.isRegistered(), true, 'NPC is registered for actual option dispatch');
+  const originalTasks = new Set([...core.TaskManager.pendingTasks.toArray(), ...core.TaskManager.activeTasks]);
+  const ownedTasks = new Set();
+  function recordTasks() {
+    for (const task of [...core.TaskManager.pendingTasks.toArray(), ...core.TaskManager.activeTasks]) {
+      if (!originalTasks.has(task)) ownedTasks.add(task);
+    }
+  }
+  t.after(() => {
+    p.getPacketSender().sendInterfaceRemoval();
+    PluginManager.emitPlayerLogout({player:p, username:p.getUsername()});
+    p.setRegistered(false); core.TaskManager.cancelTasks(p); core.TaskManager.cancelTasks(p.getIndex());
+    for (const n of [...core.World.getNpcs()]) if (n === felkrash || n?.getOwner?.() === p) core.World.getNpcs().remove(n);
+    for (const queue of [core.World.getAddNPCQueue(), core.World.getRemoveNPCQueue()]) {
+      for (let i=queue.length-1; i>=0; i--) if (queue[i] === felkrash || queue[i]?.getOwner?.() === p) queue.splice(i,1);
+    }
+    channel.close(); core.World.processCycle = previousCycle;
+    assert.equal([...core.World.getNpcs()].some(n => n === felkrash || n?.getOwner?.() === p), false, 'owned NPCs removed');
+    assert.equal([...ownedTasks].some(task => task.isRunning()), false, 'fixture tasks stopped');
+  });
+  function tick() {
+    core.World.processCycle++;
+    core.TaskManager.process();
+    c.processTurnPackets();
+    p.getMovementQueue().process(); core.TaskManager.processWalkTo(p.getIndex());
+    for (const n of core.World.getNpcs()) n.process();
+    core.World.updateLocalNpcs(p, [...core.World.getNpcs()]);
+    p.getSession().flushClient(core.World.processCycle);
+    p.resetUpdating(); for (const n of core.World.getNpcs()) n.resetUpdating();
+    recordTasks();
+  }
+  async function send(packet) { await c.dispatch([packet]); tick(); }
+  async function next() {
+    const group = p.getPacketSender().getChatboxGroupId();
+    await send({type:'dialogue_continue', widgetId:(group << 16) | (group === 229 ? 4 : 5), childIndex:-1});
+  }
+  nativeRatcatchers.setStage(p, 22);
+  assert.equal(nativeRatcatchers.isComplete(p), true, 'quest completion precondition');
+  const completeRequest = {player:p, key:'ratcatchers', complete:null};
+  PluginManager.emitCustomEvent('quest:is-complete', completeRequest);
+  assert.equal(completeRequest.complete, true, 'native quest query is registered and sees completion');
+  const item = core.ItemIdentifiers.PET_CAT_7; // 1567: first overgrown colour in Pets CAT_STAGES.
+  assert.ok(Number.isInteger(item), 'cache identifier for overgrown cat');
+  p.getInventory().add(new core.Item(item), true);
+  const slot = p.getInventory().getSlotForItemId(item);
+  assert.ok(slot >= 0, 'real inventory contains an overgrown cat');
+  await send({type:'inventory_action', itemId:item, slot, widgetId:149 << 16, option:'Drop', optionIndex:5});
+  const cat = p.getAttribute('pets:current');
+  assert.ok(cat?.isRegistered() && cat.getOwner() === p, 'real pet drop created owned follower');
+  assert.equal(p.getInventory().getAmount(item), 0, 'cat item became follower');
+  const option = felkrash.getCurrentDefinition(p).getActions().indexOf('Talk-to') + 1;
+  assert.ok(option > 0, 'cache supplies Talk-to');
+  await send({type:'npc_option', index:felkrash.getIndex(), clickType:option});
+  for (let i=0; i<12; i++) tick();
+  const menu = NativePrompt.getPending(p);
+  assert.ok(menu, 'real NPC talk reaches post-quest menu');
+  const choice = menu.options.indexOf('Can you train my cat for me?');
+  assert.ok(choice >= 0, 'training option is offered');
+  await send({type:'dialogue_continue', widgetId:NativePrompt.OPTIONS_WIDGET_ID, childIndex:choice + 1});
+  for (let i=0; i<25 && p.getAttribute('pets:current')?.getId() !== core.NpcIdentifiers.WILY_CAT_2; i++) {
+    assert.ok(p.getDialogueManager().isActive(), 'training dialogue remains active');
+    await next();
+  }
+  assert.equal(p.getAttribute('pets:current')?.getId(), core.NpcIdentifiers.WILY_CAT_2,
+    'existing Felkrash training actually produced a wily follower');
+  assert.equal(p.getAttribute('pets:current')?.getOwner(), p, 'trained cat remains owned');
+  for (let i=0; i<25 && p.getDialogueManager().isActive() && p.getInterfaceId() !== 61; i++) await next();
+  assert.equal(p.getInterfaceId(), 61, 'Felkrash opens the native cat naming interface');
+  assert.equal(lines.some(line => /finally got around to naming|Sorry I took so long/i.test(line.text)), false,
+    'the post-enter conversation has not run before enter');
+  await send({type:'widget_action', widgetId:(61 << 16) | 18, groupId:61, childId:18, buttonNum:1});
+  assert.equal(p.getInterfaceId(), 61, 'editing a letter leaves the naming interface open');
+  await send({type:'widget_action', widgetId:(61 << 16) | 32, groupId:61, childId:32, buttonNum:1});
+  assert.notEqual(p.getInterfaceId(), 61, 'enter closes the naming interface');
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), 'BAAAAA', 'the chosen shared name is saved');
+  const spokenCat = lines.find(line => /finally got around to naming/i.test(line.text));
+  assert.ok(spokenCat, 'catspeak continuation is shown after enter');
+  assert.equal(spokenCat.speakerId, p.getAttribute('pets:current').getId(), 'real cat supplies the dialogue head');
+  assert.ok(spokenCat.speakerName, 'cat dialogue has an explicit speaker');
+  for (let i=0; i<8 && !lines.some(line => /Sorry I took so long/i.test(line.text)); i++) await next();
+  assert.ok(lines.some(line => /Sorry I took so long, BAAAAA/i.test(line.text)), 'dialogue uses the selected name');
+  const restored = new NativePlayer(new NativeSession(channel));
+  NativePlayerSave.fromPlayer(p).applyToPlayer(restored);
+  assert.equal(restored.getAttribute('ratcatchers:cat-name'), 'BAAAAA', 'real player save roundtrip retains the shared name');
+});
