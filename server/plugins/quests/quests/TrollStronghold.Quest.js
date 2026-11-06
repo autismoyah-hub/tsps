@@ -25,7 +25,12 @@
  */
 const guardPickpocket = require("../data/troll-stronghold-pickpocket.json");
 const guardAttempts = new WeakMap();
-const GUARD_FAILURE_CONDITIONS = new Set(["2LzxsX", "IJvVTc"]);
+// Select the result locally: generic condition hooks can answer these prose
+// conditions for other quests before this quest sees its own attempt.
+const GUARD_OUTCOMES = {
+  twig: { success: "Qio_9h", failure: "2LzxsX", message: "UsQIS6" },
+  berry: { success: "XCkq4i", failure: "IJvVTc", message: "kUE-LP" },
+};
 
 function guardAttemptMatches(attempt, player, npc, npcId) {
   return !!attempt && attempt.npc === npc && attempt.npcId === npcId
@@ -36,14 +41,57 @@ function guardAttemptMatches(attempt, player, npc, npcId) {
     && player.getInventory().getAmount(attempt.keyId) === 0 && !player.getInventory().isFull();
 }
 
-/** The selected failure branch wakes the actor bound to the original interaction. */
-function wakePickpocketGuard({ player, npc, npcId, stepId }) {
-  if (!GUARD_FAILURE_CONDITIONS.has(stepId)) return;
+/** Keep the generated words but select this attempt's already-rolled branch. */
+function selectGuardOutcome(steps, attempt, ids) {
+  const found = new Map();
+  function find(list) {
+    for (const step of list) {
+      if (step.type === "condition" && (step.id === ids.success || step.id === ids.failure)) {
+        if (found.has(step.id)) return false;
+        found.set(step.id, { step, siblings: list });
+      }
+      if (Array.isArray(step.steps) && !find(step.steps)) return false;
+    }
+    return true;
+  }
+  if (!find(steps)) return [];
+  const successEntry = found.get(ids.success), failureEntry = found.get(ids.failure);
+  if (!successEntry || !failureEntry || successEntry.siblings !== failureEntry.siblings) return [];
+  const succeeded = successEntry.step, failed = failureEntry.step;
+  if (!Array.isArray(succeeded.steps) || !Array.isArray(failed.steps)) return [];
+  if (succeeded.steps.filter(step => step.type === "message" && step.id === ids.message).length !== 1) return [];
+  const overhead = failed.steps.filter(step => step.type === "line" && step.presentation === "overhead");
+  if (overhead.length !== 1) return [];
+  attempt.failureStep = overhead[0];
+  function select(list) {
+    return list.flatMap(step => {
+      if (step === succeeded) return attempt.success ? step.steps : [];
+      if (step === failed) return attempt.success ? [] : step.steps;
+      return Array.isArray(step.steps) ? [{ ...step, steps: select(step.steps) }] : [step];
+    });
+  }
+  return select(steps);
+}
+
+/** Wake only when this attempt's own failure line is actually reached. */
+function wakePickpocketGuard(request) {
+  const { player, npc, npcId, step } = request;
   const attempt = guardAttempts.get(player);
-  if (!guardAttemptMatches(attempt, player, npc, npcId) || attempt.success) return;
-  guardAttempts.delete(player);
-  npc.setNpcTransformationId(attempt.awakeId);
-  npc.getCombat().attack(player);
+  if (!attempt || attempt.success || attempt.failureStep !== step) return;
+  const previousBefore = request.before;
+  request.before = () => {
+    const manager = player.getDialogueManager();
+    const current = manager.getCurrent();
+    if (typeof previousBefore === "function") previousBefore();
+    if (current && manager.getCurrent() !== current) return;
+    if (guardAttempts.get(player) !== attempt || !guardAttemptMatches(attempt, player, npc, npcId)) {
+      if (current && manager.getCurrent() === current) manager.reset();
+      return;
+    }
+    guardAttempts.delete(player);
+    npc.setNpcTransformationId(attempt.awakeId);
+    npc.getCombat().attack(player);
+  };
 }
 
 module.exports = function registerTrollStrongholdQuest(api) {
@@ -253,7 +301,7 @@ module.exports = function registerTrollStrongholdQuest(api) {
   }
 
   /** Wiki: 30 Thieving; the first successful pocket holds the key. */
-  function pickpocketGuard(event, keyId, variant, asleepId, awakeId) {
+  function pickpocketGuard(event, keyId, variant, asleepId, awakeId, outcomeIds) {
     const { player, npc, npcId } = event;
     guardAttempts.delete(player);
     if (quest.getStage(player) < STAGE_HAS_PRISON_KEY) {
@@ -278,17 +326,19 @@ module.exports = function registerTrollStrongholdQuest(api) {
     const level = player.getSkillManager().getCurrentLevel(Skill.THIEVING);
     const index = Math.min(level - guardPickpocket.minimumLevel, guardPickpocket.successOutOf256.length - 1);
     const success = Math.random() * 256 < guardPickpocket.successOutOf256[index];
-    guardAttempts.set(player, { npc, npcId, keyId, awakeId, success, quest,
-      stage: STAGE_HAS_PRISON_KEY, skill: Skill.THIEVING });
-    if (!startTranscript(api, player, npcId, PAGE, variant, undefined, npc)) guardAttempts.delete(player);
+    const attempt = { npc, npcId, keyId, awakeId, success, quest,
+      stage: STAGE_HAS_PRISON_KEY, skill: Skill.THIEVING };
+    guardAttempts.set(player, attempt);
+    if (!startTranscript(api, player, npcId, PAGE, variant,
+      steps => selectGuardOutcome(steps, attempt, outcomeIds), npc)) guardAttempts.delete(player);
   }
 
   function pickpocketTwig(event) {
-    pickpocketGuard(event, CELL_KEY_1_ITEM_ID, TWIG_KEY_VARIANT, NpcIdentifiers.TWIG_3, NpcIdentifiers.TWIG_2);
+    pickpocketGuard(event, CELL_KEY_1_ITEM_ID, TWIG_KEY_VARIANT, NpcIdentifiers.TWIG_3, NpcIdentifiers.TWIG_2, GUARD_OUTCOMES.twig);
   }
 
   function pickpocketBerry(event) {
-    pickpocketGuard(event, CELL_KEY_2_ITEM_ID, BERRY_KEY_VARIANT, NpcIdentifiers.BERRY_2, NpcIdentifiers.BERRY);
+    pickpocketGuard(event, CELL_KEY_2_ITEM_ID, BERRY_KEY_VARIANT, NpcIdentifiers.BERRY_2, NpcIdentifiers.BERRY, GUARD_OUTCOMES.berry);
   }
 
   /** South mouth (arena side) and north mouth (Trollheim side) of the pass tunnel. */
@@ -847,7 +897,7 @@ module.exports = function registerTrollStrongholdQuest(api) {
   api.onCustomEvent("door:toggle", guardArenaGate);
   api.onCustomEvent("npc-drops:context", withholdPrisonKey);
   api.onCustomEvent("npc-dialogue:hook", handleStartHook);
-  api.onCustomEvent("npc-dialogue:condition", wakePickpocketGuard);
+  api.onCustomEvent("npc-dialogue:line", wakePickpocketGuard);
   api.onCustomEvent("npc-dialogue:action", handleAction);
   api.onNpcDeath(handleNpcDeath);
   api.onPlayerLogin(handleLogin);

@@ -166,6 +166,7 @@ function trollGuardFixture(t, name, level = 30, stage = 30) {
   let npc, inWorld = false;
   const oldCycle = core.World.processCycle;
   const priorAddQueue = new Set(core.World.getAddNPCQueue());
+  const priorGroundItems = new Set(core.World.getItems());
   const createdTasks = [];
   const originalSubmit = core.TaskManager.submit;
   t.after(() => {
@@ -182,6 +183,17 @@ function trollGuardFixture(t, name, level = 30, stage = 30) {
       // still-running owned tasks through the base method without replaying it.
       clean(() => { for (const task of createdTasks) if (task.isRunning()) core.Task.prototype.stop.call(task); });
       clean(() => { core.TaskManager.cancelTasks(player); core.TaskManager.cancelTasks(player.getIndex()); });
+      // Preserve unrelated ground items; remove only this actor's new drops.
+      clean(() => {
+        const manager = PM.createApi('TrollFixtureCleanup').getItemOnGroundManager();
+        const items = core.World.getItems();
+        for (const item of [...items]) {
+          if (priorGroundItems.has(item) || item.getOwner() !== player.getUsername()) continue;
+          manager.deregister(item);
+          const index = items.indexOf(item);
+          if (index >= 0) items.splice(index, 1);
+        }
+      });
       clean(() => core.GameConstants.PLAYER_PERSISTENCE.cancelRequestedSave(player));
       if (npc) {
         clean(() => core.TaskManager.cancelTasks(npc));
@@ -198,6 +210,10 @@ function trollGuardFixture(t, name, level = 30, stage = 30) {
     }
     if (cleanupError) throw cleanupError;
     assert.ok(createdTasks.every(task => !task.isRunning()), 'owned tasks are stopped');
+    assert.ok(core.World.getItems().every(item => priorGroundItems.has(item) || item.getOwner() !== player.getUsername()),
+      'no new ground items owned by this actor remain');
+    assert.ok([...priorGroundItems].every(item => core.World.getItems().includes(item)),
+      'preexisting ground item identities remain registered');
     assert.equal(core.TaskManager.hasActiveTask(player),false);
     assert.equal(core.TaskManager.hasActiveTask(player.getIndex()),false);
     if (npc) {
@@ -215,6 +231,7 @@ function trollGuardFixture(t, name, level = 30, stage = 30) {
   player.setAttribute(skip, true); player.setIndex(trollIndex++);
   const username = `troll${player.getIndex()}`;
   player.setUsername(username); player.setLongUsername(core.Misc.stringToLongBigInt(username));
+  assert.ok([...priorGroundItems].every(item => item.getOwner() !== username), 'actor has no preexisting ground items');
   assert.ok(player.getLongUsername() !== 0n); assert.ok(player.getIndex() < core.World.MAX_PLAYERS);
   player.setRegistered(true);
   const quests = require('../plugins/quests/QuestRuntime');
@@ -321,6 +338,8 @@ test('Troll Stronghold sleeping guards resolve pickpocket attempts',async t=>{
     f.npc.setHitpoints(0);
     for (let i=0;i<80 && f.player.getInventory().getAmount(f.key)===0;i++) core.TaskManager.process();
     assert.equal(f.player.getInventory().getAmount(f.key),1,'the real death task reaches the kill fallback');
+    assert.ok(core.World.getItems().some(item => item.getOwner() === f.player.getUsername() && item.getItem().getId() === core.ItemIdentifiers.BIG_BONES),
+      'the registered NPC drop handler places the guard drop of big bones');
     assert.equal(f.player.getInventory().getAmount(f.otherKey),0);
   });
   await t.test(`${name} successful pickpocket grants only the matching key`, async t => {
