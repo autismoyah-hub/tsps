@@ -176,6 +176,12 @@ test("3b. Gianne jnr.'s Captain Dalbur: delivery step (2547) is not answered by 
 // Keep the completed named page's next-tick stock opening from replacing a newer main.
 test('Ali clothing stock deferral preserves a newer native shop', async t => {
   const PM = require('../dist/plugins/PluginManager').PluginManager;
+  const {ShopDefinitionLoader} = require('../dist/game/definition/loader/impl/ShopDefinitionLoader');
+  // Match GameBuilder's boot pair after legacy cleanup and before any new per-player shops.
+  assert.equal(new ShopDefinitionLoader().load(),true);
+  core.ShopManager.initialize();
+  assert.equal(core.ShopDefinition.forId(1221)?.getName(),"Lowe's Archery Emporium");
+  assert.equal(core.ShopManager.hasShop(1221),true,'canonical static Lowe runtime is initialized');
   const MAIN = (161 << 16) | 16, CLOTHES = 'I would like to have a look at your selection of clothes.';
   const clean = H.clean, terminalText = 'Hang on a second while I get the garments.';
   for (const mode of ['stationary clothes', 'direct shop', 'newer shop']) await t.test(mode, async child => {
@@ -229,10 +235,13 @@ test('Ali clothing stock deferral preserves a newer native shop', async t => {
       if (q.hasPendingWork()) q.process(); core.TaskManager.processWalkTo(p.getIndex());
     };
     const input = async (...packets) => { await f.c.dispatch(packets); turn(); };
-    const trade = () => { const actions=lowe.getCurrentDefinition(p).getActions(), clickType=actions.indexOf('Trade')+1;
+    const trade = () => {
+      assert.equal(core.ShopManager.hasShop(1221),true,'static Lowe runtime remains available before the genuine NPC Trade');
+      const actions=lowe.getCurrentDefinition(p).getActions(), clickType=actions.indexOf('Trade')+1;
       assert.ok(clickType>0,JSON.stringify({npc:lowe.getId(),actions})); return {type:'npc_option',index:lowe.getIndex(),clickType}; };
     const shop = name => {
-      assert.equal(p.getInterfaceId(),300); assert.equal(core.ShopManager.getOpenShop(p)?.name,name);
+      assert.equal(p.getInterfaceId(),300,JSON.stringify({staticShopReady:core.ShopManager.hasShop(1221),npcId:lowe.getContentId(p),npcRegistered:lowe.isRegistered(),npcCurrent:core.World.getNpcs().get(lowe.getIndex())===lowe,playerBusy:p.busy(),movementPending:p.getMovementQueue().hasPendingWork()}));
+      assert.equal(core.ShopManager.getOpenShop(p)?.name,name);
       const mount=sender.subInterfaceTargets.get(300); assert.ok(mount); assert.equal(sender.getSubInterfaceAt(MAIN),mount);
       return {mount,id:core.ShopManager.activeShopByPlayer.get(p)};
     };
