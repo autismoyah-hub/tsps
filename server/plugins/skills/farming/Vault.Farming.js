@@ -515,4 +515,4 @@ function drag(event) {
 function logout({ player }) {
     SESSIONS.delete(player);
 }
-Object.assign(module.exports, { open, click, drag, logout });
+Object.assign(module.exports, { open, click, drag, logout, eligible, held });
