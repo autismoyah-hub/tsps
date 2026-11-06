@@ -1264,3 +1264,87 @@ test('Xarpus: a mixed run over a pool still hurts after the engine clears the st
   assert.equal(hurts.length, 1, 'once');
   raid.dispose();
 });
+
+
+test('named Theatre spectators use the named player\'s actual friends list', (t) => {
+  const Spectate = require('../plugins/minigames/tob/Spectate.TheatreOfBlood');
+  const { Misc } = require('../dist/util/Misc');
+  const { World } = require('../dist/game/World');
+  const { PrivateChatStatus } = require('../dist/game/model/PlayerRelations');
+  const names = ['tob:may-spectate', 'tob:observe', 'tob:room-built', 'tob:raid-over'];
+  const savedHandlers = new Map(names.map((name) => [name, hooks.customHandlers[name]]));
+  const key = Symbol('spectator fixture');
+  t.after(() => {
+    Raid.raids.delete(key);
+    for (const [name, handlers] of savedHandlers) {
+      if (handlers) hooks.customHandlers[name] = handlers;
+      else delete hooks.customHandlers[name];
+    }
+  });
+  // No World registration or network: real PlayerRelations still maintains its actual sets.
+  t.mock.method(World, 'getPlayers', () => ({ forEach() {}, search() { return undefined; } }));
+  t.mock.method(World, 'getPlayerByName', () => undefined);
+  const actor = (name) => {
+    const p = realReader(t, name);
+    p.setLongUsername(Misc.stringToLongBigInt(name));
+    return p;
+  };
+  const [viewer, member, other, spectator] = ['Viewer', 'Member', 'Other', 'Spectator'].map(actor);
+  const ids = [viewer, member, other, spectator].map((p) => p.getLongUsername());
+  assert.ok(ids.every((id) => id !== 0n));
+  assert.equal(new Set(ids).size, ids.length);
+  let entered = 0;
+  const raid = { id: Number.MAX_SAFE_INTEGER, over: false, players: [member, other],
+    spectators: new Set([spectator]), area: { enter() { entered++; } }, room: null };
+  Raid.raids.set(key, raid);
+  hooks.customHandlers['tob:may-spectate'] = [];
+  Spectate(hooks.api);
+  const chooseName = (name) => {
+    hooks.api.emitCustomEvent('tob:observe', { player: viewer, recent: false });
+    viewer.getEnteredSyntaxAction().execute(name);
+  };
+  const reset = () => { raid.spectators.delete(viewer); viewer.setUntargetable(false); };
+  member.getRelations().setStatus(PrivateChatStatus.FRIENDS_ONLY, false);
+  other.getRelations().setStatus(PrivateChatStatus.FRIENDS_ONLY, false);
+  viewer.getRelations().addFriend(member.getLongUsername());
+  assert.equal(member.getRelations().hasFriend(viewer.getLongUsername()), false, 'reverse friendship does not grant admission');
+  chooseName('Member');
+  assert.equal(entered, 0);
+  assert.equal(raid.spectators.has(viewer), false, 'denial changes neither the raid nor its area');
+  assert.equal(viewer.isUntargetable(), false, 'denial leaves viewer state unchanged');
+  member.getRelations().addFriend(viewer.getLongUsername());
+  assert.equal(member.getRelations().hasFriend(viewer.getLongUsername()), true);
+  chooseName('Member');
+  assert.equal(entered, 1, 'named member grants admission despite another strict member');
+  assert.equal(raid.spectators.has(viewer), true);
+  reset();
+  spectator.getRelations().setStatus(PrivateChatStatus.FRIENDS_ONLY, false);
+  chooseName('Spectator');
+  assert.equal(entered, 1, 'the named spectator owns the list');
+  assert.equal(raid.spectators.has(viewer), false);
+  spectator.getRelations().addFriend(viewer.getLongUsername());
+  chooseName('Spectator');
+  assert.equal(entered, 2);
+  reset();
+  member.getRelations().deleteFriend(viewer.getLongUsername());
+  member.getRelations().setStatus(PrivateChatStatus.ON, false);
+  chooseName('Member');
+  assert.equal(entered, 3, 'ON does not require a friendship');
+  reset();
+  member.getRelations().setStatus(PrivateChatStatus.OFF, false);
+  chooseName('Member');
+  assert.equal(entered, 4, 'OFF retains existing TSPS admission behavior');
+  reset();
+  member.getRelations().addIgnore(viewer.getLongUsername());
+  member.getRelations().setStatus(PrivateChatStatus.ON, false);
+  chooseName('Member');
+  assert.equal(entered, 5, 'ignore retains existing TSPS admission behavior');
+  reset();
+  hooks.api.emitCustomEvent('tob:observe', { player: viewer, recent: true });
+  assert.equal(entered, 6, 'Recent Party retains the existing behavior');
+  reset();
+  hooks.customHandlers['tob:may-spectate'].unshift((request) => { request.allowed = false; });
+  chooseName('Member');
+  assert.equal(entered, 6, 'an earlier event veto remains effective');
+  assert.equal(raid.spectators.has(viewer), false);
+});
