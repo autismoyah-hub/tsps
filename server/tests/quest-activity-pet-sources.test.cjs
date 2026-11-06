@@ -339,6 +339,12 @@ test('native Felkrash training control reaches naming interface after quest comp
   p.setLocation(new core.Location(3222, 3218, 0)); p.setNeedsPlacement(false);
   p.getEquipment().setItem(core.Equipment.AMULET_SLOT, new core.Item(core.ItemIdentifiers.CATSPEAK_AMULET));
   const c = new NativeConnection(channel); c.player = p;
+  const sender = p.getPacketSender(), namingWrites = [];
+  const originalSendString = sender.sendString;
+  t.mock.method(sender, 'sendString', function(value, id) {
+    if ((id >>> 16) === 61) namingWrites.push({value, child:id & 0xffff});
+    return originalSendString.call(this, value, id);
+  });
   felkrash = new core.NPC(core.NpcIdentifiers.FELKRASH, new core.Location(3223, 3218, 0));
   assert.equal(core.World.getNpcs().add(felkrash, true), true, 'Felkrash registered');
   assert.equal(felkrash.isRegistered(), true, 'NPC is registered for actual option dispatch');
@@ -420,9 +426,145 @@ test('native Felkrash training control reaches naming interface after quest comp
   assert.ok(spokenCat, 'catspeak continuation is shown after enter');
   assert.equal(spokenCat.speakerId, p.getAttribute('pets:current').getId(), 'real cat supplies the dialogue head');
   assert.ok(spokenCat.speakerName, 'cat dialogue has an explicit speaker');
-  for (let i=0; i<8 && !lines.some(line => /Sorry I took so long/i.test(line.text)); i++) await next();
-  assert.ok(lines.some(line => /Sorry I took so long, BAAAAA/i.test(line.text)), 'dialogue uses the selected name');
+  const reply = p.getDialogueManager().getCurrent();
+  assert.ok(reply, 'confirmed cat reply is active');
+  const replyOwner = p.getDialogueManager().getOwner();
+  assert.ok(replyOwner, 'confirmed reply has an explicit playback owner');
+  await send({type:'widget_action', widgetId:(61 << 16) | 32, groupId:61, childId:32, buttonNum:1});
+  assert.equal(p.getDialogueManager().getCurrent(), reply, 'duplicate enter cannot close the active cat reply');
+  await next();
+  assert.match(p.getDialogueManager().getCurrent()?.getText?.() ?? '', /Sorry I took so long, BAAAAA/i,
+    'player dialogue actually presents the selected name');
+  assert.equal(sender.getChatboxGroupId(), 217, 'normal cat-to-player transition mounts player dialogue');
+  assert.equal(p.getDialogueManager().getOwner(), replyOwner, 'normal transition retains named playback owner');
+  assert.equal(sender.getChatboxOwner(), replyOwner, 'normal transition retains actual chatbox owner');
   const restored = new NativePlayer(new NativeSession(channel));
   NativePlayerSave.fromPlayer(p).applyToPlayer(restored);
   assert.equal(restored.getAttribute('ratcatchers:cat-name'), 'BAAAAA', 'real player save roundtrip retains the shared name');
+
+  async function openRename() {
+    p.getPacketSender().sendInterfaceRemoval();
+    await send({type:'npc_option', index:felkrash.getIndex(), clickType:option});
+    for (let i=0; i<12; i++) tick();
+    const menu = NativePrompt.getPending(p);
+    assert.ok(menu, 'Felkrash post-quest menu opens for rename');
+    const choice = menu.options.indexOf('Can you rename my cat?');
+    assert.ok(choice >= 0, 'rename option offered');
+    await send({type:'dialogue_continue', widgetId:NativePrompt.OPTIONS_WIDGET_ID, childIndex:choice + 1});
+    for (let i=0; i<25 && p.getDialogueManager().isActive() && p.getInterfaceId() !== 61; i++) await next();
+    assert.equal(p.getInterfaceId(), 61, 'rename opens native interface');
+  }
+  const enter = {type:'widget_action', widgetId:(61 << 16) | 32, groupId:61, childId:32, buttonNum:1};
+  const arrow = {type:'widget_action', widgetId:(61 << 16) | 18, groupId:61, childId:18, buttonNum:1};
+  const button = child => ({type:'widget_action', widgetId:(61 << 16) | child, groupId:61, childId:child, buttonNum:1});
+  await openRename();
+  for (const child of [20, 22, 24, 26]) await send(button(child));
+  await send(button(27));
+  assert.deepEqual(namingWrites.at(-1), {value:'B', child:15}, 'final right arrow increments sixth letter');
+  await send(button(28));
+  assert.deepEqual(namingWrites.at(-1), {value:'A', child:15}, 'final left arrow decrements sixth letter');
+  await send(button(17)); await send(button(17));
+  await send(enter);
+  const sharedName = ' BBBBA';
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName,
+    'all six columns, the reversed final arrows and a space edit the shared name');
+  await openRename();
+  await send(arrow);
+  await send({type:'interface_close'});
+  assert.notEqual(p.getInterfaceId(), 61, 'IF_CLOSE cancels the pending edit');
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'cancel does not save edits');
+  const replacement = {player:p, npc:felkrash, npcId:core.NpcIdentifiers.FELKRASH,
+    variant:{page:'Felkrash',variant:'standard-dialogue-after-ratcatchers'}, exact:true,
+    select:() => [{npc:'Unrelated replacement dialogue.'}], handled:false};
+  PluginManager.emitCustomEvent('npc-dialogue:start', replacement);
+  assert.equal(replacement.handled, true, 'replacement uses the native dialogue player');
+  const unrelated = p.getDialogueManager().getCurrent();
+  assert.ok(unrelated, 'replacement dialogue is active');
+  await send(enter);
+  assert.equal(p.getDialogueManager().getCurrent(), unrelated, 'stale enter leaves unrelated dialogue intact');
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'stale enter cannot save');
+
+  await openRename();
+  const beforeWrong = namingWrites.length;
+  await send({...arrow, buttonNum:2});
+  assert.equal(p.getInterfaceId(), 61, 'wrong operation cannot close the naming interface');
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'wrong operation cannot save');
+  assert.equal(namingWrites.length, beforeWrong, 'wrong operation does not change any displayed letter');
+  p.getPacketSender().sendInterface(324);
+  await send(enter);
+  assert.equal(p.getInterfaceId(), 324, 'stale enter cannot close a replacement modal');
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'replacement modal blocks stale save');
+
+  await openRename();
+  await send(enter);
+  const previousGroup = p.getPacketSender().getChatboxGroupId();
+  assert.ok(p.getDialogueManager().isActive(), 'new name starts the native cat reply');
+  p.getPacketSender().sendChatboxInterface(previousGroup); // unrelated, unowned same-group replacement
+  await next();
+  assert.equal(p.getDialogueManager().isActive(), false, 'prebuilt named continuation is cancelled after replacement');
+  assert.equal(p.getPacketSender().getChatboxGroupId(), previousGroup, 'replacement chatbox remains open');
+
+  await openRename();
+  await send({type:'move', worldX:3224, worldY:3218, modifierFlags:0});
+  assert.notEqual(p.getInterfaceId(), 61, 'a normal walk cancels naming');
+  await send(enter);
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'walked-away stale enter cannot save');
+
+  p.getMovementQueue().reset(); p.setLocation(new core.Location(3222, 3218, 0)); p.setNeedsPlacement(false); tick();
+  await openRename();
+  p.setPrivateArea({});
+  await c.dispatch([enter]); c.processTurnPackets();
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'private-area change prevents stale commit');
+  p.setPrivateArea(null); p.getPacketSender().sendInterfaceRemoval(); tick();
+
+  async function replaceFollower(itemId, npcId) {
+    p.getPacketSender().sendInterfaceRemoval();
+    const old = p.getAttribute('pets:current');
+    const oldItem = Pets.__internals.PET_BY_ID.get(old.getId()).itemId;
+    const pick = old.getCurrentDefinition(p).getActions().indexOf('Pick-up') + 1;
+    assert.ok(pick > 0, 'current cat supports native pickup');
+    await send({type:'npc_option', index:old.getIndex(), clickType:pick});
+    for (let i=0; i<12 && p.getAttribute('pets:current'); i++) tick();
+    assert.equal(p.getAttribute('pets:current'), null, 'old follower was actually picked up');
+    p.getInventory().deleteNumber(oldItem, 1);
+    p.getInventory().add(new core.Item(itemId), true);
+    const slot = p.getInventory().getSlotForItemId(itemId);
+    assert.ok(slot >= 0, 'replacement cat is carried');
+    await send({type:'inventory_action', itemId, slot, widgetId:149 << 16, option:'Drop', optionIndex:5});
+    for (let i=0; i<4; i++) tick();
+    assert.equal(p.getAttribute('pets:current')?.getId(), npcId, 'native drop creates the expected cat form');
+    assert.equal(p.getAttribute('pets:current')?.getOwner(), p, 'replacement follower is owned');
+  }
+  for (const [itemId, npcId] of [
+    [core.ItemIdentifiers.WILY_HELLCAT, core.NpcIdentifiers.WILY_HELLCAT],
+    [core.ItemIdentifiers.LAZY_CAT_2, core.NpcIdentifiers.LAZY_CAT_2],
+    [core.ItemIdentifiers.LAZY_HELL_CAT, core.NpcIdentifiers.LAZY_HELLCAT],
+  ]) {
+    await replaceFollower(itemId, npcId);
+    const before = namingWrites.length;
+    await openRename();
+    assert.equal(namingWrites.slice(before).filter(write => write.child >= 10 && write.child <= 15)
+      .slice(-6).map(write => write.value).join(''), sharedName,
+      'each eligible cat form displays the same saved name');
+    await send({type:'interface_close'});
+  }
+  await openRename();
+  await send(arrow);
+  const previousCat = p.getAttribute('pets:current');
+  const pick = previousCat.getCurrentDefinition(p).getActions().indexOf('Pick-up') + 1;
+  assert.ok(pick > 0, 'eligible cat has a real pickup option');
+  await send({type:'npc_option', index:previousCat.getIndex(), clickType:pick});
+  for (let i=0; i<12 && p.getAttribute('pets:current'); i++) tick();
+  assert.equal(p.getAttribute('pets:current'), null, 'the cat changed while an edit was pending');
+  await send(enter);
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'stale edit cannot commit after cat pickup');
+  const itemId = core.ItemIdentifiers.LAZY_HELL_CAT, heldSlot = p.getInventory().getSlotForItemId(itemId);
+  assert.ok(heldSlot >= 0, 'picked-up cat is held');
+  await send({type:'inventory_action', itemId, slot:heldSlot, widgetId:149 << 16, option:'Drop', optionIndex:5});
+  for (let i=0; i<4; i++) tick();
+  assert.equal(p.getAttribute('pets:current')?.getId(), core.NpcIdentifiers.LAZY_HELLCAT, 'cat is resummoned');
+  await openRename();
+  PluginManager.emitPlayerLogout({player:p, username:p.getUsername()});
+  await send(enter);
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'logout prevents stale naming commit');
 });

@@ -101,12 +101,23 @@ function suffix(steps, actionId) {
 
 function press(event) {
   const {player, buttonId, action} = event;
-  if (!player || action !== 1 || (buttonId >>> 16) !== GROUP) return false;
+  if (!player || (buttonId >>> 16) !== GROUP) return false;
   const child = buttonId & 0xffff, arrow = ARROWS.get(child);
   if (!arrow && child !== ENTER) return false;
-  const state = pending.get(player);
-  if (!active(player, state)) { pending.delete(player); return false; }
+  // Consume even stale/wrong-op 61 packets: returning false would allow
+  // NetworkBuilder to send them to a different active dialogue's option handler.
   event.handled = true;
+  if (action !== 1) return;
+  const state = pending.get(player);
+  if (!active(player, state)) {
+    pending.delete(player);
+    // Only close the exact mount we opened, never a replacement UI.
+    if (state && player.getInterfaceId() === GROUP
+        && player.getPacketSender().getSubInterfaceAt(MAIN_MODAL_TARGET) === state.mount) {
+      player.getPacketSender().sendInterfaceRemoval();
+    }
+    return;
+  }
   if (arrow) {
     const [column, direction] = arrow;
     const index = ALPHABET.indexOf(state.letters[column]);
@@ -139,6 +150,21 @@ function line(event) {
   const {player, npcId, step} = event;
   const state = player && continuations.get(player);
   if (!state || npcId !== felkrashId) return;
+  // NpcDialogues builds multiple lines ahead of display. Validate at each
+  // actual presentation, including a same-group chatbox replacement between
+  // the Cat line and the already-built player line. The first synchronous
+  // presentation captures the named chain owner before its first mount.
+  const before = event.before;
+  event.before = () => {
+    const owner = player.getDialogueManager().getOwner();
+    if (continuations.get(player) !== state) { state.cancel?.(); return; }
+    if (!state.owner) state.owner = owner;
+    else if (!owner || owner !== state.owner || player.getPacketSender().getChatboxOwner() !== state.owner) {
+      clearContinuation(player, true);
+      return;
+    }
+    before?.();
+  };
   const text = String(event.text ?? '');
   const isNameLine = /\[cat name\]/i.test(text);
   const isCatReply = /^(?:Cat|Kitty)$/i.test(String(step?.speaker ?? ''))
@@ -177,6 +203,7 @@ function movement({player}) {
   pending.delete(player);
   if (ours) player.getPacketSender().sendInterfaceRemoval();
 }
+function movementInput(event) { if (event.packet?.active === true) movement(event); }
 function closeInput({player}) {
   if (player?.getInterfaceId?.() === GROUP) pending.delete(player);
   if (player) clearContinuation(player, true);
@@ -196,7 +223,8 @@ module.exports = function attachCatNaming(pluginApi, options) {
   api.onCustomEvent('interface:changed', changed);
   api.onCustomEvent('interface:opened', opened);
   api.onCustomEvent('interface:close', closeInput);
-  api.onCustomEvent('player:movement-input', movement);
+  api.onCustomEvent('player:movement-input', movementInput);
+  api.onWalkRoute(movement);
   api.onCustomEvent('npc-dialogue:choice', choice);
   api.onPlayerLogout(logout);
   api.onPlayerDisconnect(logout);
