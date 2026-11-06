@@ -29,6 +29,8 @@ test('tip jar withdrawals conserve the owner balance at currency stack limits', 
       await t.test(`${destination} withdrawal with ${mode} coin headroom`, async (child) => {
         const owner = actor(child), guest = actor(child);
         for (const f of [owner, guest]) {
+          f.p.setUsername('jar' + f.p.getIndex());
+          assert.ok(f.p.getUsername().length <= 12);
           f.p.setLongUsername(core.Misc.stringToLongBigInt(f.p.getUsername()));
           assert.notEqual(f.p.getLongUsername(), 0n);
           f.p.setRegistered(false);
