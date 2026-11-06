@@ -439,19 +439,26 @@ test('native Felkrash training control reaches naming interface after quest comp
   assert.equal(p.getDialogueManager().getOwner(), replyOwner, 'normal transition retains named playback owner');
   assert.equal(sender.getChatboxOwner(), replyOwner, 'normal transition retains actual chatbox owner');
   const restored = new NativePlayer(new NativeSession({...channel}));
+  let restoredCleaned = false;
+  function cleanupRestored() {
+    if (restoredCleaned) return;
+    restoredCleaned = true;
+    recordTasks();
+    PluginManager.emitPlayerLogout({player:restored, username:restored.getUsername()});
+    restored.setRegistered(false); core.TaskManager.cancelTasks(restored); core.TaskManager.cancelTasks(restored.getIndex());
+    for (const n of [...core.World.getNpcs()]) if (n?.getOwner?.() === restored) core.World.getNpcs().remove(n);
+    for (const queue of [core.World.getAddNPCQueue(), core.World.getRemoveNPCQueue()]) {
+      for (let i=queue.length-1; i>=0; i--) if (queue[i]?.getOwner?.() === restored) queue.splice(i,1);
+    }
+  }
+  t.after(cleanupRestored);
   restored.setIndex(nativeIndex++); restored.setUsername('felkrash-reloaded'); restored.setRegistered(true);
   NativePlayerSave.fromPlayer(p).applyToPlayer(restored);
   assert.equal(restored.getAttribute('ratcatchers:cat-name'), 'BAAAAA', 'real player save roundtrip retains the shared name');
   restored.setAttribute('bot-skip-persistence', true);
   PluginManager.emitPlayerLogin({player:restored, username:restored.getUsername(), isNewAccount:false});
   assert.equal(restored.getAttribute('ratcatchers:cat-name'), 'BAAAAA', 'production login hooks retain the saved name');
-  recordTasks();
-  PluginManager.emitPlayerLogout({player:restored, username:restored.getUsername()});
-  restored.setRegistered(false); core.TaskManager.cancelTasks(restored); core.TaskManager.cancelTasks(restored.getIndex());
-  for (const n of [...core.World.getNpcs()]) if (n?.getOwner?.() === restored) core.World.getNpcs().remove(n);
-  for (const queue of [core.World.getAddNPCQueue(), core.World.getRemoveNPCQueue()]) {
-    for (let i=queue.length-1; i>=0; i--) if (queue[i]?.getOwner?.() === restored) queue.splice(i,1);
-  }
+  cleanupRestored();
 
   async function openRename() {
     p.getPacketSender().sendInterfaceRemoval();
@@ -476,7 +483,7 @@ test('native Felkrash training control reaches naming interface after quest comp
   assert.deepEqual(namingWrites.at(-1), {value:'A', child:15}, 'final left arrow decrements sixth letter');
   await send(button(17)); await send(button(17));
   await send(enter);
-  const sharedName = ' BBBBA';
+  let sharedName = ' BBBBA';
   assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName,
     'all six columns, the reversed final arrows and a space edit the shared name');
   await openRename();
@@ -527,6 +534,7 @@ test('native Felkrash training control reaches naming interface after quest comp
   await send(enter);
   assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'confirm after wrong operation retains the original name');
   await openRename();
+  await send(arrow);
   p.getPacketSender().sendInterface(324);
   await send(enter);
   assert.equal(p.getInterfaceId(), 324, 'stale enter cannot close a replacement modal');
@@ -545,12 +553,14 @@ test('native Felkrash training control reaches naming interface after quest comp
   const movementPacket = {type:'movement_input', seq:1, dx:0, dy:0, rotation:0, duration:1, active:false, running:false};
   await send(movementPacket);
   assert.equal(p.getInterfaceId(), 61, 'inactive continuous-input heartbeat preserves naming');
+  await send(arrow);
   await send({...movementPacket, seq:2, dx:1, active:true});
   assert.notEqual(p.getInterfaceId(), 61, 'active continuous-input movement cancels naming');
   await send(enter);
   assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'continuous movement leaves no stale commit');
 
   await openRename();
+  await send(arrow);
   await send({type:'move', worldX:3224, worldY:3218, modifierFlags:0});
   assert.notEqual(p.getInterfaceId(), 61, 'a normal walk cancels naming');
   await send(enter);
@@ -558,6 +568,7 @@ test('native Felkrash training control reaches naming interface after quest comp
 
   p.getMovementQueue().reset(); p.setLocation(new core.Location(3222, 3218, 0)); p.setNeedsPlacement(false); tick();
   await openRename();
+  await send(arrow);
   p.setPrivateArea({});
   await c.dispatch([enter]); c.processTurnPackets();
   assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'private-area change prevents stale commit');
@@ -624,9 +635,11 @@ test('native Felkrash training control reaches naming interface after quest comp
   p.getInventory().add(new core.Item(itemId), true);
   await openRename();
   const beforeCarried = lines.length;
+  await send(arrow);
   await send(enter);
   assert.notEqual(p.getInterfaceId(), 61, 'a carried eligible cat can be named');
-  assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'carried cat confirms the shared name');
+  assert.equal(p.getAttribute('ratcatchers:cat-name'), 'ABBBBA', 'carried cat commits a distinct edited name');
+  sharedName = 'ABBBBA';
   assert.equal(lines.slice(beforeCarried).some(line => /finally got around to naming|Miaaow!/i.test(line.text)), false,
     'a carried cat does not speak from the ground');
   p.getPacketSender().sendInterfaceRemoval();
@@ -646,18 +659,21 @@ test('native Felkrash training control reaches naming interface after quest comp
   assert.equal(lines.findLast(line => /^Miaaow!$/i.test(line.text))?.speakerId,
     p.getAttribute('pets:current').getId(), 'non-catspeak reply uses the actual cat head');
   await openRename();
+  await send(arrow);
   nativeRatcatchers.setStage(p, 21);
   await send(enter);
   assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'quest state is rechecked at commit');
   assert.notEqual(p.getInterfaceId(), 61, 'invalid quest state closes its own naming interface');
   nativeRatcatchers.setStage(p, 22);
   await openRename();
+  await send(arrow);
   p.setLocation(new core.Location(3230, 3218, 0)); p.setNeedsPlacement(false);
   await send(enter);
   assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'distance change prevents stale commit');
   assert.notEqual(p.getInterfaceId(), 61, 'distance-invalid session closes its own interface');
   p.setLocation(new core.Location(3222, 3218, 0)); p.setNeedsPlacement(false); tick();
   await openRename();
+  await send(arrow);
   PluginManager.emitPlayerLogout({player:p, username:p.getUsername()});
   await send(enter);
   assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'logout prevents stale naming commit');

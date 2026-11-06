@@ -49,8 +49,9 @@ diary flag and plucking did not request its roll. See `chompy-pet-acquisition.md
   text; only the hellcat line is shown, matching the hell-kitten one).
 - Felkrash names a carried or following wily or lazy cat after Ratcatchers. The six-letter
   name is shared by these cat forms and appears in her naming conversation; it persists in
-  the player save. The interface starts at `AAAAAA` and cycles `A`-`Z` and space; that
-  initial value and cycling order are TSPS policy, not a recorded retail timing or UI claim.
+  the player save. The first naming defaults to `AAAAAA`; later opens restore the saved
+  name. The arrows cycle `A`-`Z` and space. That default and cycling order are TSPS policy,
+  not a recorded retail timing or UI claim.
   Cat and hellcat dialogue beyond the naming conversation remains outside this feature.
 - Probita already reclaims recorded missing pets freely. The current
   [Probita Wiki page](https://oldschool.runescape.wiki/w/Probita) dates free reclaim to
