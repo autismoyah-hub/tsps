@@ -48,7 +48,7 @@
  *    climbed with a quest handler (the shared Ladders plugin has no "Trellis").
  *  - Lighting a pot of weeds uses a short functional message, not transcript text.
  *  - Felkrash turns the overgrown cat wily at completion and afterwards ("pets:train-wily-cat",
- *    owned by the Pets plugin). Her cat-naming interface is not implemented.
+ *    owned by the Pets plugin). Post-quest cat naming uses the native naming interface.
  */
 module.exports = function registerRatcatchersQuest(api) {
   const { Equipment, ItemIdentifiers, Location, NpcIdentifiers, ObjectIdentifiers, Skill } = api.core;
@@ -1402,4 +1402,6 @@ module.exports = function registerRatcatchersQuest(api) {
   api.onObjectInteraction(handleObjectInteraction);
   api.onNpcDeath(handleNpcDeath);
   api.onPlayerLogin(handleLogin);
+  require("../ratcatchers/CatNaming.Quest")(api, {quest, felkrashId: FELKRASH_NPC_ID,
+    understandsCats: player => wearingCatspeakAmulet(player) || questComplete(player, "dragon_slayer_ii")});
 };
