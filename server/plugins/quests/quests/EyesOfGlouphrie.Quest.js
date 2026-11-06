@@ -243,8 +243,7 @@ module.exports = function registerEyesOfGlouphrieQuest(api) {
     const skills = player.getSkillManager();
     return (
       grandTreeComplete(player) &&
-      skills.getMaxLevel(Skill.CONSTRUCTION) >= CONSTRUCTION_REQUIREMENT &&
-      skills.getMaxLevel(Skill.MAGIC) >= MAGIC_REQUIREMENT
+      skills.getMaxLevel(Skill.CONSTRUCTION) >= CONSTRUCTION_REQUIREMENT
     );
   }
 
@@ -254,9 +253,6 @@ module.exports = function registerEyesOfGlouphrieQuest(api) {
       player.sendMessage(
         `You need a Construction level of at least ${CONSTRUCTION_REQUIREMENT} to start this quest.`
       );
-    }
-    if (skills.getMaxLevel(Skill.MAGIC) < MAGIC_REQUIREMENT) {
-      player.sendMessage(`You need a Magic level of at least ${MAGIC_REQUIREMENT} to start this quest.`);
     }
   }
 
