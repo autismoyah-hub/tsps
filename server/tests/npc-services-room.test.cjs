@@ -355,7 +355,7 @@ test('deferred Thormac enchanting preserves a newer native main shop', async t =
     const prompt = core.MultiChatboxPrompt.getPending(p); assert.ok(prompt); assert.equal(manager.isActive(), false);
     const choice = prompt.options.indexOf("You said you'd enchant my battlestaff for me.") + 1; assert.ok(choice > 0);
     await input({type:'dialogue_continue', widgetId:core.MultiChatboxPrompt.OPTIONS_WIDGET_ID, childIndex:choice});
-    for (let n = 0; n < 4 && !/Which sort of staff did you want enchanting\?/.test(manager.getCurrent()?.getText?.() ?? ''); n++) await input(resume());
+    for (let n = 0; n < 4 && !/Which sort of staff did you want enchanting\?/.test((manager.getCurrent()?.getText?.() ?? '').replace(/\s+/g, ' ').trim()); n++) await input(resume());
     const terminal = line(); assert.ok(terminal.current instanceof core.NpcDialogue); assert.equal(terminal.group, 231);
     assert.equal(terminal.current.getText().replace(/\s+/g, ' ').trim(), terminalText);
     assert.equal(p.getInterfaceId(), -1); assert.equal(sender.isSubInterfaceOpen(ENCHANT), false); unchanged();
