@@ -569,10 +569,18 @@ test('native Felkrash training control reaches naming interface after quest comp
   p.getMovementQueue().reset(); p.setLocation(new core.Location(3222, 3218, 0)); p.setNeedsPlacement(false); tick();
   await openRename();
   await send(arrow);
-  p.setPrivateArea({});
+  const oldArea = p.getArea(), privateRoom = new core.PrivateArea([]);
+  let inPrivateRoom = false;
+  function restoreArea() {
+    if (!inPrivateRoom) return;
+    inPrivateRoom = false; privateRoom.remove(p); p.setArea(oldArea);
+  }
+  t.after(restoreArea);
+  privateRoom.add(p); inPrivateRoom = true;
+  assert.equal(p.getPrivateArea(), privateRoom, 'actual private-area membership changed');
   await c.dispatch([enter]); c.processTurnPackets();
   assert.equal(p.getAttribute('ratcatchers:cat-name'), sharedName, 'private-area change prevents stale commit');
-  p.setPrivateArea(null); p.getPacketSender().sendInterfaceRemoval(); tick();
+  restoreArea(); p.getPacketSender().sendInterfaceRemoval(); tick();
 
   async function replaceFollower(itemId, npcId) {
     p.getPacketSender().sendInterfaceRemoval();
