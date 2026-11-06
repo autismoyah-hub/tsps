@@ -1030,3 +1030,101 @@ test("Gita Prymes upgrades angler kit to spirit kit for 1,200 flakes, then both 
   assert.equal(nextWarning.player.messages.at(-1), "Gita Prymes wants 1,200 spirit flakes to upgrade your Angler boots.");
 
 });
+
+
+// WIP fragment for server/tests/fishing.test.cjs at 221f4eba. Not frozen or run.
+// The future producer must use the named rollClueBottles function for scoped RNG below.
+test("native ordinary trout catch can award an eligible beginner clue bottle", async (t) => {
+  const { CachePipeline } = require("../dist/game/cache/CachePipeline");
+  const { PluginManager: PM } = require("../dist/plugins/PluginManager");
+  const { Player } = require("../dist/game/entity/impl/player/Player");
+  const { PlayerSession } = require("../dist/net/PlayerSession");
+  const { SkillManager } = require("../dist/game/content/skill/SkillManager");
+  const priorBots = process.env.DISABLE_PLAYER_BOTS;
+  const priorRandom = Math.random;
+  const fixtureTasks = new Set();
+  process.env.DISABLE_PLAYER_BOTS = "1";
+  let core, player, spot, submit;
+  t.after(() => {
+    Math.random = priorRandom;
+    try {
+      try {
+        if (player) {
+          core.TaskManager.cancelTasks(player.getIndex());
+          core.TaskManager.cancelTasks(player);
+          if (player.isRegistered()) core.World.getPlayers().removes(player);
+        }
+      } finally {
+        if (spot?.isRegistered()) core.World.getNpcs().removes(spot);
+      }
+    } finally {
+      try { PM.emitServerShutdown({}); }
+      finally {
+        try { for (const task of fixtureTasks) task.stop(); }
+        finally {
+          if (submit) core.TaskManager.submit = submit;
+          if (priorBots === undefined) delete process.env.DISABLE_PLAYER_BOTS;
+          else process.env.DISABLE_PLAYER_BOTS = priorBots;
+        }
+      }
+    }
+  });
+  await CachePipeline.initialize(path.resolve(__dirname, ".."));
+  core = PM.getCoreApi();
+  submit = core.TaskManager.submit;
+  core.TaskManager.submit = function (...args) {
+    if (args[0]) fixtureTasks.add(args[0]);
+    return submit.apply(this, args);
+  };
+  PM.loadFromDirectory(path.resolve(__dirname, "../plugins"));
+  const { ItemIdentifiers: I, NpcIdentifiers: N, Skill, Location, Item, NPC, World } = core;
+  core.RegionManager.init();
+  core.RegionManager.loadMapFiles(3104, 3424);
+  PM.emitServerStartup({});
+  const channel = {kind: "test", remoteAddress: "127.0.0.1", isOpen: () => true,
+    send: () => true, close() {}, onData() {}, onError() {}, onClose() {}};
+  player = new Player(new PlayerSession(channel));
+  player.setUsername("cluebottlefixture");
+  player.setAttribute("bot-skip-persistence", true);
+  player.setLocation(new Location(3104, 3424, 0));
+  assert.equal(World.getPlayers().add(player), true, "native player joins World");
+  player.needsPlacement = false;
+  const skills = player.getSkillManager();
+  skills.setExperience(Skill.FISHING, SkillManager.getExperienceForLevel(20));
+  skills.setMaxLevel(Skill.FISHING, 20);
+  skills.setCurrentLevel(Skill.FISHING, 20, true);
+  player.getInventory().add(new Item(I.FLY_FISHING_ROD), true);
+  player.getInventory().add(new Item(I.FEATHER, 2), true);
+  spot = NPC.create(N.ROD_FISHING_SPOT_10, new Location(3105, 3424, 0));
+  spot.setScriptedMovement(true);
+  assert.equal(World.getNpcs().add(spot), true, "native spot joins World");
+  spot.needsPlacement = false;
+  // Activate the genuine global fishing task before the interaction.
+  World.process();
+  player.needsPlacement = false;
+  spot.needsPlacement = false;
+  const definition = spot.getCurrentDefinition(player);
+  const clickType = definition.getActions().indexOf("Lure") + 1;
+  assert.ok(clickType > 0, "cache exposes Lure");
+  const eligibility = {player, tier: "beginner", allowed: null};
+  PM.emitCustomEvent("treasure-trails:can-receive", eligibility);
+  assert.equal(eligibility.allowed, true, "the actual capacity producer admits this player");
+  const xp = skills.getExperience(Skill.FISHING);
+  let catchRolls = 0, bottleRolls = 0;
+  Math.random = () => {
+    const stack = new Error().stack;
+    if (stack.includes("rollCatch")) { catchRolls++; return 0.02; }
+    if (stack.includes("rollClueBottles")) return bottleRolls++ === 0 ? 0 : 0.999999;
+    return priorRandom();
+  };
+  assert.equal(PM.emitNpcInteraction({player, npc: spot, npcId: spot.getId(), definition,
+    clickType, handled: false}), true, "registered spot accepts Lure");
+  for (let i = 0; i < 4; i++) World.process();
+  assert.equal(player.getInventory().getAmount(I.RAW_TROUT), 1, "control: ordinary catch lands");
+  assert.equal(skills.getExperience(Skill.FISHING) - xp, 50, "control: trout awards Fishing XP");
+  assert.equal(player.getInventory().getAmount(I.FEATHER), 1, "control: one feather is consumed");
+  assert.equal(catchRolls, 1, "only the intended trout roll was forced");
+  assert.equal(player.getInventory().getAmount(I.CLUE_BOTTLE_BEGINNER_), 1,
+    "eligible ordinary trout catch awards the forced beginner bottle");
+  assert.ok(bottleRolls >= 1, "the clue producer used the scoped bottle roll");
+});
