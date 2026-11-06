@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import ts from 'typescript';
 import * as protocol from '../../server/src/main/typescript/elvarg/net/protocol/ClientProtocol';
-import { PlayerDialogue } from '../../server/src/main/typescript/elvarg/game/model/dialogues/entries/impl/PlayerDialogue';
+import { DialogueExpression } from '../../server/src/main/typescript/elvarg/game/model/dialogues/DialogueExpression';
 import { decodeServerPacket } from '../network/packet/ServerBinaryDecoder';
 import { decodeAppearanceBinary } from '../game/sync/AppearanceDecoder';
 import { PlayerAppearance } from '../rs/config/player/PlayerAppearance';
@@ -32,6 +32,20 @@ function findOne(source: ts.SourceFile, select: (node: ts.Node) => string | unde
 const compile = (code: string) => ts.transpileModule(code, {
     compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS },
 }).outputText;
+// Preserve the complete real dialogue producer and wrapping method without loading
+// unrelated Misc directory-discovery code and its computed package require.
+const miscSource = read('../../server/src/main/typescript/elvarg/util/Misc.ts');
+const wrapMethod = findOne(miscSource, n => ts.isMethodDeclaration(n) &&
+    n.name.getText(miscSource) === 'wrapText' ? n.getText(miscSource).replace(/^public /, '') : undefined);
+const MiscText = new Function(compile('class MiscText {' + wrapMethod + '} return MiscText;'))();
+const dialogueSource = read('../../server/src/main/typescript/elvarg/game/model/dialogues/entries/Dialogue.ts');
+const dialogueClass = findOne(dialogueSource, n => ts.isClassDeclaration(n) && n.name?.text === 'Dialogue'
+    ? n.getText(dialogueSource).replace(/^export /, '') : undefined);
+const playerDialogueSource = read('../../server/src/main/typescript/elvarg/game/model/dialogues/entries/impl/PlayerDialogue.ts');
+const playerDialogueClass = findOne(playerDialogueSource, n => ts.isClassDeclaration(n) && n.name?.text === 'PlayerDialogue'
+    ? n.getText(playerDialogueSource).replace(/^export /, '') : undefined);
+const PlayerDialogue = new Function('Misc', 'DialogueExpression', compile(dialogueClass + '\n' +
+    playerDialogueClass + '\nreturn PlayerDialogue;'))(MiscText, DialogueExpression);
 const clientSource = read('../game/OsrsClient.ts');
 const widgetCallback = findOne(clientSource, n => ts.isVariableDeclaration(n) &&
     n.name.getText(clientSource) === 'handleWidgetPayload' ? n.initializer!.getText(clientSource) : undefined);
