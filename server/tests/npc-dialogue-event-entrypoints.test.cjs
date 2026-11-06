@@ -201,7 +201,7 @@ function trollGuardFixture(t, name, level = 30, stage = 30) {
     assert.equal(core.TaskManager.hasActiveTask(player),false);
     assert.equal(core.TaskManager.hasActiveTask(player.getIndex()),false);
     if (npc) {
-      assert.equal(npc.isRegistered(),false); assert.notEqual(core.World.getNpcs().get(npcIndex),npc);
+      assert.equal(npc.isRegistered(),false); assert.equal(core.World.getNpcs().get(npcIndex)===npc,false);
       assert.ok(!player.getLocalNpcs().includes(npc));
       assert.ok([...core.World.npcTileOccupants.values()].every(bucket=>!bucket.includes(npc)));
       assert.ok([...core.World.npcRegionOccupants.values()].every(bucket=>!bucket.has(npc)));
@@ -301,14 +301,14 @@ test('Troll Stronghold sleeping guards resolve pickpocket attempts',async t=>{
     core.NpcDefinition.definitions=definitionMap;
     assert.equal(sameMap,true,'the loader uses the existing definition map');
     assert.equal(core.NpcDefinition.definitions.size,previousDefinitions.size);
-    for(const [id,definition] of previousDefinitions) assert.equal(core.NpcDefinition.definitions.get(id),definition);
+    for(const [id,definition] of previousDefinitions) assert.equal(core.NpcDefinition.definitions.get(id)===definition,true,`definition ${id} identity restored`);
   });
   const { NpcDefinitionLoader }=require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
   new NpcDefinitionLoader().load();
   for (const name of ['Twig','Berry']) {
   await t.test(`${name} failed pickpocket wakes the actual guard and starts combat`, async t => {
     const f = trollGuardFixture(t,name), draws = await trollPickpocket(f,132/256);
-    assert.equal(f.npc.getCombat().getTarget(),f.player,'failed pickpocket starts the actual NPC combat target');
+    assert.equal(f.npc.getCombat().getTarget()===f.player,true,'failed pickpocket starts the actual NPC combat target');
     assert.equal(draws,1,'one attempt performs one scoped roll');
     assert.equal(f.npc.getId(),f.awake); assert.equal(f.player.getInventory().getAmount(f.key),0);
     assert.equal(f.quest.getStage(f.player),30);
@@ -328,7 +328,7 @@ test('Troll Stronghold sleeping guards resolve pickpocket attempts',async t=>{
     assert.equal(f.player.getInventory().getAmount(f.key),1,'the successful native action grants the matching key');
     assert.equal(draws,1); assert.equal(f.player.getInventory().getAmount(f.otherKey),0);
     assert.equal(f.quest.getStage(f.player),30);
-    assert.equal(f.npc.getId(),f.id); assert.equal(f.npc.getCombat().getTarget(),null);
+    assert.equal(f.npc.getId(),f.id); assert.equal(f.npc.getCombat().getTarget()===null,true);
     assert.equal(await trollPickpocket(f,0),0,'the already-held key is refused before another roll');
     assert.equal(f.player.getInventory().getAmount(f.key),1,'an owned key is not duplicated');
   });
@@ -336,7 +336,7 @@ test('Troll Stronghold sleeping guards resolve pickpocket attempts',async t=>{
 await t.test('the published level-81 endpoint succeeds for a high roll',async t=>{
   const f=trollGuardFixture(t,'Berry',81), draws=await trollPickpocket(f,0.999999);
   assert.equal(f.player.getInventory().getAmount(f.key),1);
-  assert.equal(f.npc.getCombat().getTarget(),null); assert.equal(draws,1);
+  assert.equal(f.npc.getCombat().getTarget()===null,true); assert.equal(draws,1);
 });
 await t.test('the second native guard key advances the existing quest stage',async t=>{
   const f=trollGuardFixture(t,'Twig'); f.player.getInventory().adds(f.otherKey,1);
@@ -348,16 +348,16 @@ await t.test('the second native guard key advances the existing quest stage',asy
 });
 await t.test('closing the failed guard overhead does not disturb a replacement dialogue',async t=>{
   const f=trollGuardFixture(t,'Twig'), draws=await trollPickpocket(f,0.999999,1);
-  assert.equal(f.npc.getCombat().getTarget(),f.player,'the failed native interaction starts combat');
+  assert.equal(f.npc.getCombat().getTarget()===f.player,true,'the failed native interaction starts combat');
   assert.equal(draws,1);
   const manager=f.player.getDialogueManager(), old=manager.getCurrent();
   assert.ok(old instanceof core.ActionDialogue,'the actual failure overhead is awaiting its continuation');
   f.player.closeInterruptibleInterfaces();
   const builder=new core.DialogueChainBuilder(); builder.add(new core.NpcDialogue(0,f.awake,'Replacement dialogue.'));
   manager.startDialogues(builder); const replacement=manager.getCurrent(); assert.ok(replacement);
-  assert.notEqual(replacement,old);
+  assert.equal(replacement===old,false);
   for(let i=0;i<3;i++) core.TaskManager.process();
-  assert.equal(manager.getCurrent(),replacement,'the old overhead task does not close the replacement');
+  assert.equal(manager.getCurrent()===replacement,true,'the old overhead task does not close the replacement');
   assert.equal(f.player.getInventory().getAmount(f.key),0);
   assert.equal(f.quest.getStage(f.player),30);
 });
@@ -375,7 +375,7 @@ for (const [label,stage,level,owned,full] of [
     if (full) assert.equal(inventory.isFull(),true);
     const before=inventory.getAmount(f.key),draws=await trollPickpocket(f,0);
     assert.equal(inventory.getAmount(f.key),before); assert.equal(f.npc.getId(),f.id);
-    assert.equal(f.npc.getCombat().getTarget(),null); assert.equal(draws,0,'denied interactions do not roll');
+    assert.equal(f.npc.getCombat().getTarget()===null,true); assert.equal(draws,0,'denied interactions do not roll');
   });
 }
 });
