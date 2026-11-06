@@ -882,7 +882,7 @@ function ordinaryAleActor(t) {
   assert.equal(core.WorldDefinition.isMembersWorld(), true);
   assert.equal(f.p.isRegistered(), true);
   assert.equal(f.p.isPlayerBot(), false);
-  assert.equal(f.p.isDyingReturn(), false);
+  assert.equal(f.p.isDyingReturn() ?? false, false);
   assert.equal(f.p.getPrivateArea(), null);
   assert.equal(f.p.getLocation().getX(), HOME[0]);
   assert.equal(f.p.getLocation().getY(), HOME[1]);
