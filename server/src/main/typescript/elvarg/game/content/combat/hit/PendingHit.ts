@@ -21,6 +21,12 @@ type PendingHitConfig = {
     delay?: number;
     handleAfterHitEffects?: boolean;
     hitAmount?: number;
+    /** Per-splat reveal offsets, in ticks. */
+    hitDelays?: readonly number[];
+    /** Split the final maximum across this many splats using integer arithmetic. */
+    hitMaximumSplitCount?: number;
+    /** Later splats cannot roll accuracy when the first splat missed. */
+    requireFirstAccurate?: boolean;
     rollAccuracy?: boolean;
     /** False for damage that pays its own XP (or none), skipping the usual combat XP. */
     experience?: boolean;
@@ -63,6 +69,8 @@ export class PendingHit {
     private ordinary = false;
     /** Optional per-hitsplat extra reveal delays (from `hitDelayTicks`). */
     private hitDelays?: number[];
+    private hitMaximumSplitCount = 1;
+    private requireFirstAccurate = false;
     /** Spell selected when this hit was launched; the caster may clear it before impact. */
     private spell: CombatSpell | null = null;
     /** A roll hook (Verac's set) let this hit through protection prayers. */
@@ -97,6 +105,11 @@ export class PendingHit {
             }
         } else if (delayOrConfig && typeof delayOrConfig === "object") {
             this.damageBudget = delayOrConfig.damageBudget;
+            this.hitDelays = delayOrConfig.hitDelays?.map(tick => Math.max(0, Math.trunc(tick)));
+            if (Number.isInteger(delayOrConfig.hitMaximumSplitCount) && (delayOrConfig.hitMaximumSplitCount as number) > 1) {
+                this.hitMaximumSplitCount = delayOrConfig.hitMaximumSplitCount as number;
+            }
+            this.requireFirstAccurate = delayOrConfig.requireFirstAccurate === true;
             this.bestOf = Math.max(1, Math.trunc(delayOrConfig.bestOf ?? 1));
             this.damageMultiplier = delayOrConfig.damageMultiplier ?? 1;
             this.ordinary = delayOrConfig.ordinary === true;
@@ -396,9 +409,10 @@ export class PendingHit {
         const priorHits: HitDamage[] = [];
         for (let i = 0; i < hits.length; i++) {
             const roll = { attacker: this.attacker, target: this.target, combatType: this.combatType, forceAccurate: false, forceMaxHit: false, bypassProtectionPrayer };
-            PluginManager.emitCombatHitRoll(roll);
+            const blockedByFirstMiss = i > 0 && this.requireFirstAccurate && firstAccurate !== true;
+            if (!blockedByFirstMiss) PluginManager.emitCombatHitRoll(roll);
             if (roll.bypassProtectionPrayer) this.protectionBypassed = true;
-            const projectedDefence = i > 0 && this.method
+            const projectedDefence = !blockedByFirstMiss && i > 0 && this.method
                 ? this.method.projectedDefenceLevel?.(this.attacker, this.target, {
                     hitIndex: i,
                     priorHits: [...priorHits],
@@ -406,7 +420,9 @@ export class PendingHit {
                 })
                 : undefined;
             let resolved: { accurate: boolean; bounds?: SpecialDamageBounds };
-            if (i > 0 && traits?.sharedAccuracyRollAcrossHits === true) {
+            if (blockedByFirstMiss) {
+                resolved = { accurate: false };
+            } else if (i > 0 && traits?.sharedAccuracyRollAcrossHits === true) {
                 resolved = { accurate: firstAccurate === true, bounds: firstBounds };
             } else {
                 resolved = PendingHit.withForcedMax(this.rollSpecialTraits(traits, roll.forceAccurate, rollAccuracy, i, projectedDefence), roll.forceMaxHit);
@@ -414,6 +430,9 @@ export class PendingHit {
                     firstAccurate = resolved.accurate;
                     firstBounds = resolved.bounds;
                 }
+            }
+            if (this.hitMaximumSplitCount > 1) {
+                resolved.bounds = { ...resolved.bounds, maximumSplit: { index: i, count: this.hitMaximumSplitCount } };
             }
             this.accurate = resolved.accurate;
             let damage: HitDamage = this.accurate ? ServerPerf.measurePhase(
@@ -424,6 +443,7 @@ export class PendingHit {
                 ArceuusSpells.applyCorruption(this.attacker.getAsPlayer(), this.target.getAsPlayer());
             }
             this.emitHitDamage(damage);
+            if (i === 0 && this.requireFirstAccurate) firstAccurate = this.accurate;
             capToRemaining(damage);
             this.totalDamage += damage.getDamage();
             hits[i] = damage;
