@@ -49,7 +49,7 @@ Each rule comes from the rsprox capture database (https://rsprox.net/database) o
 | Loot from a player an Ironman kills is the fallen player's (Wiki: Ironmen can't take PvP loot) | all | none |
 | No combat experience from fighting players (Wiki) | all | none |
 | Shops sell only their own stock, never what players sold to them (Wiki) | all | "As an Ironman, you can only buy the shop's own stock." *(ours)* |
-| No Grand Exchange (Wiki) | all | "As an Ironman, you cannot use the Grand Exchange." *(ours)* |
+| Grand Exchange: only single-bond buy offers (Wiki); no sales or other purchases | all | "Ironmen can only buy one bond per Grand Exchange offer." *(ours)* |
 | No presets: this server's PvP loadouts hand out items. Covers `::presets`, the interface, and the automatic opening after a death, which is skipped quietly | all | "As an Ironman, you cannot use presets." *(ours)* |
 | No staking in the Duel Arena; a free duel is still allowed (Wiki: Ironmen can't stake) | all | "As an Ironman, you cannot take part in a staked duel." *(ours)* |
 | No bank (the Ironman tutor, captured) | Ultimate | "As an Ultimate Ironman, you cannot use the bank." *(ours)* |
@@ -89,7 +89,7 @@ Generic additions for these rules:
 
 - **Group Ironman** (and Hardcore and Unranked Group Ironman).
 - **A bank PIN** when choosing a mode, as OSRS asks for one.
-- **Bonds:** Ironmen may trade bonds and buy them through their own Grand Exchange interface.
+- **Bonds:** Ironmen can buy a single bond per offer through the existing Grand Exchange screen; the OSRS Ironman-specific presentation is not yet implemented.
 - **Other limits:**
   - entering other players' houses;
   - Nightmare Zone group dreams;
