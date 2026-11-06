@@ -547,3 +547,159 @@ test("every route draws the balloon controls' own models, and each animated one 
     }
   }
 });
+
+// The real route producer and MMII consumer, joined by registered plugin events.
+test('Grand Tree balloon flight state gates the registered MMII start', async (t) => {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const { ClientConnection } = require('../dist/net/NetworkBuilder');
+  const { PlayerSave } = require('../dist/game/entity/impl/player/persistence/PlayerSave');
+  const { NpcDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
+  const { MultiChatboxPrompt } = require('../dist/game/model/menu/MultiChatboxPrompt');
+  const { TaskManager } = require('../dist/game/task/TaskManager');
+  const savedBots = process.env.DISABLE_PLAYER_BOTS, savedCycle = core.World.processCycle;
+  process.env.DISABLE_PLAYER_BOTS = '1';
+  const actors = [], ownedTasks = new Set(), submit = TaskManager.submit;
+  TaskManager.submit = function(task) { ownedTasks.add(task); return submit.call(this, task); };
+  t.after(() => {
+    const errors = [];
+    try {
+      for (const { p, channel } of actors) {
+        try { p.getPacketSender().sendInterfaceRemoval(); } catch (error) { errors.push(error); }
+        try { PluginManager.emitPlayerLogout({player:p, username:p.getUsername()}); } catch (error) { errors.push(error); }
+        try {
+          assert.equal(Controls.inFlight(p), false, 'controls flight state released');
+          assert.equal(Travel.flying(p), false, 'travel flight state released');
+          assert.equal(MultiChatboxPrompt.getPending(p), null, 'owned prompt closed');
+          assert.equal(p.getDialogueManager().isActive(), false, 'owned dialogue closed');
+        } catch (error) { errors.push(error); }
+        try { p.setRegistered(false); TaskManager.cancelTasks(p); TaskManager.cancelTasks(p.getIndex()); } catch (error) { errors.push(error); }
+        try { channel.close(); } catch (error) { errors.push(error); }
+      }
+    } finally {
+      for (const task of ownedTasks) task.stop();
+      TaskManager.submit = submit; core.World.processCycle = savedCycle;
+      if (savedBots === undefined) delete process.env.DISABLE_PLAYER_BOTS; else process.env.DISABLE_PLAYER_BOTS = savedBots;
+    }
+    assert.equal([...ownedTasks].some(task => task.isRunning()), false, 'owned flight tasks stopped');
+    assert.deepEqual(errors, [], 'all actor cleanup steps succeeded');
+  });
+  core.RegionManager.init();
+  new NpcDefinitionLoader().load();
+  const api = PluginManager.createApi('MMIIBalloonRouteNative');
+  require('../plugins/world/BalloonTransport.plugin').register(api);
+  require('../plugins/quests/quests/MonkeyMadnessII.Quest')(api);
+  // Fixture the unrelated completed quests and rescue; the route is always real persisted flight state.
+  const completed = new Set(['monkey_madness_i', 'enlightened_journey', 'the_eyes_of_glouphrie', 'troll_stronghold', 'watchtower']);
+  api.onCustomEvent('quest:is-complete', event => { if (completed.has(event.key)) event.complete = true; });
+  api.onCustomEvent('recipe-for-disaster:rescue-status', event => { if (event.rescue === 'king-awowogei') event.complete = true; });
+  const runtime = require('../plugins/quests/QuestRuntime');
+  const quest = runtime.getRegisteredQuests().findLast(entry => entry.key === 'monkey_madness_ii');
+  assert.ok(quest, 'MMII quest registered');
+  function actor(name) {
+    const channel = {kind:'test',remoteAddress:'127.0.0.1',isOpen:()=>true,send:()=>true,close(){},onData(){},onError(){},onClose(){}};
+    const session = new PlayerSession(channel), p = new Player(session);
+    session.setPlayer(p); p.setUsername(name); p.setIndex(1800 + actors.length); p.setRegistered(true);
+    p.setAttribute('bot-skip-persistence', true); p.setNeedsPlacement(false);
+    for (const skill of [core.Skill.SLAYER, core.Skill.CRAFTING, core.Skill.HUNTER, core.Skill.AGILITY, core.Skill.THIEVING, core.Skill.FIREMAKING])
+      p.getSkillManager().setMaxLevel(skill, 99);
+    const connection = new ClientConnection(channel); connection.player = p;
+    const result = {p, channel, connection}; actors.push(result); return result;
+  }
+  function tick(n=1) { for (let i=0; i<n; i++) { core.World.processCycle++; TaskManager.process(); } }
+  const flown = actor('mmii-balloon-flown'), closed = actor('mmii-balloon-closed');
+  const gnome = Common.data.stations.find(entry => entry.key === 'gnome');
+  assert.ok(gnome && !gnome.byQuest, 'gnome is a separately opened station');
+  assert.equal(Common.opened(flown.p, gnome), false); assert.equal(Common.opened(closed.p, gnome), false);
+  flown.p.setLocation(Common.tile(Common.data.stations.find(entry => entry.key === 'entrana').basket));
+  flown.p.getInventory().add(new core.Item(Common.ids.objs.magic, 3), false);
+  const firemakingXpBefore = flown.p.getSkillManager().getExperience(core.Skill.FIREMAKING);
+  assert.equal(Controls.takeOff(flown.p, gnome, 3, 'inventory'), true, 'real controls flight starts with three magic logs');
+  for (const step of SOLUTIONS.gnome.replace(/\|/g, ' ').split(/\s+/).filter(Boolean)) {
+    for (let i=0; i<Number(step.slice(1)); i++) {
+      const uid = core.CacheDefinitions.getComponentId(`zep_interface_side:${MOVES[step[0]]}`);
+      const event = {player:flown.p, buttonId:uid, groupId:uid >>> 16, childId:uid & 0xffff, action:1, handled:false};
+      assert.equal(PluginManager.emitInterfaceActionClick(event), true, 'registered control accepts flight input');
+      tick(2);
+    }
+  }
+  tick(6);
+  assert.equal(flown.p.getInventory().getAmount(Common.ids.objs.magic), 0, 'flight consumes the three magic logs');
+  assert.deepEqual([flown.p.getLocation().getX(), flown.p.getLocation().getY()], gnome.land, 'flight arrives at the Grand Tree');
+  assert.equal(flown.p.getSkillManager().getExperience(core.Skill.FIREMAKING), firemakingXpBefore + 2000, 'flight awards the route XP');
+  assert.equal(Common.opened(flown.p, gnome), true, 'successful Gnome control flight persists the route');
+  assert.equal(Common.opened(closed.p, gnome), false, 'other player route remains closed');
+  const restored = actor('mmii-balloon-restored');
+  PlayerSave.fromPlayer(flown.p).applyToPlayer(restored.p);
+  assert.equal(Common.opened(restored.p, gnome), true, 'PlayerSave/apply retains the flown route');
+  for (const skill of [core.Skill.SLAYER, core.Skill.CRAFTING, core.Skill.HUNTER, core.Skill.AGILITY, core.Skill.THIEVING, core.Skill.FIREMAKING])
+    assert.equal(restored.p.getSkillManager().getMaxLevel(skill), 99, 'saved required max levels survived restoration');
+  const questRequest = {player:restored.p, key:'enlightened_journey', complete:null};
+  PluginManager.emitCustomEvent('quest:is-complete', questRequest);
+  assert.equal(questRequest.complete, true, 'fixture completion event is actually registered');
+  const rescue = {player:restored.p, rescue:'king-awowogei', complete:false};
+  PluginManager.emitCustomEvent('recipe-for-disaster:rescue-status', rescue);
+  assert.equal(rescue.complete, true, 'fixture rescue event is actually registered');
+  for (const key of completed) {
+    const request = {player:closed.p, key, complete:null};
+    PluginManager.emitCustomEvent('quest:is-complete', request);
+    assert.equal(request.complete, true, `closed-route fixture has completed ${key}`);
+  }
+  const closedRescue = {player:closed.p, rescue:'king-awowogei', complete:false};
+  PluginManager.emitCustomEvent('recipe-for-disaster:rescue-status', closedRescue);
+  assert.equal(closedRescue.complete, true, 'closed-route fixture has the required rescue');
+  for (const [skill, level] of [[core.Skill.SLAYER,69], [core.Skill.CRAFTING,70], [core.Skill.HUNTER,60],
+    [core.Skill.AGILITY,55], [core.Skill.THIEVING,55], [core.Skill.FIREMAKING,60]])
+    assert.ok(closed.p.getSkillManager().getMaxLevel(skill) >= level, 'closed-route fixture has each required level');
+  const npc = new core.NPC(core.NpcIdentifiers.KING_NARNODE_SHAREEN, new core.Location(2465,3496,0));
+  const definition = npc.getCurrentDefinition(restored.p);
+  const option = definition.getActions().indexOf('Talk-to') + 1;
+  assert.ok(option > 0, 'active cache Narnode has Talk-to');
+  function talk(p) {
+    const event = {player:p, npc, npcId:npc.getId(), clickType:option, definition, handled:false};
+    PluginManager.emitNpcInteraction(event); return event;
+  }
+  assert.deepEqual(PluginManager.emitNpcDialogueVariant({player:restored.p, npc, npcId:npc.getId()}),
+    {page:'Monkey Madness II', variant:'chapter-i-talking-to-king-narnode'}, 'route-open registered selector offers MMII');
+  assert.equal(talk(restored.p).handled, true, 'route-open Narnode starts the registered transcript');
+  let prompt = null;
+  for (let i=0; i<40 && !(prompt = MultiChatboxPrompt.getPending(restored.p)); i++) {
+    assert.ok(restored.p.getDialogueManager().isActive(), 'start dialogue remains active');
+    restored.p.getDialogueManager().advance();
+  }
+  assert.ok(prompt, 'actual start-choice prompt is presented');
+  const choice = prompt.options.indexOf("I'll help you look for Glough.");
+  assert.ok(choice >= 0, 'start option is present');
+  await restored.connection.dispatch([{type:'dialogue_continue', widgetId:MultiChatboxPrompt.OPTIONS_WIDGET_ID, childIndex:choice + 1}]);
+  restored.connection.processTurnPackets();
+  assert.equal(quest.getStage(restored.p), 5, 'actual dialogue choice starts MMII for route-open player');
+  const craft = Common.data.stations.find(entry => entry.key === 'craft');
+  Common.openRoute(closed.p, craft); // Secondary state control; the Gnome route above used the real flight producer.
+  assert.equal(Common.opened(closed.p, craft), true, 'a different saved balloon route is open');
+  assert.equal(Common.opened(closed.p, gnome), false, 'another route does not open Grand Tree');
+  closed.p.getPacketSender().sendVarbit(gnome.varbitId, 1); // Client projection alone is not saved route state.
+  assert.equal(Common.opened(closed.p, gnome), false, 'sending the client varbit does not open the saved route');
+  assert.equal(quest.getStage(closed.p), 0, 'closed-route player is unstarted');
+  assert.equal(talk(closed.p).handled, false, 'closed route must not claim the stage-zero quest conversation');
+  assert.equal(quest.getStage(closed.p), 0);
+  assert.equal(PluginManager.emitNpcDialogueVariant({player:closed.p, npc, npcId:npc.getId()}), null,
+    'closed-route selector yields to other dialogues');
+  quest.setStage(closed.p, 5);
+  assert.ok(PluginManager.emitNpcDialogueVariant({player:closed.p, npc, npcId:npc.getId()}),
+    'already-started quest remains available after its route is absent');
+  const query = {player:flown.p, station:'gnome', opened:false};
+  PluginManager.emitCustomEvent('balloon-transport:route-status', query);
+  assert.equal(query.opened, true, 'registered event reads the real opened route');
+  const unknown = {player:flown.p, station:'not-a-station', opened:false};
+  PluginManager.emitCustomEvent('balloon-transport:route-status', unknown);
+  assert.equal(unknown.opened, false, 'unknown station stays closed');
+  const routeHooks = PluginManager.customEventHooks.get('balloon-transport:route-status');
+  assert.ok(routeHooks?.length, 'route query provider is registered');
+  try {
+    PluginManager.customEventHooks.delete('balloon-transport:route-status');
+    assert.equal(talk(flown.p).handled, false, 'missing provider fails closed despite saved route');
+    assert.equal(quest.getStage(flown.p), 0);
+  } finally {
+    PluginManager.customEventHooks.set('balloon-transport:route-status', routeHooks);
+  }
+});
