@@ -19,6 +19,9 @@ import { PendingInterfaceUpdates } from '../widgets/custom/PendingInterfaceUpdat
 import { HeldWidgetProperties } from '../widgets/HeldWidgetProperties';
 import { ChatheadFactory } from '../render/ChatheadFactory';
 import { PlayerChatheadFactory } from '../render/PlayerChatheadFactory';
+import { NpcType } from '../rs/config/npctype/NpcType';
+import { VarManager } from '../rs/config/vartype/VarManager';
+import { InputManager } from '../game/InputManager';
 
 const read = (relative: string) => ts.createSourceFile(relative,
     fs.readFileSync(path.resolve(__dirname, relative), 'utf8'), ts.ScriptTarget.Latest, true);
@@ -81,7 +84,11 @@ const fingerprint = (m: any) => {
     ])).digest('hex');
 };
 
-test('native dialogue head uses transformed NPC geometry and restores player appearance', () => {
+test('native dialogue head uses transformed NPC geometry and restores player appearance', async () => {
+    const globals = ['window', 'document'] as const;
+    const descriptors = globals.map(key => Object.getOwnPropertyDescriptor(globalThis, key));
+    let ecsForCleanup: PlayerEcs | undefined;
+    try {
     const infos = loadCacheInfos();
     const info = infos.find(i => i.name === 'osrs-241_2026-10-20');
     assert.ok(info, 'the explicitly named active-cache version is available');
@@ -104,6 +111,7 @@ test('native dialogue head uses transformed NPC geometry and restores player app
     const widget = wm.getWidgetByUid(uid)!;
     assert.ok(widget, 'real dialogue head widget loaded');
     const ecs = new PlayerEcs();
+    ecsForCleanup = ecs;
     const index = ecs.allocatePlayer(1);
     const client: any = Object.assign(new Receiver(), { widgetManager: wm, playerEcs: ecs,
         controlledPlayerServerId: 1, pendingInterfaceUpdates: new PendingInterfaceUpdates(),
@@ -177,5 +185,116 @@ test('native dialogue head uses transformed NPC geometry and restores player app
     assert.equal(repeatOrdinary.actualHash, ordinary.actualHash);
     assert.equal(repeat.actualHash, gnocci.actualHash);
     assert.deepEqual(failures, [], 'full decoded head->widget->selected native model contract');
-    ecs.reset();
+    // Exercise a real NpcType transform with a controlled varp and real cache heads.
+    // Only the synthetic definition/selector is fixture-owned; models and factories are native.
+    const vars = new VarManager(loaders.getVarBitTypeLoader());
+    const morphId = 900001, emptyId = 900002, varp = 7999;
+    const morph = new NpcType(morphId, info);
+    morph.transformVarp = varp;
+    morph.transforms = [7972, 7969, -1, emptyId, -1];
+    const noHead = new NpcType(emptyId, info);
+    const morphLoader: any = { load(id: number) {
+        return id === morphId ? morph : id === emptyId ? noHead : npcTypeLoader.load(id);
+    } };
+    host.osrsClient.npcTypeLoader = morphLoader;
+    host.osrsClient.varManager = vars;
+    const transformed = { gender: normal.gender, colors: normal.colors, kits: normal.kits,
+        equip: normal.equip, npcTransformationId: morphId };
+    const ordinaryApp = { gender: normal.gender, colors: [0,0,0,0,0], kits: normal.kits,
+        equip: normal.equip, npcTransformationId: -1 };
+    const recolorApp = { ...ordinaryApp, colors: [1,0,0,0,1] };
+    widget.playerAppearance = transformed;
+    for (const [value, id] of [[0,7972], [1,7969], [2,-1], [3,emptyId], [0,7972]] as const) {
+        vars.setVarp(varp, value);
+        const resolved = morph.transform(vars, morphLoader);
+        assert.equal(resolved?.id ?? -1, id, 'real morph resolves selected varp');
+        const model = render(widget.modelId, { widget }, 100, 100);
+        if (id === -1 || id === emptyId) assert.equal(model, undefined, 'invisible or headless morph draws nothing');
+        else assert.equal(fingerprint(model), fingerprint(npcFactory.get(npcTypeLoader.load(id))),
+            'morph selection produces the resolved native NPC geometry');
+    }
+
+    // Run the real tree cache boundary. The terminal canvas/GL sink records which native
+    // head model reached it; cache decisions and widget traversal remain production code.
+    const noop = () => {};
+    const canvas: any = { width: 800, height: 600, style: {}, addEventListener: noop,
+        getBoundingClientRect: () => ({ left: 0, top: 0, width: 800, height: 600 }),
+        __textureCache: { beginFrame: noop, endFrame: noop } };
+    (globalThis as any).window ??= { addEventListener: noop, devicePixelRatio: 1 };
+    (globalThis as any).document ??= { createElement: () => canvas, addEventListener: noop };
+    const { renderWidgetTreeGL } = await import('../widgets/gl/widgetsGl/renderWidgetTree');
+    const treeWidget: any = { uid, groupId: 217, fileId: 2, parentUid: -1, type: 6,
+        isIf3: true, x: 0, y: 0, width: 100, height: 100, modelType: 3, modelId: -1,
+        isPlayerChathead: true, itemId: -1, modelZoom: 1000 };
+    const treeManager: any = new Proxy({ getWidgetFlags: () => 0, getWidgetFlagsVersion: () => 0,
+        getStaticChildrenByParentUid: () => [], getDynamicChildrenByParent: () => [],
+        interfaceParents: new Map(), groups: new Map(),
+    }, { get: (obj, key) => (obj as any)[key] ?? noop });
+    const textures = new Map<string, any>();
+    const draws: string[] = [];
+    const glr: any = new Proxy({ canvas, width: 800, height: 600,
+        gl: new Proxy({}, { get: () => noop }),
+        createTextureFromCanvas(key: string, image: any) { const tex = { signature: image.signature }; textures.set(key, tex); return tex; },
+        updateTextureFromCanvas(key: string, image: any) { const tex = { signature: image.signature }; textures.set(key, tex); return tex; },
+        getTexture(key: string) { return textures.get(key); },
+        drawTexture(tex: any) { draws.push(tex.signature); },
+    }, { get: (obj, key) => (obj as any)[key] ?? noop });
+    let sinkCalls = 0;
+    const treeClient = { ...host.osrsClient, inputManager: new InputManager() };
+    function draw(app: any, animated = false) {
+        treeWidget.playerAppearance = app;
+        treeWidget.sequenceId = animated ? 1 : -1;
+        treeWidget.modelFrame = 0;
+        const before = draws.length;
+        renderWidgetTreeGL(glr, treeWidget, { widgetManager: treeManager, spriteIndex: {} as any,
+            fontLoader: () => undefined, hostW: 800, hostH: 600, skipTooltip: true, visible: new Map(),
+            game: { osrsClient: treeClient } as any,
+            renderModelCanvas: (id, params, width, height) => {
+                sinkCalls++;
+                const model = render(id, params, width, height);
+                return model ? { canvas: { width: 100, height: 100, signature: fingerprint(model) },
+                    offsetX: 0, offsetY: 0 } as any : undefined;
+            } });
+        assert.ok(draws.length - before <= 1, 'one head draw at most');
+        return draws.length === before ? undefined : draws.at(-1);
+    }
+    const ordinaryHash = fingerprint(playerFactory.get(ordinaryApp as any));
+    const recolorHash = fingerprint(playerFactory.get(recolorApp as any));
+    assert.notEqual(ordinaryHash, recolorHash, 'outer-cache ordinary recolor is non-vacuous');
+    assert.equal(draw(ordinaryApp), ordinaryHash);
+    let calls = sinkCalls;
+    assert.equal(draw(ordinaryApp), ordinaryHash);
+    assert.equal(sinkCalls, calls, 'unchanged static ordinary head uses the real outer cache');
+    assert.equal(draw(recolorApp), recolorHash, 'ordinary recolor invalidates identity');
+    vars.setVarp(varp, 0);
+    assert.equal(draw(transformed), gnocci.expectedHash);
+    vars.setVarp(varp, 1);
+    assert.equal(draw(transformed), bugs.expectedHash, 'same snapshot resolves a changed morph');
+    vars.setVarp(varp, 2);
+    calls = sinkCalls;
+    assert.equal(draw(transformed), undefined, 'invisible morph does not reuse earlier raster');
+    assert.equal(sinkCalls, calls + 1, 'invisible morph reaches the native model consumer');
+    vars.setVarp(varp, 3);
+    calls = sinkCalls;
+    assert.equal(draw(transformed), undefined, 'headless morph does not reuse earlier raster');
+    assert.equal(sinkCalls, calls + 1, 'headless morph reaches the native model consumer');
+    vars.setVarp(varp, 0);
+    assert.equal(draw(transformed), gnocci.expectedHash, 'visible morph restores its head');
+    assert.equal(draw(ordinaryApp), ordinaryHash, 'normal head restored after morph');
+    assert.equal(draw(ordinaryApp, true), ordinaryHash);
+    assert.equal(draw(recolorApp, true), recolorHash, 'same animated frame observes recolor');
+    assert.equal(draw(transformed, true), gnocci.expectedHash);
+    vars.setVarp(varp, 1);
+    assert.equal(draw(transformed, true), bugs.expectedHash, 'same animated frame observes morph');
+    } finally {
+        try {
+            ecsForCleanup?.reset();
+        } finally {
+            globals.forEach((key, index) => {
+                const descriptor = descriptors[index];
+                if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+                else delete (globalThis as any)[key];
+            });
+        }
+    }
 });
