@@ -1,7 +1,7 @@
 // Run after `yarn build`: node --test tests/brimhaven-rope-swing-route.test.cjs
 // A rope swing click through the real packet, routing and walk-to path, on cache clipping.
 const assert = require("node:assert/strict");
-const { before, test } = require("node:test");
+const { before, after, test } = require("node:test");
 const path = require("node:path");
 const { Server } = require("../dist/Server");
 Server.installProductionPathResolver();
@@ -9,10 +9,16 @@ const { PluginManager } = require("../dist/plugins/PluginManager");
 const { Player } = require("../dist/game/entity/impl/player/Player");
 const { ObjectActionPacketListener } = require("../dist/net/packet/impl/ObjectActionPacketListener");
 const core = PluginManager.getCoreApi();
+const priorBots = process.env.DISABLE_PLAYER_BOTS;
 
 before(async () => {
+  process.env.DISABLE_PLAYER_BOTS = "1";
   await require("../dist/game/cache/CachePipeline").CachePipeline.initialize(path.resolve(__dirname, ".."));
   core.RegionManager.init();
+});
+after(() => {
+  if (priorBots === undefined) delete process.env.DISABLE_PLAYER_BOTS;
+  else process.env.DISABLE_PLAYER_BOTS = priorBots;
 });
 
 /** A player clicking a loc through the real packet listener, run until `cycles` have passed. */
@@ -72,7 +78,7 @@ test("monkey bars are walked to from the platform beside their blocked first bar
   }
 });
 
-test('native blade hazards use the shared clock, real clipping, movement and session updates', async t => {
+test('native Brimhaven hazards use real clipping, movement and session updates', async t => {
   const Arena = require('../plugins/minigames/BrimhavenAgilityArena.plugin');
   const Shared = require('../plugins/minigames/brimhavenagilityarena/Shared.BrimhavenAgilityArena');
   const { PlayerSession } = require('../dist/net/PlayerSession');
@@ -80,11 +86,11 @@ test('native blade hazards use the shared clock, real clipping, movement and ses
   const { MapObjects, ObjectManager } = core;
   const resetAnimation = core.Animation.DEFAULT_RESET_ANIMATION.getId();
   Shared.sessions.clear(); Shared.cycle.tick = 0;
+  t.after(() => { PluginManager.emitServerShutdown({}); Shared.sessions.clear(); });
   Arena.register(PluginManager.createApi('native-brimhaven-blades'));
   // Production also finishes pending obstacles from Agility's later logout hook.
   require('../plugins/skills/Agility.plugin').register(PluginManager.createApi('native-agility'));
   PluginManager.emitServerStartup({});
-  t.after(() => { PluginManager.emitServerShutdown({}); Shared.sessions.clear(); });
   const turn = () => {
     core.World.process();
     core.World.forEachNetworkPlayer(p => p.getSession().flushPackets());
@@ -94,27 +100,32 @@ test('native blade hazards use the shared clock, real clipping, movement and ses
   const position = p => [p.getLocation().getX(),p.getLocation().getY(),p.getLocation().getZ()];
   const blade = (x,y,id) => MapObjects.get(id,at(x,y),null);
   let index = 1800;
-  function actor(test,x,y,z=3,hp=38) {
+  function actor(test,x,y,z=3,hp=38,agility=99) {
     const frames=[], events=[];
     const channel={kind:'test',isOpen:()=>true,send:b=>{frames.push(Buffer.from(b));return true;},close(){},onData(){},onClose(){},onError(){}};
     const session=new PlayerSession(channel), p=new Player(session); session.setPlayer(p);
     p.setUsername('native-blade-'+index++); p.setLocation(at(x,y,z)); p.setNeedsPlacement(false); p.setRunning(false);
     p.getSkillManager().setMaxLevels(core.Skill.HITPOINTS,hp,false).setCurrentLevel(core.Skill.HITPOINTS,hp,false);
-    p.getSkillManager().setMaxLevels(core.Skill.AGILITY,99,false).setCurrentLevel(core.Skill.AGILITY,99,false);
+    p.getSkillManager().setMaxLevels(core.Skill.AGILITY,agility,false).setCurrentLevel(core.Skill.AGILITY,agility,false);
     // Preserve real World registration and area processing; skip only account-file I/O.
     test.mock.method(p,'onAdd',()=>{}); test.mock.method(p,'onRemove',()=>{});
     const perform=p.performAnimation.bind(p);
     test.mock.method(p,'performAnimation',animation=>{events.push([Shared.cycle.tick,'performAnimation',animation]);return perform(animation);});
     const sender=p.getPacketSender();
-    for(const name of ['sendObject','sendObjectRemoval','sendObjectAnimation','sendTypedMessage','sendSoundEffect']) {
+    for(const name of ['sendObject','sendObjectRemoval','sendObjectAnimation','sendMessage','sendTypedMessage','sendSoundEffect']) {
       const original=sender[name].bind(sender);
       test.mock.method(sender,name,(...args)=>{events.push([Shared.cycle.tick,name,...args]);return original(...args);});
     }
-    assert.equal(core.World.getPlayers().add(p),true); core.World.refreshActiveRegions(); AreaManager.process(p);
+    // Cleanup is installed before World admission, including a failed setup.
     test.after(()=>{
-      PluginManager.emitPlayerLogout({player:p,username:p.getUsername()}); core.TaskManager.cancelTasks(p); core.TaskManager.cancelTasks(p.getIndex());
-      core.World.getPlayers().remove(p); core.World.refreshActiveRegions();
+      if (p.isRegistered()) PluginManager.emitPlayerLogout({player:p,username:p.getUsername()});
+      core.TaskManager.cancelTasks(p); core.TaskManager.cancelTasks(p.getIndex());
+      if (p.isRegistered()) core.World.getPlayers().remove(p);
+      core.World.refreshActiveRegions();
     });
+    assert.equal(core.World.getPlayers().add(p),true);
+    assert.equal(core.World.getPlayers().get(p.getIndex()),p);
+    core.World.refreshActiveRegions(); AreaManager.process(p);
     return {p,session,frames,events,xp:p.getSkillManager().getExperience(core.Skill.AGILITY)};
   }
 
@@ -217,6 +228,145 @@ test('native blade hazards use the shared clock, real clipping, movement and ses
     assert.ok(f.p.getSkillManager().getExperience(core.Skill.AGILITY)>f.xp);
     assert.equal(f.events.filter(([,name])=>name==='performAnimation').at(-1)[2].getId(),resetAnimation,
       'the existing default runner completion still resets other obstacle animations');
+  });
+
+  // Floor-spike minimum level is the observed contract. The exact retail
+  // refusal movement is not captured; these assertions only require no crossing.
+  await t.test('under-level ordinary routes cannot cross floor spikes; level 20 can', async test => {
+    const definition = core.CacheDefinitions.getObject(3582);
+    assert.equal(definition.name, 'Floor spikes', 'active cache identifies the obstacle');
+    assert.equal(core.GameConstants.EXPERIENCE_MULTIPLIER, 1);
+    const oldRandom = Math.random;
+    let rolls = 0;
+    Shared.setRandom(() => {
+      // This draw alone belongs to the actual spike outcome, not other world logic.
+      if ((new Error().stack ?? '').includes('rollTrap')) { rolls++; return 0; }
+      return oldRandom();
+    });
+    test.after(() => Shared.setRandom(oldRandom));
+    const spans = [
+      { label:'south spikes', from:[2772,9550], to:[2772,9553], axis:1, low:9550, high:9553 },
+      { label:'east spikes', from:[2798,9568], to:[2801,9568], axis:0, low:2798, high:2801 },
+      { label:'west spikes', from:[2761,9572], to:[2761,9575], axis:1, low:9572, high:9575 },
+    ];
+    for (const span of spans) for (const reverse of [false,true]) for (const running of [false,true]) {
+      await test.test(`${span.label}, ${reverse ? 'reverse' : 'forward'}, ${running ? 'run' : 'walk'}`, sub => {
+        const from = reverse ? span.to : span.from, to = reverse ? span.from : span.to;
+        core.RegionManager.loadMapFiles(from[0],from[1],false);
+        const dx = Math.sign(to[0]-from[0]), dy = Math.sign(to[1]-from[1]);
+        const spikeObjects = [1,2].map(step => core.MapObjects.get(3582,at(from[0]+dx*step,from[1]+dy*step),null)).filter(Boolean);
+        assert.ok(spikeObjects.length > 0, 'the active map contains floor spikes in this span');
+        assert.ok(spikeObjects.some(object => object.getDefinition().getName() === 'Floor spikes'));
+        function level(f, value) {
+          const sm = f.p.getSkillManager();
+          sm.setExperience(core.Skill.AGILITY, core.SkillManager.getExperienceForLevel(value));
+          sm.setMaxLevels(core.Skill.AGILITY, value, false).setCurrentLevel(core.Skill.AGILITY, value, false);
+          assert.equal(sm.getCurrentLevel(core.Skill.AGILITY), value);
+          f.p.setRunning(running);
+          return sm.getExperience(core.Skill.AGILITY);
+        }
+        const allowed = actor(sub,from[0],from[1]), allowedXp = level(allowed,20);
+        const beforeRolls = rolls;
+        allowed.p.getMovementQueue().requestWalk(at(to[0],to[1]));
+        let actuallyRan = false;
+        for (let i=0;i<12;i++) { turn(); actuallyRan ||= allowed.p.getMovementQueue().didRunThisCycle(); }
+        if (running) assert.equal(actuallyRan,true,'the control actually consumed a running movement frame');
+        assert.deepEqual(position(allowed.p),[...to,3], 'a real level-20 route crosses this span');
+        assert.equal(rolls,beforeRolls+1,'the spike outcome consumes the controlled draw');
+        assert.equal(allowed.p.getSkillManager().getExperience(core.Skill.AGILITY)-allowedXp,24);
+
+        const denied = actor(sub,from[0],from[1]), deniedXp = level(denied,19);
+        let crossed = false;
+        const attempted = () => {
+          denied.p.getMovementQueue().requestWalk(at(to[0],to[1]));
+          for(let i=0;i<8;i++) {
+            turn();
+            const value = position(denied.p)[span.axis];
+            crossed ||= reverse ? value <= span.low : value >= span.high;
+          }
+        };
+        attempted();
+        assert.equal(denied.p.getSkillManager().getCurrentLevel(core.Skill.AGILITY),19);
+        assert.ok(denied.events.some(([,name,message])=>name==='sendMessage' && message.includes('at least 20')),
+          'the native area observed the attempted under-level crossing');
+        assert.equal(crossed,false,'the queued route cannot reach the opposite side');
+        assert.equal(denied.p.getSkillManager().getExperience(core.Skill.AGILITY),deniedXp);
+        assert.equal(denied.p.getMovementQueue().getDestination(),null,'refusal clears the pending route');
+        attempted();
+        assert.equal(crossed,false,'a fresh click after normal placement also cannot cross');
+        assert.equal(denied.p.getSkillManager().getExperience(core.Skill.AGILITY),deniedXp);
+      });
+    }
+  });
+
+  await t.test('run enabled with a one-step spike approach uses the actual walking direction', test => {
+    core.RegionManager.loadMapFiles(2772,9550,false);
+    const f=actor(test,2772,9550,3,38,19);
+    f.p.setRunning(true);
+    f.p.getMovementQueue().requestWalk(at(2772,9551));
+    turn();
+    assert.equal(f.p.getMovementQueue().didRunThisCycle(),true,'run energy is consumed');
+    assert.deepEqual(position(f.p),[2772,9550,3],'the TSPS policy restores the ordinary approach origin');
+    assert.ok(f.events.some(([,name,message])=>name==='sendMessage' && message.includes('at least 20')));
+  });
+
+  await t.test('a same-cycle walk-to relocation is not treated as an ordinary spike approach', test => {
+    core.RegionManager.loadMapFiles(2772,9548,false);
+    const f=actor(test,2772,9550,3,38,19), target=actor(test,2772,9548);
+    const serial=f.p.getTeleportSerial();
+    let callbacks=0;
+    f.p.getMovementQueue().walkToEntity(target.p, () => {
+      assert.equal(f.p.getMovementQueue().steppedThisWorldCycle(),true);
+      f.p.setLocation(at(2772,9551)); // model a distinct registered interaction's relocation
+      callbacks++;
+    });
+    for(let i=0;i<6 && callbacks===0;i++) turn();
+    assert.equal(callbacks,1,'real walk-to reach callback ran after an ordinary step');
+    assert.equal(f.p.getTeleportSerial(),serial,'the callback used setLocation, not teleport');
+    assert.deepEqual(position(f.p),[2772,9551,3], 'the unrelated relocation is not rolled back');
+  });
+
+  await t.test('a player initially placed on spikes can leave without an inferred approach', async test => {
+    core.RegionManager.loadMapFiles(2772,9550,false);
+    for (const [y, destination] of [[9551,9550],[9552,9553]]) await test.test(`from ${y}`, sub => {
+      const f=actor(sub,2772,y,3,38,19);
+      const xp=f.p.getSkillManager().getExperience(core.Skill.AGILITY);
+      assert.equal(f.p.getSkillManager().getCurrentLevel(core.Skill.AGILITY),19);
+      f.p.getMovementQueue().requestWalk(at(2772,destination));
+      for(let i=0;i<5;i++) turn();
+      assert.deepEqual(position(f.p),[2772,destination,3]);
+      assert.equal(f.p.getSkillManager().getExperience(core.Skill.AGILITY),xp);
+    });
+  });
+
+  await t.test('a teleport onto a spike is not mistaken for an approach and the player can leave', test => {
+    core.RegionManager.loadMapFiles(2772,9550,false);
+    const f=actor(test,2772,9550);
+    f.p.getSkillManager().setExperience(core.Skill.AGILITY,core.SkillManager.getExperienceForLevel(19));
+    f.p.getSkillManager().setMaxLevels(core.Skill.AGILITY,19,false).setCurrentLevel(core.Skill.AGILITY,19,false);
+    const xp=f.p.getSkillManager().getExperience(core.Skill.AGILITY), prior=f.p.getTeleportSerial();
+    f.p.moveTo(at(2772,9552));
+    assert.ok(f.p.getTeleportSerial()>prior);
+    turn(); // let the real World consume placement before a new walk request
+    assert.deepEqual(position(f.p),[2772,9552,3], 'stale pre-teleport position is not a rollback target');
+    f.p.getMovementQueue().requestWalk(at(2772,9553));
+    for(let i=0;i<5;i++) turn();
+    assert.deepEqual(position(f.p),[2772,9553,3], 'an already placed player can leave');
+    assert.equal(f.p.getSkillManager().getExperience(core.Skill.AGILITY),xp);
+  });
+
+  await t.test('a same-tile teleport refreshes approach provenance for a later normal walk', test => {
+    core.RegionManager.loadMapFiles(2772,9550,false);
+    const f=actor(test,2772,9550);
+    f.p.getSkillManager().setExperience(core.Skill.AGILITY,core.SkillManager.getExperienceForLevel(19));
+    f.p.getSkillManager().setMaxLevels(core.Skill.AGILITY,19,false).setCurrentLevel(core.Skill.AGILITY,19,false);
+    const serial=f.p.getTeleportSerial();
+    f.p.moveTo(at(2772,9550)); turn();
+    assert.ok(f.p.getTeleportSerial()>serial);
+    assert.deepEqual(position(f.p),[2772,9550,3]);
+    f.p.getMovementQueue().requestWalk(at(2772,9553));
+    for(let i=0;i<8;i++) turn();
+    assert.ok(position(f.p)[1]<9553, 'the later genuine approach still cannot cross');
   });
 
   await t.test('shutdown restores all cache decorations/clipping and stops the shared clock',()=>{

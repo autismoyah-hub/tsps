@@ -141,13 +141,54 @@ function processPlayer(mobile) {
   const at = player.getLocation();
   const key = Shared.tileKey(at.getX(), at.getY());
   const state = Shared.stateOf(player);
-  if (state.lastTile === key) return;
+  const serial = player.getTeleportSerial?.();
+  const current = { x: at.getX(), y: at.getY(), z: at.getZ(), teleportSerial: serial };
+  if (state.lastTile === key) {
+    // A teleport to the same tile invalidates an older movement observation too.
+    if (state.lastAt?.z !== current.z || state.lastAt?.teleportSerial !== serial) state.lastAt = current;
+    return;
+  }
   const previous = state.lastAt;
   state.lastTile = key;
-  state.lastAt = { x: at.getX(), y: at.getY() };
+  state.lastAt = current;
   if (at.getZ() !== Shared.ARENA_PLANE || ObstacleRunner.isBusy(player)) return;
   const span = Shared.trapSpanAt(at.getX(), at.getY());
+  if (span && refuseSpikeApproach(player, span, previous)) {
+    // moveTo increments the teleport serial; both observations must match the restored tile.
+    state.lastTile = Shared.tileKey(previous.x, previous.y);
+    state.lastAt = { ...previous, teleportSerial: player.getTeleportSerial() };
+    return;
+  }
   if (span) stepTrap(player, span, previous);
+}
+
+/**
+ * TSPS policy: return a verified ordinary under-level approach to its last observed tile.
+ * There is no inferred retail knockback, animation, or timing. An actor placed on a span
+ * without a verified approach may still leave it; do not infer which side they came from.
+ */
+function refuseSpikeApproach(player, span, previous) {
+  if (span.kind !== "FLOOR_SPIKES" || Shared.agilityLevel(player) >= Shared.OBSTACLE_LEVEL.FLOOR_SPIKES) return false;
+  const movement = player.getMovementQueue?.();
+  const serial = player.getTeleportSerial?.();
+  const at = player.getLocation();
+  if (!previous || previous.z !== at.getZ() || !Number.isSafeInteger(serial) || previous.teleportSerial !== serial ||
+      !movement?.steppedThisWorldCycle?.() || player.isNeedsPlacement?.() !== false ||
+      Shared.trapSpanAt(previous.x, previous.y)) return false;
+  // Reconstruct the queue's actual one or two steps. A walk-to callback can
+  // relocate the player after queue processing without a teleport serial change.
+  const walk = player.getWalkingDirection?.();
+  const run = player.getRunningDirection?.();
+  if (!walk || walk.getId() < 0) return false;
+  const twoSteps = run?.getId() >= 0;
+  const followX = previous.x + (twoSteps ? walk.getX() : 0);
+  const followY = previous.y + (twoSteps ? walk.getY() : 0);
+  const last = twoSteps ? run : walk;
+  if (movement.followX !== followX || movement.followY !== followY ||
+      at.getX() !== followX + last.getX() || at.getY() !== followY + last.getY()) return false;
+  player.sendMessage(Shared.levelRefusal(Shared.OBSTACLE_LEVEL.FLOOR_SPIKES));
+  player.moveTo(new (Shared.core().Location)(previous.x, previous.y, previous.z));
+  return true;
 }
 
 /**
@@ -233,8 +274,9 @@ function trapSteps(player, span, outcome, dir) {
 }
 
 /**
- * Rolls a trap and plays it. Below the obstacle's level the player is told and walks on. The
- * pressure pads pay twice in a row, then nothing for eight ticks (Wiki, 2024); they still jump.
+ * Rolls a trap and plays it. Below the obstacle's level the player is told; verified ordinary
+ * floor-spike approaches are refused by the area before this function. The pressure pads pay
+ * twice in a row, then nothing for eight ticks (Wiki, 2024); they still jump.
  */
 function stepTrap(player, span, previous = null) {
   const kind = span.kind;
