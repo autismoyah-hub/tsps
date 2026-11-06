@@ -44,6 +44,7 @@ const harvestEvents = new WeakMap();
 const onlineFixtures = new WeakMap();
 const onlineActors = new WeakSet();
 const plantingObservers = new WeakMap();
+const observedPinChecks = new WeakMap();
 
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
@@ -57,6 +58,10 @@ before(async () => {
   // Core and Farming emit through the real PluginManager; the plugins here emit through this api.
   const real = PluginManager.createApi("LeagueRelicEconomyTest");
   real.onCustomEvent("farming:plant-rules", (event) => plantingObservers.get(event.player)?.(event));
+  real.onCustomEvent("bank-pin:guard", ({ player }) => {
+    const observed = observedPinChecks.get(player);
+    if (observed) observed.count++;
+  });
   for (const name of ["farming:harvested", "farming:harvest"]) real.onCustomEvent(name, (event) => {
     const counts = harvestEvents.get(event.player);
     if (counts) counts[name] = (counts[name] ?? 0) + 1;
@@ -941,6 +946,103 @@ test("Overgrown: a synchronous replacement crop is not overwritten by replant", 
   assert.equal(bankAmount(player, herb), 6);
   assert.equal(farm.vault[seed], 1, "no seed debit after replacement");
   assert.equal(farm.patches[Data.patchKey(patch)], replacement);
+});
+
+// Capture the same vault-inventory calls a visible Seed Vault receives, without a client/socket.
+function captureVaultInventory(player) {
+  const original = player.getPacketSender(), packets = [];
+  const sender = new Proxy(original, { get(target, key) {
+    if (key === "sendInventory") return (id, capacity, items) => {
+      packets.push({ id, capacity, items: items.map(item => item ? { ...item } : null) });
+      return sender;
+    };
+    return Reflect.get(target, key);
+  } });
+  player.getPacketSender = () => sender;
+  const vaultId = core.CacheDefinitions.getInventoryId("seed_vault");
+  assert.equal(vaultId, 626, "active cache seed_vault inventory matches pinned inv.sym");
+  return { packets, vaultPackets: () => packets.filter(packet => packet.id === vaultId) };
+}
+function seedCell(packet, farm, seed) {
+  assert.equal(packet.capacity, 104);
+  const slot = farm.vaultOrder.indexOf(seed);
+  assert.ok(slot >= 0, "the vault retains the seed's actual slot");
+  return packet.items[slot];
+}
+
+test("Overgrown: an open Seed Vault updates its seed count after a replant", (t) => {
+  mockScenery(t);
+  farmingRandom();
+  const { player, patch, seed, farm } = onlineHerb(t, "vaultcount", OVERGROWN, 2);
+  const { vaultPackets } = captureVaultInventory(player);
+  const pins = { count: 0 }; observedPinChecks.set(player, pins);
+  let inventoryRefreshes = 0;
+  const inventory = player.getInventory(), refreshInventory = inventory.refreshItems.bind(inventory);
+  t.mock.method(inventory, "refreshItems", (...args) => { inventoryRefreshes++; return refreshInventory(...args); });
+  Vault.open({ player, anywhere: true });
+  const shown = vaultPackets();
+  assert.equal(shown.length, 1, "actual vault open sent its inventory");
+  assert.deepEqual(seedCell(shown[0], farm, seed), { id: seed, amount: 2 });
+  assert.equal(farm.vault[seed], 2);
+  const guards = pins.count, refreshes = inventoryRefreshes;
+  assert.ok(guards > 0, "actual open checked the PIN guard");
+  assert.ok(refreshes > 0, "actual open refreshed carried inventory");
+  matureHerb(player);
+  assert.equal(farm.vault[seed], 1, "real automatic replant consumed one seed");
+  assert.equal(farm.patches[Data.patchKey(patch)].status, "growing", "replacement is committed");
+  const after = vaultPackets();
+  assert.equal(after.length, 2, "open vault receives the new inventory");
+  assert.deepEqual(seedCell(after[1], farm, seed), { id: seed, amount: 1 });
+  assert.deepEqual(seedCell(after[0], farm, seed), { id: seed, amount: 2 }, "prior packet is a snapshot");
+  assert.equal(pins.count, guards, "background refresh does not reopen or prompt for PIN");
+  assert.equal(inventoryRefreshes, refreshes, "background vault update does not refresh carried inventory");
+});
+
+test("Overgrown: an open Seed Vault receives the empty seed placeholder", (t) => {
+  mockScenery(t);
+  farmingRandom();
+  const { player, seed, farm } = onlineHerb(t, "vaultempty", OVERGROWN, 1);
+  const { vaultPackets } = captureVaultInventory(player);
+  Vault.open({ player, anywhere: true });
+  assert.deepEqual(seedCell(vaultPackets()[0], farm, seed), { id: seed, amount: 1 });
+  const placeholder = core.CacheDefinitions.getItem(seed).placeholder;
+  assert.ok(placeholder > 0, "active cache has the seed placeholder");
+  matureHerb(player);
+  assert.equal(farm.vault[seed], 0);
+  const after = vaultPackets();
+  assert.equal(after.length, 2);
+  assert.deepEqual(seedCell(after[1], farm, seed), { id: placeholder, amount: 1 });
+});
+
+test("Overgrown: saving the seed does not send an unnecessary vault refresh", (t) => {
+  mockScenery(t);
+  farmingRandom({ saveSeed: true });
+  const { player, patch, state, seed, herb, farm } = onlineHerb(t, "vaultsaved", OVERGROWN, 1);
+  const { vaultPackets } = captureVaultInventory(player);
+  Vault.open({ player, anywhere: true });
+  assert.equal(vaultPackets().length, 1);
+  matureHerb(player);
+  assert.equal(bankAmount(player, herb), 6, "the automatic harvest happened");
+  assert.notEqual(farm.patches[Data.patchKey(patch)], state, "a new crop was planted");
+  assert.equal(farm.patches[Data.patchKey(patch)].status, "growing");
+  assert.equal(farm.vault[seed], 1);
+  assert.equal(vaultPackets().length, 1);
+});
+
+test("Overgrown: a stale or closed Seed Vault is not refreshed", (t) => {
+  mockScenery(t);
+  farmingRandom();
+  for (const state of ["stale", "closed"]) {
+    const { player, seed, farm } = onlineHerb(t, `vault${state}`, OVERGROWN, 1);
+    const { vaultPackets } = captureVaultInventory(player);
+    Vault.open({ player, anywhere: true });
+    assert.equal(vaultPackets().length, 1);
+    if (state === "stale") player.getInterfaceId = () => -1;
+    else Vault.logout({ player });
+    matureHerb(player);
+    assert.equal(farm.vault[seed], 0, "replant still consumes the seed");
+    assert.equal(vaultPackets().length, 1, `${state} vault received no background inventory`);
+  }
 });
 
 // --- Managing Miscellania
