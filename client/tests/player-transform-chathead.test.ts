@@ -14,7 +14,7 @@ import { PlayerEcs } from '../game/ecs/PlayerEcs';
 import { CacheSystem } from '../rs/cache/CacheSystem';
 import { getCacheLoaderFactory } from '../rs/cache/loader/CacheLoaderFactory';
 import { loadCache, loadCacheInfos } from '../scripts/cache/load-util';
-import { WidgetManager } from '../widgets/WidgetManager';
+import { WidgetLoader } from '../widgets/WidgetLoader';
 import { PendingInterfaceUpdates } from '../widgets/custom/PendingInterfaceUpdates';
 import { HeldWidgetProperties } from '../widgets/HeldWidgetProperties';
 import { ChatheadFactory } from '../render/ChatheadFactory';
@@ -40,6 +40,14 @@ const method = (name: string) => findOne(clientSource, n => ts.isMethodDeclarati
 const Receiver = new Function('PlayerAppearance', 'HELD_WIDGET_ACTIONS', compile('class Receiver {' +
     method('buildPlayerAppearanceFromPayload') + method('holdForUnloadedGroup') + '} return Receiver;'))(
     PlayerAppearance, new Set(['set_player_head']));
+// Keep native widget decoding and the exact production lookup methods, without
+// constructing the mobile/layout/timer UI manager outside this head-model scope.
+const managerSource = read('../widgets/WidgetManager.ts');
+const lookupMethods = ['getWidgetByUid', 'isGroupLoaded'].map(name => findOne(managerSource,
+    n => ts.isMethodDeclaration(n) && n.name.getText(managerSource) === name
+        ? n.getText(managerSource) : undefined)).join('\n');
+const HeadWidgetLookup = new Function(compile('class HeadWidgetLookup {' + lookupMethods +
+    '} return HeadWidgetLookup;'))();
 const overlaySource = read('../widgets/gl/widgetsOverlayFactory.ts');
 const modelCallback = findOne(overlaySource, n => ts.isPropertyAssignment(n) &&
     n.name.getText(overlaySource) === 'getRenderModelCanvas' ? n.initializer.getText(overlaySource) : undefined);
@@ -70,8 +78,14 @@ test('native dialogue head uses transformed NPC geometry and restores player app
     const modelLoader = loaders.getModelLoader(), textureLoader = loaders.getTextureLoader();
     const idkTypeLoader = loaders.getIdkTypeLoader(), objTypeLoader = loaders.getObjTypeLoader();
     const npcTypeLoader = loaders.getNpcTypeLoader();
-    const wm = new WidgetManager(cache);
-    wm.getGroup(217);
+    const group = new WidgetLoader(cache).loadWidgetGroup(217);
+    assert.ok(group && group.widgets.size > 0, 'native cache group217 decoded');
+    const invalidated: number[] = [];
+    const wm = Object.assign(new HeadWidgetLookup(), { widgetByUid: group.widgets,
+        loadedGroups: { 217: true },
+        // Raster invalidation is outside this model-selection test; observe the notification.
+        invalidateWidgetRender(w: any) { invalidated.push(w.uid); },
+    });
     const uid = (217 << 16) | 2;
     const widget = wm.getWidgetByUid(uid)!;
     assert.ok(widget, 'real dialogue head widget loaded');
@@ -120,6 +134,7 @@ test('native dialogue head uses transformed NPC geometry and restores player app
         assert.equal(message.payload.action, 'set_player_head');
         assert.equal(message.payload.uid, uid);
         handle(message.payload);
+        assert.equal(invalidated.at(-1), uid, 'production receiver invalidates actual cache widget');
         const actual = render(widget.modelId, { widget }, 100, 100);
         let expected;
         if (transform >= 0) {
