@@ -440,7 +440,9 @@ test('gardener protection rechecks a naturally matured onion patch at native Yes
     expectedPrepared.xp = raked.xp; assert.deepEqual(snapshot(),expectedPrepared,'native rake/plant/cures account for every declared item in every store');
     for (const s of core.Skill.values()) if (s !== core.Skill.FARMING) assert.equal(raked.xp[s.getIndex()],initial.xp[s.getIndex()]);
     const prepared = snapshot();
-    const pay = async () => { const clickType = npc.getCurrentDefinition(p).getActions().findIndex(a => a?.toLowerCase() === 'pay') + 1; assert.ok(clickType > 0);
+    const pay = async () => { const definition = npc.getCurrentDefinition(p), actions = definition.getActions();
+      const clickType = actions.findIndex(action => /^pay(?:$| \()/i.test(action ?? '')) + 1;
+      assert.ok(clickType > 0, JSON.stringify({npcId:npc.getId(),contentId:npc.getContentId(p),definition:definition.getName(),actions,clickType,selectedAction:actions[clickType-1] ?? null}));
       await send({type:'npc_option',index:npc.getIndex(),clickType}); };
     const quote = () => { const menu = manager.getCurrent(); assert.ok(menu instanceof core.OptionDialogue);
       assert.equal(menu.getTitle(),'Pay 1 sack of potatoes?'); assert.deepEqual(menu.getOptions(),['Yes.','No.',"Yes and don't ask again."]);
