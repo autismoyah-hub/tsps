@@ -5,7 +5,7 @@
 // dispatched by PluginManager, real tasks ticked, on a real Player with only the network stubbed.
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { test, before } = require('node:test');
+const { test, before, after } = require('node:test');
 
 const ROOT = path.join(__dirname, '..');
 const { Server } = require('../dist/Server');
@@ -45,7 +45,10 @@ before(async () => {
   Grove = require(`${dir}Grove.TaiBwoWannaiCleanup`);
   Diaries = require('../plugins/achievements/AchievementDiaries.plugin.js')._test;
   jungleQuest = require('../plugins/quests/QuestRuntime').getRegisteredQuests().find((q) => q.key === 'jungle_potion');
+  // Production startup initializes every registered hook before any legacy or native login.
+  PluginManager.emitServerStartup({});
 });
+after(() => PluginManager.emitServerShutdown({}));
 
 const id = (kind, name) => core.CacheDefinitions[`get${kind}Id`](name);
 const obj = (name) => id('Obj', name);
@@ -191,7 +194,7 @@ test('Karamja gloves worn: the gloves version opens, from Trade-Co-op and from h
   // Taken off, the Default version again.
   core.ShopManager.close(p);
   p.setStatus(core.PlayerStatus.NONE);
-  p.getEquipment().setItem(Equipment.HANDS_SLOT, null);
+  p.getEquipment().deleteAtSlot(Equipment.HANDS_SLOT, 1);
   npcOp(p, 'tbwcu_gabooty', 3);
   assert.equal(shopState(p).name, "Gabooty's Tai Bwo Wannai Cooperative. (Default)");
 });
@@ -514,8 +517,6 @@ test("a deferred parcel request preserves a newer native shop modal", async t =>
   const { PlayerSession } = require("../dist/net/PlayerSession");
   const { ClientConnection } = require("../dist/net/NetworkBuilder");
   core.RegionManager.loadMapFiles(3226, 3218);
-  PluginManager.emitServerStartup({});
-  t.after(() => PluginManager.emitServerShutdown({}));
   const PARCEL = id("Interface", "tai_bwo_wannai_post"), ITEMS = id("Component", "tai_bwo_wannai_post:items");
   assert.equal(PARCEL, 323); assert.equal(ITEMS, (323 << 16) | 5);
   const STICK = obj(STICKS), TEAK = obj("teak_logs"), COIN = core.ItemIdentifiers.COINS;
@@ -546,14 +547,18 @@ test("a deferred parcel request preserves a newer native shop modal", async t =>
       for (const ground of core.World.getItems().filter(g => g.getOwner() === p.getUsername())) core.ItemOnGroundManager.deregister(ground);
     });
     const inv = p.getInventory(); inv.add(new Item(STICK, 200), false); inv.add(new Item(TEAK), false); inv.add(new Item(COIN, 100), false);
-    const gains = [], skills = p.getSkillManager(), addXp = skills.addExperiences.bind(skills);
-    t.mock.method(skills, "addExperiences", (skill, amount) => { gains.push({ skill, amount }); return addXp(skill, amount); });
+    const gains = [], skills = p.getSkillManager(), addXp = skills.addExperience.bind(skills);
+    // addExperiences delegates to addExperience; observing the sink covers both native APIs.
+    t.mock.method(skills, "addExperience", (skill, amount, multipliers) => {
+      gains.push({ skill: skill.getIndex(), amount, multipliers: !!multipliers }); return addXp(skill, amount, multipliers);
+    });
     const stores = itemId => ({ inventory: inv.getAmount(itemId), equipment: p.getEquipment().getAmount(itemId),
       bank: p.getBanks().reduce((n, b, tab) => n + (b && tab !== core.Bank.BANK_SEARCH_TAB_INDEX ? b.getAmount(itemId) : 0), 0),
       floor: core.World.getItems().filter(g => !g.isPendingRemoval() && g.getOwner() === p.getUsername()
         && g.getPrivateArea() === p.getPrivateArea() && g.getItem().getId() === itemId).reduce((n, g) => n + g.getItem().getAmount(), 0) });
     const owned = itemId => Object.values(stores(itemId)).reduce((n, amount) => n + amount, 0);
-    const resources = () => ({ sticks: stores(STICK), teak: stores(TEAK), coins: stores(COIN), gains: [...gains] });
+    const resources = () => ({ sticks: stores(STICK), teak: stores(TEAK), coins: stores(COIN), gains: [...gains],
+      experience: core.Skill.values().map(skill => skills.getExperience(skill)) });
     const initial = resources(), sender = p.getPacketSender(), manager = p.getDialogueManager();
     const unchanged = () => assert.deepEqual(resources(), initial, "opening/replacing a service takes no items, fee or XP");
     const state = () => ({ mode, interface: p.getInterfaceId(), parcelMounted: sender.isSubInterfaceOpen(PARCEL),
@@ -600,7 +605,9 @@ test("a deferred parcel request preserves a newer native shop modal", async t =>
       await send(option(rionasta, "Talk-to")); await chooseNative("What do you do here?");
       await chooseNative("Can I send a parcel please?");
       for (let n = 0; n < 6 && !/^Of course\.\.\.which items/.test(manager.getCurrent()?.getText?.() ?? ""); n++) await send(resume());
-      assert.match(line().current.getText(), /^Of course\.\.\.which items would you like to send to your bank\?/);
+      const terminal = line(); assert.ok(terminal.current instanceof core.NpcDialogue); assert.equal(terminal.group, 231);
+      // The generated terminal has two spaces after "to"; normalize whitespace, preserving exact wording.
+      assert.equal(terminal.current.getText().replace(/\s+/g, " ").trim(), "Of course...which items would you like to send to your bank?");
       assert.equal(manager.getOwner(), undefined, "ordinary Talk-to has no explicit named playback owner");
       assert.equal(p.getInterfaceId(), -1); assert.equal(sender.isSubInterfaceOpen(PARCEL), false); unchanged();
       // Both inputs drain in one real player turn, before the next global task phase.
@@ -626,5 +633,6 @@ test("a deferred parcel request preserves a newer native shop modal", async t =>
       buttonNum: 2, opId: 2, slot, itemId: TEAK });
     assert.equal(inv.getAmount(TEAK), 0); assert.equal(stores(TEAK).bank, 1); assert.equal(owned(TEAK), 1);
     assert.equal(owned(STICK), 190); assert.equal(owned(COIN), 100); assert.deepEqual(gains, []);
+    assert.deepEqual(resources().experience, initial.experience);
   });
 });
