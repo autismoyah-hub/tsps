@@ -178,8 +178,9 @@ test('Haunted Mine mapped shard requires current Crafting 35', t => {
   assert.ok(object, 'mapped crystal room outcrop exists');
   const location = object.getLocation();
   const definition = object.getDefinition();
-  const optionIndex = definition.getInteractions().findIndex(option => String(option).toLowerCase() === 'mine');
-  assert.ok(optionIndex >= 0, 'mapped outcrop has Mine action');
+  const interactions = definition.getInteractions();
+  const optionIndex = interactions.findIndex(option => String(option).toLowerCase() === 'cut');
+  assert.ok(optionIndex >= 0, `mapped outcrop ${object.getId()} at ${location.getX()},${location.getY()},${location.getZ()} has Cut action; actual ${JSON.stringify(interactions)}`);
   const queue = low.player.getMovementQueue();
   const spec = queue.buildObjectRouteSpec(object, 0);
   const adjacent = [[0, -1], [0, 1], [-1, 0], [1, 0]].find(([dx, dy]) => {
