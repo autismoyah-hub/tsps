@@ -864,6 +864,19 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
       childId:spell.widgetId&65535,slot:-1,buttonNum:1}]); f.conn.processTurnPackets();
   }
   const runes = p => [563,556,554].map(id => p.getInventory().getAmount(id));
+  function fishierFrame(p, turn) {
+    const loc = p.getLocation(), dest = p.getMovementQueue().getDestination();
+    const scene = require('../plugins/skills/sailing/charting/FishierStout.Charting').scenes.get(p);
+    return { turn, position:[loc.getX(),loc.getY(),loc.getZ()], teleportSerial:p.getTeleportSerial(),
+      teleporting:p.isTeleporting, forceMovement:!!p.getForceMovement(),
+      destination:dest ? [dest.getX(),dest.getY(),dest.getZ()] : null,
+      interaction:p.getInteractingMobile()?.getIndex?.() ?? null, hp:p.getHitpoints(),
+      trolls:scene?.npcs.map(n => ({index:n.getIndex(),target:n.getCombat().getTarget()?.getIndex?.() ?? null})) ?? [] };
+  }
+  function fishierObserve(p, frames) {
+    frames.push(fishierFrame(p, 0));
+    for (let turn=1; turn<=8; turn++) { tick(); frames.push(fishierFrame(p, turn)); }
+  }
   function fishier(f) {
     const id = core.CacheDefinitions.getObjId('sailing_charting_drink_crate_fishier_stout');
     assert.ok(Number.isInteger(id));
@@ -957,10 +970,19 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
   await t.test('first sip still refuses a legal cast inside the real Fishier allow area', async test => {
     const f=actor(test); firstDrink(f); fishier(f);
     const at=f.p.getLocation().clone(), before=runes(f.p), xp=f.p.getSkillManager().getExperience(core.Skill.MAGIC);
-    await cast(f); tick(8);
+    const frames=[];
+    try { frames.push(fishierFrame(f.p, 'before-cast')); await cast(f); fishierObserve(f.p, frames); }
+    finally { test.diagnostic(`fishier-cast-frames ${JSON.stringify(frames)}`); }
     assert.deepEqual(runes(f.p),before); assert.equal(f.p.getSkillManager().getExperience(core.Skill.MAGIC),xp);
     assert.deepEqual([f.p.getLocation().getX(),f.p.getLocation().getY(),f.p.getLocation().getZ()],[at.getX(),at.getY(),at.getZ()]);
     assert.equal(f.p.isTeleporting,false); assert.ok(f.messages.some(m=>m.includes('headache') && m.includes('teleport')));
+  });
+  await t.test('observe the same Fishier scene without casting', async test => {
+    const f=actor(test); firstDrink(f); fishier(f); const frames=[];
+    try { fishierObserve(f.p, frames); }
+    finally { test.diagnostic(`fishier-no-cast-frames ${JSON.stringify(frames)}`); }
+    assert.equal(frames.length,9);
+    assert.equal(require('../plugins/skills/sailing/charting/FishierStout.Charting').scenes.has(f.p),true);
   });
   await t.test('committed dream state survives the actual player save round-trip', async test => {
     const f=actor(test); firstDrink(f); const snapshot=PlayerSave.fromPlayer(f.p);
