@@ -28,7 +28,8 @@
  * ceremony camera, and the final dance arc); the capture's skybox (cam_skybox 61359) has
  * no core packet yet. The shy crab 16484 is spawned at 3045,2653 with the captured opening
  * conversation; its later relocation/scutter-away is a remaining gap. The dream/headache
- * is modeled as a saved state with boat and teleport restrictions. No post-quest beach-crab variant exists, so a
+ * is modeled with boat and teleport restrictions; defeat and login clear it as a TSPS recovery policy.
+ * No post-quest beach-crab variant exists, so a
  * completed player replays "crab-hunting-talking-to-the-crab-again". The Crab
  * dance emote is not unlocked (the dance conditions answer "not unlocked"). The
  * requirement refusal is a plain system message because the transcript has none.
@@ -36,11 +37,23 @@
  * hand-in/tuning stages only advance on the transcript's own hand-in and tune messages.
  */
 const DREAM_ATTRIBUTE = "crab-quest:dream-headache";
+const FIRST_SIP_STEP = "A8M5CK";
+const DREAM_SIP_STEP = "ON9Mp-";
+const REALITY_SIP_STEP = "_Hk79X";
 
-/** The bottle state is independent of quest stage and survives logout (TSPS policy). */
+/** The bottle state is independent of quest stage; login clears saved state for recovery. */
 function dreamActive(player) {
   const quest = require("../QuestRuntime").getRegisteredQuests().findLast((entry) => entry.key === "crab_quest");
   return player.getAttribute(DREAM_ATTRIBUTE) === true && !quest?.isComplete(player);
+}
+
+// These recovery boundaries are TSPS policy; the retail death/relogin behavior is unknown.
+function recoverDreamOnDefeat({ victim }) {
+  if (victim.getAttribute(DREAM_ATTRIBUTE) === true) victim.setAttribute(DREAM_ATTRIBUTE, false);
+}
+
+function recoverDreamOnLogin({ player }) {
+  if (player.getAttribute(DREAM_ATTRIBUTE) === true) player.setAttribute(DREAM_ATTRIBUTE, false);
 }
 
 function canBoardDream(event) {
@@ -1157,8 +1170,8 @@ module.exports = function registerCrabQuestQuest(api) {
     if (npcId === MAIN_CRAB_NPC_ID && event.kind === "message" &&
         event.pages?.some((page) => page.page === PAGE && page.variants?.some((variant) => variant.startsWith("drinking-from-bottle"))) &&
         !quest.isComplete(player)) {
-      if (stepId === "A8M5CK" || stepId === "ON9Mp-") player.setAttribute(DREAM_ATTRIBUTE, true);
-      else if (stepId === "_Hk79X") player.setAttribute(DREAM_ATTRIBUTE, false);
+      if (stepId === FIRST_SIP_STEP || stepId === DREAM_SIP_STEP) player.setAttribute(DREAM_ATTRIBUTE, true);
+      else if (stepId === REALITY_SIP_STEP) player.setAttribute(DREAM_ATTRIBUTE, false);
     }
     if (stepId === SHY_CRAB_BLUSH_STEP || stepId === SHY_CRAB_SCUTTER_STEP) {
       if (npcId !== SHY_CRAB_NPC_ID && npcId !== SHY_CRAB_CONTENT_ID) return;
@@ -1545,6 +1558,8 @@ module.exports = function registerCrabQuestQuest(api) {
   api.onCustomEvent("npc-dialogue:line", handleLine);
   api.onCustomEvent("npc-dialogue:action", handleAction);
   api.onCustomEvent("player:emote", handleEmote);
+  api.onPlayerDefeated(recoverDreamOnDefeat);
+  api.onPlayerLogin(recoverDreamOnLogin);
   api.onNpcInteraction(handleNpcInteraction);
   api.onObjectInteraction(handleObjectInteraction);
   api.onItemOnItem(handleItemOnItem);

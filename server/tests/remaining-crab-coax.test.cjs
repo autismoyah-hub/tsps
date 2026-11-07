@@ -696,6 +696,7 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
   const { PlayerSession } = require('../dist/net/PlayerSession');
   const { ClientConnection } = require('../dist/net/NetworkBuilder');
   const { PlayerSave } = require('../dist/game/entity/impl/player/persistence/PlayerSave');
+  const { GameConstants } = require('../dist/game/GameConstants');
   const { AreaManager } = require('../dist/game/model/areas/AreaManager');
   const { NpcDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
   const priorBots = process.env.DISABLE_PLAYER_BOTS;
@@ -731,6 +732,7 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
   core.RegionManager.init();
   core.RegionManager.loadMapFiles(3055, 2639);
   core.RegionManager.loadMapFiles(3213, 3424);
+  core.RegionManager.loadMapFiles(3051, 3193);
   core.ObjectDefinition.init();
   new NpcDefinitionLoader().load();
   started = true;
@@ -854,6 +856,25 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
     f.p.setLocation(new core.Location(3060,2638,0)); AreaManager.process(f.p);
     return PluginManager.emitObjectInteraction({player:f.p,object,objectId:object.getId(),definition,clickType,
       location:{x:loc.getX(),y:loc.getY(),z:loc.getZ()},handled:false});
+  }
+  function boardPortSarim(f) {
+    const boat = core.Sailing.giveBoat(f.p, 'raft', 'port_sarim');
+    assert.ok(boat && boat.location.kind === 'docked' && boat.location.dock === 'port_sarim');
+    let object;
+    for (let dx=-2; dx<=2 && !object; dx++) for (let dy=-2; dy<=2 && !object; dy++) {
+      const at = new core.Location(3051+dx,3193+dy,0);
+      object = core.MapObjects.getObjectsAt(at, null).find(o => {
+        const def = core.ObjectDefinition.forPlayer(o.getId(), f.p);
+        return ['Gangplank','Mooring point'].includes(def?.getName()) && def.getInteractions().includes('Board');
+      });
+    }
+    assert.ok(object, 'active Port Sarim scene provides a registered boarding object');
+    const def=core.ObjectDefinition.forPlayer(object.getId(),f.p), loc=object.getLocation();
+    f.p.setLocation(new core.Location(3050,3193,0)); AreaManager.process(f.p);
+    assert.equal(PluginManager.emitObjectInteraction({player:f.p,object,objectId:object.getId(),definition:def,
+      clickType:def.getInteractions().indexOf('Board')+1,location:{x:loc.getX(),y:loc.getY(),z:loc.getZ()},handled:false}),true);
+    tick(3); assert.ok(core.Sailing.instanceAboard(f.p), 'the registered route boards the Port Sarim boat');
+    assert.equal(core.Sailing.disembark(f.p,'port_sarim'),null);
   }
   async function cast(f) {
     const spell = core.CacheDefinitions.getSpellByName('Varrock Teleport'); assert.ok(spell);
@@ -1006,5 +1027,99 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
     assert.equal(core.World.getPlayers().get(restored.p.getIndex()), restored.p, "saved actor remains the admitted World player");
     assert.equal(board(restored),true); tick(3); assert.equal(core.Sailing.instanceAboard(restored.p),undefined);
     assert.ok(restored.messages.some(m=>m.includes('headache')));
+  });
+  await t.test('ordinary Port Sarim boarding is available with a locally docked boat', async test => {
+    const f=actor(test); boardPortSarim(f);
+  });
+  await t.test('real death clears the dream before both saves and restores travel after respawn', async test => {
+    const f=actor(test); firstDrink(f);
+    assert.equal(f.p.getAttribute('crab-quest:dream-headache'),true);
+    const saves=[], persistence=GameConstants.PLAYER_PERSISTENCE, original=persistence.requestSave.bind(persistence);
+    test.mock.method(persistence,'requestSave',(player,reason) => {
+      if (player===f.p && (reason==='death' || reason==='respawn')) saves.push([reason,player.getAttribute('crab-quest:dream-headache')]);
+      return original(player,reason);
+    });
+    f.p.setHitpoints(0); assert.equal(f.p.isDying,true); tick(8);
+    assert.equal(f.p.isDying,false); assert.equal(f.p.getAttribute('crab-quest:dream-headache'),false);
+    assert.deepEqual(saves,[['death',false],['respawn',false]]);
+    assert.notDeepEqual([f.p.getLocation().getX(),f.p.getLocation().getY()],[3055,2639]);
+    boardPortSarim(f);
+    for (const [id, amount] of [[563,1],[556,3],[554,1]]) {
+      f.p.getInventory().deleteNumber(id, f.p.getInventory().getAmount(id), true);
+      f.p.getInventory().add(new core.Item(id,amount),false);
+    }
+    const xp=f.p.getSkillManager().getExperience(core.Skill.MAGIC); await cast(f); tick(8);
+    assert.equal(f.p.getSkillManager().getExperience(core.Skill.MAGIC),xp+35);
+    assert.deepEqual(runes(f.p),[0,0,0]);
+    const at=f.p.getLocation(); assert.ok(Math.abs(at.getX()-3213)<=2 && Math.abs(at.getY()-3424)<=2 && at.getZ()===0);
+    assert.equal(f.p.isTeleporting,false);
+  });
+  await t.test('music cape unchecked exit remains locked until saved state is recovered by registered login', async test => {
+    const f=actor(test); firstDrink(f);
+    // Seed the actual music progression; the registered cape action is the unchecked exit.
+    const Progress=require('../plugins/world/Progress.Music');
+    const tracks=require('../plugins/world/Music.plugin')._test.getCatalog().nonHolidayTrackIds;
+    assert.ok(Array.isArray(tracks) && tracks.length>0 && tracks.every(Number.isInteger));
+    for (const id of tracks) Progress.unlock(f.p,id);
+    assert.equal(Progress.allUnlocked(f.p,tracks),true); assert.equal(core.WorldDefinition.isMembersWorld(),true);
+    const cape=core.ItemIdentifiers.MUSIC_CAPE, options=core.CacheDefinitions.getItem(cape).inventoryActions;
+    const clickType=options.findIndex(option=>option?.toLowerCase()==='teleport')+1;
+    assert.ok(clickType>0,'active cache exposes the music cape teleport');
+    f.p.getInventory().add(new core.Item(cape,1),false);
+    const slot=f.p.getInventory().getSlotForItemId(cape), item=f.p.getInventory().get(slot);
+    assert.ok(item && item.getId()===cape);
+    assert.equal(PluginManager.emitItemAction({player:f.p,item,itemId:cape,slot,interfaceId:149,clickType,
+      option:options[clickType-1],handled:false}),true); tick(8);
+    assert.deepEqual([f.p.getLocation().getX(),f.p.getLocation().getY(),f.p.getLocation().getZ()],[2689,3550,0]);
+    assert.equal(f.p.getAttribute('crab-quest:dream-headache'),true);
+    const before=runes(f.p), xpBefore=f.p.getSkillManager().getExperience(core.Skill.MAGIC);
+    const atBefore=f.p.getLocation().clone(); await cast(f); tick(2); assert.deepEqual(runes(f.p),before);
+    assert.equal(f.p.getSkillManager().getExperience(core.Skill.MAGIC),xpBefore);
+    assert.deepEqual([f.p.getLocation().getX(),f.p.getLocation().getY(),f.p.getLocation().getZ()],
+      [atBefore.getX(),atBefore.getY(),atBefore.getZ()]);
+    assert.equal(f.p.isTeleporting,false); assert.ok(f.messages.some(m=>m.includes('headache') && m.includes('teleport')));
+    const snapshot=PlayerSave.fromPlayer(f.p); PluginManager.emitPlayerLogout({player:f.p,username:f.p.getUsername()});
+    core.World.getPlayers().remove(f.p);
+    const restored=actor(test,f.p.getUsername()); snapshot.applyToPlayer(restored.p);
+    assert.equal(restored.p.getAttribute('crab-quest:dream-headache'),true, 'save applied before login');
+    PluginManager.emitPlayerLogin({player:restored.p,username:restored.p.getUsername()});
+    assert.equal(restored.p.getAttribute('crab-quest:dream-headache'),false);
+    boardPortSarim(restored); const xp=restored.p.getSkillManager().getExperience(core.Skill.MAGIC);
+    await cast(restored); tick(8); assert.equal(restored.p.getSkillManager().getExperience(core.Skill.MAGIC),xp+35);
+    assert.deepEqual(runes(restored.p),[0,0,0]);
+    const at=restored.p.getLocation(); assert.ok(Math.abs(at.getX()-3213)<=2 && Math.abs(at.getY()-3424)<=2 && at.getZ()===0);
+    assert.equal(restored.p.isTeleporting,false);
+  });
+  await t.test('registered login clears saved dream state on the island as a recovery policy', async test => {
+    const f=actor(test); firstDrink(f); const snapshot=PlayerSave.fromPlayer(f.p);
+    PluginManager.emitPlayerLogout({player:f.p,username:f.p.getUsername()}); core.World.getPlayers().remove(f.p);
+    const restored=actor(test,f.p.getUsername()); snapshot.applyToPlayer(restored.p);
+    assert.equal(restored.p.getAttribute('crab-quest:dream-headache'),true);
+    PluginManager.emitPlayerLogin({player:restored.p,username:restored.p.getUsername()});
+    assert.equal(restored.p.getAttribute('crab-quest:dream-headache'),false);
+    assert.equal(board(restored),true); tick(3); assert.ok(core.Sailing.instanceAboard(restored.p));
+  });
+  await t.test('death during the bottle conversation cannot reapply the headache later', async test => {
+    const f=actor(test); assert.equal(clickBottle(f),true); choose(f,1,'Start Crab Quest?');
+    until(f.p,()=>steps.get(f.p).has('A8M5CK')); assert.equal(f.p.getAttribute('crab-quest:dream-headache'),true);
+    assert.equal(f.p.getDialogueManager().isActive(),true, 'the real conversation is still live at death');
+    f.p.setHitpoints(0); assert.equal(f.p.isDying,true); tick(12);
+    assert.equal(f.p.isDying,false); assert.equal(f.p.getAttribute('crab-quest:dream-headache'),false);
+    assert.equal(core.MultiChatboxPrompt.getPending(f.p),null);
+    await f.conn.dispatch([{type:'dialogue_continue',widgetId:(219<<16)|1,childIndex:1}]); f.conn.processTurnPackets(); tick(2);
+    assert.equal(f.p.getDialogueManager().isActive(),false);
+    assert.equal(f.p.getAttribute('crab-quest:dream-headache'),false);
+  });
+  await t.test('actual quest completion clears the dream and permits travel', async test => {
+    const f=actor(test); firstDrink(f); assert.equal(f.p.getAttribute('crab-quest:dream-headache'),true);
+    const sender=f.p.getPacketSender(), opened=[], sendInterface=sender.sendInterface.bind(sender);
+    test.mock.method(sender,'sendInterface',id => { opened.push(id); return sendInterface(id); });
+    assert.equal(f.quest.complete(f.p),true); assert.equal(f.quest.isComplete(f.p),true);
+    assert.equal(f.p.getAttribute('crab-quest:dream-headache'),false);
+    tick(2); assert.ok(opened.includes(153), 'the real completion scroll opened');
+    sender.sendInterfaceRemoval(); assert.equal(f.p.busy(),false);
+    const xp=f.p.getSkillManager().getExperience(core.Skill.MAGIC); await cast(f); tick(8);
+    assert.equal(f.p.getSkillManager().getExperience(core.Skill.MAGIC),xp+35); assert.deepEqual(runes(f.p),[0,0,0]);
+    assert.equal(f.p.isTeleporting,false);
   });
 });
