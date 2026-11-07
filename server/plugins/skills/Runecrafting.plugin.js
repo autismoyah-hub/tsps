@@ -182,13 +182,14 @@ function initialize(api) {
   // What each altar binds. Wiki (Runecraft): clicking an altar converts all the essence in the
   // inventory, so rune and pure essence go together where both work.
   const ANY_ESSENCE = { ids: [ItemIdentifiers.RUNE_ESSENCE, ItemIdentifiers.PURE_ESSENCE], missing: "You don't have any essence in your inventory." };
+  const AIR_ESSENCE = { ids: [...ANY_ESSENCE.ids, ItemIdentifiers.DAEYALT_ESSENCE], missing: ANY_ESSENCE.missing };
   const PURE_ESSENCE_ONLY = { ids: [ItemIdentifiers.PURE_ESSENCE], missing: "You do not have any pure essences to bind.", mesbox: true };
   const DEATH_ESSENCE = { ids: [ItemIdentifiers.PURE_ESSENCE, ItemIdentifiers.DAEYALT_ESSENCE], missing: "You do not have any pure or daeyalt essences to bind.", mesbox: true };
   // Kourend's Blood Altar binds dark essence fragments, never pure essence (Wiki: Blood Altar (Kourend)).
   const DARK_ESSENCE = { ids: [ItemIdentifiers.DARK_ESSENCE_FRAGMENTS], missing: "You have nothing suitable to bind.", mesbox: true };
 
   RUNES_BY_ALTAR_ID = new Map([
-    [ObjectIdentifiers.ALTAR_33, { runeId: ItemIdentifiers.AIR_RUNE, level: 1, xp: 5, essence: ANY_ESSENCE, multiplier: [[11, 2], [22, 3], [33, 4], [44, 5], [55, 6], [66, 7], [77, 8], [88, 9], [99, 10]] }],
+    [ObjectIdentifiers.ALTAR_33, { runeId: ItemIdentifiers.AIR_RUNE, level: 1, xp: 5, essence: AIR_ESSENCE, essenceXp: { [ItemIdentifiers.DAEYALT_ESSENCE]: 7.5 }, multiplier: [[11, 2], [22, 3], [33, 4], [44, 5], [55, 6], [66, 7], [77, 8], [88, 9], [99, 10]] }],
     [ObjectIdentifiers.ALTAR_34, { runeId: ItemIdentifiers.MIND_RUNE, level: 2, xp: 5.5, essence: ANY_ESSENCE, multiplier: [[14, 2], [28, 3], [42, 4], [56, 5], [70, 6], [84, 7], [98, 8]] }],
     [ObjectIdentifiers.ALTAR_35, { runeId: ItemIdentifiers.WATER_RUNE, level: 5, xp: 6, essence: ANY_ESSENCE, multiplier: [[19, 2], [38, 3], [57, 4], [76, 5], [95, 6]] }],
     [ObjectIdentifiers.ALTAR_36, { runeId: ItemIdentifiers.EARTH_RUNE, level: 9, xp: 6.5, essence: ANY_ESSENCE, multiplier: [[26, 2], [52, 3], [78, 4], [104, 5]] }],
@@ -497,7 +498,17 @@ function handleCraftRunes(event) {
   }
 
   const { essence } = runeData;
-  const essenceIds = bindable(player, essence);
+  let essenceIds = bindable(player, essence);
+  if (event.objectId === ObjectIdentifiers.ALTAR_33 && player.getInventory().contains(ItemIdentifiers.DAEYALT_ESSENCE)) {
+    if (!pluginApi.core.WorldDefinition.isMembersWorld()) {
+      // The Air altar remains usable on free worlds, but Daeyalt is members-only.
+      essenceIds = essenceIds.filter((id) => id !== ItemIdentifiers.DAEYALT_ESSENCE);
+    } else if (player.getInventory().contains(ItemIdentifiers.PURE_ESSENCE)) {
+      // With both present, the first Air action uses Daeyalt; a later action uses pure.
+      // Deferring any additional rune/provider forms in that case is this server's policy.
+      essenceIds = [ItemIdentifiers.DAEYALT_ESSENCE];
+    }
+  }
   if (!essenceIds.some((essenceId) => player.getInventory().contains(essenceId))) {
     // The true Blood Altar's and Kourend's refusals are message boxes (rsprox captures 1636, 1673).
     if (essence.mesbox) {
