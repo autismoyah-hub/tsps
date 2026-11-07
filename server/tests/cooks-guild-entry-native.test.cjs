@@ -146,7 +146,10 @@ test('ordinary registered range cooking credits a successful summer pie in the g
   t.after(()=>core.MapObjects.remove(range));
   const cooking=require('../plugins/skills/Cooking.plugin'); t.after(()=>{ PM.emitPlayerDisconnect({player:p,username:p.getUsername(),source:'summer-pie-fixture'}); assert.equal(cooking.isCookingActive(p),false); });
   const recipe=cooking.COOKABLE_BY_RAW.get(raw); assert.ok(recipe); assert.equal(recipe.stopBurn,99); assert.equal(p.getSkillManager().getCurrentLevel(core.Skill.COOKING),99);
-  const event={player:p,object:range,objectId:rangeId,itemId:raw,item:p.getInventory().getValidItems().find(i=>i.getId()===raw),handled:false};
+  const {Inventory}=require('../dist/game/model/container/impl/Inventory');
+  const itemSlot=p.getInventory().getItems().findIndex(i=>i?.getId()===raw), item=p.getInventory().getItems()[itemSlot];
+  const location={x:range.getLocation().getX(),y:range.getLocation().getY(),z:range.getLocation().getZ()};
+  const event={player:p,object:range,objectId:rangeId,itemId:raw,item,itemSlot,interfaceType:Inventory.INTERFACE_ID,location,handled:false};
   assert.ok(event.item); assert.equal(PM.emitItemOnObject(event),true);
   assert.equal(cooking.isCookingActive(p),true);
   for(let n=0;n<10;n++) core.TaskManager.process();
