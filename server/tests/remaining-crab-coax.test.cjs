@@ -1062,6 +1062,9 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
     assert.equal(f.p.isDying,false); assert.equal(f.p.getAttribute('crab-quest:dream-headache'),false);
     assert.deepEqual(saves,[['death',false],['respawn',false]]);
     assert.notDeepEqual([f.p.getLocation().getX(),f.p.getLocation().getY()],[3055,2639]);
+    assert.equal(f.p.getInterfaceId(),30003, 'the actual PvP death presets modal opened');
+    await f.conn.dispatch([{type:'interface_close'}]); f.conn.processTurnPackets();
+    assert.equal(f.p.getInterfaceId(),-1, 'the normal client close released the modal');
     boardPortSarim(f);
     for (const [id, amount] of [[563,1],[556,3],[554,1]]) {
       f.p.getInventory().deleteNumber(id, f.p.getInventory().getAmount(id), true);
