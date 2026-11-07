@@ -858,7 +858,11 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
       location:{x:loc.getX(),y:loc.getY(),z:loc.getZ()},handled:false});
   }
   function boardPortSarim(f) {
-    const boat = core.Sailing.giveBoat(f.p, 'raft', 'port_sarim');
+    // Fixture setup places the one real owned raft at this dock; no sailing journey is implied.
+    assert.equal(f.p.getSailing().boats.length,1);
+    const boat = core.Sailing.activeBoat(f.p);
+    assert.ok(boat && boat.type==='raft'); assert.equal(core.Sailing.instanceFor(f.p),undefined);
+    boat.location = {kind:'docked',dock:'port_sarim'};
     assert.ok(boat && boat.location.kind === 'docked' && boat.location.dock === 'port_sarim');
     let object;
     for (let dx=-2; dx<=2 && !object; dx++) for (let dy=-2; dy<=2 && !object; dy++) {
