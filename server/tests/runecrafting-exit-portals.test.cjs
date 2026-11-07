@@ -861,3 +861,24 @@ test("Ourania refuses the whole mixed batch when a later rolled stack is full", 
   assert.deepEqual(player.xp, []);
   assert.equal(emitted.filter(([name, event]) => name === "runecrafting:success" && event.player === player).length, 0);
 });
+
+// This isolates the Air members-world guard; it is not a booted free-world integration test.
+test("free-world Air leaves Daeyalt and still crafts pure essence", (t) => {
+  t.mock.method(PluginManager.getCoreApi().WorldDefinition, "isMembersWorld", () => false);
+  const daeyalt = crafter(1, [[ItemIdentifiers.DAEYALT_ESSENCE, 1]]);
+  assert.equal(craft(daeyalt, ObjectIdentifiers.ALTAR_33), true);
+  assert.equal(amount(daeyalt, ItemIdentifiers.DAEYALT_ESSENCE), 1);
+  assert.equal(amount(daeyalt, ItemIdentifiers.AIR_RUNE), 0);
+  assert.deepEqual(daeyalt.xp, []);
+  const mixed = crafter(1, [[ItemIdentifiers.DAEYALT_ESSENCE, 1], [ItemIdentifiers.PURE_ESSENCE, 1]]);
+  assert.equal(craft(mixed, ObjectIdentifiers.ALTAR_33), true);
+  assert.equal(amount(mixed, ItemIdentifiers.DAEYALT_ESSENCE), 1);
+  assert.equal(amount(mixed, ItemIdentifiers.PURE_ESSENCE), 0);
+  assert.equal(amount(mixed, ItemIdentifiers.AIR_RUNE), 1);
+  assert.deepEqual(mixed.xp, [5]);
+  const pure = crafter(1, [[ItemIdentifiers.PURE_ESSENCE, 1]]);
+  assert.equal(craft(pure, ObjectIdentifiers.ALTAR_33), true);
+  assert.equal(amount(pure, ItemIdentifiers.PURE_ESSENCE), 0);
+  assert.equal(amount(pure, ItemIdentifiers.AIR_RUNE), 1);
+  assert.deepEqual(pure.xp, [5]);
+});
