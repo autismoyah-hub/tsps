@@ -531,9 +531,28 @@ test('a free world does not start mining with a members-only carried pickaxe', a
       if (movement.hasPendingWork()) movement.process();
       core.TaskManager.processWalkTo(p.getIndex());
     };
+    // Record only existing native state; do not alter the click, path, timing or movement.
+    const routeTrace = [];
+    const snapshot = () => {
+      const pos = p.getLocation(), movement = p.getMovementQueue();
+      return { turn: turns, at: [pos.getX(), pos.getY(), pos.getZ()],
+        registered: p.isRegistered(), hp: p.getHitpoints(), busy: p.busy(),
+        sameArea: p.getPrivateArea() === rock.getPrivateArea(),
+        stillStands: core.MapObjects.stillStands(p, objectId, loc, rock),
+        queue: movement.size(), moving: movement.isMovings(), pending: movement.hasPendingWork(),
+        hasRoute: movement.hasRoute(), invalidated: movement.wasRouteInvalidated(),
+        blockedByEntity: movement.wasBlockedByDynamicOccupancy(), calls: calls.length };
+    };
     await connection.dispatch(decoded, true);
-    for (let n = 0; n < 30 && calls.length === 0; n++) turn();
-    assert.equal(calls.length, 1, 'SETUP: actual object dispatch');
+    routeTrace.push(snapshot());
+    for (let n = 0; n < 30 && calls.length === 0; n++) { turn(); routeTrace.push(snapshot()); }
+    if (calls.length !== 1) {
+      assert.fail('SETUP: actual object dispatch ' + JSON.stringify({
+        rock: { id: objectId, at: [x, y, loc.getZ()], type: rock.getType(), face: rock.getFace(),
+          name: rock.getDefinition()?.getName(), option: rock.getDefinition()?.getInteractions()?.[0] },
+        start: [start.getX(), start.getY(), start.getZ()], decoded, trace: routeTrace,
+      }));
+    }
     assert.equal(calls[0].object, rock, 'SETUP: same indexed rock');
     assert.equal(String(calls[0].option).toLowerCase(), 'mine');
     assert.equal(p.getLocation().equals(start), false, 'SETUP: native approach moved');
