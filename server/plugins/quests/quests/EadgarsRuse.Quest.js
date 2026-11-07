@@ -555,7 +555,8 @@ module.exports = function registerEadgarsRuseQuest(api) {
   // ---------------------------------------------------------------------------
 
   function meetsSkillRequirements(player) {
-    return player.getSkillManager().getMaxLevel(Skill.HERBLORE) >= HERBLORE_LEVEL;
+    const skills = player.getSkillManager();
+    return skills.getMaxLevel(Skill.HERBLORE) >= HERBLORE_LEVEL || skills.getCurrentLevel(Skill.HERBLORE) >= HERBLORE_LEVEL;
   }
 
   function notifySkillRequirements(player) {
