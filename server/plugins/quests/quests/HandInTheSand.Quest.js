@@ -593,7 +593,9 @@ module.exports = function registerHandInTheSandQuest(api) {
   function meetsRequirements(player) {
     const skills = player.getSkillManager();
     return (
+      skills.getMaxLevel(Skill.THIEVING) >= 17 &&
       skills.getCurrentLevel(Skill.THIEVING) >= 17 &&
+      skills.getMaxLevel(Skill.CRAFTING) >= 49 &&
       skills.getCurrentLevel(Skill.CRAFTING) >= 49
     );
   }
