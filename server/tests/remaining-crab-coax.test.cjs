@@ -686,5 +686,291 @@ test('Crab clears the native instance flag on completion only', () => {
 test('Crab Sit uses the real cached slot 54 loop', () => {
   const Emotes = require('../plugins/interface/Emotes.plugin');
   const player = { getEquipment: () => ({ getItems: () => [] }) };
-  assert.deepEqual(Emotes._test.resolveEmote(player, SIT_SLOT, 1, {}), { sequence: SIT_LOOP });
+  assert.deepEqual(Emotes._test.resolveEmote(player, SIT_SLOT, 1, {}), { sequence: SIT_LOOP, graphic: undefined });
+});
+
+// Native registered bottle, mooring and spell consumers. The fixture drives the real dialogue
+// manager and scheduled sailing tasks; it does not claim a decoded click or a sailing journey.
+test('native Crab bottle dream state and travel consumers', async (t) => {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const { ClientConnection } = require('../dist/net/NetworkBuilder');
+  const { PlayerSave } = require('../dist/game/entity/impl/player/persistence/PlayerSave');
+  const { AreaManager } = require('../dist/game/model/areas/AreaManager');
+  const { NpcDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
+  const priorBots = process.env.DISABLE_PLAYER_BOTS;
+  process.env.DISABLE_PLAYER_BOTS = '1';
+  const actors = [], steps = new WeakMap();
+  let started = false;
+  const core = PluginManager.getCoreApi();
+  t.after(() => {
+    try {
+      for (const p of actors) {
+        if (p.isRegistered()) {
+          core.Sailing.onLogout(p);
+          PluginManager.emitPlayerLogout({ player: p, username: p.getUsername() });
+        }
+        core.TaskManager.cancelTasks(p);
+        core.TaskManager.cancelTasks(p.getIndex());
+        for (const npc of [...core.World.getNpcs()]) if (npc?.getOwner?.() === p) PluginManager.removeNpc(npc);
+        if (p.isRegistered()) core.World.getPlayers().remove(p);
+      }
+      if (started) PluginManager.emitServerShutdown({});
+      core.World.refreshActiveRegions();
+    } finally {
+      if (priorBots === undefined) delete process.env.DISABLE_PLAYER_BOTS;
+      else process.env.DISABLE_PLAYER_BOTS = priorBots;
+    }
+  });
+  // The preceding fake-API controls initialized QuestRuntime's singleton.
+  // Reload both modules before registering the real plugin handlers.
+  delete require.cache[require.resolve('../plugins/quests/QuestRuntime')];
+  delete require.cache[require.resolve('../plugins/quests/quests/CrabQuest.Quest.js')];
+  assert.notEqual(require('../plugins/quests/QuestRuntime'), runtime);
+  PluginManager.loadFromDirectory(path.resolve(__dirname, '../plugins'));
+  core.RegionManager.init();
+  core.RegionManager.loadMapFiles(3055, 2639);
+  core.RegionManager.loadMapFiles(3213, 3424);
+  core.ObjectDefinition.init();
+  new NpcDefinitionLoader().load();
+  started = true;
+  PluginManager.emitServerStartup({});
+  PluginManager.createApi('crab-dream-observer').onCustomEvent('npc-dialogue:action', e => {
+    if (e.player && e.kind === 'message') steps.get(e.player)?.add(e.stepId);
+  });
+  let serial = 0;
+  const tick = (n = 1) => { while (n-- > 0) core.World.process(); };
+  const until = (p, predicate) => {
+    const m = p.getDialogueManager();
+    for (let i = 0; i < 300 && !predicate(); i++) {
+      const current = m.getCurrent();
+      if (current instanceof core.OptionDialogue) assert.fail('unexpected native option owner');
+      else if (current instanceof core.ActionDialogue && current.isSelfAdvancing()) tick();
+      else if (current) m.advance();
+      else tick();
+    }
+    assert.ok(predicate(), 'real dialogue reached the requested step');
+  };
+  function actor(test, name = `crab${++serial}`) {
+    const channel = { kind:'test', isOpen:()=>true, send:()=>true, close(){}, onData(){}, onError(){}, onClose(){} };
+    const session = new PlayerSession(channel), p = new Player(session, new core.Location(3055, 2639, 0));
+    session.setPlayer(p);
+    p.setUsername(name);
+    p.setLongUsername(core.Misc.stringToLongBigInt(p.getUsername()));
+    assert.notEqual(p.getLongUsername(), 0n);
+    test.mock.method(p, 'onAdd', () => {});
+    test.mock.method(p, 'onRemove', () => {});
+    test.after(() => {
+      const fishier = require('../plugins/skills/sailing/charting/FishierStout.Charting');
+      const scene = fishier.scenes.get(p), ownedNpcs = scene ? [...scene.npcs] : [];
+      try {
+        core.Sailing.onLogout(p);
+        if (p.isRegistered()) PluginManager.emitPlayerLogout({ player: p, username: p.getUsername() });
+      } finally {
+        core.TaskManager.cancelTasks(p);
+        core.TaskManager.cancelTasks(p.getIndex());
+        if (scene) core.TaskManager.cancelTasks(scene);
+        for (const npc of [...core.World.getNpcs()]) if (npc?.getOwner?.() === p) PluginManager.removeNpc(npc);
+        if (p.getArea()?.hasMember?.(p)) p.getArea().leave(p, false);
+        if (p.isRegistered()) core.World.getPlayers().remove(p);
+      }
+      assert.equal(p.isRegistered(), false, 'owned actor released before its mocks restore');
+      assert.equal(core.Sailing.instanceFor(p), undefined, 'owned boat instance released');
+      if (scene) { assert.equal(fishier.scenes.has(p), false); if (scene.area) assert.equal(scene.area.isDestroyed(), true); }
+      for (const npc of ownedNpcs) assert.equal(npc.isRegistered(), false);
+    });
+    const messages = [], send = p.sendMessage.bind(p);
+    test.mock.method(p, 'sendMessage', msg => { messages.push(msg); return send(msg); });
+    actors.push(p); steps.set(p, new Set());
+    assert.equal(core.World.getPlayers().add(p), true);
+    assert.equal(core.World.getPlayers().get(p.getIndex()), p);
+    p.setAttribute('bot-skip-persistence', true);
+    for (const [skill, level] of [[core.Skill.SAILING,40],[core.Skill.FISHING,30],[core.Skill.MAGIC,25],[core.Skill.HITPOINTS,99],[core.Skill.DEFENCE,99]]) {
+      p.getSkillManager().setMaxLevels(skill, level, false);
+      p.getSkillManager().setExperience(skill, core.SkillManager.getExperienceForLevel(level));
+      p.getSkillManager().setCurrentLevel(skill, level, false);
+    }
+    p.setHitpoints(99);
+    const quests = require('../plugins/quests/QuestRuntime').getRegisteredQuests();
+    const pand = quests.filter(q => q.key === 'pandemonium').at(-1), quest = quests.filter(q => q.key === 'crab_quest').at(-1);
+    assert.ok(pand && quest); pand.setStage(p, pand.completionValue);
+    const requirement = { player: p, key: 'pandemonium', complete: undefined };
+    PluginManager.createApi('crab-dream-requirement-check').emitCustomEvent('quest:is-complete', requirement);
+    assert.equal(requirement.complete, true, 'the real registered quest listener confirms the prerequisite');
+    assert.ok(p.getSkillManager().getMaxLevel(core.Skill.SAILING) >= 40);
+    assert.ok(p.getSkillManager().getMaxLevel(core.Skill.FISHING) >= 30);
+    assert.ok(core.Sailing.giveBoat(p, 'raft', 'dognose_island'));
+    for (const [id, amount] of [[563,1],[556,3],[554,1]]) p.getInventory().add(new core.Item(id, amount), false);
+    p.setSpellbook(core.MagicSpellbook.NORMAL);
+    p.setLocation(new core.Location(3055,2639,0)); AreaManager.process(p);
+    const area = p.getArea();
+    const decision = area ? PluginManager.callArea(area, 'canTeleport', p, 20, new core.Location(3213,3424,0)) : null;
+    assert.equal(decision == null, true, 'Dognose area has no explicit teleport decision');
+    const conn = new ClientConnection(channel); conn.player = p;
+    return {p, quest, messages, conn, test};
+  }
+  function clickBottle(f) {
+    const at = new core.Location(3055,2639,0);
+    const object = core.ObjectManager.objectsAt(at).find(o => o.getId() === 62438);
+    assert.ok(object, 'the registered quest bottle exists at its authored location');
+    const definition = core.ObjectDefinition.forPlayer(62438, f.p);
+    assert.equal(definition.getActions()[0], 'Drink');
+    return PluginManager.emitObjectInteraction({ player:f.p, object, objectId:62438, clickType:1,
+      definition, location:{x:3055,y:2639,z:0}, handled:false });
+  }
+  function choose(f, option, title) {
+    const manager=f.p.getDialogueManager();
+    for (let i=0; i<40 && !core.MultiChatboxPrompt.getPending(f.p) && manager.isActive(); i++) {
+      const current=manager.getCurrent();
+      if (current instanceof core.ActionDialogue && current.isSelfAdvancing()) tick();
+      else manager.advance();
+    }
+    const pending = core.MultiChatboxPrompt.getPending(f.p);
+    assert.ok(pending, `actual dialogue presents ${title}`);
+    assert.equal(pending.title, title);
+    assert.deepEqual(pending.options, ['Yes.', 'No.']);
+    assert.equal(PluginManager.emitInterfaceActionClick({ player:f.p, groupId:219, childId:1,
+      buttonId:(219<<16)|1, slot:option, action:1, handled:false }), true);
+  }
+  function firstDrink(f) {
+    assert.equal(clickBottle(f), true); choose(f, 1, 'Start Crab Quest?');
+    until(f.p, () => steps.get(f.p).has('A8M5CK'));
+    until(f.p, () => !f.p.getDialogueManager().isActive());
+    assert.ok(f.quest.getStage(f.p) >= 5 && !f.quest.isComplete(f.p));
+  }
+  function mooring(player) {
+    for (let dx=-1; dx<=1; dx++) for (let dy=-1; dy<=1; dy++) {
+      const loc = new core.Location(3061+dx,2638+dy,0);
+      const object = core.MapObjects.getObjectsAt(loc, null).find(o => core.ObjectDefinition.forPlayer(o.getId(), player)?.getName() === 'Mooring point');
+      if (object) return object;
+    }
+    assert.fail('active cache scene has a Mooring point at Dognose');
+  }
+  function board(f) {
+    const object = mooring(f.p), loc = object.getLocation();
+    const definition = core.ObjectDefinition.forPlayer(object.getId(), f.p);
+    const clickType = definition.getInteractions().indexOf('Board') + 1;
+    assert.ok(clickType > 0, 'active cache exposes Board for this player');
+    f.p.setLocation(new core.Location(3060,2638,0)); AreaManager.process(f.p);
+    return PluginManager.emitObjectInteraction({player:f.p,object,objectId:object.getId(),definition,clickType,
+      location:{x:loc.getX(),y:loc.getY(),z:loc.getZ()},handled:false});
+  }
+  async function cast(f) {
+    const spell = core.CacheDefinitions.getSpellByName('Varrock Teleport'); assert.ok(spell);
+    assert.equal(f.p.busy(), false);
+    assert.equal(f.p.getMovementQueue().isMovementBlocked(), false);
+    assert.equal(f.p.getCombat().getTeleblockTimer().finished(), true);
+    await f.conn.dispatch([{type:'widget_action',widgetId:spell.widgetId,groupId:spell.widgetId>>>16,
+      childId:spell.widgetId&65535,slot:-1,buttonNum:1}]); f.conn.processTurnPackets();
+  }
+  const runes = p => [563,556,554].map(id => p.getInventory().getAmount(id));
+  function fishier(f) {
+    const id = core.CacheDefinitions.getObjId('sailing_charting_drink_crate_fishier_stout');
+    assert.ok(Number.isInteger(id));
+    f.p.getInventory().add(new core.Item(id,1), false);
+    const slot = f.p.getInventory().getSlotForItemId(id), item=f.p.getInventory().get(slot);
+    assert.ok(item && item.getId()===id);
+    assert.equal(PluginManager.emitItemAction({player:f.p,item,itemId:id,slot,interfaceId:149,clickType:2,option:'Drink',handled:false}),true);
+    until(f.p,()=>core.MultiChatboxPrompt.getPending(f.p)!==null);
+    const prompt=core.MultiChatboxPrompt.getPending(f.p);
+    assert.equal(prompt.title,'Are you sure you want to drink this?');
+    assert.deepEqual(prompt.options,['Yes.','No.']);
+    assert.equal(PluginManager.emitInterfaceActionClick({player:f.p,groupId:219,childId:1,buttonId:(219<<16)|1,slot:1,action:1,handled:false}),true);
+    assert.equal(f.p.getInventory().getAmount(id),0,'registered drink consumed the selected item');
+    tick(7);
+    const scene=require('../plugins/skills/sailing/charting/FishierStout.Charting').scenes.get(f.p);
+    assert.ok(scene && scene.area && f.p.getArea()===scene.area, 'actual Fishier producer entered its private arena');
+    assert.equal(scene.npcs.length,3, 'the real producer spawned its three trolls');
+    // Keep the actual arena and lifecycle, but quiesce unrelated troll combat for this cast check.
+    for (const npc of scene.npcs) {
+      assert.equal(npc.isRegistered(),true); npc.getCombat().reset();
+      f.test.mock.method(npc.getCombat(), 'attack', () => {});
+    }
+    assert.equal(PluginManager.callArea(scene.area,'canTeleport',f.p,20,new core.Location(3213,3424,0)),true);
+    assert.equal(f.p.busy(),false); assert.equal(f.p.getMovementQueue().isMovementBlocked(),false);
+    assert.equal(f.p.needsPlacement,false, 'World processed native placement');
+  }
+  await t.test('before a dose a legal moored boat boards normally', async test => {
+    const f=actor(test); assert.equal(f.quest.getStage(f.p),0);
+    assert.equal(clickBottle(f),true); choose(f,2,'Start Crab Quest?');
+    assert.equal(f.quest.getStage(f.p),0); assert.ok(!steps.get(f.p).has('A8M5CK'));
+    assert.equal(board(f),true); tick(3);
+    assert.ok(core.Sailing.instanceAboard(f.p));
+  });
+  await t.test('before a dose a legal Varrock cast consumes its runes and arrives', async test => {
+    const f=actor(test); assert.equal(f.quest.getStage(f.p),0); const xp=f.p.getSkillManager().getExperience(core.Skill.MAGIC); await cast(f); tick(8);
+    const at=f.p.getLocation(); assert.ok(Math.abs(at.getX()-3213)<=2 && Math.abs(at.getY()-3424)<=2 && at.getZ()===0);
+    assert.equal(f.p.getSkillManager().getExperience(core.Skill.MAGIC),xp+35); assert.deepEqual(runes(f.p),[0,0,0]);
+  });
+  await t.test('confirmed first drink refuses a legal moored boat without changing it', async test => {
+    const f=actor(test); firstDrink(f);
+    const before=JSON.stringify(f.p.getSailing().boats);
+    assert.equal(f.p.busy(), false); assert.equal(board(f),true); tick(3);
+    assert.equal(core.Sailing.instanceAboard(f.p),undefined);
+    assert.equal(JSON.stringify(f.p.getSailing().boats),before);
+    assert.ok(f.messages.some(m => m.includes('headache') && m.includes('boat')));
+  });
+  await t.test('confirmed first drink refuses a legal Varrock cast without runes or XP loss', async test => {
+    const f=actor(test); firstDrink(f);
+    const before=runes(f.p), xp=f.p.getSkillManager().getExperience(core.Skill.MAGIC);
+    assert.equal(f.p.busy(),false); await cast(f); tick(8);
+    assert.deepEqual(runes(f.p),before); assert.equal(f.p.getSkillManager().getExperience(core.Skill.MAGIC),xp);
+    assert.equal(f.p.isTeleporting,false); assert.deepEqual([f.p.getLocation().getX(),f.p.getLocation().getY()],[3055,2639]);
+    assert.ok(f.messages.some(m => m.includes('headache') && m.includes('teleport')));
+  });
+  // Controlled registered callbacks between request and task; not a claim of natural click timing.
+  await t.test('first sip before an already scheduled boarding commit prevents it', async test => {
+    const f=actor(test), before=JSON.stringify(f.p.getSailing().boats);
+    assert.equal(board(f),true); assert.equal(core.Sailing.instanceAboard(f.p),undefined);
+    assert.equal(clickBottle(f),true); choose(f,1,'Start Crab Quest?');
+    assert.ok(steps.get(f.p).has('A8M5CK'), 'the actual sip committed before processing the boarding task');
+    tick(3); assert.equal(core.Sailing.instanceAboard(f.p),undefined);
+    assert.equal(JSON.stringify(f.p.getSailing().boats),before);
+  });
+  await t.test('second-dose No retains lock; Yes restores boarding; re-entry relocks', async test => {
+    const f=actor(test); firstDrink(f);
+    assert.equal(clickBottle(f),true); choose(f,2,'Drink from the bottle again?');
+    assert.ok(!steps.get(f.p).has('_Hk79X')); f.p.getDialogueManager().reset();
+    assert.equal(board(f),true); tick(3); assert.equal(core.Sailing.instanceAboard(f.p),undefined);
+    assert.equal(clickBottle(f),true); choose(f,1,'Drink from the bottle again?'); until(f.p,()=>steps.get(f.p).has('_Hk79X'));
+    until(f.p,()=>!f.p.getDialogueManager().isActive());
+    assert.equal(board(f),true); tick(3); assert.ok(core.Sailing.instanceAboard(f.p));
+    assert.equal(core.Sailing.disembark(f.p,'dognose_island'),null);
+    f.p.setLocation(new core.Location(3055,2639,0));
+    assert.equal(clickBottle(f),true); until(f.p,()=>steps.get(f.p).has('ON9Mp-'));
+    until(f.p,()=>!f.p.getDialogueManager().isActive());
+    assert.equal(board(f),true); tick(3); assert.equal(core.Sailing.instanceAboard(f.p),undefined);
+  });
+  await t.test('second dose restores Varrock cast', async test => {
+    const f=actor(test); firstDrink(f); assert.equal(clickBottle(f),true); choose(f,1,'Drink from the bottle again?');
+    until(f.p,()=>steps.get(f.p).has('_Hk79X')); until(f.p,()=>!f.p.getDialogueManager().isActive());
+    const xp=f.p.getSkillManager().getExperience(core.Skill.MAGIC); await cast(f); tick(8);
+    const at=f.p.getLocation(); assert.ok(Math.abs(at.getX()-3213)<=2 && Math.abs(at.getY()-3424)<=2 && at.getZ()===0);
+    assert.equal(f.p.getSkillManager().getExperience(core.Skill.MAGIC),xp+35); assert.deepEqual(runes(f.p),[0,0,0]);
+  });
+  await t.test('ordinary Fishier arena permits a legal Varrock cast', async test => {
+    const f=actor(test); fishier(f); const xp=f.p.getSkillManager().getExperience(core.Skill.MAGIC);
+    await cast(f); tick(8); const at=f.p.getLocation();
+    assert.ok(Math.abs(at.getX()-3213)<=2 && Math.abs(at.getY()-3424)<=2 && at.getZ()===0);
+    assert.deepEqual(runes(f.p),[0,0,0]); assert.equal(f.p.getSkillManager().getExperience(core.Skill.MAGIC),xp+35);
+  });
+  await t.test('first sip still refuses a legal cast inside the real Fishier allow area', async test => {
+    const f=actor(test); firstDrink(f); fishier(f);
+    const at=f.p.getLocation().clone(), before=runes(f.p), xp=f.p.getSkillManager().getExperience(core.Skill.MAGIC);
+    await cast(f); tick(8);
+    assert.deepEqual(runes(f.p),before); assert.equal(f.p.getSkillManager().getExperience(core.Skill.MAGIC),xp);
+    assert.deepEqual([f.p.getLocation().getX(),f.p.getLocation().getY(),f.p.getLocation().getZ()],[at.getX(),at.getY(),at.getZ()]);
+    assert.equal(f.p.isTeleporting,false); assert.ok(f.messages.some(m=>m.includes('headache') && m.includes('teleport')));
+  });
+  await t.test('committed dream state survives the actual player save round-trip', async test => {
+    const f=actor(test); firstDrink(f); const snapshot=PlayerSave.fromPlayer(f.p);
+    PluginManager.emitPlayerLogout({player:f.p,username:f.p.getUsername()});
+    core.World.getPlayers().remove(f.p);
+    const restored=actor(test, f.p.getUsername()); snapshot.applyToPlayer(restored.p);
+    assert.equal(restored.p.getLongUsername(), f.p.getLongUsername());
+    assert.notEqual(restored.p.getLongUsername(), 0n);
+    assert.equal(core.World.getPlayers().get(restored.p.getIndex()), restored.p, "saved actor remains the admitted World player");
+    assert.equal(board(restored),true); tick(3); assert.equal(core.Sailing.instanceAboard(restored.p),undefined);
+    assert.ok(restored.messages.some(m=>m.includes('headache')));
+  });
 });
