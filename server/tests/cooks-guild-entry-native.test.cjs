@@ -105,7 +105,7 @@ async function bakeActor(t, atGuild = true, cooking = 99) {
   const spell=core.CacheDefinitions.getSpellByName('Bake Pie'), req=core.CacheDefinitions.getSpellRequirements('Bake Pie');
   assert.ok(spell && req); assert.equal(core.CacheDefinitions.getSpellName(spell.widgetId,spell.itemId).toLowerCase(),'bake pie');
   const raw=core.CacheDefinitions.getObjId('uncooked_summer_pie'), cooked=core.ItemIdentifiers.SUMMER_PIE;
-  assert.equal(core.ItemDefinition.forId(raw).getName().toLowerCase(),'uncooked summer pie');
+  assert.equal(core.ItemDefinition.forId(raw).getName().toLowerCase(),'raw summer pie');
   for (const rune of req.runes) p.getInventory().adds(rune.id,rune.amount);
   p.getInventory().adds(raw,1);
   return {p,skills,spell,req,raw,cooked,conn:f.c};
