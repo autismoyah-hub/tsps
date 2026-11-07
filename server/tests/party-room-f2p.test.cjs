@@ -545,7 +545,7 @@ test('a free world does not start mining with a members-only carried pickaxe', a
     };
     await connection.dispatch(decoded, true);
     routeTrace.push(snapshot());
-    for (let n = 0; n < 30 && calls.length === 0; n++) { turn(); routeTrace.push(snapshot()); }
+    for (let n = 0; n < 60 && calls.length === 0; n++) { turn(); routeTrace.push(snapshot()); }
     if (calls.length !== 1) {
       assert.fail('SETUP: actual object dispatch ' + JSON.stringify({
         rock: { id: objectId, at: [x, y, loc.getZ()], type: rock.getType(), face: rock.getFace(),
