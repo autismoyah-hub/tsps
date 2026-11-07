@@ -599,10 +599,10 @@ module.exports = function registerMakingFriendsWithMyArmQuest(api) {
 
   function talkToLarry(event) {
     const { player, npcId } = event;
-    if (!LARRY_NPC_IDS.has(npcId)) return;
+    if (!LARRY_NPC_IDS.has(npcId)) return false;
     const stage = quest.getStage(player);
-    if (stage < STAGE_MY_ARM || quest.isComplete(player)) return;
-    if (npcId !== LARRY_RELLEKKA_NPC_ID) return;
+    if (stage < STAGE_MY_ARM || quest.isComplete(player)) return false;
+    if (npcId !== LARRY_RELLEKKA_NPC_ID) return false;
     let variant;
     if (stage < STAGE_LARRY) {
       variant = "starting-out-talking-to-larry";
