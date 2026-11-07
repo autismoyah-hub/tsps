@@ -879,6 +879,10 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
       clickType:def.getInteractions().indexOf('Board')+1,location:{x:loc.getX(),y:loc.getY(),z:loc.getZ()},handled:false}),true);
     tick(3); assert.ok(core.Sailing.instanceAboard(f.p), 'the registered route boards the Port Sarim boat');
     assert.equal(core.Sailing.disembark(f.p,'port_sarim'),null);
+    assert.equal(f.p.isNeedsPlacement(),true, 'disembark schedules native placement');
+    tick();
+    assert.equal(f.p.isNeedsPlacement(),false, 'World completed the landing placement');
+    assert.equal(f.p.busy(),false, 'the disembarked player is ready to travel');
   }
   async function cast(f) {
     const spell = core.CacheDefinitions.getSpellByName('Varrock Teleport'); assert.ok(spell);
