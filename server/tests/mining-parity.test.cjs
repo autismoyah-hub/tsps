@@ -1420,3 +1420,22 @@ test("sulphur mining stops when the breathing filter is removed before the roll"
     restore();
   }
 });
+
+test("free worlds skip members pickaxes and keep the best free tool", () => {
+  const original = core.WorldDefinition.isMembersWorld;
+  try {
+    core.WorldDefinition.isMembersWorld = () => false;
+    harness();
+    assert.equal(core.CacheDefinitions.getItem(ItemIds.DRAGON_PICKAXE).isMembers, true);
+    assert.equal(core.CacheDefinitions.getItem(ItemIds.BRONZE_PICKAXE).isMembers, false);
+    const player = createPlayer({ pickaxe: ItemIds.DRAGON_PICKAXE });
+    const inventory = player.getInventory();
+    inventory.contains = id => id === ItemIds.DRAGON_PICKAXE || id === ItemIds.BRONZE_PICKAXE;
+    player.getInventory = () => inventory;
+    assert.equal(Mining.findBestPickaxe(player)?.id, ItemIds.BRONZE_PICKAXE);
+    core.WorldDefinition.isMembersWorld = () => true;
+    assert.equal(Mining.findBestPickaxe(player)?.id, ItemIds.DRAGON_PICKAXE);
+  } finally {
+    core.WorldDefinition.isMembersWorld = original;
+  }
+});
