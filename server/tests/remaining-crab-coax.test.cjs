@@ -878,6 +878,9 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
     for (let turn=1; turn<=8; turn++) { tick(); frames.push(fishierFrame(p, turn)); }
   }
   function fishier(f) {
+    // A player can disable auto-retaliate; use an idle caster for the travel check.
+    f.p.setAutoRetaliate(false);
+    assert.equal(f.p.autoRetaliateReturn(), false);
     const id = core.CacheDefinitions.getObjId('sailing_charting_drink_crate_fishier_stout');
     assert.ok(Number.isInteger(id));
     f.p.getInventory().add(new core.Item(id,1), false);
@@ -902,6 +905,9 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
     assert.equal(PluginManager.callArea(scene.area,'canTeleport',f.p,20,new core.Location(3213,3424,0)),true);
     assert.equal(f.p.busy(),false); assert.equal(f.p.getMovementQueue().isMovementBlocked(),false);
     assert.equal(f.p.needsPlacement,false, 'World processed native placement');
+    assert.equal(f.p.getMovementQueue().getDestination(),null, 'no walk is queued before the cast');
+    assert.equal(f.p.getForceMovement() == null,true, 'no forced movement is active before the cast');
+    assert.equal(f.p.getInteractingMobile() == null,true, 'the caster has no active interaction');
   }
   await t.test('before a dose a legal moored boat boards normally', async test => {
     const f=actor(test); assert.equal(f.quest.getStage(f.p),0);
@@ -983,6 +989,12 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
     finally { test.diagnostic(`fishier-no-cast-frames ${JSON.stringify(frames)}`); }
     assert.equal(frames.length,9);
     assert.equal(require('../plugins/skills/sailing/charting/FishierStout.Charting').scenes.has(f.p),true);
+    for (const frame of frames) {
+      assert.deepEqual(frame.position,frames[0].position, 'idle no-cast position stays fixed');
+      assert.equal(frame.teleportSerial,frames[0].teleportSerial);
+      assert.equal(frame.destination,null);
+      assert.equal(frame.forceMovement,false);
+    }
   });
   await t.test('committed dream state survives the actual player save round-trip', async test => {
     const f=actor(test); firstDrink(f); const snapshot=PlayerSave.fromPlayer(f.p);
