@@ -28,13 +28,34 @@
  * ceremony camera, and the final dance arc); the capture's skybox (cam_skybox 61359) has
  * no core packet yet. The shy crab 16484 is spawned at 3045,2653 with the captured opening
  * conversation; its later relocation/scutter-away is a remaining gap. The dream/headache
- * (boat and teleport lock) is not implemented. No post-quest beach-crab variant exists, so a
+ * is modeled as a saved state with boat and teleport restrictions. No post-quest beach-crab variant exists, so a
  * completed player replays "crab-hunting-talking-to-the-crab-again". The Crab
  * dance emote is not unlocked (the dance conditions answer "not unlocked"). The
  * requirement refusal is a plain system message because the transcript has none.
  * Shells and recruits are de-duplicated by per-item/per-spot flags, and the instrument
  * hand-in/tuning stages only advance on the transcript's own hand-in and tune messages.
  */
+const DREAM_ATTRIBUTE = "crab-quest:dream-headache";
+
+/** The bottle state is independent of quest stage and survives logout (TSPS policy). */
+function dreamActive(player) {
+  const quest = require("../QuestRuntime").getRegisteredQuests().findLast((entry) => entry.key === "crab_quest");
+  return player.getAttribute(DREAM_ATTRIBUTE) === true && !quest?.isComplete(player);
+}
+
+function canBoardDream(event) {
+  if (event.allow === false || !dreamActive(event.player)) return;
+  event.allow = false;
+  event.reason = "The headache from drinking from the bottle on the beach makes it difficult to find your boat. You feel that swigging from that bottle again would fix it.";
+}
+
+function canTeleportDream(event) {
+  if (!dreamActive(event.player)) return;
+  event.allow = false;
+  event.player.sendMessage("The headache from drinking from the bottle stops you from remembering how to teleport. Drinking from the bottle again may help with this.");
+}
+
+
 module.exports = function registerCrabQuestQuest(api) {
   const {
     GameObject,
@@ -827,13 +848,10 @@ module.exports = function registerCrabQuestQuest(api) {
       startTranscript(api, player, MAIN_CRAB_NPC_ID, PAGE, "drinking-from-bottle");
       return;
     }
-    startTranscript(
-      api,
-      player,
-      MAIN_CRAB_NPC_ID,
-      PAGE,
-      "drinking-from-bottle-drinking-from-the-bottle-again-to-go-back-to-the-dream"
-    );
+    const variant = player.getAttribute(DREAM_ATTRIBUTE) === true
+      ? "drinking-from-bottle-drinking-from-the-bottle-again-to-go-back-to-reality"
+      : "drinking-from-bottle-drinking-from-the-bottle-again-to-go-back-to-the-dream";
+    startTranscript(api, player, MAIN_CRAB_NPC_ID, PAGE, variant);
   }
 
   // ==========================================================================
@@ -1136,6 +1154,12 @@ module.exports = function registerCrabQuestQuest(api) {
 
   function handleAction(event) {
     const { player, npcId, stepId } = event;
+    if (npcId === MAIN_CRAB_NPC_ID && event.kind === "message" &&
+        event.pages?.some((page) => page.page === PAGE && page.variants?.some((variant) => variant.startsWith("drinking-from-bottle"))) &&
+        !quest.isComplete(player)) {
+      if (stepId === "A8M5CK" || stepId === "ON9Mp-") player.setAttribute(DREAM_ATTRIBUTE, true);
+      else if (stepId === "_Hk79X") player.setAttribute(DREAM_ATTRIBUTE, false);
+    }
     if (stepId === SHY_CRAB_BLUSH_STEP || stepId === SHY_CRAB_SCUTTER_STEP) {
       if (npcId !== SHY_CRAB_NPC_ID && npcId !== SHY_CRAB_CONTENT_ID) return;
       event.handled = true;
@@ -1468,6 +1492,7 @@ module.exports = function registerCrabQuestQuest(api) {
   }
 
   function grantReward(player) {
+    player.setAttribute(DREAM_ATTRIBUTE, false);
     player.getSkillManager().addExperiences(Skill.SAILING, 10000);
     player.getSkillManager().addExperiences(Skill.FISHING, 3000);
   }
@@ -1476,6 +1501,7 @@ module.exports = function registerCrabQuestQuest(api) {
   // Registration
   // ==========================================================================
 
+  api.persistAttribute(DREAM_ATTRIBUTE, false);
   api.persistAttribute(RECRUITED_ATTRIBUTE);
   api.persistAttribute(SCARED_ATTRIBUTE);
   api.persistAttribute(MET_ATTRIBUTE);
@@ -1512,6 +1538,8 @@ module.exports = function registerCrabQuestQuest(api) {
   });
 
   api.onNpcDialogueCondition(answerCondition);
+  api.onCustomEvent("sailing:can-board", canBoardDream);
+  api.onCustomEvent("teleport:can-start", canTeleportDream);
   api.onCustomEvent("npc-dialogue:hook", handleStartHook);
   api.onCustomEvent("npc-dialogue:choice", handleChoice);
   api.onCustomEvent("npc-dialogue:line", handleLine);
