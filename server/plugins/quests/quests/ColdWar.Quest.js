@@ -408,7 +408,7 @@ module.exports = function registerColdWarQuest(api) {
     return (
       skills.getMaxLevel(Skill.HUNTER) >= 10 &&
       skills.getMaxLevel(Skill.AGILITY) >= 30 &&
-      skills.getMaxLevel(Skill.CRAFTING) >= 30 &&
+      (skills.getMaxLevel(Skill.CRAFTING) >= 30 || skills.getCurrentLevel(Skill.CRAFTING) >= 30) &&
       skills.getMaxLevel(Skill.CONSTRUCTION) >= 34 &&
       skills.getMaxLevel(Skill.THIEVING) >= 15
     );
