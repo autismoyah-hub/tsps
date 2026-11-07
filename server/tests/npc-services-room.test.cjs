@@ -783,6 +783,7 @@ test('Ignisia exchanges a glove for the full fifty owned burnt pages or refuses'
 
 // An older terminal conversation may open its menu next tick, but cannot own a newer completed main.
 test('deferred Loinur menu preserves a completed newer native price checker', async t => {
+  const { ItemContainer } = require('../dist/game/model/container/ItemContainer');
   const NPC = 7231, X = 1670, Y = 3834, MENU = 187, CHECKER = 464, SIDE = 238;
   const MAIN_TARGET = (161 << 16) | 16, SIDE_TARGET = (161 << 16) | 74;
   const PRICE_BUTTON = (387 << 16) | 3;
@@ -882,7 +883,7 @@ test('deferred Loinur menu preserves a completed newer native price checker', as
       assert.equal(completed[0].mount,mount); assert.equal(completed[0].side,side);
       assert.equal(completed[0].interfaceId,CHECKER); assert.equal(completed[0].status,core.PlayerStatus.PRICE_CHECKING);
       const container = p.__priceCheckerContainer;
-      assert.ok(container instanceof core.ItemContainer); assert.equal(container.getPlayer(),p);
+      assert.ok(container instanceof ItemContainer); assert.equal(container.getPlayer(),p);
       assert.equal(container.capacity(),28); assert.deepEqual(container.getValidItems(),[]);
       assert.equal(completed[0].container,container); return {mount,side,container};
     };
