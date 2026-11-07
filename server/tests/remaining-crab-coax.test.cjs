@@ -882,7 +882,17 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
     assert.equal(f.p.isNeedsPlacement(),true, 'disembark schedules native placement');
     tick();
     assert.equal(f.p.isNeedsPlacement(),false, 'World completed the landing placement');
+    busyFrame(f,'after-disembark');
     assert.equal(f.p.busy(),false, 'the disembarked player is ready to travel');
+  }
+  function busyFrame(f, boundary) {
+    const p=f.p, at=p.getLocation(), dialogue=p.getDialogueManager(), pending=core.MultiChatboxPrompt.getPending(p);
+    f.test.diagnostic(`crab-recovery-busy ${JSON.stringify({boundary, interfaceId:p.getInterfaceId(), hp:p.getHitpoints(),
+      needsPlacement:p.isNeedsPlacement(), teleporting:p.isTeleportingReturn(), status:p.getStatus(),
+      forceMovement:!!p.getForceMovement(), dying:p.isDying, registered:p.isRegistered(),
+      area:p.getArea()?.constructor?.name ?? null, dialogueActive:dialogue.isActive(),
+      dialogueCurrent:dialogue.getCurrent()?.constructor?.name ?? null, pendingTitle:pending?.title ?? null,
+      position:[at.getX(),at.getY(),at.getZ()]})}`);
   }
   async function cast(f) {
     const spell = core.CacheDefinitions.getSpellByName('Varrock Teleport'); assert.ok(spell);
@@ -1048,6 +1058,7 @@ test('native Crab bottle dream state and travel consumers', async (t) => {
       return original(player,reason);
     });
     f.p.setHitpoints(0); assert.equal(f.p.isDying,true); tick(8);
+    busyFrame(f,'after-death');
     assert.equal(f.p.isDying,false); assert.equal(f.p.getAttribute('crab-quest:dream-headache'),false);
     assert.deepEqual(saves,[['death',false],['respawn',false]]);
     assert.notDeepEqual([f.p.getLocation().getX(),f.p.getLocation().getY()],[3055,2639]);
