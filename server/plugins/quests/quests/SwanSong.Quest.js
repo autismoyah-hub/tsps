@@ -958,6 +958,7 @@ module.exports = function registerSwanSongQuest(api) {
           player.sendMessage("There is nothing in the firebox to light.");
           return;
         }
+        if (player.getSkillManager().getCurrentLevel(Skill.FIREMAKING) < 42) return;
         setFlag(player, FIREBOX_LIT_ATTRIBUTE);
         play(player, FRANKLIN_NPC_ID, "helping-franklin-using-the-tinderbox-on-the-firebox");
         return;
