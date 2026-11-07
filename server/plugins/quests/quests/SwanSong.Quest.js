@@ -246,7 +246,6 @@ module.exports = function registerSwanSongQuest(api) {
     { skill: Skill.COOKING, level: 62, label: "Cooking" },
     { skill: Skill.FISHING, level: 62, label: "Fishing" },
     { skill: Skill.SMITHING, level: 45, label: "Smithing" },
-    { skill: Skill.FIREMAKING, level: 42, label: "Firemaking" },
     { skill: Skill.CRAFTING, level: 40, label: "Crafting" },
   ];
 
