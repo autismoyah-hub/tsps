@@ -465,36 +465,16 @@ module.exports = function registerHauntedMineQuest(api) {
   }
 
   /** "Yes." starts the quest. */
-  /** Wiki: 35 Crafting and Priest in Peril. */
-  const CRAFTING_REQUIREMENT = 35;
-
   function questIsComplete(player, key) {
     const request = { player, key, complete: undefined };
     api.emitCustomEvent("quest:is-complete", request);
     return request.complete === true;
   }
 
-  function meetsSkillRequirements(player) {
-    return player.getSkillManager().getMaxLevel(Skill.CRAFTING) >= CRAFTING_REQUIREMENT;
-  }
-
-  function notifySkillRequirements(player) {
-    if (!meetsSkillRequirements(player)) {
-      player.sendMessage(
-        `You need a Crafting level of at least ${CRAFTING_REQUIREMENT} to start this quest.`
-      );
-    }
-  }
-
   function handleStartHook(event) {
     const { player, npcId, hook } = event;
     if (npcId !== ZEALOT_NPC_ID || hook !== START_HOOK) return;
     if (quest.getStage(player) === 0) {
-      if (!meetsSkillRequirements(player)) {
-        event.end = true;
-        notifySkillRequirements(player);
-        return;
-      }
       if (!questIsComplete(player, "priest_in_peril")) {
         event.end = true;
         player.sendMessage("You must complete Priest in Peril to start this quest.");

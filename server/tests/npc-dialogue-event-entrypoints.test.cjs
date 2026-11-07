@@ -2754,7 +2754,7 @@ function startSkillLevels(player, maximum, current = maximum) {
   for (const skill of core.Skill.values()) player.getSkillManager().setMaxLevels(skill, maximum, false).setCurrentLevel(skill, current, false);
 }
 async function followNativeStartRoute(f, definition) {
-  const npcId = core.NpcIdentifiers[definition.npc], npc = core.NPC.create(npcId, new core.Location(3222, 3218));
+  const npcId = core.NpcIdentifiers[definition.npc], npc = core.NPC.create(npcId, definition.location ?? new core.Location(3222, 3218));
   assert.equal(PM.emitNpcInteraction({ player: f.player, npc, npcId, action: 'Talk-to', clickType: 1, handled: false }), true);
   for (const option of definition.route) {
     for (let n = 0; n < 80 && !MultiChatboxPrompt.getPending(f.player); n++) {
@@ -2778,6 +2778,123 @@ async function assertRejectedStart(f, key, items) {
   assert.equal(registeredQuest(key).getStage(player), 0, 'stale native replies cannot reach later quest actions');
   assert.deepEqual(carriedItems(player), items);
 }
+// Seeded checkpoint: the player has completed both prerequisites and entered
+// Mort Myre during Nature Spirit, but has not completed it or earned its XP.
+// Placement and effective boost are fixture state, not observed gameplay.
+test('Haunted Mine starts below 35 Crafting and retains the later shard gate', async t => {
+  const { SkillManager } = require('../dist/game/content/skill/SkillManager');
+  const errors = [];
+  const originalError = console.error;
+  t.mock.method(console, 'error', (...args) => { errors.push(args); originalError(...args); });
+  core.RegionManager.init();
+  const route = { ...REJECTED_START_ROUTES.find(entry => entry.key === 'haunted_mine'),
+    location: new core.Location(3444, 3258, 0) };
+  const seed = (f, level, priest = true) => {
+    const skills = f.player.getSkillManager();
+    for (const skill of core.Skill.values()) {
+      skills.setExperiences(skill, SkillManager.getExperienceForLevel(60), false)
+        .setMaxLevels(skill, 60, false).setCurrentLevel(skill, 60, false);
+      assert.equal(skills.getExperience(skill), SkillManager.getExperienceForLevel(60));
+    }
+    skills.setExperiences(core.Skill.CRAFTING, SkillManager.getExperienceForLevel(level), false)
+      .setMaxLevels(core.Skill.CRAFTING, level, false).setCurrentLevel(core.Skill.CRAFTING, level, false);
+    assert.equal(skills.getExperience(core.Skill.CRAFTING), SkillManager.getExperienceForLevel(level));
+    assert.equal(skills.getMaxLevel(core.Skill.CRAFTING), level);
+    assert.equal(skills.getCurrentLevel(core.Skill.CRAFTING), level);
+    if (priest) {
+      completePrerequisites(f.player, ['priest_in_peril', 'the_restless_ghost']);
+      registeredQuest('nature_spirit').setStage(f.player, 10);
+    }
+    f.player.setLocation(new core.Location(3444, 3257, 0));
+    t.after(() => core.TaskManager.cancelTasks(f.player));
+    if (priest) {
+      assert.equal(registeredQuest('priest_in_peril').isComplete(f.player), true);
+      assert.equal(registeredQuest('the_restless_ghost').isComplete(f.player), true);
+      assert.equal(registeredQuest('nature_spirit').getStage(f.player), 10);
+      assert.equal(registeredQuest('nature_spirit').isComplete(f.player), false);
+    }
+  };
+  const normal = fixture(t); seed(normal, 35);
+  await followNativeStartRoute(normal, route);
+  assert.equal(registeredQuest('haunted_mine').getStage(normal.player), 1);
+  assert.ok(normal.player.getDialogueManager().getCurrent());
+
+  const low = fixture(t); seed(low, 34);
+  const pointsBefore = Number(low.player.getAttribute('quest.points')) || 0;
+  const strengthBefore = low.player.getSkillManager().getExperience(core.Skill.STRENGTH);
+  const varbits = [];
+  const sender = low.player.getPacketSender();
+  const sendVarbit = sender.sendVarbit.bind(sender);
+  t.mock.method(sender, 'sendVarbit', (id, value) => { varbits.push([id, value]); return sendVarbit(id, value); });
+  await followNativeStartRoute(low, route);
+  assert.equal(registeredQuest('haunted_mine').getStage(low.player), 1);
+  assert.ok(low.player.getDialogueManager().getCurrent());
+  assert.equal(low.player.getAttribute('haunted-mine:schema'), 1);
+  assert.ok(varbits.some(([id, value]) => id === 2397 && value === 1));
+  assert.equal(Number(low.player.getAttribute('quest.points')) || 0, pointsBefore);
+  assert.equal(low.player.getSkillManager().getExperience(core.Skill.STRENGTH), strengthBefore);
+
+  const missing = fixture(t); seed(missing, 34, false);
+  const items = carriedItems(missing.player);
+  await followNativeStartRoute(missing, route);
+  await assertRejectedStart(missing, 'haunted_mine', items);
+
+  low.player.closeInterruptibleInterfaces();
+  registeredQuest('haunted_mine').setStage(low.player, 10);
+  low.player.getInventory().adds(core.ItemIdentifiers.CHISEL, 1);
+  assert.equal(low.player.getInventory().contains(core.ItemIdentifiers.CHISEL), true);
+  assert.ok(low.player.getInventory().getFreeSlots() > 0);
+  assert.equal(low.player.getSkillManager().getCurrentLevel(core.Skill.CRAFTING), 34);
+  // The shortcut destination is a source anchor for the crystal room; the
+  // actual outcrop is discovered from the loaded map, not a guessed tile.
+  core.RegionManager.loadMapFiles(2800, 4429);
+  const ids = new Set([core.ObjectIdentifiers.CRYSTAL_OUTCROP,
+    core.ObjectIdentifiers.CRYSTAL_OUTCROP_2, core.ObjectIdentifiers.CRYSTAL_OUTCROP_3]);
+  const object = [...core.MapObjects.mapObjects.values()].flat().find(candidate => {
+    const at = candidate.getLocation();
+    return ids.has(candidate.getId()) && at.getZ() === 0 &&
+      Math.abs(at.getX() - 2800) < 64 && Math.abs(at.getY() - 4429) < 64;
+  });
+  assert.ok(object, 'mapped crystal room outcrop exists');
+  const location = object.getLocation();
+  const definition = object.getDefinition();
+  const optionIndex = definition.getInteractions().findIndex(option => String(option).toLowerCase() === 'mine');
+  assert.ok(optionIndex >= 0, 'mapped outcrop has Mine action');
+  const queue = low.player.getMovementQueue();
+  const spec = queue.buildObjectRouteSpec(object, 0);
+  const adjacent = [[0, -1], [0, 1], [-1, 0], [1, 0]].find(([dx, dy]) => {
+    low.player.setLocation(new core.Location(location.getX() + dx, location.getY() + dy, location.getZ()));
+    return !core.RegionManager.blocked(low.player.getLocation(), low.player.getPrivateArea()) && queue.reachesObject(object, spec);
+  });
+  assert.ok(adjacent, 'an adjacent tile reaches the mapped outcrop');
+  low.player.needsPlacement = false;
+  const click = () => PM.emitObjectInteraction({ player: low.player, object, objectId: object.getId(),
+    definition, location: { x: location.getX(), y: location.getY(), z: location.getZ() }, clickType: optionIndex + 1, handled: false });
+  const packetStart = low.packets.length;
+  assert.equal(click(), true);
+  low.player.getSession().flushPackets();
+  assert.match(Buffer.concat(low.packets.slice(packetStart)).toString('utf8'), /Crafting level of 35/);
+  assert.equal(registeredQuest('haunted_mine').getStage(low.player), 10);
+  assert.equal(low.player.getInventory().contains(core.ItemIdentifiers.SALVE_SHARD), false);
+  assert.equal(Number(low.player.getAttribute('quest.points')) || 0, pointsBefore);
+  assert.equal(low.player.getSkillManager().getExperience(core.Skill.STRENGTH), strengthBefore);
+  assert.equal(low.player.getDialogueManager().getCurrent(), undefined);
+  const gate = PM.emitCanGainExperience(low.player, core.Skill.STRENGTH, 22000);
+  assert.equal(core.GameConstants.EXPERIENCE_MULTIPLIER, 1);
+  assert.notEqual(gate.allow, false);
+  assert.equal(gate.multiplier, 1);
+  assert.notEqual(low.player.getAttribute(SkillManager.XP_LOCKED_ATTRIBUTE), true);
+  low.player.getSkillManager().setCurrentLevel(core.Skill.CRAFTING, 35, false);
+  assert.equal(click(), true);
+  assert.equal(low.player.getSkillManager().getMaxLevel(core.Skill.CRAFTING), 34);
+  assert.equal(low.player.getSkillManager().getExperience(core.Skill.CRAFTING), SkillManager.getExperienceForLevel(34));
+  assert.equal(registeredQuest('haunted_mine').getStage(low.player), 11);
+  assert.equal(low.player.getInventory().getAmount(core.ItemIdentifiers.SALVE_SHARD), 1);
+  assert.equal(Number(low.player.getAttribute('quest.points')) || 0, pointsBefore + 2);
+  assert.equal(low.player.getSkillManager().getExperience(core.Skill.STRENGTH), strengthBefore + 22000);
+  assert.deepEqual(errors, [], 'plugin and dialogue dispatch reported no errors');
+});
+
 for (const definition of REJECTED_START_ROUTES) test(`${definition.page} normal rejected-start routes stop before accepted actions and retry successfully`, async t => {
   const f = fixture(t), items = carriedItems(f.player);
   const refuse = async () => {
