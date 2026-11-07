@@ -790,11 +790,7 @@ module.exports = function registerGhostsAhoyQuest(api) {
     return null;
   }
 
-  /** Wiki: 25 Agility, 20 Cooking, Priest in Peril and The Restless Ghost. */
-  const REQUIRED_SKILLS = [
-    { skill: Skill.AGILITY, level: 25, label: "Agility" },
-    { skill: Skill.COOKING, level: 20, label: "Cooking" },
-  ];
+  /** Priest in Peril and The Restless Ghost are required to start. */
   const REQUIRED_QUESTS = [
     { key: "priest_in_peril", name: "Priest in Peril" },
     { key: "the_restless_ghost", name: "The Restless Ghost" },
@@ -815,31 +811,13 @@ module.exports = function registerGhostsAhoyQuest(api) {
   }
 
   function meetsStartRequirements(player) {
-    return missingSkillRequirements(player).length === 0 && missingQuestRequirements(player).length === 0;
-  }
-
-  function missingSkillRequirements(player) {
-    const skills = player.getSkillManager();
-    return REQUIRED_SKILLS.filter((requirement) => skills.getMaxLevel(requirement.skill) < requirement.level);
-  }
-
-  function meetsSkillRequirements(player) {
-    return missingSkillRequirements(player).length === 0;
-  }
-
-  function notifySkillRequirements(player) {
-    for (const requirement of missingSkillRequirements(player)) {
-      player.sendMessage(
-        `You need a ${requirement.label} level of at least ${requirement.level} to start this quest.`
-      );
-    }
+    return missingQuestRequirements(player).length === 0;
   }
 
   function handleStartHook({ player, npcId, hook }) {
     if (npcId !== VELORINA_NPC_ID || hook !== START_HOOK) return;
     if (quest.getStage(player) <= 0) {
       if (!meetsStartRequirements(player)) {
-        notifySkillRequirements(player);
         notifyQuestRequirements(player);
         return;
       }
@@ -892,7 +870,6 @@ module.exports = function registerGhostsAhoyQuest(api) {
       // already consent, so start the quest here.
       if (quest.getStage(player) <= 0) {
         if (!meetsStartRequirements(player)) {
-          notifySkillRequirements(player);
           notifyQuestRequirements(player);
           return;
         }
