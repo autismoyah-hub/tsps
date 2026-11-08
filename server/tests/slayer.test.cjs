@@ -362,6 +362,39 @@ test("Turael's tasks give no points and say so", () => {
   assert.match(player.messages.at(-1), /eligible to earn reward points if you complete tasks from a more advanced Slayer Master/);
 });
 
+// Completion checkpoints: these exercise the points contract directly, without
+// claiming that the seeded prior streaks were earned or simulating NPC deaths.
+for (const { standard, wilderness, masterId, expectedPoints, expectedStreak } of [
+  { standard: 4, wilderness: 0, masterId: 7, expectedPoints: 0, expectedStreak: 1 },
+  { standard: 0, wilderness: 4, masterId: 3, expectedPoints: 0, expectedStreak: 1 },
+  { standard: 20, wilderness: 3, masterId: 7, expectedPoints: 0, expectedStreak: 4 },
+  { standard: 0, wilderness: 4, masterId: 7, expectedPoints: 25, expectedStreak: 5 },
+  { standard: 0, wilderness: 9, masterId: 7, expectedPoints: 125, expectedStreak: 10 },
+]) {
+  test(`completion points use master ${masterId}'s own streak (${standard} standard, ${wilderness} Wilderness)`, () => {
+    const player = createPlayer();
+    setVarbit(player, "slayer_tasks_completed", standard);
+    setVarbit(player, "slayer_wilderness_tasks_completed", wilderness);
+    const assigned = Tasks.assign(player, master(masterId));
+    assert.ok(assigned.line, "the master offers an eligible task");
+    const task = Tasks.current(player);
+    assert.ok(task);
+    assert.equal(task.masterId, masterId);
+    assert.ok(task.count > 0);
+    assert.equal(varbit(player, "slayer_points"), 0);
+    Tasks.complete(player, task);
+    assert.equal(Tasks.current(player), null, "completion clears the held task");
+    const own = masterId === 7 ? "slayer_wilderness_tasks_completed" : "slayer_tasks_completed";
+    const other = masterId === 7 ? "slayer_tasks_completed" : "slayer_wilderness_tasks_completed";
+    assert.equal(varbit(player, own), expectedStreak);
+    assert.equal(varbit(player, other), masterId === 7 ? standard : wilderness);
+    assert.equal(varbit(player, "slayer_points"), expectedPoints);
+    if (expectedPoints === 0) {
+      assert.match(player.messages.at(-1), new RegExp(`will need </col>${5 - expectedStreak} more`));
+    }
+  });
+}
+
 test("Turael replaces another master's task and resets the streak", () => {
   const player = createPlayer();
   setVarbit(player, "slayer_tasks_completed", 12);
