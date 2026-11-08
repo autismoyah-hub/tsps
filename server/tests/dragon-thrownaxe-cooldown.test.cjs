@@ -26,7 +26,7 @@ after(() => {
   assert.deepEqual(setupErrors, [], 'setup and engine errors must not be swallowed');
 });
 
-function scene(t) {
+function scene(t, rapid = false) {
   const errors = [], error = console.error.bind(console);
   t.mock.method(console, 'error', (...args) => { errors.push(args); error(...args); });
   const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true, send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
@@ -51,6 +51,10 @@ function scene(t) {
   p.setHitpoints(99); p.setSpecialPercentage(100);
   p.getEquipment().set(core.Equipment.WEAPON_SLOT, new core.Item(core.ItemIdentifiers.DRAGON_THROWNAXE, 50));
   core.WeaponInterfaceManager.assign(p);
+  const styles = Object.values(p.getWeapon().getFightType());
+  const style = styles.find(type => type.isRapid() === rapid);
+  assert.ok(style, 'the axe has the requested style');
+  p.setFightType(style);
   npc = PM.spawnNpc({ id: core.NpcIdentifiers.MUGGER_2, x: 3220, y: 3223, wanderRadius: 0 });
   assert.ok(npc && npc.isRegistered());
   npc.setNeedsPlacement(false); npc.setHitpoints(500); npc.getMovementQueue().setBlockMovement(true);
@@ -83,19 +87,47 @@ function scene(t) {
   return { p, npc, tick, attacks, deadline, tasks };
 }
 
-test('Momentum Throw bypasses an existing ordinary attack cooldown', t => {
+for (const [rapid, speed] of [[false, 5], [true, 4]]) {
+  test(`Momentum Throw resets the ${rapid ? 'rapid' : 'accurate'} cooldown`, t => {
+    const { p, tick, attacks, deadline } = scene(t, rapid);
+    core.CombatSpecial.activate(p);
+    assert.equal(p.isSpecialActivated(), true);
+    tick();
+    assert.equal(attacks.length, 2);
+    assert.equal(attacks[1].method, p.getCombatSpecial().getCombatMethod());
+    assert.ok(attacks[1].cycle < deadline, 'special started before the previous deadline');
+    assert.equal(p.getSpecialPercentage(), 75, 'one special drains 25 energy');
+    assert.equal(p.getCombat().getAttackDelay(), speed, 'special starts a full weapon cooldown');
+    for (let i = 1; i < speed; i++) { tick(); assert.equal(attacks.length, 2, 'no early normal attack'); }
+    tick();
+    assert.equal(attacks.length, 3);
+    assert.equal(attacks[2].cycle - attacks[1].cycle, speed);
+    assert.equal(p.getSpecialPercentage(), 75, 'one activation drains once');
+  });
+}
+
+test('two activations on successive ticks each launch once', t => {
+  const { p, tick, attacks } = scene(t);
+  core.CombatSpecial.activate(p); tick();
+  core.CombatSpecial.activate(p); tick();
+  assert.equal(attacks.length, 3);
+  assert.equal(attacks[2].cycle - attacks[1].cycle, 1);
+  assert.equal(p.getSpecialPercentage(), 50);
+  assert.equal(p.getCombat().getAttackDelay(), 5);
+});
+
+test('a special on the old deadline starts a full new cooldown', t => {
   const { p, tick, attacks, deadline } = scene(t);
+  while (core.World.getProcessCycle() < deadline - 1) tick();
+  assert.equal(attacks.length, 1);
   core.CombatSpecial.activate(p);
-  assert.equal(p.isSpecialActivated(), true);
   tick();
   assert.equal(attacks.length, 2);
-  assert.equal(attacks[1].method, p.getCombatSpecial().getCombatMethod());
-  assert.ok(attacks[1].cycle < deadline, 'special started before the previous deadline');
-  assert.equal(p.getSpecialPercentage(), 75, 'one special drains 25 energy');
-  assert.ok(p.getCombat().getAttackDelay() > 0, 'the prior cooldown remains');
+  assert.equal(attacks[1].cycle, deadline);
+  assert.equal(p.getCombat().getAttackDelay(), 5);
+  for (let i = 1; i < 5; i++) { tick(); assert.equal(attacks.length, 2); }
   tick();
-  assert.equal(p.getSpecialPercentage(), 75, 'one activation drains once');
-  assert.equal(attacks.length, 2, 'no duplicate attack on the next tick');
+  assert.equal(attacks[2].cycle - attacks[1].cycle, 5);
 });
 
 test('without an armed special the ordinary cooldown still applies', t => {
