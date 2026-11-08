@@ -1,7 +1,7 @@
 // Prospective real-engine regression; run after build, not executed during source-only discovery.
 // https://oldschool.runescape.wiki/w/Dodgy_Squire?oldid=15304858
 // https://oldschool.runescape.wiki/w/Transcript:Dodgy_Squire?oldid=14394381
-// Below-cap Talk-to: select the bottom-right eligible item and offer its listed refund.
+// Below-cap Talk-to handler/transcript checkpoint with one eligible item.
 // Later refund assertions are only reached if the expected offer is first produced.
 const assert = require("node:assert/strict");
 const path = require("node:path");
@@ -61,16 +61,22 @@ const pending = (player) => core.MultiChatboxPrompt.getPending(player);
 function advanceUntilPrompt(player) {
   const manager = player.getDialogueManager();
   for (let i = 0; i < 40 && !pending(player) && manager.isActive(); i++) manager.advance();
-  return pending(player);
+  const menu = pending(player);
+  assert.ok(menu || !manager.isActive(), "dialogue reached a prompt or finished within the limit");
+  return menu;
+}
+function click(player, number) {
+  return core.MultiChatboxPrompt.handleInterfaceActionClick({
+    player, buttonId: core.MultiChatboxPrompt.OPTIONS_WIDGET_ID, groupId: 219, slot: number, action: number,
+  });
 }
 function answer(player, label) {
   const menu = pending(player);
   const index = menu?.options.indexOf(label) ?? -1;
   assert.ok(index >= 0, `choice ${label} is offered: ${JSON.stringify(menu)}`);
   const number = index + 1;
-  assert.equal(core.MultiChatboxPrompt.handleInterfaceActionClick({
-    player, buttonId: core.MultiChatboxPrompt.OPTIONS_WIDGET_ID, groupId: 219, slot: number, action: number,
-  }), true, `the ${label} choice was handled`);
+  assert.equal(click(player, number), true, `the ${label} choice was handled`);
+  return number;
 }
 function beginTalk(f) {
   const { player, npc } = f;
@@ -101,10 +107,14 @@ test("Talk-to offers the eligible top and accepting exchanges exactly it for 200
   assert.equal(core.ItemDefinition.forId(f.itemId).getName().toLowerCase(), "void knight top");
   beginTalk(f);
   assertTopOffer(f); // Predicted first missing-behavior assertion; later assertions are unreached if it fails.
-  answer(f.player, "Accept");
-  advanceUntilPrompt(f.player);
+  const accepted = answer(f.player, "Accept");
+  assert.equal(advanceUntilPrompt(f.player), null, "the exchange conversation finished without another prompt");
+  assert.equal(f.player.getDialogueManager().isActive(), false);
   assert.equal(f.player.getInventory().getAmount(f.itemId), 0, "the offered item was removed");
-  assert.equal(Rewards.getPoints(f.player), 300, "the listed refund was credited once");
+  assert.equal(Rewards.getPoints(f.player), 300, "the listed refund was credited");
+  assert.equal(click(f.player, accepted), false, "the closed offer cannot be accepted again");
+  assert.equal(f.player.getInventory().getAmount(f.itemId), 0);
+  assert.equal(Rewards.getPoints(f.player), 300, "replaying the old choice cannot credit again");
 });
 
 test("declining an eligible offer preserves the same item and points", (t) => {
@@ -112,7 +122,8 @@ test("declining an eligible offer preserves the same item and points", (t) => {
   beginTalk(f);
   assertTopOffer(f);
   answer(f.player, "Decline");
-  advanceUntilPrompt(f.player);
+  assert.equal(advanceUntilPrompt(f.player), null, "declining finishes without another prompt");
+  assert.equal(f.player.getDialogueManager().isActive(), false);
   assertUnchanged(f);
 });
 
