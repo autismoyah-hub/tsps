@@ -2159,7 +2159,7 @@ test("an admitted Varrock fall retains its damage when the player logs out", asy
   const core = PluginManager.getCoreApi();
   const { World, RegionManager, MapObjects } = core;
   const actors = new Set(), snapshots = new Map(), outcomes = new Map(), ownedTasks = new Set(), errors = [];
-  const channels = new WeakMap(), initialHitpoints = new WeakMap();
+  const channels = new WeakMap(), initialHitpoints = new WeakMap(), experienceRequests = new WeakMap();
   const oldBots = process.env.DISABLE_PLAYER_BOTS, oldSubmit = core.TaskManager.submit, oldError = console.error;
   let persistence = null, oldSave = null;
   let started = false, serial = 0;
@@ -2219,6 +2219,8 @@ test("an admitted Varrock fall retains its damage when the player logs out", asy
     assert.equal(RegionManager.blocked(p.getLocation(), null), false, "seeded approach is walkable");
     assert.equal(World.getPlayers().add(p), true); p.needsPlacement = false;
     const sm = p.getSkillManager();
+    const addExperiences = sm.addExperiences; experienceRequests.set(p, []);
+    sm.addExperiences = function (...args) { experienceRequests.get(p).push(args); return addExperiences.apply(this, args); };
     for (const [skill, value] of [[Skill.AGILITY, level], [Skill.HITPOINTS, 50]]) {
       sm.setExperiences(skill, core.SkillManager.getExperienceForLevel(value), false);
       sm.setMaxLevel(skill, value); sm.setCurrentLevels(skill, value);
@@ -2274,12 +2276,35 @@ test("an admitted Varrock fall retains its damage when the player logs out", asy
     }
     assert.fail("no natural failed roll in 32 ordinary clicks: target boundary not reached");
   }
+  function walkRestored(restored) {
+    restored.setUsername(`agrestore${++serial}`);
+    restored.setLongUsername(core.Misc.stringToLongBigInt(restored.getUsername()));
+    restored.setAttribute("bot-skip-persistence", true);
+    actors.add(restored);
+    RegionManager.loadMapFiles(restored.getLocation().getX(), restored.getLocation().getY());
+    assert.equal(World.getPlayers().add(restored), true, "the restored actor enters the real world");
+    restored.needsPlacement = false;
+    assert.equal(restored.getMovementQueue().isMovementBlocked(), false, "restoration has no movement lock");
+    const from = restored.getLocation().clone(), hp = restored.getHitpoints();
+    const next = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dy]) => from.transform(dx, dy))
+      .find(tile => RegionManager.canMovestart(from, tile, 1, 1, null));
+    assert.ok(next, "the saved landing has an ordinary walkable neighbor");
+    restored.getMovementQueue().requestWalk(next);
+    assert.ok(restored.getMovementQueue().getDestination()?.equals(next), "ordinary movement queued the selected endpoint");
+    for (let i = 0; i < 8 && !restored.getLocation().equals(next); i++) World.process();
+    assert.ok(restored.getLocation().equals(next), "the restored actor completed the next ordinary walk");
+    assert.equal(restored.getHitpoints(), hp, "the next action did not replay fall damage");
+    World.getPlayers().removes(restored);
+  }
   await t.test("successful obstacle logout preserves landing and XP", () => {
     const p = actor(46), xp = p.getSkillManager().getExperience(Skill.AGILITY); start(p);
     assert.equal(outcomes.get(p), true);
     const restored = logout(p);
     assert.deepEqual(tile(restored), [3208, 3414, 3]); assert.equal(restored.getHitpoints(), 50);
     assert.ok(restored.getSkillManager().getExperience(Skill.AGILITY) > xp);
+    assert.deepEqual(experienceRequests.get(p).filter(([skill]) => skill === Skill.AGILITY).map(([, xp]) => xp), [23],
+      "the real XP manager received this obstacle exactly once");
+    walkRestored(restored);
   });
   await t.test("completed failure applies its damage once before logout", () => {
     const p = failedActor(), xp = p.getSkillManager().getExperience(Skill.AGILITY); drain(p);
@@ -2297,6 +2322,7 @@ test("an admitted Varrock fall retains its damage when the player logs out", asy
     assert.equal(restored.getSkillManager().getExperience(Skill.AGILITY), xp);
     const hp = restored.getHitpoints();
     assert.ok(hp >= 42 && hp <= 47, `a committed fall retains 3-8 damage in the logout save; health ${hp}`);
+    walkRestored(restored);
   });
   await t.test("a fall queued on the removal tick reaches the saved health", () => {
     const p = failedActor();
