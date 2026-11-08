@@ -1570,6 +1570,21 @@ test('native cooking on a live fire', async suite => {
     assert.equal(a.skill.getExperience(core.Skill.COOKING), refusalXp);
     a.p.closeInterruptibleInterfaces();
     a.inv.deleteNumber(I.BOWL_OF_WATER, 1); a.inv.deleteNumber(I.INCOMPLETE_STEW, 1);
+    for (let n = 0; n < 2; n++) {
+      a.inv.add(new core.Item(I.BOWL_OF_WATER, 1), false); a.inv.add(new core.Item(I.POTATO, 1), false);
+    }
+    await a.c.dispatch([{ type: 'inventory_use_on', itemId: I.POTATO, slot: a.inv.getSlotForItemId(I.POTATO),
+      target: { kind: 'inventory', id: I.BOWL_OF_WATER, slot: a.inv.getSlotForItemId(I.BOWL_OF_WATER) } }]);
+    turn();
+    const emptyMenu = a.p.getCreationMenu();
+    assert.ok(emptyMenu, 'SETUP: second batch menu opened with both ingredients present');
+    a.inv.deleteNumber(I.POTATO, 2);
+    emptyMenu.execute(I.INCOMPLETE_STEW, 2);
+    for (let n = 0; n < 8; n++) turn();
+    assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)], [0, 2, 0],
+      'missing ingredient preserves both bowls and produces nothing');
+    assert.equal(a.skill.getExperience(core.Skill.COOKING), refusalXp);
+    a.p.closeInterruptibleInterfaces(); a.inv.deleteNumber(I.BOWL_OF_WATER, 2);
 
     // A seeded raw stew exercises the same real range consumer's burn branch.
     a.inv.add(new core.Item(I.UNCOOKED_STEW, 1), false);
