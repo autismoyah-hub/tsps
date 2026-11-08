@@ -399,7 +399,7 @@ test('a full bank deposits a matching charged tome into its first tab stack',t=>
 });
 
 test('a full bank refuses a different charge state and a free slot accepts it',t=>{
-  const {p}=fixture(t), I=core.ItemIdentifiers;
+  const {p,messages}=fixture(t), I=core.ItemIdentifiers;
   p.getInventory().add(new core.Item(I.BURNT_PAGE,5),false);
   depositTomeOp(p,chargeFireTome(p,1));
   const incoming=chargeFireTome(p,2);
@@ -407,6 +407,7 @@ test('a full bank refuses a different charge state and a free slot accepts it',t
   const before=tomeTotals(p);
   depositTomeOp(p,incoming);
   assert.equal(p.getInventory().getAmount(I.TOME_OF_FIRE),1);
+  assert.ok(messages.includes('Not enough space in bank.'),'the refused deposit reports the full bank');
   assert.deepEqual(tomeTotals(p),before);
   handlers.delete(Bank.CAPACITY_EVENT);
   depositTomeOp(p,incoming);
@@ -432,4 +433,18 @@ for(const all of [false,true]) test(`a full bank deposits ${all?'all':'one'} mat
   assert.equal(p.getBank(0).getAmount(I.TOME_OF_FIRE),1);
   assert.equal(p.getBank(1).getAmount(I.TOME_OF_FIRE),all?3:2);
   assert.deepEqual(tomeTotals(p),before);
+  const restored=new Player(null);
+  t.mock.method(restored,'getSession',()=>({sendClientPacket:()=>true}));
+  t.mock.method(restored,'sendMessage',()=>{});
+  restored.setStatus(core.PlayerStatus.BANKING); restored.setInterfaceId(Bank.MAIN_INTERFACE_ID);
+  PlayerSave.fromPlayer(p).applyToPlayer(restored);
+  assert.equal(Common.read(restored.getBank(0).getValidItems()[0]).charges,20);
+  assert.equal(Common.read(restored.getBank(1).getValidItems()[0]).charges,40);
+  restored.getInventory().add(new core.Item(I.BURNT_PAGE,2),false);
+  const next=chargeFireTome(restored,2);
+  const restoredBefore=tomeTotals(restored);
+  depositTomeOp(restored,next);
+  assert.equal(restored.getInventory().getAmount(I.TOME_OF_FIRE),0);
+  assert.equal(restored.getBank(1).getAmount(I.TOME_OF_FIRE),all?4:3);
+  assert.deepEqual(tomeTotals(restored),restoredBefore);
 });
