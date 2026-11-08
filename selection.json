@@ -1,0 +1,14 @@
+{
+  "action": "SELECT_ONCE",
+  "attempts": 1,
+  "owner": "827f21d7-bd7b-4698-9d4d-e4105ca67d27",
+  "source": "85f2568b5dba4e2e7968adb099b0bf8e66e1aae7",
+  "planSHA256": "77b46b6e526ffede8356f35ab16469059c4bbc6b15e2b7113aaacb34c70b9b3a",
+  "manifestSHA256": "11d1c3776fedb0fd963bf97cb9cc8ff24b30b577d8b6449d65d679d41a930c00",
+  "count": 4931,
+  "tests": [
+    "fishing.test.cjs",
+    "minnow-exchange-capacity.test.cjs"
+  ],
+  "purpose": "Establish the intended baseline conservation failure and required controls before any AFTER choice."
+}

@@ -1,0 +1,38 @@
+{
+  "executor": "827f21d7-bd7b-4698-9d4d-e4105ca67d27",
+  "pythonSHA256": "c2c20b4745d447551221ec3d4e70f92c270c4609fe3df34fc52ea6dd46e92273",
+  "sdkMapSHA256": "0984d519ae00e72cbc77507c38eeddea49a74851513763fae1f69bb85339bec1",
+  "extraPins": {
+    "acquire-review.py": "0e89624b1cf8dd29c57a0c2f8e56773be2fa46c43d2864c968f77ecc99541b83",
+    "review-capture.py": "a01046085d7850a4782da959d0208a2d0e83e923649b9279b731b7b7084e6e3a",
+    "hf-project-access-v4.py": "fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326",
+    "authenticated-child-snapshot-command.py": "00ff45d75be1eae3bc8f04995cfb8bcbe2bc5adc28c1162b843cfe88c87024f9",
+    "bootstrap-sdk-target.py": "c8a07874c46390e2018ae12bf56497039b9795131dc389c41a2c02801d361d36",
+    "collect-author-after.py": "de48aed66b6c4a3eb4ee9be516247786c17eb8c04ce83dfd7bf518a47779f971",
+    "reconcile-author-after.py": "7568454a9c4550f637fab188c3c9fe408a09caa1e8f7486cdfd5fe8d51f9cbd1",
+    "assemble-reconciliation.py": "024a2f93deb9b2116a04d51d05afc9bda87b9064d58066967926018217e6915c",
+    "../frame_transport.py": "f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76",
+    "../retain-job-result.py": "bdcb7f104ebfa8c26d2aa68c1dd31cf7780f12174eb92d3e98ffb928797a9071"
+  },
+  "source": "85f2568b5dba4e2e7968adb099b0bf8e66e1aae7",
+  "sourceRef": "refs/heads/minnow-exchange-before-827f21d7",
+  "originalPlanSHA256": "73d74f2b12784b0f3266dec992a4c1ea48447d4d805829369a0b5c146c17b1b8",
+  "originalRequestSHA256": "9ac5ca824269b1901ab8bc743ffbb3d2f0cb43c3bd664a58ccc427760be57754",
+  "planSHA256": "77b46b6e526ffede8356f35ab16469059c4bbc6b15e2b7113aaacb34c70b9b3a",
+  "manifestSHA256": "11d1c3776fedb0fd963bf97cb9cc8ff24b30b577d8b6449d65d679d41a930c00",
+  "count": 4931,
+  "tests": [
+    "fishing.test.cjs",
+    "minnow-exchange-capacity.test.cjs"
+  ],
+  "expectedTestCounts": {
+    "fishing.test.cjs": 12,
+    "minnow-exchange-capacity.test.cjs": 4
+  },
+  "callerSHA256": "6e0023550eb35b9d8cf3c3710c20ecbf6944a3e0c44b0c8db26f3e0b43a7d2da",
+  "submitCallerSHA256": "54f7d2ea91000a39d842bfe046701e807a40e4a16ec9e8ac46de344f8919d022",
+  "payloadSHA256": "6028946a60c124772178a55f61285b6ac9eef1a05a5362199a836e8bea7ebfc3",
+  "bindingsSHA256": "b9a9b460201832f107af778486c45c806b55f46de039c3af3483b9c19c52d3dd",
+  "profileBasisSHA256": "8eb0af645befdd9c250e8716ab9adabfeeb65fc2044a33852e0d3eaad2aacb06",
+  "selectionSHA256": "d8bec00f935e008e94e6aa4a08cd6eb822849cc5069d477e527a6d1d4fc5c311"
+}
