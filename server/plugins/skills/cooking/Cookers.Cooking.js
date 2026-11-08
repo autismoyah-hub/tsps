@@ -527,6 +527,11 @@ function stopOnDisconnect({ player }) {
   stopCooking(player, false);
 }
 
+/** Discarding an item interrupts a pending cooking session. */
+function stopOnDiscard({ player }) {
+  stopCooking(player);
+}
+
 /** The one task that steps every cooking player, submitted with the first cook. */
 function ensureCookTask() {
   if (cookingTask) return;
@@ -544,6 +549,7 @@ function attachCookers(api) {
   api.persistAttribute(SUCCESS_COUNT_ATTRIBUTE, 0);
   api.onPlayerLogin(sendSuccessCount);
   api.onPlayerDisconnect(stopOnDisconnect);
+  api.onCustomEvent("item:discarded", stopOnDiscard);
   api.onCustomEvent("level-up:popup-opened", pauseCooking);
   api.onCustomEvent("cooking:count", countCookEvent);
 
