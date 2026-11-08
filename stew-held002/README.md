@@ -1,0 +1,9 @@
+# Held stew input candidate 002
+
+Non-runnable source-only preparation. No selection, executor, provider action or job is authorized. Custody is NO_KNOWN_RECEIPT / ambiguity HOLD. This package does not assert clearance.
+
+Frozen fixture c9606d test declarations: 31 top-level and 18 nested declaration sites. Four two-element static loops at lines 625 (range/fire), 692 (walk false/true), 988 (walk/disconnect), and 1073 (full false/true) add four invocations, predicting 53 total. All nested invocations require their parent to reach them; early setup/assertion failure may suppress children. TAP # tests is authoritative. The expected count is a positive-run bound, not a claim that baseline failure reaches all children.
+
+The two new schema 1 documents differ from immutable 56b827a2 only in expectedTestCounts: {} becomes {"cooking.test.cjs":53}. The existing 4918 raw hash/blob rows and source identities remain untouched. SAMEd750 independently verified those rows on 56b827a2. Profile is a candidate copied from the native profile basis, not review or admission. No cache, setup, stack frame or timing was run. Seeded restrictions exercise handler safety, not a natural preset producer.
+
+case-guard-candidate.py is a non-executable guard sketch. It does not obtain or authenticate a capture and unconditionally holds execution. A final case caller still requires a trustworthy direct capture implementation, nested intent classification, explicit authority/executor resolution, reviewed literal paths and SHA pins for actual interpreter, SDK target, helper, pilot, payload, resolver and collector, genuine review/custody provenance, byte snapshots used by the actual child, and independent finite review. Schema validation alone cannot establish genuine capture or completeness. No SDK projection or actual caller is asserted by this package.
