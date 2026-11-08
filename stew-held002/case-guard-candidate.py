@@ -57,7 +57,7 @@ def validate_fresh_capture(capture, subject, now):
     for job in capture['jobs']:
         if not isinstance(job,dict) or set(job)!={'source','name','project','status'} or any(not isinstance(job[k],str) or not job[k] for k in job): raise ValueError('unknown job fields')
         if job['project']!=subject['project']: raise ValueError('unexpected project')
-        if job['source']==subject['source'] and job['name']==subject['name']: raise ValueError('matching job: HOLD')
+        if job['source']==subject['source'] or job['name']==subject['name']: raise ValueError('matching source or name: HOLD')
     return True
 
 def execution_gate(*_args, **_kwargs):
