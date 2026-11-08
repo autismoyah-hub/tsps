@@ -61,13 +61,15 @@
  *    rift, lightning, prayer punishment, shadow) are not scripted.
  *  - Roger is not talkable (no transcript page); the stepping stone runs the
  *    crossing conversation and Roger is scenery.
- *  - The post-quest Selim claim and the Pharaoh Kemesis cutscene are not
- *    implemented; the owed partisan comes from the camp tent and the owed
- *    circlet from the Sophanem High Priest.
+ *  - The Pharaoh Kemesis cutscene is not implemented; the owed partisan comes
+ *    from the camp tent and the owed circlet from the Sophanem High Priest.
+ *    Selim sells additional partisans; his natural placement is not provided here.
  */
 module.exports = function registerBeneathCursedSandsQuest(api) {
   const {
     GameObject,
+    Inventory,
+    Item,
     ItemIdentifiers,
     Location,
     MapObjects,
@@ -207,6 +209,8 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
   const LILY_ITEM = ItemIdentifiers.LILY_OF_THE_ELID; // 26961
   const CURE_CRATE_ITEM = ItemIdentifiers.CURE_CRATE; // 26962
   const KERIS_PARTISAN_ITEM = ItemIdentifiers.KERIS_PARTISAN; // 25979
+  const COINS_ITEM = ItemIdentifiers.COINS;
+  const PARTISAN_PRICE = 60000;
   const CIRCLET_OF_WATER_ITEM = ItemIdentifiers.CIRCLET_OF_WATER; // 26969
   const COAL_ITEM = ItemIdentifiers.COAL; // 453
   const IRON_BAR_ITEM = ItemIdentifiers.IRON_BAR; // 2351
@@ -848,7 +852,19 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
   // Condition answers
   // ==========================================================================
 
-  function answerCondition({ player, text, stepId }) {
+  function isSelimDialogue(event) {
+    return (event.npcId === NpcIdentifiers.SELIM || event.npcId === NpcIdentifiers.SELIM_2)
+      && event.npc?.getContentId?.(event.player) === event.npcId
+      && (event.pages ?? []).some((entry) => entry.page === "Selim");
+  }
+
+  function answerCondition(event) {
+    const { player, text, stepId } = event;
+    if (stepId === "D3sMpc" || stepId === "-dvb1Z") {
+      if (!isSelimDialogue(event)) return null;
+      const enough = hasItem(player, COINS_ITEM, PARTISAN_PRICE);
+      return stepId === "-dvb1Z" ? enough : !enough;
+    }
     const value = String(text ?? "").toLowerCase();
     switch (stepId) {
       case "EG72ae": // requirements not met
@@ -1020,6 +1036,37 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
 
   function handleAction(event) {
     const { player, stepId } = event;
+    if (stepId === "DIC4H2") {
+      if (event.kind !== "message" || !isSelimDialogue(event)) return;
+      // Mark handled before any operation: even a replacement dialogue must not
+      // cause the transcript runner to print a success for a refused exchange.
+      event.handled = true;
+      event.end = true;
+      const inventory = player.getInventory();
+      if (!quest.isComplete(player) || inventory.getAmount(COINS_ITEM) < PARTISAN_PRICE) {
+        player.sendMessage("You cannot buy a Keris partisan right now.");
+        return;
+      }
+      const preview = new Inventory(player).setItems(inventory.getCopiedItems());
+      preview.deleted(COINS_ITEM, PARTISAN_PRICE, false);
+      if (preview.getAddableAmount(new Item(KERIS_PARTISAN_ITEM, 1)) !== 1) {
+        player.sendMessage("You don't have enough inventory space.");
+        return;
+      }
+      const coinsBefore = inventory.getAmount(COINS_ITEM);
+      const partisansBefore = inventory.getAmount(KERIS_PARTISAN_ITEM);
+      inventory.deleted(COINS_ITEM, PARTISAN_PRICE, false);
+      inventory.add(new Item(KERIS_PARTISAN_ITEM, 1), false);
+      inventory.refreshItems();
+      if (inventory.getAmount(COINS_ITEM) !== coinsBefore - PARTISAN_PRICE
+          || inventory.getAmount(KERIS_PARTISAN_ITEM) !== partisansBefore + 1) {
+        player.sendMessage("The Keris partisan purchase could not be completed.");
+        return;
+      }
+      event.handled = false;
+      event.end = false;
+      return;
+    }
     switch (stepId) {
       case "e-KOmi": // Sophanem High Priest: hand over the first cure crate
         if (hasItem(player, CURE_CRATE_ITEM)) player.getInventory().deleteNumber(CURE_CRATE_ITEM, 1);
