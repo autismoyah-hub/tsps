@@ -1606,6 +1606,18 @@ test("the attack the speed was asked for is the attack that starts", () => {
 });
 
 test("registered Wilderness assignment and NPC death keep the first-four points gate independent", async (t) => {
+  // Earlier contract tests install partial plugin APIs. Run this registered-world
+  // case in a clean process so their hook tables cannot affect its result.
+  if (process.env.SLAYER_POINTS_NATIVE_CHILD !== "1") {
+    const child = require("node:child_process").spawnSync(process.execPath,
+      ["--test", "--test-name-pattern=^registered Wilderness assignment and NPC death", __filename],
+      { env: { ...process.env, SLAYER_POINTS_NATIVE_CHILD: "1" }, encoding: "utf8", timeout: 120000, maxBuffer: 8 * 1024 * 1024 });
+    process.stdout.write(child.stdout ?? ""); process.stderr.write(child.stderr ?? "");
+    assert.equal(child.error, undefined, "the isolated registered-world process finishes");
+    assert.equal(child.signal, null);
+    assert.equal(child.status, 0, "the isolated registered-world assertions pass");
+    return;
+  }
   const path = require("node:path");
   const { Player } = require("../dist/game/entity/impl/player/Player");
   const { PlayerSession } = require("../dist/net/PlayerSession");
@@ -1647,6 +1659,8 @@ test("registered Wilderness assignment and NPC death keep the first-four points 
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
   assert.equal(require("../dist/game/definition/WorldDefinition").isMembersWorld(), true);
   PluginManager.loadFromDirectory(path.resolve(__dirname, "../plugins"));
+  assert.equal(PluginManager.npcDeathHooks.filter((hook) => hook.pluginName === "Slayer" && hook.handlerName === "npcKilled").length, 1,
+    "Slayer's task-kill handler is registered once");
   RegionManager.init();
   RegionManager.loadMapFiles(3222, 3218);
   PluginManager.emitServerStartup({}); started = true;
