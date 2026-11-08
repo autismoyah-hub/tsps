@@ -141,9 +141,9 @@ test('optional surface conversations use exact quest pages and preserve fallthro
     PluginManager.emitNpcInteraction(event);
     return event;
   }
-  for (const [id, variant, expected] of [[N.MILLIE_MILLER, 'a-tour-of-lumbridge-millie-miller', 'Hello Adventurers. Welcome to Mill Lane Mill. Can I help you?'],
-    [N.FATHER_URHNEY, 'a-tour-of-lumbridge-father-urhney', "Go away! I'm meditating!"], [N.GEE, 'a-tour-of-lumbridge-gee-or-donie', 'Hello there, can I help you?'],
-    [N.DONIE, 'a-tour-of-lumbridge-gee-or-donie', 'Hello there, can I help you?']]) {
+  for (const [id, variant, expected, last] of [[N.MILLIE_MILLER, 'a-tour-of-lumbridge-millie-miller', 'Hello Adventurers. Welcome to Mill Lane Mill. Can I help you?', "We don't have any of those things in Dorgesh-Kaan! They sound so interesting!"],
+    [N.FATHER_URHNEY, 'a-tour-of-lumbridge-father-urhney', "Go away! I'm meditating!", "I don't care! I'm still meditating!"], [N.GEE, 'a-tour-of-lumbridge-gee-or-donie', 'Hello there, can I help you?', "You'd get used to it!"],
+    [N.DONIE, 'a-tour-of-lumbridge-gee-or-donie', 'Hello there, can I help you?', "You'd get used to it!"]]) {
     spoken.length = 0; starts.length = 0;
     assert.equal(talk(p, id).handled, true);
     assert.equal(starts.length, 1);
@@ -151,6 +151,19 @@ test('optional surface conversations use exact quest pages and preserve fallthro
     assert.deepEqual(starts[0].variant, { page: PAGE, variant });
     assert.ok(spoken.some(line => line.player === p && line.text === expected), `quest line for ${id}`);
     assert.equal(p.manager.getCurrent()?.getNpcId?.(), id, 'the clicked actor supplies the chathead');
+    for (let i = 0; i < 30 && p.manager.getCurrent(); i++) p.manager.advance();
+    assert.equal(p.manager.getCurrent(), undefined, 'conversation completes within 30 advances');
+    assert.ok(spoken.some(line => line.player === p && line.text === last), `final quest line for ${id}`);
+    const expectedLines = require('../data/definitions/npc-dialogues.json')[PAGE].variants[variant].filter(step => step.type === 'line').map(step => step.text);
+    const actualLines = spoken.filter(line => line.player === p).map(line => line.text);
+    let position = 0;
+    for (const line of actualLines) if (line === expectedLines[position]) position++;
+    assert.equal(position, expectedLines.length, `all transcript NPC lines occur in order for ${id}`);
+    assert.equal(p.attrs.get(STAGE_KEY), 2, 'optional conversation preserves touring stage');
+    assert.equal(p.attrs.get(BITS_KEY) ?? 0, 0, 'optional conversation preserves mandatory tour bits');
+    spoken.length = 0; starts.length = 0;
+    assert.equal(talk(p, N.HANS).handled, true, 'ordinary next tour interaction is reachable');
+    assert.ok(spoken.some(line => line.text === 'Hello. What are you doing here?'), 'Hans uses the tour conversation');
     h.clearChat(p);
   }
   assert.equal(p.attrs.get(BITS_KEY) ?? 0, 0, 'optional conversations do not change mandatory bits');
