@@ -768,7 +768,10 @@ function finishObstacleOnLogout({ player }) {
 }
 
 function settleObstacleBeforeRemoval(event) {
-  if (ObstacleRunner.isBusy(event.player) || ObstacleRunner.hasUnsettledHazard(event.player)) {
+  const busy = ObstacleRunner.isBusy(event.player);
+  // A pending logout still suppresses the diary credit that logout fast-forward suppressed.
+  if (busy) logoutObstacleCompletions.add(event.player);
+  if (busy || ObstacleRunner.hasUnsettledHazard(event.player)) {
     event.allow = false;
   }
 }
