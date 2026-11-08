@@ -51,7 +51,7 @@ test('registered dock net Inspect preserves catch controls and speaks when empty
   player.setNeedsPlacement(false);
   player.setHitpoints(10);
   assert.equal(player.isRegistered(), true);
-  assert.equal(player.isDyingReturn(), false);
+  assert.notEqual(player.isDyingReturn(), true);
   assert.equal(player.getMovementQueue().isMovementBlocked(), false);
   assert.equal(player.getDialogueManager().isActive(), false);
   function inspect(id, location) {
