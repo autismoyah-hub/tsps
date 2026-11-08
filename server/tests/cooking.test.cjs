@@ -1448,7 +1448,7 @@ test('native cooking on a live fire', async suite => {
     });
     let turns = 0;
     const turn = () => {
-      assert.ok(++turns <= 120, 'bounded task phases');
+      assert.ok(++turns <= 240, 'bounded task phases');
       for (const actor of [a, b]) actor.p.resetUpdating();
       core.World.processCycle = (core.World.processCycle + 1) & 0x7fffffff;
       core.TaskManager.process(); a.c.processTurnPackets(); b.c.processTurnPackets();
@@ -1568,11 +1568,11 @@ test('native cooking on a live fire', async suite => {
     a.inv.deleteNumber(I.POTATO, 1);
     menu.execute(I.INCOMPLETE_STEW, 2);
     for (let n = 0; n < 8; n++) turn();
-    assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)], [0, 1, 1],
-      'stale batch choice makes only what the remaining ingredients support');
+    assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)], [1, 2, 0],
+      'removing the clicked potato aborts instead of substituting another item');
     assert.equal(a.skill.getExperience(core.Skill.COOKING), refusalXp);
     a.p.closeInterruptibleInterfaces();
-    a.inv.deleteNumber(I.BOWL_OF_WATER, 1); a.inv.deleteNumber(I.INCOMPLETE_STEW, 1);
+    a.inv.deleteNumber(I.POTATO, 1); a.inv.deleteNumber(I.BOWL_OF_WATER, 2);
     for (let n = 0; n < 2; n++) {
       a.inv.add(new core.Item(I.BOWL_OF_WATER, 1), false); a.inv.add(new core.Item(I.POTATO, 1), false);
     }
@@ -1588,6 +1588,20 @@ test('native cooking on a live fire', async suite => {
       'missing ingredient preserves both bowls and produces nothing');
     assert.equal(a.skill.getExperience(core.Skill.COOKING), refusalXp);
     a.p.closeInterruptibleInterfaces(); a.inv.deleteNumber(I.BOWL_OF_WATER, 2);
+    for (let n = 0; n < 2; n++) {
+      a.inv.add(new core.Item(I.BOWL_OF_WATER, 1), false); a.inv.add(new core.Item(I.POTATO, 1), false);
+    }
+    await a.c.dispatch([{ type: 'inventory_use_on', itemId: I.POTATO, slot: a.inv.getSlotForItemId(I.POTATO),
+      target: { kind: 'inventory', id: I.BOWL_OF_WATER, slot: a.inv.getSlotForItemId(I.BOWL_OF_WATER) } }]);
+    turn();
+    const batchMenu = a.p.getCreationMenu();
+    assert.ok(batchMenu, 'SETUP: ordinary two-item menu');
+    batchMenu.execute(I.INCOMPLETE_STEW, 2);
+    for (let n = 0; n < 8; n++) turn();
+    assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)], [0, 0, 2],
+      'a valid batch uses the clicked pair and one further plain pair');
+    assert.equal(a.skill.getExperience(core.Skill.COOKING), refusalXp);
+    a.p.closeInterruptibleInterfaces(); a.inv.deleteNumber(I.INCOMPLETE_STEW, 2);
 
     // A seeded raw stew exercises the same real range consumer's burn branch.
     a.inv.add(new core.Item(I.UNCOOKED_STEW, 1), false);
@@ -1605,6 +1619,67 @@ test('native cooking on a live fire', async suite => {
     for (let n = 0; n < 4; n++) turn();
     assert.equal(count(a, I.BURNT_STEW), 1, 'burn output remains one unit');
     assert.equal(count(b, I.BURNT_STEW), 0);
+    a.skill.setCurrentLevels(core.Skill.COOKING, 99, false);
+    a.inv.deleteNumber(I.STEW, 1); a.inv.deleteNumber(I.BURNT_STEW, 1);
+
+    // Exercise the two remaining meat/ingredient-order combinations through the same packet path.
+    for (const [first, second, intermediate] of [[I.COOKED_MEAT, I.POTATO, I.INCOMPLETE_STEW_3],
+      [I.POTATO, I.COOKED_CHICKEN, I.INCOMPLETE_STEW]]) {
+      for (const id of [I.BOWL_OF_WATER, first, second]) a.inv.add(new core.Item(id, 1), false);
+      await use(first, I.BOWL_OF_WATER);
+      assert.deepEqual([count(a, first), count(a, I.BOWL_OF_WATER), count(a, intermediate), count(a, second)], [0, 0, 1, 1]);
+      await use(second, intermediate);
+      assert.deepEqual([count(a, second), count(a, intermediate), count(a, I.UNCOOKED_STEW)], [0, 0, 1]);
+      a.inv.deleteNumber(I.UNCOOKED_STEW, 1);
+    }
+
+    async function dispatchPair(potatoSlot, waterSlot) {
+      const potato = a.inv.getItems()[potatoSlot], water = a.inv.getItems()[waterSlot], before = events.length;
+      await a.c.dispatch([{ type: 'inventory_use_on', itemId: I.POTATO, slot: potatoSlot,
+        target: { kind: 'inventory', id: I.BOWL_OF_WATER, slot: waterSlot } }]);
+      turn();
+      assert.deepEqual(events.slice(before), [{ used: potato, target: water, usedSlot: potatoSlot,
+        targetSlot: waterSlot, handled: true, result: true }]);
+      return { potato, water };
+    }
+    for (const key of [core.Item.PRESET_META, core.Item.UNTRADEABLE_META, core.Item.UNBANKABLE_META, 'stew:test-marker']) {
+      for (const protectedId of [I.POTATO, I.BOWL_OF_WATER]) {
+        a.inv.add(new core.Item(I.POTATO, 1), false); a.inv.add(new core.Item(I.BOWL_OF_WATER, 1), false);
+        const potatoSlot = a.inv.getSlotForItemId(I.POTATO), waterSlot = a.inv.getSlotForItemId(I.BOWL_OF_WATER);
+        const protectedSlot = protectedId === I.POTATO ? potatoSlot : waterSlot;
+        const protectedItem = a.inv.getItems()[protectedSlot]; protectedItem.setMetaValue(key, true);
+        await dispatchPair(potatoSlot, waterSlot);
+        for (let n = 0; n < 5; n++) turn();
+        assert.equal(a.inv.getItems()[protectedSlot], protectedItem, 'protected selected instance remains in its slot');
+        assert.equal(protectedItem.getMetaValue(key), true);
+        assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)], [1, 1, 0]);
+        a.inv.deleteAtSlot(potatoSlot, 1); a.inv.deleteAtSlot(waterSlot, 1);
+      }
+    }
+    // A protected earlier same-ID slot must never be substituted for the plain clicked potato.
+    a.inv.add(new core.Item(I.POTATO, 1), false);
+    const protectedSlot = a.inv.getSlotForItemId(I.POTATO), protectedPotato = a.inv.getItems()[protectedSlot];
+    protectedPotato.setMetaValue(core.Item.PRESET_META, true);
+    a.inv.add(new core.Item(I.POTATO, 1), false); a.inv.add(new core.Item(I.BOWL_OF_WATER, 1), false);
+    const plainSlot = a.inv.getItems().findIndex((item, slot) => slot !== protectedSlot && item.getId() === I.POTATO);
+    const waterSlot2 = a.inv.getSlotForItemId(I.BOWL_OF_WATER);
+    await dispatchPair(plainSlot, waterSlot2);
+    for (let n = 0; n < 5; n++) turn();
+    assert.equal(a.inv.getItems()[protectedSlot], protectedPotato);
+    assert.equal(protectedPotato.getMetaValue(core.Item.PRESET_META), true);
+    assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)], [1, 0, 1]);
+    a.inv.deleteAtSlot(protectedSlot, 1); a.inv.deleteNumber(I.INCOMPLETE_STEW, 1);
+
+    // Replace the clicked object after dispatch but before the recipe task spends anything.
+    a.inv.add(new core.Item(I.POTATO, 1), false); a.inv.add(new core.Item(I.BOWL_OF_WATER, 1), false);
+    const staleSlot = a.inv.getSlotForItemId(I.POTATO), staleWater = a.inv.getSlotForItemId(I.BOWL_OF_WATER);
+    const selected = await dispatchPair(staleSlot, staleWater);
+    const replacement = new core.Item(I.POTATO, 1); a.inv.setItem(staleSlot, replacement);
+    assert.notEqual(replacement, selected.potato);
+    for (let n = 0; n < 5; n++) turn();
+    assert.equal(a.inv.getItems()[staleSlot], replacement);
+    assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)], [1, 1, 0]);
+    assert.equal(a.skill.getExperience(core.Skill.COOKING), refusalXp);
   });
   // The members-world control confirms the same range recipe remains available.
 await suite.test('a members-world range cooks raw mackerel', async t => {

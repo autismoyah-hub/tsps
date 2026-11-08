@@ -22,8 +22,25 @@ const NO_SPACE_FOR_DOUGH_MESSAGE = "You don't have enough inventory space to mak
 /** Half made bowl (chocolate bomb), whose cache gameval name is shared by other bowls. */
 const CHOCOLATE_BOMB_BOWL = 9563;
 
+/** Plain, single-slot ingredients can be consumed without discarding item metadata. */
+function plainInput(item, id) {
+  return item?.getId() === id && item.getAmount() === 1 && item.getMeta() === null
+    && !item.isPresetItem() && !item.isUntradeable() && !item.isUnbankable();
+}
+
+function eligibleSlots(inventory, id) {
+  return inventory.getItems().flatMap((item, slot) => plainInput(item, id) ? [slot] : []);
+}
+
+function validSelected(inventory, selected) {
+  return Array.isArray(selected) && selected.length === 2 && selected[0].slot !== selected[1].slot
+    && selected.every(({ item, slot, id }) => Number.isInteger(slot)
+      && inventory.getItems()[slot] === item && plainInput(item, id));
+}
+
 function hasIngredients(inventory, recipe) {
-  return recipe.ingredients.every(({ id, count }) => inventory.getAmount(id) >= count);
+  return recipe.ingredients.every(({ id, count }) => recipe.plainInputs
+    ? eligibleSlots(inventory, id).length >= count : inventory.getAmount(id) >= count);
 }
 
 /** Room for what one item gives back: the dough, its pot and the emptied container need a slot more than flour and water. */
@@ -33,7 +50,8 @@ function hasRoom(inventory, recipe) {
 
 /** How many of the recipe the inventory holds the ingredients for. */
 function makeable(inventory, recipe) {
-  return Math.min(...recipe.ingredients.map(({ id, count }) => Math.floor(inventory.getAmount(id) / count)));
+  return Math.min(...recipe.ingredients.map(({ id, count }) => Math.floor(
+    (recipe.plainInputs ? eligibleSlots(inventory, id).length : inventory.getAmount(id)) / count)));
 }
 
 function productName(recipe) {
@@ -65,11 +83,21 @@ function canMake(player, recipe) {
 }
 
 /** One item: the ingredients go, the product (and any emptied containers) come, with any XP. */
-function makeOne(player, recipe) {
+function makeOne(player, recipe, selected) {
   const { Item, Skill } = Common.core;
   const inventory = player.getInventory();
   if (!availableOnWorld(recipe) || !hasIngredients(inventory, recipe) || !hasRoom(inventory, recipe)) return false;
-  for (const { id, count } of recipe.ingredients) inventory.deleteNumber(id, count);
+  if (recipe.plainInputs) {
+    if (selected && !validSelected(inventory, selected)) return false;
+    const slots = selected ? selected.map(({ slot }) => slot)
+      : recipe.ingredients.flatMap(({ id, count }) => eligibleSlots(inventory, id).slice(0, count));
+    if (slots.length !== recipe.ingredients.reduce((total, { count }) => total + count, 0)
+      || new Set(slots).size !== slots.length) return false;
+    for (const slot of slots) inventory.deleteAtSlot(slot, 1, false);
+    inventory.refreshItems();
+  } else {
+    for (const { id, count } of recipe.ingredients) inventory.deleteNumber(id, count);
+  }
   inventory.addItem(new Item(recipe.productId, 1));
   for (const { id, count } of recipe.returns) inventory.addItem(new Item(id, count));
   if (recipe.message) Common.spam(player, recipe.message);
@@ -84,7 +112,7 @@ function makeOne(player, recipe) {
  * each item's ingredients, `hooks.made()` after each item and
  * `hooks.done()` after the last one made.
  */
-function start(player, recipe, amount, hooks = {}) {
+function start(player, recipe, amount, hooks = {}, selected = null) {
   Common.core.TaskManager.cancelTasks(player.getIndex());
   if (hooks.canMake?.() === false) return;
   let remaining = amount;
@@ -95,7 +123,7 @@ function start(player, recipe, amount, hooks = {}) {
     if (--wait > 0) return true;
     const actions = Common.actionsPerCycle(player, "make");
     for (let done = 0; done < actions && remaining > 0; done++) {
-      if (hooks.canMake?.() === false || !makeOne(player, recipe)) {
+      if (hooks.canMake?.() === false || !makeOne(player, recipe, made === 0 ? selected : null)) {
         if (made > 0) hooks.done?.();
         return false;
       }
@@ -117,19 +145,20 @@ function start(player, recipe, amount, hooks = {}) {
  * "How many do you wish to make?" showing the product, offering as many as the inventory makes
  * (rsprox captures). One to make is made without a menu.
  */
-function offer(player, recipe, hooks) {
+function offer(player, recipe, hooks, selected = null) {
   if (!canMake(player, recipe)) return;
+  if (recipe.plainInputs && !validSelected(player.getInventory(), selected)) return;
   const most = makeable(player.getInventory(), recipe);
   if (most <= 0) return;
   if (most === 1) {
-    start(player, recipe, 1, hooks);
+    start(player, recipe, 1, hooks, selected);
     return;
   }
   const { CreationMenu } = Common.core;
   player.getPacketSender().sendCreationMenu(new CreationMenu(
     MAKE_TITLE,
     [recipe.productId],
-    { execute: (_itemId, amount) => start(player, recipe, Math.min(amount, makeable(player.getInventory(), recipe)), hooks) },
+    { execute: (_itemId, amount) => start(player, recipe, Math.min(amount, makeable(player.getInventory(), recipe)), hooks, selected) },
     { mode: MAKE_MENU_MODE, maxAmount: most, lastAmount: most },
   ));
 }
@@ -194,7 +223,11 @@ function useItemOnItem(event) {
   const recipe = Common.recipeWith(usedItemId, usedWithItemId);
   if (!recipe) return;
   event.handled = true;
-  offer(player, recipe);
+  const selected = recipe.plainInputs ? [
+    { item: event.usedItem, slot: event.usedItemSlot, id: usedItemId },
+    { item: event.usedWithItem, slot: event.usedWithItemSlot, id: usedWithItemId },
+  ] : null;
+  offer(player, recipe, undefined, selected);
 }
 
 /** A half baked gnomebowl's Prepare option opens the same chocolate-bomb recipe its bars make. */
