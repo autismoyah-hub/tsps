@@ -1546,7 +1546,18 @@ test('native cooking on a live fire', async suite => {
     a.skill.setCurrentLevels(core.Skill.COOKING, 24, false);
     a.inv.add(new core.Item(I.BOWL_OF_WATER, 1), false); a.inv.add(new core.Item(I.POTATO, 1), false);
     const refusalXp = a.skill.getExperience(core.Skill.COOKING);
-    await use(I.POTATO, I.BOWL_OF_WATER);
+    const sender = a.p.getPacketSender(), sendString = sender.sendString, refusalText = [];
+    const messageSpy = t.mock.method(sender, 'sendString', function(text, widget, ...rest) {
+      if (widget === ((229 << 16) | 3)) refusalText.push(text);
+      return sendString.call(this, text, widget, ...rest);
+    });
+    try {
+      await use(I.POTATO, I.BOWL_OF_WATER);
+    } finally {
+      messageSpy.mock.restore();
+    }
+    assert.equal(refusalText.length, 1, 'level refusal opens one message box');
+    assert.match(refusalText[0], /^You need a Cooking level of 25 to make .+\.$/);
     assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)], [1, 1, 0]);
     assert.equal(a.skill.getExperience(core.Skill.COOKING), refusalXp);
     a.p.closeInterruptibleInterfaces();
