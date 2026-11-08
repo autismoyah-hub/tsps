@@ -1483,7 +1483,11 @@ test('native cooking on a live fire', async suite => {
     const count = (actor, id) => actor.inv.getAmount(id);
     for (const [first, second, middle] of [[I.POTATO, I.COOKED_MEAT, I.INCOMPLETE_STEW],
       [I.COOKED_CHICKEN, I.POTATO, I.INCOMPLETE_STEW_3]]) {
+      if (first === I.COOKED_CHICKEN) {
+        for (let n = 0; n < 25; n++) a.inv.add(new core.Item(I.LOGS, 1), false);
+      }
       for (const id of [I.BOWL_OF_WATER, first, second]) a.inv.add(new core.Item(id, 1), false);
+      if (first === I.COOKED_CHICKEN) assert.equal(a.inv.getFreeSlots(), 0, 'SETUP: full inventory for preparation');
       assert.equal(count(a, I.UNCOOKED_STEW), 0, 'SETUP: no existing product');
       await use(first, I.BOWL_OF_WATER);
       assert.deepEqual([count(a, first), count(a, I.BOWL_OF_WATER), count(a, middle), count(a, second)], [0, 0, 1, 1]);
@@ -1494,6 +1498,9 @@ test('native cooking on a live fire', async suite => {
       assert.equal(count(b, I.UNCOOKED_STEW), 0, 'another actor receives nothing');
       if (first === I.POTATO) a.inv.deleteNumber(I.UNCOOKED_STEW, 1);
     }
+    assert.equal(count(a, I.LOGS), 25, 'preparation kept all unrelated items');
+    a.inv.add(new core.Item(I.LOGS, 1), false); a.inv.add(new core.Item(I.LOGS, 1), false);
+    assert.equal(a.inv.getFreeSlots(), 0, 'SETUP: full inventory before cooking');
     // Seed the actor near an actual loaded range; the stew itself came from the preceding use.
     core.RegionManager.loadMapFiles(3264, 3136);
     const range = [...core.MapObjects.mapObjects.values()].flat().find(object => {
@@ -1528,6 +1535,7 @@ test('native cooking on a live fire', async suite => {
     assert.equal(a.skill.getExperience(core.Skill.COOKING) - beforeXp, 117);
     for (let n = 0; n < 4; n++) turn();
     assert.equal(count(a, I.STEW), 1, 'delayed cooking does not duplicate the bowl');
+    assert.equal(count(a, I.LOGS), 27, 'cooking keeps unrelated inventory items');
     assert.equal(count(b, I.STEW), 0, 'other actor receives no stew');
   });
   // The members-world control confirms the same range recipe remains available.
