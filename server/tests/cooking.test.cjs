@@ -1448,7 +1448,7 @@ test('native cooking on a live fire', async suite => {
     });
     let turns = 0;
     const turn = () => {
-      assert.ok(++turns <= 240, 'bounded task phases');
+      assert.ok(++turns <= 280, 'bounded task phases');
       for (const actor of [a, b]) actor.p.resetUpdating();
       core.World.processCycle = (core.World.processCycle + 1) & 0x7fffffff;
       core.TaskManager.process(); a.c.processTurnPackets(); b.c.processTurnPackets();
@@ -1602,6 +1602,37 @@ test('native cooking on a live fire', async suite => {
       'a valid batch uses the clicked pair and one further plain pair');
     assert.equal(a.skill.getExperience(core.Skill.COOKING), refusalXp);
     a.p.closeInterruptibleInterfaces(); a.inv.deleteNumber(I.INCOMPLETE_STEW, 2);
+
+    // Drop below the requirement after a valid menu choice, then between batch units.
+    for (const dropAfterFirst of [false, true]) {
+      for (let n = 0; n < 2; n++) {
+        a.inv.add(new core.Item(I.BOWL_OF_WATER, 1), false); a.inv.add(new core.Item(I.POTATO, 1), false);
+      }
+      await a.c.dispatch([{ type: 'inventory_use_on', itemId: I.POTATO, slot: a.inv.getSlotForItemId(I.POTATO),
+        target: { kind: 'inventory', id: I.BOWL_OF_WATER, slot: a.inv.getSlotForItemId(I.BOWL_OF_WATER) } }]);
+      turn();
+      const levelMenu = a.p.getCreationMenu();
+      assert.ok(levelMenu, 'SETUP: two-unit menu while at the required level');
+      levelMenu.execute(I.INCOMPLETE_STEW, 2);
+      if (dropAfterFirst) {
+        for (let n = 0; n < 8 && count(a, I.INCOMPLETE_STEW) === 0; n++) turn();
+        assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)], [1, 1, 1],
+          'SETUP: one unit was actually made before the level drop');
+      }
+      const heldBeforeDrop = a.inv.getItems().flatMap((item, slot) =>
+        [I.POTATO, I.BOWL_OF_WATER].includes(item.getId()) ? [{ item, slot }] : []);
+      a.skill.setCurrentLevels(core.Skill.COOKING, 24, false);
+      for (let n = 0; n < 8; n++) turn();
+      assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)],
+        dropAfterFirst ? [1, 1, 1] : [2, 2, 0], 'level drop stops deferred spending');
+      for (const { item, slot } of heldBeforeDrop) assert.equal(a.inv.getItems()[slot], item, 'the exact remaining item stays in its slot');
+      assert.equal(a.skill.getExperience(core.Skill.COOKING), refusalXp);
+      a.p.closeInterruptibleInterfaces();
+      a.inv.deleteNumber(I.POTATO, dropAfterFirst ? 1 : 2);
+      a.inv.deleteNumber(I.BOWL_OF_WATER, dropAfterFirst ? 1 : 2);
+      if (dropAfterFirst) a.inv.deleteNumber(I.INCOMPLETE_STEW, 1);
+      a.skill.setCurrentLevels(core.Skill.COOKING, 99, false);
+    }
 
     // A seeded raw stew exercises the same real range consumer's burn branch.
     a.inv.add(new core.Item(I.UNCOOKED_STEW, 1), false);

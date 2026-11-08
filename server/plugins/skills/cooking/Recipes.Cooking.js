@@ -86,6 +86,8 @@ function canMake(player, recipe) {
 function makeOne(player, recipe, selected) {
   const { Item, Skill } = Common.core;
   const inventory = player.getInventory();
+  // Opted-in recipes must still meet their level at each deferred ingredient spend.
+  if (recipe.plainInputs && Common.level(player) < recipe.level) return false;
   if (!availableOnWorld(recipe) || !hasIngredients(inventory, recipe) || !hasRoom(inventory, recipe)) return false;
   if (recipe.plainInputs) {
     if (selected && !validSelected(inventory, selected)) return false;
