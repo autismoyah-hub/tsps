@@ -1401,6 +1401,9 @@ test('native cooking on a live fire', async suite => {
     const ids = [I.BOWL_OF_WATER, I.POTATO, I.COOKED_MEAT, I.COOKED_CHICKEN,
       I.INCOMPLETE_STEW, I.INCOMPLETE_STEW_3, I.UNCOOKED_STEW];
     assert.deepEqual(ids, [1921, 1942, 2142, 2140, 1997, 1999, 2001], 'SETUP: active ordinary item identities');
+    assert.deepEqual(['bowl_water', 'potato', 'cooked_meat', 'cooked_chicken', 'stew1', 'stew2', 'uncooked_stew', 'stew', 'burnt_stew']
+      .map(name => core.CacheDefinitions.getObjId(name)), [...ids, I.STEW, I.BURNT_STEW],
+      'SETUP: active cache gamevals match the ordinary recipe and heat inputs');
     for (const id of ids) {
       assert.equal(core.ItemDefinition.forId(id).isNoted(), false, 'SETUP: unnoted item');
       assert.equal(core.ItemDefinition.forId(id).isStackable(), false, 'SETUP: one slot per item');
