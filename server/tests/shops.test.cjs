@@ -160,6 +160,43 @@ function sell(player, slot, option = "Sell 1") {
   });
 }
 
+test("an explicit shop row price reaches purchase and sellback hooks", (t) => {
+  // The explicit value represents a generated row; this fixture uses stubbed
+  // player/item definitions but real ShopManager, Item and Inventory paths.
+  const seen = [];
+  t.mock.method(PluginManager, "emitCustomEvent", (name, event) => {
+    if (name === "shop:buy-price" && event.itemId === STEEL_AXE) {
+      seen.push([name, event.price]);
+      event.price = 80;
+    }
+    if (name === "shop:sell-price" && event.itemId === STEEL_AXE) {
+      seen.push([name, event.buyPrice, event.price]);
+      event.price = 50;
+    }
+  });
+  ShopDefinition.replace([new ShopDefinition(AXE_SHOP, "Price control", "COINS", [
+    { id: STEEL_AXE, amount: 1, restockTicks: null, price: 100 },
+  ], 100, 100, 100, "test")]);
+  ShopManager.initialize();
+  const player = createPlayer();
+  player.getInventory().add(new Item(COINS, 1000), false);
+  ShopManager.open(player, AXE_SHOP);
+  seen.length = 0;
+  buy(player, 0, STEEL_AXE);
+  assert.equal(player.getInventory().getAmount(COINS), 920);
+  assert.equal(player.getInventory().getAmount(STEEL_AXE), 1);
+  assert.deepEqual(stockOf(), [[STEEL_AXE, 0]]);
+  assert.ok(seen.some((entry) => entry[0] === "shop:buy-price" && entry[1] === 100));
+  const slot = player.getInventory().getItems().findIndex((item) => item?.getId() === STEEL_AXE);
+  assert.ok(slot >= 0);
+  seen.length = 0;
+  sell(player, slot);
+  assert.equal(player.getInventory().getAmount(COINS), 970);
+  assert.equal(player.getInventory().getAmount(STEEL_AXE), 0);
+  assert.deepEqual(stockOf(), [[STEEL_AXE, 1]]);
+  assert.ok(seen.some((entry) => entry[0] === "shop:sell-price" && entry[1] === 100 && entry[2] === 85));
+});
+
 test("Sell N sells unstackable items from every slot, skipping ones that can't be sold", () => {
   const player = openShop(0);
   player.getInventory().add(new Item(STEEL_AXE, 1), false);
