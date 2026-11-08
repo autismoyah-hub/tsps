@@ -56,6 +56,7 @@ const DEFAULT_MOVE_TICKS = 1;
 const MAX_WALK_TILES = 64;
 
 const BUSY_ATTRIBUTE = "agility.obstacle";
+const pendingHazards = new WeakMap();
 /** The client's BUSY varbit: 1 while a course obstacle plays, 0 as it ends (rsprox 1788, 1885). */
 const BUSY_VARBIT = 12393;
 
@@ -136,8 +137,32 @@ function hit(player, amount) {
       ? Math.floor((player.getHitpoints() * amount.percent) / 100) + (amount.plus ?? 0)
       : amount;
   if (damage > 0) {
-    player.getCombat().getHitQueue().addPendingDamage([new HitDamage(damage, HitMask.RED)]);
+    hasUnsettledHazard(player);
+    const hit = new HitDamage(damage, HitMask.RED);
+    let hazards = pendingHazards.get(player);
+    if (!hazards) pendingHazards.set(player, hazards = { hits: new Set(), awaitingRespawn: false });
+    hazards.hits.add(hit);
+    hit.onApplied(() => {
+      hazards.hits.delete(hit);
+      if (player.getHitpoints() <= 0) hazards.awaitingRespawn = true;
+      if (hazards.hits.size === 0 && !hazards.awaitingRespawn) pendingHazards.delete(player);
+    });
+    player.getCombat().getHitQueue().addPendingDamage([hit]);
   }
+}
+
+/** Keep the actor registered through its own fall damage and, if lethal, normal respawn. */
+function hasUnsettledHazard(player) {
+  const hazards = pendingHazards.get(player);
+  if (!hazards) return false;
+  if (hazards.awaitingRespawn && player.getHitpoints() <= 0) return true;
+  const queue = player.getCombat().getHitQueue();
+  for (const hit of hazards.hits) {
+    if (!queue.hasPendingDamage(hit)) hazards.hits.delete(hit);
+  }
+  if (hazards.hits.size > 0) return true;
+  pendingHazards.delete(player);
+  return false;
 }
 
 /** One tile of a forced walk; bypasses the movement queue so clipping never stops it. */
@@ -179,8 +204,7 @@ function expandSteps(steps) {
 function createObstacleTask(Task) {
   return class ObstacleTask extends Task {
     constructor(context, steps, onFinish) {
-      // Each attempt owns its key; other content cancels player-keyed work during logout.
-      super(1, context, true);
+      super(1, context.player, true);
       this.context = context;
       this.player = context.player;
       this.steps = expandSteps(steps);
@@ -428,6 +452,7 @@ module.exports = {
   DIRECTION_VECTORS,
   init,
   isBusy,
+  hasUnsettledHazard,
   run,
   completeNow,
   directionBetween,

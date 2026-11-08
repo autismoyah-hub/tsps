@@ -1237,7 +1237,14 @@ export class World {
                     World.removePlayerQueue.splice(index, 1);
                     continue;
                 }
-                if (Server.isUpdating() || player.readyToLeaveWorld()) {
+                const updating = Server.isUpdating();
+                if (updating || player.readyToLeaveWorld()) {
+                    // Content may need normal mechanics/hit/death ticks before its actor is saved.
+                    // Forced shutdown and stale entries for an already removed actor still drain.
+                    if (!updating && player.isRegistered() && !PluginManager.emitCanRemovePlayer(player)) {
+                        amount++;
+                        continue;
+                    }
                     if (player.isPlayerBot?.() !== true) {
                         activeRegionsChanged = true;
                     }

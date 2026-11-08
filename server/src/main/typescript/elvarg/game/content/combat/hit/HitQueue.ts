@@ -169,6 +169,11 @@ export class HitQueue {
         return this.pendingHits.some((entry) => entry.hit === hit);
     }
 
+    /** Whether this exact damage is still waiting for the owner's hit phase. */
+    hasPendingDamage(hit: HitDamage): boolean {
+        return this.pendingDamage.includes(hit);
+    }
+
     hasPendingHitFrom(attacker: Mobile): boolean {
         return this.pendingHits.some(({ hit }) => hit.getAttacker() === attacker);
     }

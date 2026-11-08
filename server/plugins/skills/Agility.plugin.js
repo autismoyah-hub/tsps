@@ -767,6 +767,12 @@ function finishObstacleOnLogout({ player }) {
   logoutObstacleCompletions.delete(player);
 }
 
+function settleObstacleBeforeRemoval(event) {
+  if (ObstacleRunner.isBusy(event.player) || ObstacleRunner.hasUnsettledHazard(event.player)) {
+    event.allow = false;
+  }
+}
+
 buildIndex();
 
 module.exports = {
@@ -791,6 +797,7 @@ module.exports = {
     api.onNpcInteraction("Agility Trainer", { "Give-Stick": operateNpcObstacle });
     api.registerArea(createTileObstacleArea());
     api.onCanTeleport(blockTeleportMidObstacle);
+    api.onCanRemovePlayer(settleObstacleBeforeRemoval);
     api.onPlayerLogout(finishObstacleOnLogout);
     api.onPlayerLogout(pauseMarksOnLogout);
     api.onPlayerLogin(resumeMarksOnLogin);

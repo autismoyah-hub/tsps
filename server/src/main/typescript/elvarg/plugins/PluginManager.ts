@@ -33,6 +33,7 @@ import {
   PluginFiremakingBlockedEvent,
   PluginCanTeleportEvent,
   PluginCanLogoutEvent,
+  PluginCanRemovePlayerEvent,
   PluginGroundItemInteractionEvent,
   PluginItemActionEvent,
   PluginModule,
@@ -306,6 +307,7 @@ export class PluginManager {
   private static canAttackHooks: PluginHook<PluginCanAttackEvent>[] = [];
   private static canTeleportHooks: PluginHook<PluginCanTeleportEvent>[] = [];
   private static canLogoutHooks: PluginHook<PluginCanLogoutEvent>[] = [];
+  private static canRemovePlayerHooks: PluginHook<PluginCanRemovePlayerEvent>[] = [];
   private static canEatHooks: PluginHook<PluginCanEatEvent>[] = [];
   private static firemakingBlockedHooks: PluginHook<PluginFiremakingBlockedEvent>[] = [];
   private static canDrinkHooks: PluginHook<PluginCanDrinkEvent>[] = [];
@@ -1327,6 +1329,17 @@ export class PluginManager {
       if (event.allow === true) return null;
     }
     return null;
+  }
+
+  /** Any content hold defers removal; this also applies to a closed connection. */
+  public static emitCanRemovePlayer(player: any): boolean {
+    const event: PluginCanRemovePlayerEvent = { player, allow: null };
+    for (const hook of PluginManager.canRemovePlayerHooks) {
+      event.allow = null;
+      PluginManager.executeHook(hook, event, "can_remove_player", "can_remove_player");
+      if (event.allow === false) return false;
+    }
+    return true;
   }
 
   public static emitCanEat(player: any, itemId: number): boolean | null {
@@ -3368,6 +3381,20 @@ export class PluginManager {
           return;
         }
         PluginManager.canLogoutHooks.push({
+          ...hookProfile(handler),
+          handler: (event) => {
+            if (!event || !event.player) {
+              return;
+            }
+            handler(event);
+          },
+        });
+      },
+      onCanRemovePlayer: (handler) => {
+        if (typeof handler !== "function") {
+          return;
+        }
+        PluginManager.canRemovePlayerHooks.push({
           ...hookProfile(handler),
           handler: (event) => {
             if (!event || !event.player) {

@@ -393,6 +393,12 @@ export interface PluginCanLogoutEvent {
   reason?: string;
 }
 
+/** Defers world removal while content finishes work that requires a registered actor. */
+export interface PluginCanRemovePlayerEvent {
+  player: any;
+  allow: boolean | null;
+}
+
 export interface PluginCanEatEvent {
   player: any;
   itemId: number;
@@ -1092,6 +1098,7 @@ export interface PluginApi {
   onCanAttack(handler: (event: PluginCanAttackEvent) => void): void;
   onCanTeleport(handler: (event: PluginCanTeleportEvent) => void): void;
   onCanLogout(handler: (event: PluginCanLogoutEvent) => void): void;
+  onCanRemovePlayer(handler: (event: PluginCanRemovePlayerEvent) => void): void;
   onCanEat(handler: (event: PluginCanEatEvent) => void): void;
   onFiremakingBlocked(
     handler: (event: PluginFiremakingBlockedEvent) => void
