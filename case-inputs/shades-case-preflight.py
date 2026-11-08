@@ -8,6 +8,10 @@ PREFIX='server/plugins/skills/crafting/'
 def sha(data):return hashlib.sha256(data).hexdigest()
 def preflight(which):
  source,mhash=CASES[which];folder=ROOT/which; raw=(folder/'manifest.json').read_bytes()
+ subprocess.run(['git','-C',str(REPO),'fetch','origin','main'],check=True,stdout=subprocess.DEVNULL)
+ if subprocess.run(['git','-C',str(REPO),'diff','--quiet','f44efb070e7f044ba1c4c67608f1260daab12127','origin/main','--','server/plugins/quests/quests/ShadesOfMortton.Quest.js'],check=False).returncode != 0:raise RuntimeError('current source changed; HOLD')
+ prs=json.loads(subprocess.check_output(['gh','pr','list','--repo','RSPSApp/tsps','--state','open','--limit','100','--json','files']))
+ if len(prs)>=100 or any(any(f.get('path') in ('server/plugins/quests/quests/ShadesOfMortton.Quest.js','server/tests/shades-sanctity-logout.test.cjs') for f in pr.get('files',[])) for pr in prs):raise RuntimeError('open PR overlap or incomplete listing; HOLD')
  if sha(raw)!=mhash or len(raw)!=1087345:raise RuntimeError('manifest identity')
  manifest=json.loads(raw); plan=json.loads((folder/'pilot.json').read_bytes())
  if manifest['source']!=source or manifest['excludedPrefix']!=PREFIX or manifest['excludedCount']!=11 or plan['source']!=source or plan['executionHold'] is not True or plan['timeout']!=1800 or plan['attempts']!=1:raise RuntimeError('profile mismatch')
