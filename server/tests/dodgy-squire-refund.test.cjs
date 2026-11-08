@@ -5,7 +5,7 @@
 // Later refund assertions are only reached if the expected offer is first produced.
 const assert = require("node:assert/strict");
 const path = require("node:path");
-const { before, test } = require("node:test");
+const { before, after, test } = require("node:test");
 require("../dist/Server").Server.installProductionPathResolver();
 const { CachePipeline } = require("../dist/game/cache/CachePipeline");
 const { NpcDefinitionLoader } = require("../dist/game/definition/loader/impl/NpcDefinitionLoader");
@@ -17,11 +17,34 @@ const Rewards = require("../plugins/minigames/pestcontrol/Rewards.PestControl");
 
 let core;
 let nextIndex = 5700;
+let pluginsLoading = false;
+
+function attempt(errors, fn) {
+  try { fn(); } catch (error) { errors.push(error); }
+}
+
+function emitCleanup(errors, label, emit) {
+  const originalError = console.error;
+  console.error = (...args) => {
+    if (String(args[0]).startsWith(`[plugins] ${label} hook failed (`)) {
+      errors.push(new Error(args.map(String).join(" ")));
+    }
+    originalError.apply(console, args);
+  };
+  try { attempt(errors, emit); } finally { console.error = originalError; }
+}
+
+after(() => {
+  const errors = [];
+  if (pluginsLoading) emitCleanup(errors, "server_shutdown", () => PluginManager.emitServerShutdown({}));
+  if (errors.length) throw new AggregateError(errors, "plugin shutdown failed");
+});
 
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
   new NpcDefinitionLoader().load();
   assert.equal(isMembersWorld(), true, "reward service requires a members world");
+  pluginsLoading = true;
   PluginManager.loadFromDirectory(path.resolve(__dirname, "../plugins"));
   core = PluginManager.getCoreApi();
   core.ObjectDefinition.init();
@@ -37,9 +60,13 @@ function fixture(t, itemId) {
   player.setLocation(new core.Location(2667, 2656, 0));
   player.needsPlacement = false;
   t.after(() => {
-    player.closeInterruptibleInterfaces();
-    player.setRegistered(false);
-    core.TaskManager.cancelTasks(player.getIndex());
+    const errors = [];
+    attempt(errors, () => player.closeInterruptibleInterfaces());
+    emitCleanup(errors, "logout", () => PluginManager.emitPlayerLogout({ player, username: player.getUsername() }));
+    attempt(errors, () => core.TaskManager.cancelTasks(player));
+    attempt(errors, () => core.TaskManager.cancelTasks(player.getIndex()));
+    attempt(errors, () => player.setRegistered(false));
+    if (errors.length) throw new AggregateError(errors, "owned actor cleanup failed");
   });
   assert.ok(player.getHitpoints() > 0, "the actor is alive");
   const id = core.NpcIdentifiers.DODGY_SQUIRE;
