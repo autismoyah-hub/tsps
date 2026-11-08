@@ -1,5 +1,4 @@
 // Native shop, currency and inventory path. Requires the built server and its cache.
-process.env.DISABLE_PLAYER_BOTS = "1";
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const { before, after, test } = require("node:test");
@@ -11,8 +10,13 @@ const { Player } = require("../dist/game/entity/impl/player/Player");
 const { PlayerSession } = require("../dist/net/PlayerSession");
 const { ClientConnection } = require("../dist/net/NetworkBuilder");
 const { MAX_STACK_AMOUNT } = require("../dist/game/model/container/StackType");
-let core, index = 7800;
+let core, serial = 0;
+const oldBots = process.env.DISABLE_PLAYER_BOTS;
+const oldError = console.error;
+const hookErrors = [];
 before(async () => {
+  console.error = (...args) => { hookErrors.push(args.map(String).join(" ")); oldError.apply(console, args); };
+  process.env.DISABLE_PLAYER_BOTS = "1";
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
   PM.loadFromDirectory(path.resolve(__dirname, "../plugins"));
   core = PM.getCoreApi();
@@ -22,16 +26,57 @@ before(async () => {
   assert.equal(new ShopDefinitionLoader().load(), true);
   core.ShopManager.initialize();
 });
-after(() => PM.emitServerShutdown({}));
+after(() => {
+  const failures = [];
+  try {
+    try { PM.emitServerShutdown({}); } catch (error) { failures.push(error); }
+    try { assert.deepEqual(hookErrors, [], "no swallowed plugin or engine errors"); } catch (error) { failures.push(error); }
+  } finally {
+    console.error = oldError;
+    if (oldBots === undefined) delete process.env.DISABLE_PLAYER_BOTS;
+    else process.env.DISABLE_PLAYER_BOTS = oldBots;
+  }
+  if (failures.length) throw new AggregateError(failures, "shutdown failed");
+});
 function actor(t) {
   const channel = { kind: "test", remoteAddress: "127.0.0.1", isOpen: () => true, send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
-  const p = new Player(new PlayerSession(channel));
-  p.setIndex(index++); p.setUsername(`minerals${index}`); p.setRegistered(true);
-  p.setLocation(new core.Location(3222, 3218, 0)); p.needsPlacement = false;
+  const session = new PlayerSession(channel);
+  const p = new Player(session);
+  let worldIndex = -1;
+  // Install cleanup before registration, mocks or other setup can fail.
+  t.after(() => {
+    const failures = [];
+    const attempt = fn => { try { fn(); } catch (error) { failures.push(error); } };
+    attempt(() => core.ShopManager.close(p));
+    attempt(() => p.closeInterruptibleInterfaces());
+    attempt(() => PM.emitPlayerLogout({ player: p, username: p.getUsername() }));
+    attempt(() => core.GameConstants.PLAYER_PERSISTENCE.cancelRequestedSave(p));
+    attempt(() => p.getMovementQueue().reset());
+    attempt(() => p.getMovementQueue().walkToReset());
+    attempt(() => core.TaskManager.cancelTasks(p));
+    attempt(() => { if (worldIndex >= 0) core.TaskManager.cancelTasks(worldIndex); });
+    attempt(() => { if (worldIndex >= 0 && core.World.getPlayers().get(worldIndex) === p) core.World.getPlayers().remove(p); });
+    attempt(() => { if (worldIndex >= 0) assert.notEqual(core.World.getPlayers().get(worldIndex), p, "actor removed"); });
+    attempt(() => assert.equal(core.TaskManager.hasActiveTask(p), false, "player tasks cancelled"));
+    attempt(() => { if (worldIndex >= 0) assert.equal(core.TaskManager.hasActiveTask(worldIndex), false, "index tasks cancelled"); });
+    if (failures.length) throw new AggregateError(failures, "actor cleanup failed");
+  });
+  p.setAttribute("bot-skip-persistence", true);
+  session.setPlayer(p);
+  p.setUsername(`minerals${++serial}`);
+  p.setLongUsername(core.Misc.stringToLongBigInt(p.getUsername()));
+  assert.notEqual(p.getLongUsername(), 0n);
+  assert.equal(core.World.getPlayers().add(p), true);
+  worldIndex = p.getIndex();
+  assert.equal(core.World.getPlayers().get(worldIndex), p);
+  p.setLocation(new core.Location(3222, 3218, 0));
+  p.setNeedsPlacement(false);
+  assert.ok(p.getHitpoints() > 0);
+  assert.notEqual(p.isDyingReturn(), true);
+  assert.equal(p.busy(), false);
   const connection = new ClientConnection(channel); connection.player = p;
   const messages = [];
   t.mock.method(p.getPacketSender(), "sendMessage", m => { messages.push(m); return p.getPacketSender(); });
-  t.after(() => { core.ShopManager.close(p); PM.emitPlayerLogout({ player: p, username: p.getUsername() }); p.setRegistered(false); core.TaskManager.cancelTasks(p.getIndex()); });
   return { p, connection, messages };
 }
 async function action(f, groupId, childId, buttonNum, slot, itemId) {
@@ -69,9 +114,11 @@ test("Belona's actual exchange charges and returns the Wiki mineral prices", asy
 
 test("Belona refuses other stock and preserves locked items and a full currency stack", async t => {
   const f = actor(t), inv = f.p.getInventory(), minerals = core.ItemIdentifiers.UNIDENTIFIED_MINERALS;
-  const glove = 21343, other = 12009;
+  const glove = core.ItemIdentifiers.MINING_GLOVES, other = core.ItemIdentifiers.BRONZE_AXE;
   inv.add(new core.Item(minerals, MAX_STACK_AMOUNT), false);
-  inv.add(new core.Item(other), false);
+  const ordinary = new core.Item(other);
+  assert.equal(ordinary.isSellable(), true, "non-stock control is normally sellable");
+  inv.add(ordinary, false);
   inv.add(new core.Item(glove, 1, { [core.Item.UNTRADEABLE_META]: true }), false);
   open(f, 1454);
   await sell(f, other);
