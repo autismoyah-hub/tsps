@@ -145,7 +145,7 @@ function player() {
     sendInterfaceRemoval() { manager.reset(); return packet; },
   }, { get: (target, key) => target[key] ?? (() => packet) });
   const p = {
-    attrs, varbits, configs, xp, messages, inventory, smithingLevel: 99,
+    attrs, varbits, configs, xp, messages, inventory, animations: [], smithingLevel: 99,
     getAttribute: key => attrs.get(key),
     setAttribute: (key, value) => attrs.set(key, value),
     getInventory: () => inventory,
@@ -159,6 +159,10 @@ function player() {
     }),
     getLocation: () => location,
     moveTo: to => { location = to; },
+    getHitpoints: () => 99,
+    getMovementQueue: () => ({ size: () => 0 }),
+    getForceMovement: () => null,
+    performAnimation: animation => p.animations.push(animation),
     isRegistered: () => true,
     isPlayer: () => true,
     getAsPlayer: () => p,
@@ -408,6 +412,12 @@ test('completed slashed-book-only item use crafts a shield without repeating que
   p.inventory.adds(I.PRIMED_MIND_BAR, 1);
   while (p.inventory.getFreeSlots()) p.inventory.adds(I.COINS, 1);
   h.itemOnObject(p, I.PRIMED_MIND_BAR, O.WORKBENCH_5);
+  assert.equal(p.animations.length, 1);
+  assert.ok(Number.isInteger(core.CacheDefinitions.getSeqId('human_smithing')));
+  assert.equal(p.animations[0].getId(), core.CacheDefinitions.getSeqId('human_smithing'));
+  for (let i = 0; i < 3; i++) core.TaskManager.process();
+  assert.equal(p.inventory.getAmount(I.MIND_SHIELD), 0);
+  core.TaskManager.process();
   assert.equal(p.inventory.getAmount(I.MIND_SHIELD), 1);
   assert.equal(p.inventory.getAmount(I.PRIMED_MIND_BAR), 0);
   assert.equal(p.inventory.getFreeSlots(), 0);
@@ -417,8 +427,41 @@ test('completed slashed-book-only item use crafts a shield without repeating que
   p.inventory.deleteNumber(I.MIND_SHIELD, 1);
   p.inventory.adds(I.PRIMED_MIND_BAR, 1);
   h.itemOnObject(p, I.PRIMED_MIND_BAR, O.WORKBENCH_5);
+  for (let i = 0; i < 4; i++) core.TaskManager.process();
   assert.equal(p.inventory.getAmount(I.MIND_SHIELD), 1);
   assert.equal(p.xp.length, 2);
+});
+
+test('workbench Smith crafts the shield after four ticks', () => {
+  const p = player();
+  h.quest.setStage(p, 12);
+  for (const id of [I.SLASHED_BOOK, I.HAMMER, I.PRIMED_MIND_BAR]) p.inventory.adds(id, 1);
+  assert.equal(h.object(p, O.WORKBENCH_5, 'Smith').handled, true);
+  assert.equal(p.animations[0].getId(), core.CacheDefinitions.getSeqId('human_smithing'));
+  for (let i = 0; i < 3; i++) core.TaskManager.process();
+  assert.equal(p.inventory.getAmount(I.PRIMED_MIND_BAR), 1);
+  assert.equal(p.inventory.getAmount(I.MIND_SHIELD), 0);
+  core.TaskManager.process();
+  assert.equal(p.inventory.getAmount(I.PRIMED_MIND_BAR), 0);
+  assert.equal(p.inventory.getAmount(I.MIND_SHIELD), 1);
+  assert.deepEqual(p.xp, [[core.Skill.SMITHING.getIndex(), 30]]);
+});
+
+test('movement, logout and death cancel shield smithing', () => {
+  for (const mode of ['movement', 'logout', 'death']) {
+    const p = player();
+    h.quest.setStage(p, 12);
+    for (const id of [I.SLASHED_BOOK, I.HAMMER, I.PRIMED_MIND_BAR]) p.inventory.adds(id, 1);
+    h.object(p, O.WORKBENCH_5, 'Smith');
+    core.TaskManager.process();
+    if (mode === 'movement') p.moveTo(new core.Location(1955, 5147, 2));
+    if (mode === 'logout') p.isRegistered = () => false;
+    if (mode === 'death') p.getHitpoints = () => 0;
+    for (let i = 0; i < 4; i++) core.TaskManager.process();
+    assert.equal(p.inventory.getAmount(I.PRIMED_MIND_BAR), 1, mode);
+    assert.equal(p.inventory.getAmount(I.MIND_SHIELD), 0, mode);
+    assert.deepEqual(p.xp, [], mode);
+  }
 });
 
 test('shield item use conserves the bar without level, hammer or plain metadata', () => {
@@ -434,7 +477,50 @@ test('shield item use conserves the bar without level, hammer or plain metadata'
     assert.equal(p.inventory.getAmount(I.PRIMED_MIND_BAR), 1, mode);
     assert.equal(p.inventory.getAmount(I.MIND_SHIELD), 0, mode);
     assert.deepEqual(p.xp, [], mode);
+    if (mode === 'level') assert.ok(p.messages.includes('You need level 30 Smithing to work this metal.'));
+    if (mode === 'hammer') assert.ok(p.messages.includes('You need a hammer to work the metal with.'));
   }
+});
+
+test('shield completion rechecks requirements and rejects double clicks', () => {
+  for (const mode of ['slot', 'level', 'hammer', 'slashed', 'beaten', 'double']) {
+    const p = player();
+    h.quest.setStage(p, 12);
+    for (const id of [I.SLASHED_BOOK, I.HAMMER, I.PRIMED_MIND_BAR]) p.inventory.adds(id, 1);
+    h.itemOnObject(p, I.PRIMED_MIND_BAR, O.WORKBENCH_5);
+    if (mode === 'double') h.itemOnObject(p, I.PRIMED_MIND_BAR, O.WORKBENCH_5);
+    if (mode === 'slot') {
+      const slot = p.inventory.getItems().findIndex(item => item.getId() === I.PRIMED_MIND_BAR);
+      p.inventory.setItem(slot, new core.Item(I.PRIMED_MIND_BAR, 1));
+    }
+    if (mode === 'level') p.smithingLevel = 29;
+    if (mode === 'hammer') p.inventory.deleteNumber(I.HAMMER, 1);
+    if (mode === 'slashed') p.inventory.deleteNumber(I.SLASHED_BOOK, 1);
+    if (mode === 'beaten') p.inventory.adds(I.BEATEN_BOOK, 1);
+    for (let i = 0; i < 4; i++) core.TaskManager.process();
+    assert.equal(p.inventory.getAmount(I.MIND_SHIELD), mode === 'double' ? 1 : 0, mode);
+    assert.equal(p.xp.length, mode === 'double' ? 1 : 0, mode);
+  }
+});
+
+test('a new item use cancels the first craft and restarts its four ticks', () => {
+  const p = player();
+  h.quest.setStage(p, 12);
+  for (const id of [I.SLASHED_BOOK, I.HAMMER, I.PRIMED_MIND_BAR, I.PRIMED_MIND_BAR]) p.inventory.adds(id, 1);
+  const slots = p.inventory.getItems().map((item, slot) => item.getId() === I.PRIMED_MIND_BAR ? slot : -1).filter(slot => slot >= 0);
+  const use = slot => h.itemOnObjectEvent({ player: p, itemId: I.PRIMED_MIND_BAR, objectId: O.WORKBENCH_5,
+    itemSlot: slot, item: p.inventory.getItems()[slot], handled: false });
+  use(slots[0]);
+  for (let i = 0; i < 2; i++) core.TaskManager.process();
+  // UseItemPacketListener invokes walkToReset, which cancels tasks by player index.
+  core.TaskManager.cancelTasks(p.getIndex());
+  use(slots[1]);
+  for (let i = 0; i < 3; i++) core.TaskManager.process();
+  assert.equal(p.inventory.getAmount(I.MIND_SHIELD), 0);
+  core.TaskManager.process();
+  assert.equal(p.inventory.getItems()[slots[0]].getId(), I.PRIMED_MIND_BAR);
+  assert.equal(p.inventory.getItems()[slots[1]].getId(), I.MIND_SHIELD);
+  assert.equal(p.xp.length, 1);
 });
 
 
@@ -472,6 +558,7 @@ test('real inventory: cached items, full bag, stale removal and metadata conserv
   const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true,
     send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
   const p = new Player(new PlayerSession(channel));
+  p.isRegistered = () => true;
   p.setAttribute('quest.elemental_workshop_ii.stage', 12);
   p.getSkillManager().setCurrentLevel(core.Skill.SMITHING, 30, false);
   const inv = p.getInventory();
@@ -502,6 +589,7 @@ test('real inventory: cached items, full bag, stale removal and metadata conserv
   assert.notEqual(gate.allow, false);
   assert.ok(Number.isFinite(GameConstants.EXPERIENCE_MULTIPLIER) && GameConstants.EXPERIENCE_MULTIPLIER > 0);
   h.itemOnObjectEvent({ ...event, item: plain, handled: false });
+  for (let i = 0; i < 4; i++) core.TaskManager.process();
   assert.equal(refreshes, 1, 'only the successful exchange refreshes the real inventory');
   const expectedXp = Math.floor(30 * GameConstants.EXPERIENCE_MULTIPLIER * gate.multiplier * 10 + 1e-6) / 10;
   assert.equal(p.getSkillManager().getExperience(core.Skill.SMITHING) - xpBefore, expectedXp);
