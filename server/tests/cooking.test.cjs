@@ -1393,6 +1393,143 @@ test('native cooking on a live fire', async suite => {
       'ordinary seaweed used on a fire becomes soda ash');
     assert.equal(skills.getExperience(core.Skill.COOKING), seaweedXp, 'producing soda ash awards no Cooking XP');
   });
+  await suite.test('ordinary stew preparation preserves the bowl in either ingredient order', async t => {
+    const { Player } = require('../dist/game/entity/impl/player/Player');
+    const { PlayerSession } = require('../dist/net/PlayerSession');
+    const { ClientConnection } = require('../dist/net/NetworkBuilder');
+    const I = core.ItemIdentifiers;
+    const ids = [I.BOWL_OF_WATER, I.POTATO, I.COOKED_MEAT, I.COOKED_CHICKEN,
+      I.INCOMPLETE_STEW, I.INCOMPLETE_STEW_3, I.UNCOOKED_STEW];
+    assert.deepEqual(ids, [1921, 1942, 2142, 2140, 1997, 1999, 2001], 'SETUP: active ordinary item identities');
+    for (const id of ids) {
+      assert.equal(core.ItemDefinition.forId(id).isNoted(), false, 'SETUP: unnoted item');
+      assert.equal(core.ItemDefinition.forId(id).isStackable(), false, 'SETUP: one slot per item');
+    }
+    const channel = () => ({ kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true,
+      send: () => true, close() {}, onData() {}, onError() {}, onClose() {} });
+    const hookErrors = [], originalError = console.error;
+    t.mock.method(console, 'error', (...args) => {
+      if (String(args[0]).includes('[plugins]') && String(args[0]).includes('hook failed')) hookErrors.push(args);
+      else originalError(...args);
+    });
+    t.after(() => assert.deepEqual(hookErrors, [], 'no registered hook errors'));
+    function actor(name, index) {
+      const ch = channel(), p = new Player(new PlayerSession(ch));
+      p.setIndex(index); p.setUsername(name); p.setRegistered(true);
+      p.setLocation(new core.Location(3226, 3218, 0)); p.needsPlacement = false;
+      const c = new ClientConnection(ch); c.player = p;
+      const skill = p.getSkillManager(), cooking = core.Skill.COOKING;
+      skill.setExperience(cooking, core.SkillManager.getExperienceForLevel(99))
+        .setMaxLevels(cooking, 99, false).setCurrentLevels(cooking, 99, false);
+      PluginManager.emitPlayerLogin({ player: p, username: name });
+      t.after(() => {
+        p.closeInterruptibleInterfaces();
+        PluginManager.emitPlayerDisconnect({ player: p, username: name });
+        PluginManager.emitPlayerLogout({ player: p, username: name });
+        p.setRegistered(false); core.TaskManager.cancelTasks(p.getIndex()); core.TaskManager.cancelTasks(p);
+      });
+      return { p, c, inv: p.getInventory(), skill };
+    }
+    const a = actor('stewmaker', 3180), b = actor('stewother', 3181);
+    const runner = submittedCookingTasks.find(task => Number.isInteger(task.cycle));
+    assert.ok(runner && runner.isStopped(), 'SETUP: previous cooking runner retired');
+    assert.equal(Cooking._test.activeSessions.size, 0, 'SETUP: no previous cooking sessions');
+    core.TaskManager.submit(runner);
+    t.after(() => { runner.stop(); core.TaskManager.process(); });
+    const events = [], emit = PluginManager.emitItemOnItem;
+    t.mock.method(PluginManager, 'emitItemOnItem', function(event) {
+      const result = emit.call(this, event);
+      if (event.player === a.p) events.push({ used: event.usedItem, target: event.usedWithItem,
+        usedSlot: event.usedItemSlot, targetSlot: event.usedWithItemSlot, handled: event.handled, result });
+      return result;
+    });
+    let turns = 0;
+    const turn = () => {
+      assert.ok(++turns <= 80, 'bounded task phases');
+      for (const actor of [a, b]) actor.p.resetUpdating();
+      core.World.processCycle = (core.World.processCycle + 1) & 0x7fffffff;
+      core.TaskManager.process(); a.c.processTurnPackets(); b.c.processTurnPackets();
+      for (const actor of [a, b]) {
+        const movement = actor.p.getMovementQueue(); movement.beginCycle(); movement.processEntityPursuit();
+        if (movement.hasPendingWork()) movement.process();
+        core.TaskManager.processWalkTo(actor.p.getIndex());
+      }
+    };
+    // Positive setup uses an existing registered pie recipe through the same packet path.
+    const pieShell = core.CacheDefinitions.getObjId('pie_shell');
+    const rawPie = core.CacheDefinitions.getObjId('uncooked_meat_pie');
+    assert.ok(Number.isInteger(pieShell) && Number.isInteger(rawPie));
+    b.inv.add(new core.Item(pieShell, 1), false); b.inv.add(new core.Item(I.COOKED_MEAT, 1), false);
+    await b.c.dispatch([{ type: 'inventory_use_on', itemId: pieShell, slot: b.inv.getSlotForItemId(pieShell),
+      target: { kind: 'inventory', id: I.COOKED_MEAT, slot: b.inv.getSlotForItemId(I.COOKED_MEAT) } }]);
+    for (let n = 0; n < 5; n++) turn();
+    assert.equal(b.inv.getAmount(rawPie), 1, 'SETUP: native registered recipe produced its existing output');
+    async function use(first, second) {
+      const from = a.inv.getSlotForItemId(first), to = a.inv.getSlotForItemId(second);
+      const used = a.inv.getItems()[from], target = a.inv.getItems()[to];
+      assert.ok(used && target && from !== to, 'SETUP: selected owned slots');
+      for (const item of [used, target]) {
+        assert.equal(item.getAmount(), 1); assert.equal(item.getMeta(), null);
+        assert.equal(item.isPresetItem(), false);
+      }
+      const before = events.length;
+      await a.c.dispatch([{ type: 'inventory_use_on', itemId: first, slot: from,
+        target: { kind: 'inventory', id: second, slot: to } }]);
+      turn();
+      assert.deepEqual(events.slice(before), [{ used, target, usedSlot: from, targetSlot: to,
+        handled: true, result: true }], 'registered item-on-item consumer receives the selected slots');
+      for (let n = 0; n < 4; n++) turn();
+    }
+    const count = (actor, id) => actor.inv.getAmount(id);
+    for (const [first, second, middle] of [[I.POTATO, I.COOKED_MEAT, I.INCOMPLETE_STEW],
+      [I.COOKED_CHICKEN, I.POTATO, I.INCOMPLETE_STEW_3]]) {
+      for (const id of [I.BOWL_OF_WATER, first, second]) a.inv.add(new core.Item(id, 1), false);
+      assert.equal(count(a, I.UNCOOKED_STEW), 0, 'SETUP: no existing product');
+      await use(first, I.BOWL_OF_WATER);
+      assert.deepEqual([count(a, first), count(a, I.BOWL_OF_WATER), count(a, middle), count(a, second)], [0, 0, 1, 1]);
+      await use(second, middle);
+      assert.deepEqual([count(a, second), count(a, middle), count(a, I.UNCOOKED_STEW)], [0, 0, 1]);
+      for (let n = 0; n < 4; n++) turn();
+      assert.equal(count(a, I.UNCOOKED_STEW), 1, 'delayed tasks do not duplicate the bowl');
+      assert.equal(count(b, I.UNCOOKED_STEW), 0, 'another actor receives nothing');
+      if (first === I.POTATO) a.inv.deleteNumber(I.UNCOOKED_STEW, 1);
+    }
+    // Seed the actor near an actual loaded range; the stew itself came from the preceding use.
+    core.RegionManager.loadMapFiles(3264, 3136);
+    const range = [...core.MapObjects.mapObjects.values()].flat().find(object => {
+      const loc = object.getLocation(), def = object.getDefinition();
+      return object.getPrivateArea() == null && loc.getZ() === 0 && loc.getX() >= 3264 && loc.getX() <= 3327
+        && loc.getY() >= 3136 && loc.getY() <= 3199 && def?.getName() === 'Range'
+        && def.getInteractions()?.some(action => action?.toLowerCase() === 'cook');
+    });
+    assert.ok(range, 'SETUP: loaded public range');
+    const loc = range.getLocation();
+    const tile = [[-1, 0], [1, 0], [0, -1], [0, 1], [-2, 0], [2, 0], [0, -2], [0, 2]]
+      .map(([dx, dy]) => new core.Location(loc.getX() + dx, loc.getY() + dy, 0))
+      .find(candidate => !core.RegionManager.blocked(candidate, null) && range.isWithinInteractionDistance(candidate));
+    assert.ok(tile, 'SETUP: adjacent walkable range tile');
+    a.p.setLocation(tile); a.p.needsPlacement = false;
+    const rawSlot = a.inv.getSlotForItemId(I.UNCOOKED_STEW), raw = a.inv.getItems()[rawSlot];
+    assert.equal(raw.getMeta(), null); assert.equal(raw.isPresetItem(), false);
+    assert.equal(core.MapObjects.getPrivateArea(a.p, range.getId(), loc), range);
+    const calls = [], emitObject = PluginManager.emitItemOnObject;
+    t.mock.method(PluginManager, 'emitItemOnObject', function(event) {
+      const result = emitObject.call(this, event);
+      if (event.player === a.p) calls.push({ item: event.item, slot: event.itemSlot, object: event.object, handled: event.handled, result });
+      return result;
+    });
+    const beforeXp = a.skill.getExperience(core.Skill.COOKING);
+    await a.c.dispatch([{ type: 'item_on_object', widgetId: core.Inventory.INTERFACE_ID,
+      objectId: range.getId(), itemId: I.UNCOOKED_STEW, slot: rawSlot, x: loc.getX(), y: loc.getY() }]);
+    for (let n = 0; n < 12 && !calls.length; n++) turn();
+    assert.deepEqual(calls, [{ item: raw, slot: rawSlot, object: range, handled: true, result: true }]);
+    for (let n = 0; n < 12 && count(a, I.STEW) === 0; n++) turn();
+    assert.deepEqual([count(a, I.UNCOOKED_STEW), count(a, I.STEW), count(a, I.BURNT_STEW)], [0, 1, 0]);
+    assert.equal(a.skill.getExperience(core.Skill.COOKING) - beforeXp, 117);
+    for (let n = 0; n < 4; n++) turn();
+    assert.equal(count(a, I.STEW), 1, 'delayed cooking does not duplicate the bowl');
+    assert.equal(count(b, I.STEW), 0, 'other actor receives no stew');
+  });
   // The members-world control confirms the same range recipe remains available.
 await suite.test('a members-world range cooks raw mackerel', async t => {
   const { Player } = require('../dist/game/entity/impl/player/Player');
