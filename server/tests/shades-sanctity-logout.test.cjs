@@ -1,6 +1,26 @@
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
+const Module = require('node:module');
 const { test } = require('node:test');
+const forbidden = path.resolve(__dirname, '../plugins/skills/crafting');
+const normalize = p => process.platform === 'win32' ? p.toLowerCase() : p;
+const inside = (root, file) => {
+  const relative = path.relative(normalize(root), normalize(file));
+  return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
+};
+const loadedPaths = new Set();
+const originalLoad = Module._load;
+function guardedLoad(request, parent, isMain) {
+  const resolved = Module._resolveFilename(request, parent, isMain);
+  if (path.isAbsolute(resolved)) {
+    const canonical = fs.realpathSync(resolved);
+    if (inside(forbidden, resolved) || inside(forbidden, canonical)) throw new Error('Forbidden Crafting plugin import');
+    loadedPaths.add(canonical);
+  }
+  return originalLoad.apply(this, arguments);
+}
+Module._load = guardedLoad;
 const { Server } = require('../dist/Server');
 Server.installProductionPathResolver();
 const { PluginManager } = require('../dist/plugins/PluginManager');
@@ -23,6 +43,9 @@ test('temple sanctity resets on logout and stays zero through saved login', asyn
       TaskManager.cancelTasks(player);
       if (player.isRegistered()) World.getPlayers().removes(player);
     }
+    const guardActive = Module._load === guardedLoad;
+    console.log(JSON.stringify({ event:'shades-import-guard', active:guardActive, loadedPaths:[...loadedPaths].sort() }));
+    assert.ok(guardActive, 'import guard remained active');
   });
   function actor(name) {
     const channel = { kind:'test', remoteAddress:'127.0.0.1', isOpen:()=>true,
