@@ -58,12 +58,18 @@ function admitted(t, player, id, name, option) {
   const messages = [];
   const send = player.sendMessage.bind(player);
   t.mock.method(player, 'sendMessage', (...a) => { messages.push(String(a[0])); return send(...a); });
+  const tasksBefore = submitted.size;
   const handled = PM.emitNpcInteraction({ player, npc, definition, npcId: id, clickType, handled: false });
   assert.equal(handled, true);
-  return { npc, messages };
+  return { npc, messages, tasksAdded: submitted.size - tasksBefore };
 }
 test('workman outcome follows the captured delay, while an ordinary pickpocket resolves normally', (t) => {
   // During task processing 0.5 succeeds at level 99 without guaranteeing rare rewards.
+  const underlevel = actor(t, 1, 'under');
+  const refused = admitted(t, underlevel, core.NpcIdentifiers.DIGSITE_WORKMAN_2, 'Digsite workman', 'Steal-from');
+  assert.ok(refused.messages.includes('You need a Thieving level of at least 25 to do this.'));
+  assert.equal(refused.tasksAdded, 0, 'refusal schedules no outcome');
+  assert.equal(underlevel.getInventory().getItems().filter(i => i?.getId() > 0).length, 0);
   const workman = actor(t, 99, 'workman');
   const man = actor(t, 99, 'man');
   const rawTenths = (p) => Math.round(p.getSkillManager().getSkills().getExperiences()[core.Skill.THIEVING.getIndex()] * 10);
@@ -88,4 +94,10 @@ test('workman outcome follows the captured delay, while an ordinary pickpocket r
   assert.equal(workman.getSkillManager().getExperience(core.Skill.THIEVING) - workDisplayXp, 10);
   tick();
   assert.equal(rawTenths(workman) - workXp, 104, 'reward only once');
+  assert.equal(underlevel.getSkillManager().getExperience(core.Skill.THIEVING), core.SkillManager.getExperienceForLevel(1));
+  // Four ticks have passed; this checks a subsequent ordinary action, not a minimum cadence.
+  admitted(t, man, core.NpcIdentifiers.MAN, 'Man', 'Pickpocket');
+  tick();
+  assert.equal(man.getSkillManager().getExperience(core.Skill.THIEVING) - manXp, 16);
+  assert.equal(rawTenths(workman) - workXp, 104);
 });
