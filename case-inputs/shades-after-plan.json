@@ -46,5 +46,15 @@
     "shades-sanctity-logout.test.cjs": 1
   },
   "executionHold": true,
-  "scope": "Filtered native logout fixture; in-memory save roundtrip, no full minigame or client claim"
+  "scope": "Filtered native logout fixture; in-memory save roundtrip, no full minigame or client claim",
+  "expectedInputsRef": {
+    "schema": 1,
+    "repository": "autismoyah-hub/tsps",
+    "artifactCommit": "e27054b944c8d4998715f4170b309ab64003becd",
+    "path": "case-inputs/shades-logout-after.json",
+    "sha256": "3b6e656078604a8130a2d6f5e9c0e10f075ee79ca5e767eae66b5dac89658cce",
+    "bytes": 1087345,
+    "source": "f97459c4185b0f0c3772b8ee014c0ea3abd63440",
+    "count": 5013
+  }
 }
