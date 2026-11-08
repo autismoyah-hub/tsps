@@ -1445,7 +1445,7 @@ test('native cooking on a live fire', async suite => {
     });
     let turns = 0;
     const turn = () => {
-      assert.ok(++turns <= 80, 'bounded task phases');
+      assert.ok(++turns <= 120, 'bounded task phases');
       for (const actor of [a, b]) actor.p.resetUpdating();
       core.World.processCycle = (core.World.processCycle + 1) & 0x7fffffff;
       core.TaskManager.process(); a.c.processTurnPackets(); b.c.processTurnPackets();
@@ -1537,6 +1537,56 @@ test('native cooking on a live fire', async suite => {
     assert.equal(count(a, I.STEW), 1, 'delayed cooking does not duplicate the bowl');
     assert.equal(count(a, I.LOGS), 27, 'cooking keeps unrelated inventory items');
     assert.equal(count(b, I.STEW), 0, 'other actor receives no stew');
+
+    // A level refusal preserves both ingredients, including the bowl.
+    a.inv.deleteNumber(I.LOGS, 27);
+    a.skill.setCurrentLevels(core.Skill.COOKING, 24, false);
+    a.inv.add(new core.Item(I.BOWL_OF_WATER, 1), false); a.inv.add(new core.Item(I.POTATO, 1), false);
+    const refusalXp = a.skill.getExperience(core.Skill.COOKING);
+    await use(I.POTATO, I.BOWL_OF_WATER);
+    assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)], [1, 1, 0]);
+    assert.equal(a.skill.getExperience(core.Skill.COOKING), refusalXp);
+    a.p.closeInterruptibleInterfaces();
+    a.skill.setCurrentLevels(core.Skill.COOKING, 99, false);
+
+    // Select a real two-item menu, then remove one ingredient before the choice.
+    a.inv.add(new core.Item(I.BOWL_OF_WATER, 1), false); a.inv.add(new core.Item(I.POTATO, 1), false);
+    const potatoSlot = a.inv.getSlotForItemId(I.POTATO), waterSlot = a.inv.getSlotForItemId(I.BOWL_OF_WATER);
+    const selectedPotato = a.inv.getItems()[potatoSlot], selectedWater = a.inv.getItems()[waterSlot];
+    const beforeMenu = events.length;
+    await a.c.dispatch([{ type: 'inventory_use_on', itemId: I.POTATO, slot: potatoSlot,
+      target: { kind: 'inventory', id: I.BOWL_OF_WATER, slot: waterSlot } }]);
+    turn();
+    assert.deepEqual(events.slice(beforeMenu), [{ used: selectedPotato, target: selectedWater,
+      usedSlot: potatoSlot, targetSlot: waterSlot, handled: true, result: true }]);
+    const menu = a.p.getCreationMenu();
+    assert.ok(menu, 'SETUP: actual two-recipe selection menu');
+    assert.deepEqual(menu.getItems(), [I.INCOMPLETE_STEW]);
+    a.inv.deleteNumber(I.POTATO, 1);
+    menu.execute(I.INCOMPLETE_STEW, 2);
+    for (let n = 0; n < 8; n++) turn();
+    assert.deepEqual([count(a, I.POTATO), count(a, I.BOWL_OF_WATER), count(a, I.INCOMPLETE_STEW)], [0, 1, 1],
+      'stale batch choice makes only what the remaining ingredients support');
+    assert.equal(a.skill.getExperience(core.Skill.COOKING), refusalXp);
+    a.p.closeInterruptibleInterfaces();
+    a.inv.deleteNumber(I.BOWL_OF_WATER, 1); a.inv.deleteNumber(I.INCOMPLETE_STEW, 1);
+
+    // A seeded raw stew exercises the same real range consumer's burn branch.
+    a.inv.add(new core.Item(I.UNCOOKED_STEW, 1), false);
+    a.skill.setCurrentLevels(core.Skill.COOKING, 25, false);
+    const burnSlot = a.inv.getSlotForItemId(I.UNCOOKED_STEW), burnInput = a.inv.getItems()[burnSlot];
+    const beforeBurnCalls = calls.length, burnXp = a.skill.getExperience(core.Skill.COOKING);
+    const random = t.mock.method(Math, 'random', () => 0);
+    await a.c.dispatch([{ type: 'item_on_object', widgetId: core.Inventory.INTERFACE_ID,
+      objectId: range.getId(), itemId: I.UNCOOKED_STEW, slot: burnSlot, x: loc.getX(), y: loc.getY() }]);
+    for (let n = 0; n < 12 && count(a, I.BURNT_STEW) === 0; n++) turn();
+    random.mock.restore();
+    assert.deepEqual(calls.slice(beforeBurnCalls), [{ item: burnInput, slot: burnSlot, object: range, handled: true, result: true }]);
+    assert.deepEqual([count(a, I.UNCOOKED_STEW), count(a, I.BURNT_STEW), count(a, I.STEW)], [0, 1, 1]);
+    assert.equal(a.skill.getExperience(core.Skill.COOKING), burnXp, 'burning awards no Cooking XP');
+    for (let n = 0; n < 4; n++) turn();
+    assert.equal(count(a, I.BURNT_STEW), 1, 'burn output remains one unit');
+    assert.equal(count(b, I.BURNT_STEW), 0);
   });
   // The members-world control confirms the same range recipe remains available.
 await suite.test('a members-world range cooks raw mackerel', async t => {
