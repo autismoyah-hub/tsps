@@ -1639,11 +1639,25 @@ test('native cooking on a live fire', async suite => {
     a.skill.setCurrentLevels(core.Skill.COOKING, 25, false);
     const burnSlot = a.inv.getSlotForItemId(I.UNCOOKED_STEW), burnInput = a.inv.getItems()[burnSlot];
     const beforeBurnCalls = calls.length, burnXp = a.skill.getExperience(core.Skill.COOKING);
-    const random = t.mock.method(Math, 'random', () => 0);
-    await a.c.dispatch([{ type: 'item_on_object', widgetId: core.Inventory.INTERFACE_ID,
-      objectId: range.getId(), itemId: I.UNCOOKED_STEW, slot: burnSlot, x: loc.getX(), y: loc.getY() }]);
-    for (let n = 0; n < 12 && count(a, I.BURNT_STEW) === 0; n++) turn();
-    random.mock.restore();
+    const realRandom = Math.random;
+    let burnRolls = 0;
+    const random = t.mock.method(Math, 'random', () => {
+      const caller = new Error().stack?.split('\n')[2] ?? '';
+      if (/^\s*at isSuccess \(/.test(caller) && Cooking._test.activeSessions.size === 1
+        && Cooking._test.activeSessions.get(a.p)?.cookable.raw === I.UNCOOKED_STEW) {
+        burnRolls++;
+        return 0;
+      }
+      return realRandom();
+    });
+    try {
+      await a.c.dispatch([{ type: 'item_on_object', widgetId: core.Inventory.INTERFACE_ID,
+        objectId: range.getId(), itemId: I.UNCOOKED_STEW, slot: burnSlot, x: loc.getX(), y: loc.getY() }]);
+      for (let n = 0; n < 12 && count(a, I.BURNT_STEW) === 0; n++) turn();
+    } finally {
+      random.mock.restore();
+    }
+    assert.equal(burnRolls, 1, 'only the stew cook success roll is forced');
     assert.deepEqual(calls.slice(beforeBurnCalls), [{ item: burnInput, slot: burnSlot, object: range, handled: true, result: true }]);
     assert.deepEqual([count(a, I.UNCOOKED_STEW), count(a, I.BURNT_STEW), count(a, I.STEW)], [0, 1, 1]);
     assert.equal(a.skill.getExperience(core.Skill.COOKING), burnXp, 'burning awards no Cooking XP');
@@ -1673,6 +1687,7 @@ test('native cooking on a live fire', async suite => {
         targetSlot: waterSlot, handled: true, result: true }]);
       return { potato, water };
     }
+    // Explicitly seeded restrictions exercise handler safety; they do not claim preset production.
     for (const key of [core.Item.PRESET_META, core.Item.UNTRADEABLE_META, core.Item.UNBANKABLE_META, 'stew:test-marker']) {
       for (const protectedId of [I.POTATO, I.BOWL_OF_WATER]) {
         a.inv.add(new core.Item(I.POTATO, 1), false); a.inv.add(new core.Item(I.BOWL_OF_WATER, 1), false);
