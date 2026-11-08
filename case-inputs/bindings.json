@@ -1,0 +1,46 @@
+{
+  "payload": {
+    "path": "before/shades-native-payload.cjs",
+    "sha256": "e12b86b53c3d00843f8841070f9310d2fd578b1406d741e101fe090c41ce0b4f"
+  },
+  "resolver": {
+    "path": "input-manifest-resolver.cjs",
+    "sha256": "d357e075913184c77f49adc86c8496d045fa58a20fdca59a12d1faf2d284927c"
+  },
+  "pilot": {
+    "path": "pilot.py",
+    "sha256": "2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200"
+  },
+  "package": {
+    "path": "package.json",
+    "sha256": "ac9cb75167ec66ac1c1f4345d65bda679a20ac1b9a85aba45dd1919dcd18ac78"
+  },
+  "caller": {
+    "path": "case-caller.py",
+    "sha256": "bceab818fd41147ac51919455ab29a23b561a57c6d8aa3aa4444e5ccc60c4948"
+  },
+  "originalPlan": {
+    "path": "before/pilot.json",
+    "sha256": "7822841e8926616325a5197668c9ffcee13466873d4c6ed043c2233d6d0cc144"
+  },
+  "originalRequest": {
+    "path": "before/preview.json",
+    "sha256": "5b482a865374666dedbb13f8475f2d49196978c54951531149180f42ea09e23f"
+  },
+  "profileBasis": {
+    "path": "profile-basis.json",
+    "sha256": "8eb0af645befdd9c250e8716ab9adabfeeb65fc2044a33852e0d3eaad2aacb06"
+  },
+  "originalD46": {
+    "path": "native-payload-failure-seals.cjs",
+    "sha256": "d46b3773c4bb3134920efa29074f9f2e6d9cf06e99b27b28cc909a222aa67620"
+  },
+  "submitCaller": {
+    "path": "before/case-executor.py",
+    "sha256": "59932680f427a66ffe094cb913ff91ba346ed7edd7c6e1ca72afb234d8589934"
+  },
+  "inputCollector": {
+    "path": "retain-contiguous-inputs003.py",
+    "sha256": "b399ca13e8fbfee6f7633a9d430d85c8204774c2941a2e4d5f74c642820fa690"
+  }
+}

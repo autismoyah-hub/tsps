@@ -1,0 +1,62 @@
+[
+  {
+    "name": "anyio",
+    "version": "4.16.0"
+  },
+  {
+    "name": "click",
+    "version": "8.5.1"
+  },
+  {
+    "name": "filelock",
+    "version": "4.2.9"
+  },
+  {
+    "name": "fsspec",
+    "version": "2026.9.0"
+  },
+  {
+    "name": "h11",
+    "version": "0.16.0"
+  },
+  {
+    "name": "hf-xet",
+    "version": "1.8.0"
+  },
+  {
+    "name": "httpcore2",
+    "version": "2.16.0"
+  },
+  {
+    "name": "httpx2",
+    "version": "2.16.0"
+  },
+  {
+    "name": "huggingface-hub",
+    "version": "2.4.0"
+  },
+  {
+    "name": "idna",
+    "version": "3.20"
+  },
+  {
+    "name": "packaging",
+    "version": "26.3"
+  },
+  {
+    "name": "pyyaml",
+    "version": "6.0.3"
+  },
+  {
+    "name": "tqdm",
+    "version": "4.70.1"
+  },
+  {
+    "name": "truststore",
+    "version": "0.10.5"
+  },
+  {
+    "name": "typing-extensions",
+    "version": "4.16.0"
+  }
+]
