@@ -8,14 +8,18 @@ const { Bank } = core;
 const { Player } = require('../dist/game/entity/impl/player/Player');
 const { CachePipeline } = require('../dist/game/cache/CachePipeline');
 const { PlayerSave } = require('../dist/game/entity/impl/player/persistence/PlayerSave');
+const { NullPlayerPersistence } = require('../dist/game/entity/impl/player/persistence/NullPlayerPersistence');
 const Common = require('../plugins/items/elementaltomes/Common.ElementalTomes');
 const TomeBank = require('../plugins/items/elementaltomes/Bank.ElementalTomes');
+const Pages = require('../plugins/items/elementaltomes/Pages.ElementalTomes');
 const ATTRIBUTE = 'elemental-tomes:bank-charge-targets';
-const handlers = new Map(), persisted = [];
+const handlers = new Map(), persisted = [], pageUses = [];
 before(async()=>{
   await CachePipeline.initialize(process.cwd());
   Common.initialize({core});
   TomeBank.initialize({core});
+  Pages.initialize({core});
+  Pages.attach({core,onItemAction:()=>{},onItemOnItem:(a,b,fn,options)=>pageUses.push({a,b,fn,options})});
   TomeBank.attach({persistAttribute:(...args)=>{persisted.push(args);PlayerSave.persistAttribute(...args);},onCustomEvent:(name,handler)=>handlers.set(name,handler)});
 });
 function fixture(t) {
@@ -325,4 +329,107 @@ test('closed bank and full inventory do not emit withdrawal events; notes and un
   assert.equal(p.getBank(0).getAmount(25578),20);assert.equal(p.getInventory().getAmount(25577),1);
   p.setNoteWithdrawal(false);const unrelated=book(p,4151);withdraw(p,unrelated);
   assert.equal(p.getBank(0).getAmount(25578),20);
+});
+
+// These transactions use the page-on-tome producer and the bank widget/drag paths.
+function chargeFireTome(p, pages) {
+  const I = core.ItemIdentifiers, inventory = p.getInventory();
+  inventory.add(new core.Item(I.TOME_OF_FIRE_EMPTY_,1),false);
+  const tome = inventory.getValidItems().find(item=>item.getId()===I.TOME_OF_FIRE_EMPTY_);
+  const page = inventory.getValidItems().find(item=>item.getId()===I.BURNT_PAGE);
+  const use = pageUses.find(entry=>entry.a===core.ItemDefinition.forId(I.BURNT_PAGE).getName() &&
+    entry.b===core.ItemDefinition.forId(I.TOME_OF_FIRE_EMPTY_).getName());
+  assert.ok(tome && page && use, 'real carried tome, pages and registered handler');
+  assert.equal(use.fn({player:p,usedItem:page,usedWithItem:tome}),true);
+  const action = p.getEnteredAmountAction();
+  assert.ok(action, 'charging prompts for a page count');
+  action.execute(pages);
+  assert.deepEqual(Common.read(tome),{charges:pages*Common.CHARGES_PER_PAGE,pageId:I.BURNT_PAGE});
+  return tome;
+}
+function depositTomeOp(p,tome,all=false) {
+  const slot=p.getInventory().getItems().indexOf(tome);
+  assert.ok(slot>=0, 'clicked tome is carried');
+  assert.equal(Bank.handleWidgetAction(p,{groupId:Bank.SIDE_INTERFACE_ID,childId:Bank.SIDE_ITEMS_CHILD,
+    buttonNum:all?8:3,option:all?'Deposit-All':'Deposit-1',slot,itemId:tome.getId()}),true);
+}
+function tomeTotals(p) {
+  const containers=[p.getInventory(),...Array.from({length:Bank.BANK_SEARCH_TAB_INDEX},(_,tab)=>p.getBank(tab))];
+  const states=new Map(); let pages=0;
+  for(const container of containers) for(const item of container.getValidItems()) {
+    if(item.getId()===core.ItemIdentifiers.BURNT_PAGE) pages+=item.getAmount();
+    if(item.getId()!==core.ItemIdentifiers.TOME_OF_FIRE) continue;
+    const state=Common.read(item), key=`${state.pageId}:${state.charges}`;
+    states.set(key,(states.get(key)??0)+item.getAmount());
+  }
+  return {states:[...states].sort(([a],[b])=>a.localeCompare(b)),pages};
+}
+function fullAtUsedSlots(t,p) {
+  const capacity=Bank.usedSlots(p);
+  handlers.set(Bank.CAPACITY_EVENT,event=>{event.capacity=capacity;});
+  t.after(()=>handlers.delete(Bank.CAPACITY_EVENT));
+  assert.equal(Bank.freeSlots(p),0);
+}
+function moveTomeToFirstTab(p,charges) {
+  assert.equal(Object.getPrototypeOf(core.GameConstants.PLAYER_PERSISTENCE), NullPlayerPersistence.prototype,
+    'tab drag uses the real null persistence backend');
+  const entry=Bank.layout(p).find(({item})=>item.getId()===core.ItemIdentifiers.TOME_OF_FIRE && Common.read(item).charges===charges);
+  assert.ok(entry);
+  // layout() returns fresh entries, so locate by the underlying item identity.
+  const displaySlot=Bank.layout(p).findIndex(candidate=>candidate.item===entry.item);
+  assert.ok(displaySlot>=0);
+  assert.equal(Bank.handleDrag(p,{sourceWidgetId:(Bank.MAIN_INTERFACE_ID<<16)|Bank.ITEMS_CHILD,
+    sourceSlot:displaySlot,sourceItemId:entry.item.getId(),
+    targetWidgetId:(Bank.MAIN_INTERFACE_ID<<16)|Bank.TABS_CHILD,
+    targetSlot:Bank.TAB_BUTTON_SLOT_OFFSET+1}),true);
+  assert.ok(p.getBank(1).getValidItems().some(item=>Common.read(item).charges===charges));
+}
+
+test('a full bank deposits a matching charged tome into its first tab stack',t=>{
+  const {p}=fixture(t), I=core.ItemIdentifiers;
+  p.getInventory().add(new core.Item(I.BURNT_PAGE,5),false);
+  depositTomeOp(p,chargeFireTome(p,2));
+  const incoming=chargeFireTome(p,2);
+  fullAtUsedSlots(t,p);
+  const before=tomeTotals(p);
+  depositTomeOp(p,incoming);
+  assert.equal(p.getInventory().getAmount(I.TOME_OF_FIRE),0);
+  assert.equal(p.getBank(0).getAmount(I.TOME_OF_FIRE),2);
+  assert.deepEqual(tomeTotals(p),before);
+});
+
+test('a full bank refuses a different charge state and a free slot accepts it',t=>{
+  const {p}=fixture(t), I=core.ItemIdentifiers;
+  p.getInventory().add(new core.Item(I.BURNT_PAGE,5),false);
+  depositTomeOp(p,chargeFireTome(p,1));
+  const incoming=chargeFireTome(p,2);
+  fullAtUsedSlots(t,p);
+  const before=tomeTotals(p);
+  depositTomeOp(p,incoming);
+  assert.equal(p.getInventory().getAmount(I.TOME_OF_FIRE),1);
+  assert.deepEqual(tomeTotals(p),before);
+  handlers.delete(Bank.CAPACITY_EVENT);
+  depositTomeOp(p,incoming);
+  assert.equal(p.getInventory().getAmount(I.TOME_OF_FIRE),0);
+  assert.equal(p.getBank(0).getValidItems().length,2);
+  assert.deepEqual(tomeTotals(p),before);
+});
+
+for(const all of [false,true]) test(`a full bank deposits ${all?'all':'one'} matching charged tomes into a later tab`,t=>{
+  const {p}=fixture(t), I=core.ItemIdentifiers;
+  p.getInventory().add(new core.Item(I.BURNT_PAGE,10),false);
+  depositTomeOp(p,chargeFireTome(p,1));
+  depositTomeOp(p,chargeFireTome(p,2));
+  moveTomeToFirstTab(p,40);
+  const incoming=chargeFireTome(p,2);
+  if(all) chargeFireTome(p,2);
+  fullAtUsedSlots(t,p);
+  assert.equal(Common.read(p.getBank(0).getValidItems()[0]).charges,20);
+  assert.equal(Common.read(p.getBank(1).getValidItems()[0]).charges,40);
+  const before=tomeTotals(p);
+  depositTomeOp(p,incoming,all);
+  assert.equal(p.getInventory().getAmount(I.TOME_OF_FIRE),0);
+  assert.equal(p.getBank(0).getAmount(I.TOME_OF_FIRE),1);
+  assert.equal(p.getBank(1).getAmount(I.TOME_OF_FIRE),all?3:2);
+  assert.deepEqual(tomeTotals(p),before);
 });
