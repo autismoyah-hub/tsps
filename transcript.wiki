@@ -1,0 +1,452 @@
+{{Transcript|npc}}
+
+==Standard dialogue==
+* '''Dodgy Squire:''' Psst! Got any Void kit you don't want? Spare robes, spare helms, that kind of thing?
+* {{tselect|Select an Option}}
+* {{topt|What if I do?}}
+** '''Player:''' What if I do?
+** '''Dodgy Squire:''' Might be able to take it off your hands for you. Show me what you've got, and I'll see if I can get you some Commendation Points for it.
+** {{tcond|If the player does not have any eligible items:}}
+*** {{tact|end}}
+** {{tcond|If the player has any non-broken void items:}}
+*** {{tact|The player will offer whatever item is closest to the bottom-right corner of their inventory.}}
+*** {{tcond|If the item selected is a Void mage helm:}}
+**** {{tbox|pic=Void mage helm detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void mage helm detail.png|Void mage helm: The squire offers you [0-160] Commendation points.}}
+**** {{tselect|Void mage helm: Exchange for [0-160] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void mage helm to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Void melee helm:}}
+**** {{tbox|pic=Void melee helm detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void melee helm detail.png|Void melee helm: The squire offers you [0-160] Commendation points.}}
+**** {{tselect|Void melee helm: Exchange for [0-160] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void melee helm to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Void ranger helm:}}
+**** {{tbox|pic=Void ranger helm detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void ranger helm detail.png|Void ranger helm: The squire offers you [0-160] Commendation points.}}
+**** {{tselect|Void ranger helm: Exchange for [0-160] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void ranger helm to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Void knight mace:}}
+**** {{tbox|pic=Void knight mace detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void knight mace detail.png|Void knight mace: The squire offers you [0-200] Commendation points.}}
+**** {{tselect|Void knight mace: Exchange for [0-200] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void knight mace to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is an Elite void top:}}
+**** {{tbox|pic=Elite void top detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Elite void top detail.png|Elite void top: The squire offers you [0-360] Commendation points.}}
+**** {{tselect|Elite void top: Exchange for [0-360] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Elite void top to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Void knight top:}}
+**** {{tbox|pic=Void knight top detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void knight top detail.png|Void knight top: The squire offers you [0-200] Commendation points.}}
+**** {{tselect|Void knight top: Exchange for [0-200] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void knight top to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is an Elite void robe:}}
+**** {{tbox|pic=Elite void robe detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=elite void robe detail.png|Elite void robe: The squire offers you [0-360] Commendation points.}}
+**** {{tselect|Elite void robe: Exchange for [0-360] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Elite void robe to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Void knight robe:}}
+**** {{tbox|pic=Void knight robe detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void knight robe detail.png|Void knight robe: The squire offers you [0-200] Commendation points.}}
+**** {{tselect|Void knight robe: Exchange for [0-200] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void knight robe to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected are Void knight gloves:}}
+**** {{tbox|pic=Void knight gloves detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void knight gloves detail.png|Void knight gloves: The squire offers you [0-120] Commendation points.}}
+**** {{tselect|Void knight gloves: Exchange for [0-120] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void knight gloves to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Void mage helm (l):}}
+**** {{tbox|pic=Void mage helm detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void mage helm detail.png|Void mage helm (l): The squire offers you [0-160] Commendation points.}}
+**** {{tselect|Void mage helm (l): Exchange for [0-160] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void mage helm (l) to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Void melee helm (l):}}
+**** {{tbox|pic=Void melee helm detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void melee helm detail.png|Void melee helm (l): The squire offers you [0-160] Commendation points.}}
+**** {{tselect|Void melee helm (l): Exchange for [0-160] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void melee helm (l) to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Void ranger helm (l):}}
+**** {{tbox|pic=Void ranger helm detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void ranger helm detail.png|Void ranger helm (l): The squire offers you [0-160] Commendation points.}}
+**** {{tselect|Void ranger helm (l): Exchange for [0-160] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void ranger helm (l) to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Void knight mace (l):}}
+**** {{tbox|pic=Void knight mace detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void knight mace detail.png|Void knight mace (l): The squire offers you [0-200] Commendation points.}}
+**** {{tselect|Void knight mace (l): Exchange for [0-200] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void knight mace to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is an Elite void top (l):}}
+**** {{tbox|pic=Elite void top detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Elite void top detail.png|Elite void top (l): The squire offers you [0-360] Commendation points.}}
+**** {{tselect|Elite void top (l): Exchange for [0-360] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Elite void top (l) to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Void knight top (l):}}
+**** {{tbox|pic=Void knight top detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void knight top detail.png|Void knight top (l): The squire offers you [0-200] Commendation points.}}
+**** {{tselect|Void knight top (l): Exchange for [0-200] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void knight top (l) to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Elite void robe (l):}}
+**** {{tbox|pic=Elite void robe detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Elite void robe detail.png|Elite void robe (l): The squire offers you [0-360] Commendation points.}}
+**** {{tselect|Elite void robe (l): Exchange for [0-360] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Elite void robe (l) to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected is a Void knight robe (l):}}
+**** {{tbox|pic=Void knight robe detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void knight robe detail.png|Void knight robe (l): The squire offers you [0-200] Commendation points.}}
+**** {{tselect|Void knight robe (l): Exchange for [0-200] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void knight robe (l) to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+*** {{tcond|If the item selected are Void knight gloves:}}
+**** {{tbox|pic=Void knight gloves detail.png|You show the squire some of your Void kit.}}
+**** {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+***** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+**** {{tbox|pic=Void knight gloves detail.png|Void knight gloves (l): The squire offers you [0-120] Commendation points.}}
+**** {{tselect|Void knight gloves (l): Exchange for [0-120] points?}}
+**** {{topt|Accept}}
+***** {{tact|gives=their Void knight gloves (l) to the Dodgy Squire}} 
+***** '''Dodgy Squire:''' Deal!
+***** {{tact|end}}
+**** {{topt|Decline}}
+***** {{tact|end}}
+* {{topt|No, I don't.}}
+** '''Player:''' No, I don't.
+** {{tact|end}}
+
+==Using items on the Dodgy Squire==
+===Void mage helm===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void mage helm detail.png|Void mage helm: The squire offers you [0-160] Commendation points.}}
+* {{tselect|Void mage helm: Exchange for [0-160] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void mage helm to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void melee helm===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void melee helm detail.png|Void melee helm: The squire offers you [0-160] Commendation points.}}
+* {{tselect|Void melee helm: Exchange for [0-160] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void melee helm to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void ranger helm===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void ranger helm detail.png|Void ranger helm: The squire offers you [0-160] Commendation points.}}
+* {{tselect|Void ranger helm: Exchange for [0-160] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void ranger helm to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void knight mace===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void knight mace detail.png|Void knight mace: The squire offers you [0-200] Commendation points.}}
+* {{tselect|Void knight mace: Exchange for [0-200] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void knight mace to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Elite void top===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Elite void top detail.png|Elite void top: The squire offers you [0-360] Commendation points.}}
+* {{tselect|Elite void top: Exchange for [0-360] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Elite void top to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void knight top===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void knight top detail.png|Void knight top: The squire offers you [0-200] Commendation points.}}
+* {{tselect|Void knight top: Exchange for [0-200] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void knight top to the Dodgy Squire}} 
+* '''Dodgy Squire:''' Deal!
+** {{tact|end}} 
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Elite void robe===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=elite void robe detail.png|Elite void robe: The squire offers you [0-360] Commendation points.}}
+* {{tselect|Elite void robe: Exchange for [0-360] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Elite void robe to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void knight robe===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void knight robe detail.png|Void knight robe: The squire offers you [0-200] Commendation points.}}
+* {{tselect|Void knight robe: Exchange for [0-200] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void knight robe to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void knight gloves===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void knight gloves detail.png|Void knight gloves: The squire offers you [0-120] Commendation points.}}
+* {{tselect|Void knight gloves: Exchange for [0-120] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void knight gloves to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void mage helm (l)===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void mage helm detail.png|Void mage helm (l): The squire offers you [0-160] Commendation points.}}
+* {{tselect|Void mage helm (l): Exchange for [0-160] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void mage helm (l) to the Dodgy Squire}} 
+* '''Dodgy Squire:''' Deal!
+* {{tact|end}}
+* {{topt|Decline}}
+* {{tact|end}}
+
+===Void melee helm (l)===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void melee helm detail.png|Void melee helm (l): The squire offers you [0-160] Commendation points.}}
+* {{tselect|Void melee helm (l): Exchange for [0-160] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void melee helm (l) to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void ranger helm (l)===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void ranger helm detail.png|Void ranger helm (l): The squire offers you [0-160] Commendation points.}}
+* {{tselect|Void ranger helm (l): Exchange for [0-160] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void ranger helm (l) to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void knight mace (l)===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void knight mace detail.png|Void knight mace (l): The squire offers you [0-200] Commendation points.}}
+* {{tselect|Void knight mace (l): Exchange for [0-200] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void knight mace to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Elite void top (l)===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Elite void top detail.png|Elite void top (l): The squire offers you [0-360] Commendation points.}}
+* {{tselect|Elite void top (l): Exchange for [0-360] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Elite void top (l) to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void knight top (l)===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void knight top detail.png|Void knight top (l): The squire offers you [0-200] Commendation points.}}
+* {{tselect|Void knight top (l): Exchange for [0-200] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void knight top (l) to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Elite void robe (l)===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Elite void robe detail.png|Elite void robe (l): The squire offers you [0-360] Commendation points.}}
+* {{tselect|Elite void robe (l): Exchange for [0-360] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Elite void robe (l) to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void knight robe (l)===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void knight robe detail.png|Void knight robe (l): The squire offers you [0-200] Commendation points.}}
+* {{tselect|Void knight robe (l): Exchange for [0-200] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void knight robe (l) to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Void knight gloves (l)===
+* {{tcond|If the value of the item puts the player over the maximum amount of Void knight commendation points:}}
+** '''Dodgy Squire:''' Just so you know, you've got a lot of Commendation points already, so I can't pay you my usual rate.
+* {{tbox|pic=Void knight gloves detail.png|Void knight gloves (l): The squire offers you [0-120] Commendation points.}}
+* {{tselect|Void knight gloves (l): Exchange for [0-120] points?}}
+* {{topt|Accept}}
+** {{tact|gives=their Void knight gloves (l) to the Dodgy Squire}} 
+** '''Dodgy Squire:''' Deal!
+** {{tact|end}}
+* {{topt|Decline}}
+** {{tact|end}}
+
+===Any other item===
+* '''Dodgy Squire:''' That's not really the sort of stuff I want
+* {{tact|end}}

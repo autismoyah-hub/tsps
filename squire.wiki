@@ -1,0 +1,55 @@
+{{Infobox NPC
+|name = Dodgy Squire
+|image = [[File:Dodgy Squire.png|120px]]
+|release = [[14 April]] [[2016]]
+|update = Bank Placeholders & PID
+|members = Yes
+|race = [[Human]]
+|location = [[Void Knights' Outpost]]
+|gender = Male
+|options = Talk-to
+|examine = I'm sure the briefcase's contents is strictly for personal use.
+|map = {{Map|name=Dodgy Squire|x=2668|y=2658|r=3|mtype=square}}
+|id = 2060
+|leagueRegion = Asgarnia
+}}
+[[File:Dodgy Squire chathead.png|left]]
+The '''Dodgy Squire''' can be found at the [[Void Knights' Outpost]] and will refund 80% of the original value of [[commendation points]] in exchange for [[Void Knight equipment]] pieces, excluding the [[Void seal]]. He is located just north of the bank. He will not accept [[(broken)]] items, nor any of the [[Shattered relics void ornament kit|ornamented]] items. He will accept [[(l)|locked]] items, but the [[trouver parchment]] is '''not''' refunded, so it is recommended to unlock the item before refunding it.
+
+{| class="wikitable"
+|+Void Knight Equipment Exchange
+!colspan=2|Void Knight equipment
+!Commendation Points
+|-
+|{{Plinkt|Void knight mace}}
+|200
+|-
+|{{Plinkt|Void knight top}}
+|200
+|-
+|{{Plinkt|Void knight robe}}
+|200
+|-
+|{{Plinkt|Void knight gloves}}
+|120
+|-
+|{{Plinkt|Void mage helm}}
+|160
+|-
+|{{Plinkt|Void ranger helm}}
+|160
+|-
+|{{Plinkt|Void melee helm}}
+|160
+|-
+|{{Plinkt|Elite void top}}
+|360
+|-
+|{{Plinkt|Elite void robe}}
+|360
+|}
+
+==Dialogue==
+{{Hastranscript|npc}}
+
+{{Pest Control}}
