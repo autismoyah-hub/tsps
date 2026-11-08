@@ -164,6 +164,12 @@ function stopOffering({ player }) {
   offerings.delete(player);
 }
 
+/** Inventory actions interrupt an offering, including a Bury click handled by Prayer. */
+function interruptOfferingForInventoryAction({ player, packet }) {
+  if (packet?.type !== "inventory_action" || packet.option?.toLowerCase() === "examine") return;
+  stopOffering({ player });
+}
+
 function pauseOffering(event) {
   pauseForLevelUp(event, offerings, (player) => stopOffering({ player }));
 }
@@ -224,5 +230,6 @@ module.exports = {
     api.onItemOnObject(useBoneOnAltar, { noted: false });
     api.onCustomEvent("level-up:popup-opened", pauseOffering);
     api.onCustomEvent("bone-altars:offer", offerOnAltar);
+    api.onCustomEvent("player:world-input", interruptOfferingForInventoryAction);
   },
 };
