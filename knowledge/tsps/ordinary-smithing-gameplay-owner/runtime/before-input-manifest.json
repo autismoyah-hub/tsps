@@ -2,8 +2,8 @@
   "schema": 1,
   "source": "33db80b984122e38c1bcab91d0acbf3f896815f6",
   "tests": [
-    "dragon-forge-shared-shard.test.cjs",
-    "dragon-forge-preset-parts.test.cjs"
+    "dragon-forge-preset-parts.test.cjs",
+    "dragon-forge-shared-shard.test.cjs"
   ],
   "expectedTestCounts": {
     "dragon-forge-shared-shard.test.cjs": 7,
