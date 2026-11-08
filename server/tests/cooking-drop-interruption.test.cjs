@@ -20,8 +20,19 @@ before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, '..'));
   core = PluginManager.getCoreApi();
   core.ObjectDefinition.init();
-  core.RegionManager.init();
-  core.RegionManager.loadMapFiles(3222, 3218);
+  const mapWarnings = [];
+  const originalWarn = console.warn, originalError = console.error;
+  console.warn = (...args) => { mapWarnings.push(args); originalWarn(...args); };
+  console.error = (...args) => { mapWarnings.push(args); originalError(...args); };
+  try {
+    core.RegionManager.init();
+    core.RegionManager.loadMapFiles(3222, 3218);
+  }
+  finally { console.warn = originalWarn; console.error = originalError; }
+  assert.deepEqual(mapWarnings, [], 'region loading did not report a swallowed failure');
+  const regionId = core.RegionManager.regionIdForTile(3222, 3218);
+  assert.equal(core.RegionManager.getRegionid(regionId)?.isLoaded(), true,
+    'the actual cache center region is loaded before seeding the range');
   Cooking.register(PluginManager.createApi('CookingDropInterruption'));
   [raw, cooked, burnt, chicken, cookedChicken, spare] =
     ['raw_beef', 'cooked_meat', 'burnt_meat', 'raw_chicken', 'cooked_chicken', 'pot_empty']
