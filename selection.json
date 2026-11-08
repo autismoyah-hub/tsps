@@ -1,0 +1,14 @@
+{
+  "action": "SELECT_ONCE",
+  "attempts": 1,
+  "owner": "827f21d7-bd7b-4698-9d4d-e4105ca67d27",
+  "source": "2a58cab282b120dca88f8e3eb005df88d8beac6c",
+  "planSHA256": "998a3bb59f540c84e5c7a659239bcea5175ad492affafa60ed874a5a2578507d",
+  "manifestSHA256": "1f96541877fc28f6f3a375e262008768074a85e48cfd720f0b810ff9fcafb679",
+  "count": 4931,
+  "tests": [
+    "fishing.test.cjs",
+    "minnow-exchange-capacity.test.cjs"
+  ],
+  "purpose": "Verify reviewed fixed exchange against the independently accepted causal BEFORE and controls."
+}

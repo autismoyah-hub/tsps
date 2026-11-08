@@ -1,0 +1,41 @@
+{
+  "executor": "827f21d7-bd7b-4698-9d4d-e4105ca67d27",
+  "pythonSHA256": "c2c20b4745d447551221ec3d4e70f92c270c4609fe3df34fc52ea6dd46e92273",
+  "sdkMapSHA256": "0984d519ae00e72cbc77507c38eeddea49a74851513763fae1f69bb85339bec1",
+  "extraPins": {
+    "review-capture.py": "a01046085d7850a4782da959d0208a2d0e83e923649b9279b731b7b7084e6e3a",
+    "acquire-review.py": "0e89624b1cf8dd29c57a0c2f8e56773be2fa46c43d2864c968f77ecc99541b83",
+    "hf-project-access-v4.py": "fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326",
+    "authenticated-child-snapshot-command.py": "00ff45d75be1eae3bc8f04995cfb8bcbe2bc5adc28c1162b843cfe88c87024f9",
+    "bootstrap-sdk-target.py": "c8a07874c46390e2018ae12bf56497039b9795131dc389c41a2c02801d361d36",
+    "collect-author-after.py": "de48aed66b6c4a3eb4ee9be516247786c17eb8c04ce83dfd7bf518a47779f971",
+    "reconcile-author-after.py": "3b661f44ac4b4c40183ccb278c37c07f36e0398f4794d4731dcd4faaa30c6491",
+    "assemble-reconciliation.py": "f9f2c3c11bb038b0b72dfa06885cade99db5446d5ba29cf00605cf4ec1032115",
+    "../frame_transport.py": "f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76",
+    "../retain-job-result.py": "bdcb7f104ebfa8c26d2aa68c1dd31cf7780f12174eb92d3e98ffb928797a9071"
+  },
+  "source": "2a58cab282b120dca88f8e3eb005df88d8beac6c",
+  "sourceRef": "refs/heads/minnow-exchange-capacity-827f21d7",
+  "originalPlanSHA256": "8acd058263adcb9bde8767fc6bf142098d560b48308e908ead4a639f22553420",
+  "originalRequestSHA256": "1ea1519cff5757ce661a2fceac48d2a9a74a3ab0c43c7b63844364dd25a2eb86",
+  "planSHA256": "998a3bb59f540c84e5c7a659239bcea5175ad492affafa60ed874a5a2578507d",
+  "manifestSHA256": "1f96541877fc28f6f3a375e262008768074a85e48cfd720f0b810ff9fcafb679",
+  "count": 4931,
+  "tests": [
+    "fishing.test.cjs",
+    "minnow-exchange-capacity.test.cjs"
+  ],
+  "expectedTestCounts": {
+    "fishing.test.cjs": 12,
+    "minnow-exchange-capacity.test.cjs": 4
+  },
+  "callerSHA256": "02aa4d2bd7cdcc2031309b500fc86c4e4ad78322013e605efe1fc8488f5ecc7e",
+  "submitCallerSHA256": "54f7d2ea91000a39d842bfe046701e807a40e4a16ec9e8ac46de344f8919d022",
+  "payloadSHA256": "6028946a60c124772178a55f61285b6ac9eef1a05a5362199a836e8bea7ebfc3",
+  "bindingsSHA256": "c1b79438959cb2918b67d61f6d4488f9d9aa6ff0fce107216deb5896c444a81b",
+  "profileBasisSHA256": "8eb0af645befdd9c250e8716ab9adabfeeb65fc2044a33852e0d3eaad2aacb06",
+  "selectionSHA256": "dd55ebef866bb61294a764da691cf5d45798c0492ea458dbf60c2b3f6e478f65",
+  "causalBeforeReceiptSHA256": "37253c747456868172ad0cdca31970aff849370475fc338a5301440e29701b33",
+  "causalBeforePacketSHA256": "aed6fc1ca70df14bd544599432cd5a99c06b6160bea6353bd0757dc5f9f394ef",
+  "causalBeforeJob": "6af087eb0e0338d1bb84bace"
+}
