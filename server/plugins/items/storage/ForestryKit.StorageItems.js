@@ -47,6 +47,8 @@ const QUANTITY_BUTTONS = new Map([[11, 0], [12, 1], [13, 3], [14, 2]]);
 const QUANTITY_AMOUNTS = new Map([[0, 1], [1, 5], [2, Number.MAX_SAFE_INTEGER]]);
 const MODE_X = 3;
 const QUANTITY_ATTRIBUTE = "storage-items:forestry-kit-quantity";
+const CAPE_POUCH_ATTRIBUTE = "storage-items:forestry-cape-pouch";
+const CAPE_GAMEVALS = ["skillcape_woodcutting", "skillcape_woodcutting_trimmed"];
 const EXAMINE_OP = 10;
 /** The forestry basket's "Forestry kit" sub-option on Fill and View (LogBasket.StorageItems). */
 const BASKET_KIT_SUB_OP = 1;
@@ -77,13 +79,23 @@ function storableIds() {
   return storable;
 }
 
+function capeIds() {
+  return new Set(CAPE_GAMEVALS.map((name) => Storage.core.CacheDefinitions.getObjId(name))
+    .filter((id) => id !== null && id !== undefined));
+}
+
+function acceptsForPlayer(player, id) {
+  return family.accepts(id) && family.room(player, id, Storage.contents(player, family)) > 0;
+}
+
 const family = {
   key: "forestry-kit",
   names: [NAME, ...HOLDERS],
   pairs: [],
   worn: true,
-  accepts: (id) => storableIds().has(id) && !Storage.isNoted(id),
-  room: () => Number.MAX_SAFE_INTEGER,
+  accepts: (id) => (storableIds().has(id) || capeIds().has(id)) && !Storage.isNoted(id),
+  room: (player, id) => capeIds().has(id) && !player.getAttribute(CAPE_POUCH_ATTRIBUTE)
+    ? 0 : Number.MAX_SAFE_INTEGER,
   /** Carried or worn, it takes what the player earns (Wiki: leaves; captured: bark). */
   gathers: (player) => Storage.carried(player, family).length > 0,
   /** Bark pays at the Forestry Shop; rations power a felling axe from a carried or worn kit. */
@@ -99,7 +111,7 @@ function isOpen(player) {
 }
 
 function sendContents(player) {
-  player.getPacketSender().sendInventory(INVENTORY, storableIds().size, Storage.contents(player, family));
+  player.getPacketSender().sendInventory(INVENTORY, storableIds().size + (player.getAttribute(CAPE_POUCH_ATTRIBUTE) ? capeIds().size : 0), Storage.contents(player, family));
 }
 
 function quantityMode(player) {
@@ -121,7 +133,7 @@ function view({ player }) {
 
 /** Moves up to `amount` of `id` into the kit; returns how many went in. */
 function deposit(player, id, amount) {
-  if (!family.accepts(id)) {
+  if (!acceptsForPlayer(player, id)) {
     player.sendMessage(MESSAGE.CANT_HOLD);
     return 0;
   }
@@ -145,7 +157,7 @@ function withdraw(player, slot, amount) {
 
 /** Every storable item in the inventory goes in; with none, the captured line. */
 function fill({ player }) {
-  const held = Storage.inventoryIds(player).filter(family.accepts);
+  const held = Storage.inventoryIds(player).filter((id) => acceptsForPlayer(player, id));
   if (!held.length) {
     player.sendMessage(MESSAGE.NOTHING);
     return;
@@ -223,11 +235,24 @@ function click(event) {
 
 function useOnKit(event) {
   const { player, usedItem, usedWithItem } = event;
-  const usedIsKit = Storage.nameOf(usedItem) === NAME;
-  const withIsKit = Storage.nameOf(usedWithItem) === NAME;
+  const usedIsKit = family.names.includes(Storage.nameOf(usedItem));
+  const withIsKit = family.names.includes(Storage.nameOf(usedWithItem));
   if (!usedIsKit && !withIsKit) return;
   const other = usedIsKit ? usedWithItem : usedItem;
-  if (!family.accepts(other?.getId?.())) return;
+  if (other?.getId?.() === Storage.core.ItemIdentifiers.CAPE_POUCH) {
+    event.handled = true;
+    if (player.getSkillManager().getMaxLevel(Storage.core.Skill.WOODCUTTING) < 99) {
+      player.sendMessage("You need level 99 Woodcutting to expand your Forestry kit/basket with this.");
+      return;
+    }
+    // Repeat attachment behavior has not been captured. Keep the extra pouch rather than consume it.
+    if (player.getAttribute(CAPE_POUCH_ATTRIBUTE)) return;
+    player.getInventory().deleteNumber(other.getId(), 1);
+    player.setAttribute(CAPE_POUCH_ATTRIBUTE, 1);
+    player.sendMessage("You expand your Forestry kit/basket to be able to hold a Woodcutting cape.");
+    return;
+  }
+  if (!acceptsForPlayer(player, other?.getId?.())) return;
   event.handled = true;
   deposit(player, other.getId(), other.getAmount());
 }
@@ -241,8 +266,18 @@ function destroyed({ player, itemId }) {
   if (family.names.includes(name) && !Storage.owns(player, family)) Storage.setContents(player, family, []);
 }
 
+function capePerk(request) {
+  if (!request?.player || request.result === true || request.skill !== "WOODCUTTING") return;
+  const player = request.player;
+  const worn = player.getEquipment().getItems()[Storage.core.Equipment.CAPE_SLOT];
+  if (!family.names.includes(Storage.nameOf(worn)) || !player.getAttribute(CAPE_POUCH_ATTRIBUTE)) return;
+  if (Storage.contents(player, family).some(({ id, amount }) => amount > 0 && capeIds().has(id))) request.result = true;
+}
+
 module.exports = (api) => {
   Storage.register(family);
+  api.persistAttribute(CAPE_POUCH_ATTRIBUTE, 0);
+  api.onCustomEvent("skillcape:has-perk", capePerk);
   api.persistAttribute(QUANTITY_ATTRIBUTE, 0);
   api.onItemAction(NAME, { View: view, Fill: fill });
   for (const name of HOLDERS) api.onItemAction(name, { Fill: basketFill, View: basketView });

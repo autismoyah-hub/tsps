@@ -9,6 +9,7 @@ const { PluginManager } = require('../dist/plugins/PluginManager');
 const { Player } = require('../dist/game/entity/impl/player/Player');
 const { PlayerSession } = require('../dist/net/PlayerSession');
 const { EquipPacketListener } = require('../dist/net/packet/impl/EquipPacketListener');
+const { PlayerSave } = require('../dist/game/entity/impl/player/persistence/PlayerSave');
 
 let core;
 let next = 8100;
@@ -77,4 +78,23 @@ test('a stored Woodcutting cape grants its perk with the kit worn, not carried',
   EquipPacketListener.equip(p, I.FORESTRY_KIT, item(p, I.FORESTRY_KIT).slot, core.Inventory.INTERFACE_ID);
   assert.equal(p.getEquipment().getItems()[core.Equipment.CAPE_SLOT].getId(), I.FORESTRY_KIT);
   assert.equal(perk(p), true, 'wearing the kit grants the stored cape perk');
+});
+
+
+test('the kit refuses a cape before the upgrade and the upgraded store survives PlayerSave', () => {
+  const p = actor(99), I = core.ItemIdentifiers;
+  give(p, I.FORESTRY_KIT, I.CAPE_POUCH, I.WOODCUTTING_CAPE);
+  option(p, I.FORESTRY_KIT, 'Fill');
+  assert.equal(p.getInventory().getAmount(I.WOODCUTTING_CAPE), 1);
+  use(p, I.CAPE_POUCH, I.FORESTRY_KIT);
+  option(p, I.FORESTRY_KIT, 'Fill');
+  assert.equal(p.getInventory().getAmount(I.WOODCUTTING_CAPE), 0);
+  const restored = actor(99);
+  PlayerSave.fromPlayer(p).applyToPlayer(restored);
+  assert.equal(restored.getInventory().getAmount(I.FORESTRY_KIT), 1);
+  option(restored, I.FORESTRY_KIT, 'View');
+  PluginManager.emitInterfaceActionClick({ player: restored, buttonId: (823 << 16) | 21,
+    groupId: 823, childId: 21, action: 2, slot: 0, itemId: I.WOODCUTTING_CAPE, handled: false });
+  assert.equal(restored.getInventory().getAmount(I.WOODCUTTING_CAPE), 1);
+  assert.equal(perk(restored), false);
 });
