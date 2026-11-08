@@ -6,7 +6,14 @@ const ROOT = '/tmp/tsps-shades-260b-materialize';
 const PREFIX = 'server/plugins/skills/crafting/';
 const FILE_LIMIT = 64 * 1024 * 1024;
 const TOTAL_LIMIT = 192 * 1024 * 1024;
+// This bounds network/async work; synchronous fsync and bounded readback can exceed it.
 const DEADLINE_MS = 900000;
+const MANIFESTS = {
+  '2deadd8ce6d0bb2d7163f5f14d1fa62ea19456cc': 'f5a7f863edc6107d658afcff607b4fc72b0908ed22ec7419b24434c1c7336a4f',
+  'f97459c4185b0f0c3772b8ee014c0ea3abd63440': '3b6e656078604a8130a2d6f5e9c0e10f075ee79ca5e767eae66b5dac89658cce',
+};
+// Caller must bind this job as the exclusive same-UID owner of ROOT until it exits.
+// Directory checks cannot prevent a hostile same-UID process from renaming an ancestor.
 const digest = (kind, value) => crypto.createHash(kind).update(value).digest('hex');
 function checkDirectory(dir) {
   const parts = path.resolve(dir).split(path.sep).filter(Boolean);
@@ -27,9 +34,15 @@ function ensureParents(file) {
     checkDirectory(current);
   }
 }
+function checkOwnedRoot() {
+  checkDirectory(ROOT);
+  const stat = fs.lstatSync(ROOT);
+  if (stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o700) throw Error('case root ownership or mode mismatch');
+}
 async function materialize(manifest, root, repository) {
   if (root !== ROOT || manifest.schema !== 1 || manifest.excludedPrefix !== PREFIX || manifest.excludedCount !== 11 ||
-      !/^[0-9a-f]{40}$/.test(manifest.source) || repository !== 'autismoyah-hub/tsps') throw Error('profile mismatch');
+      !MANIFESTS[manifest.source] || digest('sha256', Buffer.from(JSON.stringify(manifest) + '\n')) !== MANIFESTS[manifest.source] ||
+      repository !== 'autismoyah-hub/tsps') throw Error('profile mismatch');
   const files = Object.keys(manifest.expectedInputs).sort();
   if (files.length !== 5013 || JSON.stringify(files) !== JSON.stringify(Object.keys(manifest.sourceBlobs).sort())) throw Error('manifest membership');
   for (const file of files) {
@@ -39,7 +52,7 @@ async function materialize(manifest, root, repository) {
   }
   checkDirectory(path.dirname(ROOT));
   fs.mkdirSync(ROOT, {mode:0o700}); // Refuse any previous root, including partial attempts.
-  checkDirectory(ROOT);
+  checkOwnedRoot();
   let next = 0, total = 0, completed = 0;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEADLINE_MS);
@@ -49,6 +62,7 @@ async function materialize(manifest, root, repository) {
       const url = `https://raw.githubusercontent.com/${repository}/${manifest.source}/${file.split('/').map(encodeURIComponent).join('/')}`;
       const response = await fetch(url, {redirect:'error', signal:AbortSignal.any([controller.signal, AbortSignal.timeout(60000)])});
       if (!response.ok || response.url !== url || !response.body) throw Error(`input HTTP status ${response.status}: ${file}`);
+      checkOwnedRoot();
       ensureParents(target);
       const fd = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW, 0o600);
       let size = 0;
@@ -59,10 +73,15 @@ async function materialize(manifest, root, repository) {
           if (size > FILE_LIMIT || total > TOTAL_LIMIT) throw Error('input byte limit');
           h.update(chunk);
           let offset = 0;
-          while (offset < chunk.length) offset += fs.writeSync(fd, chunk, offset, chunk.length - offset);
+          while (offset < chunk.length) {
+            const written = fs.writeSync(fd, chunk, offset, chunk.length - offset);
+            if (written <= 0) throw Error('zero-byte output write');
+            offset += written;
+          }
         }
         fs.fsyncSync(fd);
       } finally { fs.closeSync(fd); }
+      checkOwnedRoot();
       checkDirectory(path.dirname(target));
       const stat = fs.lstatSync(target);
       if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(target) !== target || stat.size !== size) throw Error('unsafe output file');
