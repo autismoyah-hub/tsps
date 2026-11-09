@@ -12,7 +12,7 @@
     "collector_entry.py": "ebcf8b136463f26f6126ee62acb26b60cb795badd55a41d12f00839947cf14bb",
     "job_identity.py": "aa6b12b2ac3d8b9a1774223278eb5d8c02edf2ecceb2b8118c120a3037020d13",
     "status.py": "fedda8591760f81146f2470149a7a12156100a9baa5af61436ced999d73e3d93",
-    "status_invoke.py": "baf3204f0061555935127d86043378c3642da6de063465ae6235f63012bdae5d",
+    "status_invoke.py": "698990c5df5deef98af0cb5f0e3d8c137b7a1b1cf55943d9adeda39e121227d1",
     "authority.py": "218404c595589d13c18658b64c13eb924d146544d1ed40fbfc221cae96002e63",
     "pilot.py": "2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200",
     "payload.cjs": "220ef3554ec1bf8951c22dc8e50b849feeeaaa5b0b0b06f664ea7b393cb1dde4",

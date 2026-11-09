@@ -13,3 +13,4 @@ collector owner control PASS
 collector name control PASS
 collector partial control PASS
 collector positive control PASS
+altered status entry with matching caller hash refused before adapter PASS

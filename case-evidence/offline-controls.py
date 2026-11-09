@@ -148,3 +148,11 @@ for scenario in ('command','docker_image','labels','owner','name','partial','pos
    paths=list(root.glob('collector-raw-stream-*.txt'));assert calls==['api','inspect','logs'] and len(paths)==1 and paths[0].read_text()=='partial-line\n'
   else:assert calls==['api','inspect','logs'],calls
   print('collector',scenario,'control PASS')
+# Actual status invocation refuses a modified entry even if the caller supplies its new digest.
+statusinvoke=load('wc_status_invoke',HERE/'status_invoke.py')
+with tempfile.TemporaryDirectory(prefix='wc-status-entry-control-') as td:
+ root=pathlib.Path(td);entry=root/'status.py';entry.write_text('modified status entry')
+ pre={'owner':owner,'planSHA256':'a'*64,'files':{'status.py':'b'*64}};prepath=root/'prestart.json';prepath.write_text(json.dumps(pre));(root/'exclusive-intent.json').write_text(json.dumps({'owner':owner,'planSHA256':'a'*64,'prestartSHA256':h(prepath)}));calls=[]
+ argv=['status_invoke.py','--plan',str(root/'pilot.json'),'--plan-sha256','a'*64,'--entry-sha256',h(entry),'--prestart',str(prepath),'--prestart-sha256',h(prepath)]
+ with patch.object(statusinvoke,'ROOT',root),patch.object(statusinvoke.subprocess,'run',side_effect=lambda *a,**k:calls.append('adapter')),patch.object(sys,'argv',argv),patch.dict(os.environ,{'CCC_SESSION_ID':owner}):expect_refuse(statusinvoke.main)
+ assert calls==[];print('altered status entry with matching caller hash refused before adapter PASS')
