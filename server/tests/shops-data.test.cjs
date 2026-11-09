@@ -153,3 +153,67 @@ test('a shop-wide stockAmount of 0 keeps rows that omit their own amount', () =>
     'the inherited zero stays listed, an explicit amount wins and an invalid amount is still dropped'
   );
 });
+test('shop importer applies unambiguous prices in the shop currency', (t) => {
+  const os = require('node:os');
+  const { spawnSync } = require('node:child_process');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shop-price-import-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const scripts = path.join(root, 'server/scripts');
+  const definitions = path.join(root, 'server/data/definitions');
+  const docs = path.join(root, 'docs');
+  for (const dir of [scripts, definitions, docs]) fs.mkdirSync(dir, { recursive: true });
+  const script = path.join(scripts, 'import-osrs-shops.mjs');
+  fs.copyFileSync(path.join(__dirname, '../scripts/import-osrs-shops.mjs'), script);
+  fs.writeFileSync(path.join(definitions, 'shops.json'), '[]');
+  const items = [
+    { id: 101, stock: 2, sell: '10000' },
+    { id: 102, stock: 1, sell: '42', currency: 'coins' },
+    { id: 103, stock: 1, sell: '0' },
+    { id: 104, stock: 1, sell: '{{Coins|10}}' },
+    { id: 105, stock: 1, sell: '9007199254740992' },
+    { id: 106, stock: 1 },
+  ];
+  fs.writeFileSync(path.join(docs, 'shops-items-by-shop.json'), JSON.stringify({
+    'Test points shop': { shop_info: { currency: 'Volcanic Mine points', general_store: false }, owners: [], items },
+    'Test coins shop': { shop_info: { currency: 'coins', general_store: true, buys_at: 600, change_per: 20 }, owners: [], items: [{ id: 107, stock: 1, sell: '42', currency: 'coins' }] },
+    'Mysterious Stranger (shop)': { shop_info: { currency: 'coins' }, owners: [], items: [{ id: 22517, stock: 1, sell: '10' }] },
+    'Bounty Hunter Store': { shop_info: { currency: 'Points' }, owners: [], items: [{ id: 108, stock: 1, sell: '10', currency: 'coins' }] },
+    'Unknown points shop': { shop_info: { currency: 'Points' }, owners: [], items: [{ id: 109, stock: 1, sell: '10' }] },
+  }));
+  const result = spawnSync(process.execPath, [script, '--docs', docs], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  const shopsFile = path.join(definitions, 'shops.json');
+  const first = fs.readFileSync(shopsFile);
+  const check = spawnSync(process.execPath, [script, '--docs', docs, '--check'], { encoding: 'utf8' });
+  assert.equal(check.status, 0, check.stderr);
+  assert.match(check.stdout, /shops\.json is up to date/);
+  assert.deepEqual(fs.readFileSync(shopsFile), first);
+  fs.writeFileSync(shopsFile, '[]');
+  const repeat = spawnSync(process.execPath, [script, '--docs', docs], { encoding: 'utf8' });
+  assert.equal(repeat.status, 0, repeat.stderr);
+  assert.deepEqual(fs.readFileSync(shopsFile), first);
+  const output = JSON.parse(first.toString('utf8'));
+  const points = output.find((shop) => shop.name === 'Test points shop');
+  const coins = output.find((shop) => shop.name === 'Test coins shop');
+  assert.deepEqual(points.originalStock.map((row) => row.price ?? null), [10000, null, null, null, null, null]);
+  assert.equal(points.generalStore, false);
+  assert.equal(coins.originalStock[0].price, 42);
+  assert.equal(coins.generalStore, true);
+  assert.equal(coins.sellMultiplier, 600);
+  assert.equal(coins.priceChangePer, 20);
+  assert.equal(output.find((shop) => shop.name === 'Mysterious Stranger (shop)').originalStock.find((row) => row.id === 22517).price, 75000);
+  assert.equal(output.find((shop) => shop.name === 'Bounty Hunter Store').originalStock[0].price, undefined);
+  const unknown = output.find((shop) => shop.name === 'Unknown points shop');
+  assert.equal(unknown.currency, 'POINTS');
+  assert.equal(unknown.originalStock[0].price, undefined);
+  assert.match(result.stdout, /Exported prices imported: 2; unsupported: 6/);
+});
+
+test('shop-wide price remains effective when an imported row has a price', () => {
+  const { ShopDefinitionLoader } = require('../dist/game/definition/loader/impl/ShopDefinitionLoader');
+  const definition = new ShopDefinitionLoader().toDefinition({
+    id: 999996, name: 'Price precedence', currency: 'COINS', prices: { 303: 2500 },
+    originalStock: [{ id: 303, amount: 1, price: 42 }],
+  }, 'core');
+  assert.equal(definition.getOriginalStock()[0].price, 2500);
+});

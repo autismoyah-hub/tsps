@@ -219,7 +219,18 @@ function sellPolicy(currency, info) {
   return { sellMultiplier: buysAt, ...(Number.isSafeInteger(changePer) ? { priceChangePer: changePer } : {}) };
 }
 
-function originalStock(name, items) {
+// Import only plain, positive prices denominated in the actual shop currency.
+// Unsupported expressions and currency overrides retain the existing fallback.
+function exportPrice(item, shopCurrency) {
+  const raw = item.sell;
+  if (shopCurrency === "POINTS") return null;
+  if (typeof raw !== "string" || !/^[1-9][0-9]*$/.test(raw)) return null;
+  if (item.currency !== undefined && String(item.currency).trim().toUpperCase() !== shopCurrency) return null;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function originalStock(name, items, shopCurrency, priceStats) {
   const stock = (EXTRA_STOCK[name] ?? []).map((entry) => ({ ...entry }));
   const prices = ITEM_PRICES[name] ?? {};
   for (const item of items ?? []) {
@@ -228,7 +239,10 @@ function originalStock(name, items) {
     const entry = { id: item.id, amount };
     const restock = Number(item.restock_time);
     if (Number.isFinite(restock) && restock > 0) entry.restockTicks = restock;
+    const exported = exportPrice(item, shopCurrency);
     if (prices[item.id] !== undefined) entry.price = prices[item.id];
+    else if (exported !== null) { entry.price = exported; priceStats.imported++; }
+    else if (item.sell !== undefined) priceStats.unsupported++;
     stock.push(entry);
   }
   const order = STOCK_ORDER[name];
@@ -312,6 +326,7 @@ function main() {
 
   const rebuilt = [];
   const unmappedCurrencies = new Set();
+  const priceStats = { imported: 0, unsupported: 0 };
   for (const [name, record] of Object.entries(byShop)) {
     // Shops gone from the game stay in the dump (shop_info.removed) but must not
     // be bound: they would take the Trade of the live shop on the same NPC.
@@ -325,7 +340,7 @@ function main() {
       currency,
       ...(typeof record.shop_info?.general_store === "boolean" ? { generalStore: record.shop_info.general_store } : {}),
       ...sellPolicy(currency, record.shop_info),
-      originalStock: originalStock(name, record.items),
+      originalStock: originalStock(name, record.items, currency, priceStats),
       ...(SHOP_PRICES[name] ? { prices: new Map(SHOP_PRICES[name]) } : {}),
       npcInteractions: npcInteractions(name, record.owners, shopsByNpc),
     });
@@ -348,6 +363,7 @@ function main() {
     fs.writeFileSync(shopsFile, output);
     console.log(`Wrote ${rebuilt.length} shops to ${path.relative(repoRoot, shopsFile)}`);
   }
+  console.log(`Exported prices imported: ${priceStats.imported}; unsupported: ${priceStats.unsupported}`);
   if (unmappedCurrencies.size) {
     console.warn(
       `Unmapped "Points" currencies (register a concrete key): ${[...unmappedCurrencies].join(", ")}`

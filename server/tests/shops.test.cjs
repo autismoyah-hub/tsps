@@ -160,6 +160,43 @@ function sell(player, slot, option = "Sell 1") {
   });
 }
 
+test("an explicit shop row price reaches purchase and sellback hooks", (t) => {
+  // The explicit value represents a generated row; this fixture uses stubbed
+  // player/item definitions but real ShopManager, Item and Inventory paths.
+  const seen = [];
+  t.mock.method(PluginManager, "emitCustomEvent", (name, event) => {
+    if (name === "shop:buy-price" && event.itemId === STEEL_AXE) {
+      seen.push([name, event.price]);
+      event.price = 80;
+    }
+    if (name === "shop:sell-price" && event.itemId === STEEL_AXE) {
+      seen.push([name, event.buyPrice, event.price]);
+      event.price = 50;
+    }
+  });
+  ShopDefinition.replace([new ShopDefinition(AXE_SHOP, "Price control", "COINS", [
+    { id: STEEL_AXE, amount: 1, restockTicks: null, price: 100 },
+  ], 100, 100, 100, "test")]);
+  ShopManager.initialize();
+  const player = createPlayer();
+  player.getInventory().add(new Item(COINS, 1000), false);
+  ShopManager.open(player, AXE_SHOP);
+  seen.length = 0;
+  buy(player, 0, STEEL_AXE);
+  assert.equal(player.getInventory().getAmount(COINS), 920);
+  assert.equal(player.getInventory().getAmount(STEEL_AXE), 1);
+  assert.deepEqual(stockOf(), [[STEEL_AXE, 0]]);
+  assert.ok(seen.some((entry) => entry[0] === "shop:buy-price" && entry[1] === 100));
+  const slot = player.getInventory().getItems().findIndex((item) => item?.getId() === STEEL_AXE);
+  assert.ok(slot >= 0);
+  seen.length = 0;
+  sell(player, slot);
+  assert.equal(player.getInventory().getAmount(COINS), 970);
+  assert.equal(player.getInventory().getAmount(STEEL_AXE), 0);
+  assert.deepEqual(stockOf(), [[STEEL_AXE, 1]]);
+  assert.ok(seen.some((entry) => entry[0] === "shop:sell-price" && entry[1] === 100 && entry[2] === 85));
+});
+
 test("Sell N sells unstackable items from every slot, skipping ones that can't be sold", () => {
   const player = openShop(0);
   player.getInventory().add(new Item(STEEL_AXE, 1), false);
@@ -760,4 +797,62 @@ test("the rotten tomato crates' Buy opens Pelters' Veg Stall", () => {
   const player = {};
   hooks.get("Crate").Buy({ player });
   assert.deepEqual(opened, [[player, PELTERS]]);
+});
+
+
+test("bundle deliveries conserve stock and currency without a false single-item receipt", (t) => {
+  const purchases = [];
+  t.mock.method(PluginManager, "emitCustomEvent", (name, event) => {
+    if (name === "shop:delivery") { event.deliverId = STEEL_AXE_NOTE; event.amount = 3; event.captureDelivery = true; }
+    if (name === "shop:purchase") purchases.push(event);
+  });
+  for (const [option, units] of [["Buy 1", 1], ["Buy 5", 2]]) {
+    ShopDefinition.replace([new ShopDefinition(AXE_SHOP, "Bundle control", "COINS", [
+      { id: BRONZE_AXE, amount: 2, restockTicks: null, price: 100 },
+    ], 100, 100, 100, "test")]);
+    ShopManager.initialize();
+    const player = createPlayer(); player.getInventory().add(new Item(COINS, 1000), false);
+    ShopManager.open(player, AXE_SHOP); const before = purchases.length;
+    buy(player, 0, BRONZE_AXE, option);
+    assert.equal(player.getInventory().getAmount(STEEL_AXE_NOTE), units * 3);
+    assert.equal(player.getInventory().getAmount(COINS), 1000 - units * 100);
+    assert.deepEqual(stockOf(), [[BRONZE_AXE, 2 - units]]);
+    assert.equal(purchases.length, before + 1);
+    assert.equal(purchases.at(-1).amount, units);
+    assert.equal(purchases.at(-1).deliveredSlot, -1);
+    assert.equal(purchases.at(-1).deliveredItem, null);
+  }
+});
+
+test("opt-in receipt identifies one real delivered object and ordinary delivery omits it", (t) => {
+  let capture = true; const purchases = [];
+  t.mock.method(PluginManager, "emitCustomEvent", (name, event) => {
+    if (name === "shop:delivery") event.captureDelivery = capture;
+    if (name === "shop:purchase") purchases.push(event);
+  });
+  const first = openShop(); buy(first, 1, STEEL_AXE);
+  const event = purchases.at(-1);
+  assert.ok(event.deliveredSlot >= 0);
+  assert.equal(event.deliveredItem, first.getInventory().getItems()[event.deliveredSlot]);
+  assert.equal(event.deliveredItem.getId(), STEEL_AXE);
+  capture = false; const ordinary = openShop(); buy(ordinary, 1, STEEL_AXE);
+  assert.equal(ordinary.getInventory().getAmount(STEEL_AXE), 1);
+  assert.equal(Object.hasOwn(purchases.at(-1), "deliveredItem"), false);
+});
+
+test("a full inventory refuses an undeliverable nonstackable purchase without charge or receipt", (t) => {
+  const purchases = [];
+  t.mock.method(PluginManager, "emitCustomEvent", (name, event) => {
+    if (name === "shop:delivery") event.captureDelivery = true;
+    if (name === "shop:purchase") purchases.push(event);
+  });
+  const player = openShop();
+  while (player.getInventory().getFreeSlots() > 0) player.getInventory().add(new Item(BRONZE_AXE), false);
+  assert.equal(player.getInventory().getFreeSlots(), 0);
+  const beforeCoins = player.getInventory().getAmount(COINS); const beforeStock = stockOf();
+  buy(player, 1, STEEL_AXE);
+  assert.equal(player.getInventory().getAmount(STEEL_AXE), 0);
+  assert.equal(player.getInventory().getAmount(COINS), beforeCoins);
+  assert.deepEqual(stockOf(), beforeStock);
+  assert.equal(purchases.length, 0);
 });
