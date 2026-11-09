@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import types
 import urllib.request
@@ -35,7 +36,7 @@ def durable_create(path, raw):
 def canonical_subject(subject):
     required = {'owner','reviewer','model','reasoningEffort','source','heldPlanSHA256','selectedPlanSHA256','manifestSHA256',
                 'callerSHA256','prestartSHA256','payloadSHA256','pilotSHA256','adapterSHA256',
-                'childSHA256','classifierSHA256','liveSHA256','entrySHA256','launcherSHA256','sourceGateSHA256','sourceProfileSHA256','cacheInventorySHA256','sdkPythonSHA256','sdkManifestSHA256','cliSHA256','sdkVersion','requestSHA256'}
+                'childSHA256','classifierSHA256','liveSHA256','entrySHA256','launcherSHA256','sourceGateSHA256','sourceProfileSHA256','cacheInventorySHA256','sdkPythonSHA256','sdkManifestSHA256','cliSHA256','nodeSHA256','cliModuleSHA256','sdkVersion','requestSHA256'}
     if not isinstance(subject,dict) or set(subject) != required: raise ValueError('authority subject schema')
     if subject['owner'] != OWNER or subject['reviewer'] != REVIEWER or subject['model'] != 'gpt-6.1-terra' or subject['reasoningEffort'] != 'medium' or subject['sdkVersion'] != '2.4.0':
         raise ValueError('authority identity mismatch')
@@ -155,21 +156,13 @@ def validate_choice_live(subject, selected_raw, choice_raw, review_raw, cli, cli
     if not isinstance(matches[0].get('ts'),str) or not matches[0]['ts']: raise ValueError('choice timestamp missing')
     return choice
 
-def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, runtime_files, sdk_manifest, held_plan, manifest):
-    """Recheck connected identity, authenticated peer turn and local source preflight; no provider."""
-    if os.environ.get('CCC_SESSION_ID') != OWNER: raise ValueError('session environment mismatch')
-    if subject['cliSHA256'] != cli_sha or subject['callerSHA256'] != CALLER_SHA: raise ValueError('CLI/caller subject mismatch')
-    pinned(cli,cli_sha); pinned(preflight,PREFLIGHT_SHA); pinned(caller,CALLER_SHA)
-    keys = {'payloadSHA256','pilotSHA256','adapterSHA256','childSHA256','classifierSHA256','liveSHA256','entrySHA256','launcherSHA256','sourceGateSHA256','sourceProfileSHA256','cacheInventorySHA256','sdkPythonSHA256','prestartSHA256'}
-    if set(runtime_files) != keys: raise ValueError('runtime file keyset mismatch')
-    for key in keys: pinned(runtime_files[key],subject[key])
-    if Path(runtime_files['prestartSHA256']).resolve() != Path(__file__).resolve(): raise ValueError('prestart source mismatch')
-    if Path(runtime_files['sdkPythonSHA256']).resolve() != Path(sys.executable).resolve(): raise ValueError('active Python mismatch')
+def verify_sdk(subject, sdk_manifest, expected_root):
     pinned(sdk_manifest,subject['sdkManifestSHA256'])
     sdk_doc = json.loads(Path(sdk_manifest).read_bytes())
     if sdk_doc.get('version') != '2.4.0' or not isinstance(sdk_doc.get('files'),dict) or not sdk_doc['files']:
         raise ValueError('SDK manifest invalid')
     sdk_root = Path(sdk_doc['root']).resolve(strict=True)
+    if sdk_root != Path(expected_root).resolve(strict=True): raise ValueError('selected SDK root mismatch')
     actual = set()
     for entry in sdk_root.rglob('*'):
         if entry.is_symlink(): raise ValueError('SDK symlink refused')
@@ -184,6 +177,28 @@ def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, run
         target = sdk_root / rel
         if target.is_symlink() or not target.resolve(strict=True).is_relative_to(sdk_root): raise ValueError('SDK link/path invalid')
         pinned(target,digest)
+    return {'sdkRoot':str(sdk_root),'sdkManifestSHA256':subject['sdkManifestSHA256']}
+
+def verify_toolchain(subject, cli, node, cli_module):
+    for name,expected in (('cuttle',cli),('node',node)):
+        resolved=shutil.which(name)
+        if not resolved or Path(resolved).resolve()!=Path(expected).resolve(): raise ValueError('PATH executable mismatch: '+name)
+    wrapper=pinned(cli,subject['cliSHA256']);pinned(node,subject['nodeSHA256']);pinned(cli_module,subject['cliModuleSHA256'])
+    expected=('#!/bin/sh\nexec node '+str(Path(cli_module).resolve())+' "$@"\n').encode()
+    if wrapper!=expected: raise ValueError('CLI wrapper delegation mismatch')
+
+def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, runtime_files, sdk_manifest, held_plan, manifest):
+    """Recheck connected identity, authenticated peer turn and local source preflight; no provider."""
+    if os.environ.get('CCC_SESSION_ID') != OWNER: raise ValueError('session environment mismatch')
+    if subject['cliSHA256'] != cli_sha or subject['callerSHA256'] != CALLER_SHA: raise ValueError('CLI/caller subject mismatch')
+    pinned(cli,cli_sha); pinned(preflight,PREFLIGHT_SHA); pinned(caller,CALLER_SHA)
+    keys = {'payloadSHA256','pilotSHA256','adapterSHA256','childSHA256','classifierSHA256','liveSHA256','entrySHA256','launcherSHA256','sourceGateSHA256','sourceProfileSHA256','cacheInventorySHA256','sdkPythonSHA256','nodeSHA256','cliModuleSHA256','prestartSHA256'}
+    if set(runtime_files) != keys: raise ValueError('runtime file keyset mismatch')
+    for key in keys: pinned(runtime_files[key],subject[key])
+    if Path(runtime_files['prestartSHA256']).resolve() != Path(__file__).resolve(): raise ValueError('prestart source mismatch')
+    if Path(runtime_files['sdkPythonSHA256']).resolve() != Path(sys.executable).resolve(): raise ValueError('active Python mismatch')
+    verify_toolchain(subject,cli,runtime_files['nodeSHA256'],runtime_files['cliModuleSHA256'])
+    verify_sdk(subject,sdk_manifest,json.loads(Path(sdk_manifest).read_bytes())['root'])
     held_raw=pinned(held_plan,subject['heldPlanSHA256'])
     manifest_raw=pinned(manifest,subject['manifestSHA256'])
     gate_path=Path(runtime_files['sourceGateSHA256']).resolve(); gate_raw=pinned(gate_path,subject['sourceGateSHA256'])

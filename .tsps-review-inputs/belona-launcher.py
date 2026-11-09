@@ -71,6 +71,8 @@ def verify_before_auth(subject,paths):
     snapshot(__file__,subject['launcherSHA256'])
     prestart=module(paths['prestart'],subject['prestartSHA256'],'belona_gate_prestart')
     prestart.canonical_subject(subject)
+    prestart.verify_toolchain(subject,paths['cli'],paths['node'],paths['cliModule'])
+    prestart.verify_sdk(subject,paths['sdkManifest'],paths['sdkRoot'])
     gate=module(paths['sourceGate'],subject['sourceGateSHA256'],'belona_gate_source')
     caller=module(paths['caller'],subject['callerSHA256'],'belona_gate_caller')
     _,held=snapshot(paths['held'],subject['heldPlanSHA256'])
