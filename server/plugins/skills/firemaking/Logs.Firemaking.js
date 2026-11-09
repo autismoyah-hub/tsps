@@ -1008,6 +1008,11 @@ function answerXpMultiplier(request) {
   request.multiplier *= firemakingXpMultiplier(request.player);
 }
 
+/** An inventory item action interrupts this player's current lighting or tending. */
+function handleInventoryItemAction({ player, action, option }) {
+  if (action === "action" && option !== "Examine") stopFiremaking(activeSessionsRef, player);
+}
+
 function handlePlayerDisconnect({ player }) {
   stopFiremaking(activeSessionsRef, player, false);
 }
@@ -1157,6 +1162,7 @@ function attach(api) {
   api.onCustomEvent("firemaking:log-xp", answerLogXp);
   api.onCustomEvent("firemaking:xp-multiplier", answerXpMultiplier);
   api.onPlayerDisconnect(handlePlayerDisconnect);
+  api.onCanUseItem(handleInventoryItemAction);
   api.onCustomEvent("level-up:popup-opened", handlePlayerLevelUp);
   api.onItemOnItem(onItemOnItemEvent, { noted: false });
   api.onItemOnGroundItem(onItemOnGroundItemEvent, { noted: false });
