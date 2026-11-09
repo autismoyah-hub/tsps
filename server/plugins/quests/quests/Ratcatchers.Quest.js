@@ -35,10 +35,8 @@
  * /w/Transcript:Ratcatchers); varp/varbit from scripts/lookup-gameval.ts.
  *
  * Gaps:
- *  - The server has no observable "cat catches vermin" event, so the 8-sewer-rat
- *    and 6-mansion-rat tasks count player kills of rats inside the task zone
- *    (onNpcDeath); the wiki's Chase-vermin path still works but is invisible to
- *    plugins. Reported for a shared rat-catch event.
+ *  - Mansion rat progress still counts player kills instead of individual cat
+ *    catches. Kitten hand-in and overgrown-cat eligibility also need correction.
  *  - The King Rat fight is scripted: using a cat item on the hole in the wall
  *    plays the challenge, and choosing either fight option resolves it; the cat
  *    cannot die and fish healing, withdraw and the 1 HP retreat are not simulated.
@@ -1170,6 +1168,17 @@ module.exports = function registerRatcatchersQuest(api) {
     player.moveTo(new Location(location.x, location.y - 1, 1));
   }
 
+  function handleVerminCaught({ player, verminName, location }) {
+    if (!player || !quest || verminName !== "Rat" || quest.getStage(player) !== STAGE_SISTERS_TASK
+        || !inZone(SEWERS_ZONE, location) || ratsCaught(player) >= RATS_TO_CATCH) return;
+    const caught = ratsCaught(player) + 1;
+    player.setAttribute(RATS_ATTRIBUTE, caught);
+    if (caught === RATS_TO_CATCH) {
+      sendAuxiliaryVarbit(player, VARBIT_RATCATCHERS_STAGE, 15);
+      startTranscript(api, player, catNpcId(player), PAGE, "grimesquit-phingspet-upon-catching-the-8th-rat");
+    }
+  }
+
   function handleNpcDeath(event) {
     if (!quest) return;
     const player = event?.killer?.isPlayer?.() ? event.killer : null;
@@ -1177,15 +1186,6 @@ module.exports = function registerRatcatchersQuest(api) {
     const location = event.location ?? event.npc?.getLocation?.();
     if (npcName(event.npc, player) !== "Rat") return;
     const stage = quest.getStage(player);
-    if (stage === STAGE_SISTERS_TASK && inZone(SEWERS_ZONE, location)) {
-      const caught = ratsCaught(player) + 1;
-      player.setAttribute(RATS_ATTRIBUTE, caught);
-      if (caught >= RATS_TO_CATCH) {
-        sendAuxiliaryVarbit(player, VARBIT_RATCATCHERS_STAGE, 15);
-        startTranscript(api, player, catNpcId(player), PAGE, "grimesquit-phingspet-upon-catching-the-8th-rat");
-      }
-      return;
-    }
     if (stage === STAGE_AT_MANOR && inZone(MANSION_ZONE, location)) {
       const caught = manorRatsCaught(player) + 1;
       player.setAttribute(MANOR_ATTRIBUTE, caught);
@@ -1404,6 +1404,7 @@ module.exports = function registerRatcatchersQuest(api) {
   api.onItemOnItem(handleItemOnItem);
   api.onItemOnObject(handleItemOnObject);
   api.onObjectInteraction(handleObjectInteraction);
+  api.onCustomEvent("pets:vermin-caught", handleVerminCaught);
   api.onNpcDeath(handleNpcDeath);
   api.onPlayerLogin(handleLogin);
   require("../ratcatchers/CatNaming.Ratcatchers")(api, {quest, felkrashId: FELKRASH_NPC_ID,

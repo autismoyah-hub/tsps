@@ -231,12 +231,12 @@ test('stage 0 to completion dispatches the registered QH legs and sends varbit 1
   // After starting, Ratcatchers releases Gertrude so A Tail of Two Cats can own her.
   assert.equal(h.npcTalk(N.GERTRUDE, 'Gertrude').handled, false);
 
-  // Sisters Grime: sniff sets the task, then eight sewer rat kills and the pole hand-in.
+  // Sisters Grime: sniff sets the task, then eight cat catches and the pole hand-in.
   h.action('y8ZblR', N.GRIMESQUIT);
   assert.equal(h.stage(), 2);
   assert.equal(h.varbit(), 10);
   assert.deepEqual(h.variant(N.GRIMESQUIT), { page: 'Ratcatchers', variant: 'grimesquit-phingspet-before-catching-8-rats' });
-  for (let i = 0; i < 8; i++) h.killRat(3250, 9850);
+  for (let i = 0; i < 8; i++) h.fire('pets:vermin-caught', { verminName: 'Rat', location: { x: 3250, y: 9850 } });
   assert.equal(h.attributes.get('quest.ratcatchers.rats'), 8);
   assert.equal(h.varbit(), 15, 'the distinct eight-rats step is sent before returning to the sisters');
   h.action('VYB0Uo', N.PHINGSPET);
