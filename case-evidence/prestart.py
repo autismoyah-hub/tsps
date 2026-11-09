@@ -82,7 +82,7 @@ def main():
  for name in ('submission.json','exclusive-intent.json'): assert not (ROOT/name).exists()
  pins={'pilot.py':'2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200','payload.cjs':'220ef3554ec1bf8951c22dc8e50b849feeeaaa5b0b0b06f664ea7b393cb1dde4','package.json':'ac9cb75167ec66ac1c1f4345d65bda679a20ac1b9a85aba45dd1919dcd18ac78','frame_transport.py':'f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76','retain-job-result.py':'bdcb7f104ebfa8c26d2aa68c1dd31cf7780f12174eb92d3e98ffb928797a9071','retain-contiguous-inputs003.py':'b399ca13e8fbfee6f7633a9d430d85c8204774c2941a2e4d5f74c642820fa690'}
  assert all(sha((ROOT/n).read_bytes())==h for n,h in pins.items())
- files={n:sha((ROOT/n).read_bytes()) for n in ('prestart.py','provider_guard.py','invoke.py','collect.py','status.py','status_invoke.py','authority.py',*pins)}
+ files={n:sha((ROOT/n).read_bytes()) for n in ('prestart.py','provider_guard.py','invoke.py','collect.py','collector_entry.py','job_identity.py','status.py','status_invoke.py','authority.py',*pins)}
  parserraw=(ROOT/'authority.py').read_bytes(); assert sha(parserraw)=='218404c595589d13c18658b64c13eb924d146544d1ed40fbfc221cae96002e63'
  import types
  parser=types.ModuleType('case_authority');exec(compile(parserraw,str(ROOT/'authority.py'),'exec'),parser.__dict__)

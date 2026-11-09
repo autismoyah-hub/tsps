@@ -98,3 +98,54 @@ for code in (301,403):
 with patch.object(prestart.urllib.request,'build_opener',return_value=Opener(FakeResponse(req.full_url,b'x'*17))):expect_refuse(lambda:prestart.read_exact_route(req,16))
 with patch.object(prestart.urllib.request,'build_opener',return_value=Opener(FakeResponse('https://example.invalid/other',b'x'))):expect_refuse(lambda:prestart.read_exact_route(req,16))
 print('route redirects/denial/size/final URL controls PASS')
+# Real job matcher: returned and inspected job must match exact request and ownership.
+matcher=load('wc_job_identity',HERE/'job_identity.py')
+import copy
+req={'image':'image@sha256:abc','flavor':'cpu-upgrade','command':['node','-e',guard.NAME],'labels':{'project':'tsps','source':guard.SOURCE,'purpose':'overflow-qualification'}}
+job={'id':'job1','docker_image':req['image'],'flavor':req['flavor'],'command':req['command'],'labels':req['labels'],'owner':{'name':'Autismo-Yah'}}
+submission={'namespace':'Autismo-Yah','request':req,'job':job,'plan':{'source':guard.SOURCE,'name':guard.NAME}}
+assert matcher.verify_job(copy.deepcopy(job),copy.deepcopy(submission))=='job1'
+for field,value in [('command',['node','different']),('docker_image','wrong'),('labels',{'source':'wrong'}),('owner',{'name':'wrong'}),('id','wrong')]:
+ bad=copy.deepcopy(job);bad[field]=value;expect_refuse(lambda:matcher.verify_job(bad,copy.deepcopy(submission)))
+bad_submission=copy.deepcopy(submission);bad_submission['job']['command']=['node','wrong'];expect_refuse(lambda:matcher.verify_job(copy.deepcopy(job),bad_submission))
+print('job identity wrong command/image/source/owner/id controls PASS')
+# Actual collector_entry + unchanged pilot with fake API: wrong inspected identity must stop before logs.
+import dataclasses
+collector=load('wc_collector_entry',HERE/'collector_entry.py')
+@dataclasses.dataclass
+class FakeJob:
+ id:str;docker_image:str;flavor:str;command:list;labels:dict;owner:dict;status:dict
+for field,value in [('command',['node','different']),('docker_image','wrong'),('labels',{'source':'wrong'}),('owner',{'name':'wrong'})]:
+ with tempfile.TemporaryDirectory(prefix='wc-collector-control-') as td:
+  root=pathlib.Path(td)
+  for n in ('job_identity.py','pilot.py'):(root/n).write_bytes((HERE/n).read_bytes())
+  (root/'submission.json').write_text(json.dumps(submission));planpath=root/'pilot.json';planpath.write_text(json.dumps(submission['plan']));status=copy.deepcopy(job);status['status']={'stage':'COMPLETED'};statuspath=root/'terminal.json';statuspath.write_text(json.dumps(status));calls=[]
+  bad=copy.deepcopy(status);bad[field]=value
+  class FakeAPI:
+   def whoami(self):return {'name':'Autismo-Yah'}
+   def inspect_job(self,job_id,namespace):calls.append('inspect');return FakeJob(**bad)
+   def fetch_job_logs(self,*a,**kw):calls.append('logs');return []
+  argv=['collector_entry.py','--plan',str(planpath),'--plan-sha256',h(planpath),'--status',str(statuspath),'--status-sha256',h(statuspath)]
+  # Pilot accesses only these plan keys before inspecting; use a complete plan and bind it to receipt.
+  fullplan={**submission['plan'],'payloadFile':'payload.cjs','image':req['image'],'flavor':req['flavor'],'timeout':1800,'attempts':1}
+  planpath.write_text(json.dumps(fullplan));sub=copy.deepcopy(submission);sub['plan']=fullplan;(root/'submission.json').write_text(json.dumps(sub));(root/'payload.cjs').write_text('__PLAN__')
+  argv[argv.index('--plan-sha256')+1]=h(planpath)
+  with patch.object(collector,'ROOT',root),patch.object(collector.huggingface_hub,'HfApi',FakeAPI),patch.object(sys,'argv',argv):expect_refuse(collector.main)
+  assert calls==['inspect'] and len(list(root.glob('collector-inspect-*.json')))==1,(field,calls)
+  print('collector wrong',field,'refused before logs PASS')
+# Matching terminal job reaches the logs API; this is a synthetic transport control.
+@dataclasses.dataclass
+class FakeStatus: stage:str
+with tempfile.TemporaryDirectory(prefix='wc-collector-positive-') as td:
+ root=pathlib.Path(td)
+ for n in ('job_identity.py','pilot.py'):(root/n).write_bytes((HERE/n).read_bytes())
+ fullplan={**submission['plan'],'payloadFile':'payload.cjs','image':req['image'],'flavor':req['flavor'],'timeout':1800,'attempts':1,'scope':'synthetic'};planpath=root/'pilot.json';planpath.write_text(json.dumps(fullplan));sub=copy.deepcopy(submission);sub['plan']=fullplan;(root/'submission.json').write_text(json.dumps(sub));(root/'payload.cjs').write_text('__PLAN__')
+ status=copy.deepcopy(job);status['status']={'stage':'COMPLETED'};statuspath=root/'terminal.json';statuspath.write_text(json.dumps(status));calls=[]
+ class FakeAPI:
+  def whoami(self):return {'name':'Autismo-Yah'}
+  def inspect_job(self,job_id,namespace):calls.append('inspect');return FakeJob(**{**status,'status':FakeStatus('COMPLETED')})
+  def fetch_job_logs(self,*a,**kw):calls.append('logs');return []
+ frame=types.ModuleType('frame_transport');frame.reconstruct_child_outputs=lambda *a:None
+ argv=['collector_entry.py','--plan',str(planpath),'--plan-sha256',h(planpath),'--status',str(statuspath),'--status-sha256',h(statuspath)]
+ with patch.object(collector,'ROOT',root),patch.object(collector.huggingface_hub,'HfApi',FakeAPI),patch.object(sys,'argv',argv),patch.dict(sys.modules,{'frame_transport':frame}),contextlib.redirect_stdout(io.StringIO()):collector.main()
+ assert calls==['inspect','logs'];print('collector matching terminal reaches logs PASS')

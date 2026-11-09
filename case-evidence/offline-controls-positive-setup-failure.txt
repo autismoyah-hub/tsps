@@ -1,0 +1,24 @@
+owner wrong/duplicate turn controls PASS
+peer wrong/duplicate turn controls PASS
+mc wrong/duplicate turn controls PASS
+post-scan refresh failure before intent/pilot PASS; retained diagnostic
+changed-ref actual prestart refusal before receipt PASS
+changed-diff actual prestart refusal before receipt PASS
+route redirects/denial/size/final URL controls PASS
+job identity wrong command/image/source/owner/id controls PASS
+collector wrong command refused before logs PASS
+collector wrong docker_image refused before logs PASS
+collector wrong labels refused before logs PASS
+collector wrong owner refused before logs PASS
+Traceback (most recent call last):
+  File "/workspace/repo/.author-evidence/case/before/offline-controls.py", line 149, in <module>
+    with patch.object(collector,'ROOT',root),patch.object(collector.huggingface_hub,'HfApi',FakeAPI),patch.object(sys,'argv',argv),patch.dict(sys.modules,{'frame_transport':frame}),contextlib.redirect_stdout(io.StringIO()):collector.main()
+                                                                                                                                                                                                                               ^^^^^^^^^^^^^^^^
+  File "/workspace/repo/.author-evidence/case/before/collector_entry.py", line 29, in main
+    exec(compile(pilotraw,str(pilot),'exec'),m.__dict__)
+  File "/tmp/wc-collector-positive-4w_i89u0/pilot.py", line 96, in <module>
+    main()
+  File "/tmp/wc-collector-positive-4w_i89u0/pilot.py", line 91, in main
+    'artifacts': str(here), 'scope': plan['scope'],
+                                     ~~~~^^^^^^^^^
+KeyError: 'scope'
