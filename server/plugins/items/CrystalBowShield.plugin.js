@@ -36,7 +36,7 @@ function refresh(player) {
 function checkAmmo(player, _amountRequired, silent) {
   const item = player.getEquipment().get(core.Equipment.WEAPON_SLOT);
   if (!item || !isBow(item.getId()) || !isManaged(item) || remaining(item) > 0) return null;
-  if (!silent) player.sendMessage("Your crystal bow has no charges left.");
+  if (!silent) player.sendMessage("Your crystal bow has no charges left. Revert it to a seed.");
   return false;
 }
 
@@ -111,9 +111,14 @@ function revert({ player, item, slot }) {
   const id = item.getId();
   if (!isBow(id) && !isShield(id) && id !== core.ItemIdentifiers.CRYSTAL_BOW_INACTIVE_
     && id !== core.ItemIdentifiers.CRYSTAL_SHIELD_INACTIVE_) return false;
+  const charges = item.getMetaValue(CHARGES_META);
   api.sendMultiChatboxPrompt(player, "Revert this crystal equipment to a seed?",
     "Yes, revert it.", () => {
-      if (player.getInventory().getItems()[slot] !== item || item.getId() !== id) return;
+      if (player.getInventory().getItems()[slot] !== item || item.getId() !== id
+        || item.getMetaValue(CHARGES_META) !== charges) {
+        player.sendMessage("That item has changed. Please try again.");
+        return;
+      }
       item.setId(core.ItemIdentifiers.CRYSTAL_WEAPON_SEED);
       item.setMetaValue(CHARGES_META, undefined);
       player.getInventory().refreshItems();

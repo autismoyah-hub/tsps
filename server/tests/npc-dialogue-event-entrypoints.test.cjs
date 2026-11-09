@@ -4372,3 +4372,36 @@ test('Ilfeen shares all five discount tiers between bow and shield choices', asy
   }
   assert.equal(player.getAttribute('ilfeen:paid-crystal-chants'), 4);
 });
+
+test('a crystal Revert confirmation refuses if the same item charge changes', async t => {
+  const f = fixture(t), { player } = f, ids = core.ItemIdentifiers, inventory = player.getInventory();
+  const item = new core.Item(ids.CRYSTAL_BOW, 1);
+  item.setMetaValue('crystal-bow-shield:charges', 100);
+  inventory.add(item, false);
+  const slot = inventory.getSlotForItemId(ids.CRYSTAL_BOW), held = inventory.getItems()[slot];
+  await f.connection.dispatch([{ type: 'inventory_action', widgetId: core.CacheDefinitions.getComponentId('inventory:items'),
+    itemId: ids.CRYSTAL_BOW, slot, option: 'Revert', optionIndex: 4 }]);
+  f.connection.processTurnPackets();
+  assert.equal(MultiChatboxPrompt.getPending(player)?.title, 'Revert this crystal equipment to a seed?');
+  held.setMetaValue('crystal-bow-shield:charges', 99);
+  await choose(f, 1);
+  assert.equal(inventory.getItems()[slot], held);
+  assert.equal(held.getId(), ids.CRYSTAL_BOW);
+  assert.equal(inventory.getAmount(ids.CRYSTAL_WEAPON_SEED), 0);
+});
+
+
+test('a managed zero-charge active bow can be recovered through Revert', async t => {
+  const f = fixture(t), { player } = f, ids = core.ItemIdentifiers, inventory = player.getInventory();
+  const item = new core.Item(ids.CRYSTAL_BOW, 1);
+  item.setMetaValue('crystal-bow-shield:charges', 0);
+  inventory.add(item, false);
+  const slot = inventory.getSlotForItemId(ids.CRYSTAL_BOW);
+  await f.connection.dispatch([{ type: 'inventory_action', widgetId: core.CacheDefinitions.getComponentId('inventory:items'),
+    itemId: ids.CRYSTAL_BOW, slot, option: 'Revert', optionIndex: 4 }]);
+  f.connection.processTurnPackets();
+  assert.equal(MultiChatboxPrompt.getPending(player)?.title, 'Revert this crystal equipment to a seed?');
+  await choose(f, 1);
+  assert.equal(inventory.getAmount(ids.CRYSTAL_WEAPON_SEED), 1);
+  assert.equal(inventory.getAmount(ids.CRYSTAL_BOW), 0);
+});

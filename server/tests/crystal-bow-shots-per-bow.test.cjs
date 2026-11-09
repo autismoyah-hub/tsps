@@ -212,3 +212,15 @@ test('two applied combat hits spend two shield charges', (t) => {
   target.getCombat().getHitQueue().process(6);
   assert.equal(shield.getMetaValue('crystal-bow-shield:charges'), 2);
 });
+
+test('a final-shot bow moved out before completion stays unusable when returned', (t) => {
+  const p = archer(t), bow = new core.Item(I.CRYSTAL_BOW, 1);
+  bow.setMetaValue('crystal-bow-shield:charges', 1);
+  wield(p, bow); fire(p, 1);
+  p.getEquipment().setItem(core.Equipment.WEAPON_SLOT, new core.Item(-1, 0));
+  PluginManager.emitCustomEvent('combat:attack-finished', { attacker: p });
+  assert.equal(bow.getId(), I.CRYSTAL_BOW);
+  assert.equal(bow.getMetaValue('crystal-bow-shield:charges'), 0);
+  wield(p, bow);
+  assert.equal(CombatFactory.checkAmmo(p, 1), false);
+});

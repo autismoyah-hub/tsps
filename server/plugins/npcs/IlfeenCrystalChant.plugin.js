@@ -62,7 +62,11 @@ function openMenu(player, npcId, npc) {
 
 /** Recheck the quote and commit a preflighted inventory without replacing unrelated item identities. */
 function buy(player, npcId, kind, quotedTier) {
-  if (!isIlfeen(npcId) || !Object.hasOwn(PRICES, kind) || !complete(player) || count(player) !== quotedTier) return;
+  if (!isIlfeen(npcId) || !Object.hasOwn(PRICES, kind)) return;
+  if (!complete(player) || count(player) !== quotedTier) {
+    player.sendMessage("That offer has changed. Please speak to Ilfeen again.");
+    return;
+  }
   const inventory = player.getInventory();
   const seed = core.ItemIdentifiers.CRYSTAL_WEAPON_SEED;
   const coins = core.ItemIdentifiers.COINS;
