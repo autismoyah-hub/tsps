@@ -41,3 +41,17 @@ with tempfile.TemporaryDirectory() as t:
  assert not calls
 selection_temp.cleanup()
 print('source gate and actual selected bytes checked before fake adapter; mismatches call zero; real hard hold prevented adapter')
+# Child-side plan guard exercises a fake bootstrap, never the authentication adapter.
+import subprocess
+import sys
+with tempfile.TemporaryDirectory() as tmp:
+    plan=Path(tmp)/'selected.json';plan.write_bytes(b'synthetic-plan')
+    expected=sha(plan); fake=[sys.executable,'-c','print("FAKE_ADAPTER_REACHED")']
+    command=launcher.guarded_child_command(fake,plan,expected)
+    good=subprocess.run(command,capture_output=True,text=True)
+    assert good.returncode==0 and good.stdout.strip()=='FAKE_ADAPTER_REACHED'
+    plan.write_bytes(b'mutated')
+    bad=subprocess.run(command,capture_output=True,text=True)
+    assert bad.returncode!=0 and 'SELECTED_PLAN_CHANGED_BEFORE_AUTH' in bad.stderr
+    assert 'FAKE_ADAPTER_REACHED' not in bad.stdout
+print('child plan mutation refused before synthetic adapter bootstrap')

@@ -19,6 +19,22 @@ def module(path,digest,name):
     exec(compile(raw,str(path),'exec'),result.__dict__)
     return result
 
+CHILD_PLAN_GUARD = """import hashlib,sys
+from pathlib import Path
+plan_path=sys.argv.pop(1)
+expected=sys.argv.pop(1)
+bootstrap=sys.argv.pop(1)
+if hashlib.sha256(Path(plan_path).read_bytes()).hexdigest()!=expected:raise SystemExit('SELECTED_PLAN_CHANGED_BEFORE_AUTH')
+exec(compile(bootstrap,'<verified-auth-bootstrap>','exec'))
+"""
+
+def guarded_child_command(command,selected_path,selected_sha):
+    if len(command)<3 or command[1]!='-c':raise ValueError('unexpected authenticated child command')
+    if not isinstance(selected_sha,str) or len(selected_sha)!=64:raise ValueError('selected hash malformed')
+    guarded=[command[0],'-c',CHILD_PLAN_GUARD,str(selected_path),selected_sha,*command[2:]]
+    if any('\0' in arg or len(arg.encode())+1>=131072 for arg in guarded):raise ValueError('child argv bound')
+    return guarded
+
 def verify_before_auth(subject,paths):
     """Called outside the authenticated adapter; checks source before any adapter work."""
     if globals().get('__BELONA_SNAPSHOT_SHA__') != subject.get('launcherSHA256'):
@@ -41,6 +57,7 @@ def verify_before_auth(subject,paths):
     helper=module(paths['helper'],subject['childSHA256'],'belona_gate_helper')
     command=helper.authenticated_pilot_command(paths['python'],paths['adapter'],subject['adapterSHA256'],paths['entry'],subject['entrySHA256'],selected_path,paths['sdkRoot'])
     if command[-2:] != ['--plan',str(selected_path)]:raise ValueError('selected plan handoff mismatch')
+    command=guarded_child_command(command,selected_path,sha(selected))
     return {'sourceProfile':result,'selectedPath':str(selected_path),'selectedSHA256':sha(selected),'command':command}
 
 def launch(subject,paths,run_child=subprocess.run):
