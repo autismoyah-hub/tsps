@@ -1,17 +1,17 @@
 """Unreviewed HELD draft: only execute a selected case via reviewed 004 entry."""
-import argparse, base64, dataclasses, hashlib, json, os, re, subprocess, sys, time
+import argparse, base64, dataclasses, hashlib, json, os, re, struct, subprocess, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
 OWNER='260b5681-1632-4418-adb3-1e0ce7a20952'
 REVIEWER='ed3a4125-645c-4266-8b86-4e199dd5bc63'
-BASE='2deadd8ce6d0bb2d7163f5f14d1fa62ea19456cc'
+BASE='8489c88a87c96730aa0f441895c07884bd04c358'
 HERE=Path(__file__).resolve().parent
-REQUEST_SHA='d6bcfe8b90bc71577370932101e22acc6bc022238bb46a95bb3d000024784ab4'
-PREVIEW_SHA='5b482a865374666dedbb13f8475f2d49196978c54951531149180f42ea09e23f'
-PAYLOAD_SHA='e12b86b53c3d00843f8841070f9310d2fd578b1406d741e101fe090c41ce0b4f'
-PROGRAM_SHA='5bcadc4a164eca79382d3d07573d48ffcde9b15fd38296ff461a47e101bca7ca'
-MANIFEST_SHA='f5a7f863edc6107d658afcff607b4fc72b0908ed22ec7419b24434c1c7336a4f'
+REQUEST_SHA='2096df156a56863fbd1121a2dec7a60c04ca5f31f5a8bb5de350cb5a2b99fc57'
+PREVIEW_SHA='3b816c8f8b702db85ca05f7632add4c8d10653d988cabc41c34c0874401bcdce'
+PAYLOAD_SHA='f4b4a471f9dc00be7fc9e31680340fcf4acf677302c8fe82b4c828f5f7f1f538'
+PROGRAM_SHA='8727bf004c2543a00164a50846269cce3a5e444e46d41e2ca49e0ba16f9a8076'
+MANIFEST_SHA='3d72850b9a395846a82d0cc1477298e5c2c9948cc6e9a0baedbaf25e36dda73f'
 FRAME_SHA='f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76'
 RETAIN_SHA='bdcb7f104ebfa8c26d2aa68c1dd31cf7780f12174eb92d3e98ffb928797a9071'
 ENCODING="json.dumps(request,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('utf-8')"
@@ -124,12 +124,32 @@ def main():
         if str(stage).upper() not in {'COMPLETED','ERROR','CANCELED','CANCELLED'}:
             print(json.dumps({'stage':'NOT_TERMINAL','jobId':job_id})); return
         exclusive(HERE/'collection-journal'/'05-logs-start.json',canon({'query':'logs','jobId':job_id,'stage':'START'}))
-        log_path=HERE/f'logs-{stamp}.txt'
-        with log_path.open('xb') as stream:
-            stream.flush(); os.fsync(stream.fileno()); syncdir(log_path.parent)
+        frame_path=HERE/f'sdk-fragments-{stamp}.bin'; log_path=HERE/f'logs-{stamp}.txt'
+        count=0; total=0
+        with frame_path.open('xb') as stream:
+            stream.flush(); os.fsync(stream.fileno()); syncdir(frame_path.parent)
             for fragment in api.fetch_job_logs(job_id=job_id,namespace='Autismo-Yah',follow=False):
-                stream.write((fragment+'\n').encode());stream.flush();os.fsync(stream.fileno())
-        exclusive(HERE/'collection-journal'/'06-logs-result.json',canon({'query':'logs','jobId':job_id,'logFile':log_path.name,'sha256':sha(log_path.read_bytes())}))
+                if not isinstance(fragment,str): raise RuntimeError('Unexpected SDK fragment type')
+                raw_fragment=fragment.encode('utf-8'); total+=len(raw_fragment)
+                if len(raw_fragment)>16*1024*1024 or total>128*1024*1024: raise RuntimeError('SDK fragment bound')
+                frame=struct.pack('>Q',len(raw_fragment))+raw_fragment
+                if stream.write(frame)!=len(frame): raise RuntimeError('Short SDK frame write')
+                stream.flush();os.fsync(stream.fileno());count+=1
+        exclusive(HERE/'collection-journal'/'06-logs-result.json',canon({'query':'logs','jobId':job_id,'frameFile':frame_path.name,'fragmentCount':count,'bytes':total,'sha256':sha(frame_path.read_bytes()),'format':'u64be length followed by exact SDK string encoded UTF-8'}))
+        # SDK yields SSE event data strings, not wire bytes. This explicitly derived newline-joined view is for the legacy retainer only.
+        with frame_path.open('rb') as frames, log_path.open('xb') as derived:
+            derived.flush();os.fsync(derived.fileno());syncdir(log_path.parent)
+            for _ in range(count):
+                header=frames.read(8)
+                if len(header)!=8: raise RuntimeError('Truncated SDK frame header')
+                length=struct.unpack('>Q',header)[0]
+                if length>16*1024*1024: raise RuntimeError('SDK frame length')
+                data=frames.read(length)
+                if len(data)!=length: raise RuntimeError('Truncated SDK frame')
+                derived.write(data);derived.write(b'\n')
+            if frames.read(1): raise RuntimeError('Unexpected SDK frame tail')
+            derived.flush();os.fsync(derived.fileno())
+        exclusive(HERE/'collection-journal'/'07-derived-view.json',canon({'format':'SDK event UTF-8 plus newline per event; derived, not raw wire','logFile':log_path.name,'sha256':sha(log_path.read_bytes()),'sourceFrameSHA256':sha(frame_path.read_bytes())}))
         returned=record['job']
         if returned.get('command')!=request['command'] or returned.get('docker_image')!=request['image'] or (returned.get('labels') or {}).get('source')!=request['labels']['source'] or (returned.get('labels') or {}).get('name')!=request['name']:
             raise RuntimeError('Submission returned command/source mismatch; HOLD')
@@ -142,11 +162,11 @@ def main():
         if retain.returncode!=0: raise RuntimeError('Native input retention failed; raw preserved; HOLD')
         print(json.dumps({'stage':'TERMINAL_RAW_RETAINED','jobId':job_id,'statusFile':f'status-{stamp}.json','logFile':f'logs-{stamp}.txt','closure':'process-group and provider evidence only; raw requires independent classification'})); return
     # Exact case preflight checks remote refs, schema inputs and all local Git rows.
-    preflight=subprocess.run(snapshot_command(HERE.parent/'case-caller.py','bceab818fd41147ac51919455ab29a23b561a57c6d8aa3aa4444e5ccc60c4948','before','--review-subject'),capture_output=True,check=True,timeout=120)
+    preflight=subprocess.run(snapshot_command(HERE.parent/'case-caller.py','95c4bc3ac9eef0a475100b45c7885417af22bdd93f6adcb5509e20319d13cdd0','before','--review-subject'),capture_output=True,check=True,timeout=120)
     preflight_json=json.loads(preflight.stdout)
     if preflight_json.get('stage')!='HELD_PREFLIGHT' or preflight_json['subject']['source']!=BASE: raise RuntimeError('Preflight mismatch')
     # Accepted auth004 wrapper provides HfApi; reconcile all project/source/name queries.
-    path=HERE.parent/'reconcile.py'; raw=exact(path,'c3ff44249cd1ab2e684f960fabd54e898a61d5ed3845baa0f106a36e8329d25d')
+    path=HERE.parent/'reconcile.py'; raw=exact(path,'1880b606f48e5a287a704bc0ef7e5de6b6d66269a8347604479509ada47564db')
     namespace={'__name__':'case_reconcile','__file__':str(path)};exec(compile(raw,str(path),'exec'),namespace)
     reconciliation=namespace['reconcile'](api,BASE,request['name'],HERE.parent)
     exclusive(HERE/'reconciliation.json',canon({'utc':utc(),'result':reconciliation}))
@@ -155,14 +175,18 @@ def main():
     exclusive(HERE/'review-receipt.json',review_raw)
     # Repeat the complete exact-input and current-main/PR check immediately before intent.
     last_fit_start=time.monotonic()
-    final_preflight=subprocess.run(snapshot_command(HERE.parent/'case-caller.py','bceab818fd41147ac51919455ab29a23b561a57c6d8aa3aa4444e5ccc60c4948','before','--review-subject'),capture_output=True,check=True,timeout=120)
+    final_preflight=subprocess.run(snapshot_command(HERE.parent/'case-caller.py','95c4bc3ac9eef0a475100b45c7885417af22bdd93f6adcb5509e20319d13cdd0','before','--review-subject'),capture_output=True,check=True,timeout=120)
     if json.loads(final_preflight.stdout)!=preflight_json: raise RuntimeError('Final preflight differs; HOLD')
     main=subprocess.check_output(['git','-C','/workspace/repo','rev-parse','origin/main'],text=True).strip()
     remote=subprocess.check_output(['git','-C','/workspace/repo','ls-remote','origin','refs/heads/main'],text=True).strip().split('\t')[0]
     if remote!=main: raise RuntimeError('Main moved after preflight; HOLD')
     fit_raw=exact(a.fit_receipt,a.fit_receipt_sha256)
-    fit_expected={'reviewer':REVIEWER,'verdict':'SCOPED_WRITERS_CLEAR','owner':OWNER,'base':'f44efb070e7f044ba1c4c67608f1260daab12127','currentMain':main,
-      'paths':['server/plugins/quests/quests/ShadesOfMortton.Quest.js','server/tests/shades-sanctity-logout.test.cjs']}
+    fit_value=json.loads(fit_raw); dispositions=fit_value.get('overlapDisposition')
+    if not isinstance(dispositions,list) or len(dispositions)!=len(preflight_json['subject']['openOverlap']): raise RuntimeError('Overlap dispositions missing')
+    for item,overlap in zip(dispositions,preflight_json['subject']['openOverlap']):
+        if not isinstance(item,dict) or set(item)!={'number','head','reason'} or item['number']!=overlap['number'] or item['head']!=overlap['head'] or not isinstance(item['reason'],str) or len(item['reason'].strip())<20: raise RuntimeError('Overlap disposition invalid')
+    fit_expected={'reviewer':REVIEWER,'verdict':'SCOPED_WRITERS_CLEAR','owner':OWNER,'base':'c77054e654410ddf1453a87cb99369579bc3bc85','currentMain':main,
+      'seams':preflight_json['subject']['seams'],'openOverlap':preflight_json['subject']['openOverlap'],'overlapDisposition':dispositions}
     if json.loads(fit_raw)!=fit_expected: raise RuntimeError('Scoped writer disposition mismatch')
     fit_transcript=subprocess.run(['cuttle','--json','sessions','read',REVIEWER,'--turns','200'],capture_output=True,check=True,timeout=45).stdout
     fit_proof=authority['exact_turn'](fit_transcript,REVIEWER,fit_expected)

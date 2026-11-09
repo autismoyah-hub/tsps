@@ -1,5 +1,5 @@
 """HELD source candidate. Run only after exact-case review and selection."""
-import hashlib, importlib.metadata, json, os, re, sys, time, types
+import hashlib, importlib.metadata, json, os, re, sys, time, types, urllib.request
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
@@ -8,14 +8,14 @@ ACCESS = ROOT / 'hf-project-access-v4.py'
 ENTRY = HERE / 'case-executor.py'
 PYTHON_SHA = 'c2c20b4745d447551221ec3d4e70f92c270c4609fe3df34fc52ea6dd46e92273'
 ACCESS_SHA = 'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326'
-ENTRY_SHA = '4936ffb34b9d978f3f5a0a2fd44474c5e779c63265dc7bb96ae86d260db3b92d'
+ENTRY_SHA = 'decdc2d3257b8fc11eee9ec9989839c5698cc081f52bd583d683043efcd34f51'
 RECEIPT_SHA = '7ef21896e53f1e39c16f83b17c07889d4d570ff3415814cdb6aa1ce2901ae39f'
 PROJECTION_SHA = '9cd75e87859ecfa4f0f7ef0fee291e1aaa76fbf4e67a5f68663d56ffc2a92bfd'
 def checked(path, digest):
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != digest: raise RuntimeError('Bound input mismatch')
     return raw
-bundle = json.loads(checked(HERE / 'bindings.json', '18841bb078b42740bc19b9fde0ea455e3811537761ca689646389593b3285593'))
+bundle = json.loads(checked(HERE / 'bindings.json', 'c8ff9392a62d379d03ff37437e299ad6662e396abdd00919a98869ebd06a0a09'))
 if set(bundle) != {'payload','resolver','pilot','package','caller','originalPlan','originalRequest','profileBasis','originalD46','submitCaller','inputCollector'}: raise RuntimeError('Binding keys mismatch')
 for row in bundle.values():
     if set(row) != {'path','sha256'}: raise RuntimeError('Binding schema mismatch')
@@ -46,10 +46,11 @@ def preauth_plan_check(args):
     selected_path = Path(arg('--selected-plan')).resolve()
     if selected_path != (HERE / 'selected-plan.json').resolve(): raise RuntimeError('Selected plan path mismatch')
     selected = json.loads(checked(selected_path, arg('--selected-plan-sha256')))
-    preview = json.loads(checked(HERE / 'preview.json', '5b482a865374666dedbb13f8475f2d49196978c54951531149180f42ea09e23f'))
+    preview = json.loads(checked(HERE / 'preview.json', '3b816c8f8b702db85ca05f7632add4c8d10653d988cabc41c34c0874401bcdce'))
     expected = dict(preview['plan'], executionHold=False, selection=selected.get('selection'))
     if selected != expected: raise RuntimeError('Selected plan differs from reviewed preview; HOLD')
 preauth_plan_check(args)
+if os.environ.get('CCC_SESSION_ID') != '260b5681-1632-4418-adb3-1e0ce7a20952': raise RuntimeError('Invoking session mismatch')
 if args and args[0] == 'submit':
     with (HERE / 'prestart-clock.json').open('xb') as f:
         f.write(json.dumps({'startedMonotonic':time.monotonic()}).encode()); f.flush(); os.fsync(f.fileno())
@@ -69,6 +70,33 @@ if args and args[0] == 'collect':
     claim_fd=os.open(claim_dir,os.O_RDONLY|os.O_DIRECTORY)
     try: os.fsync(claim_fd)
     finally: os.close(claim_fd)
+# Cuttle ACP is not the provider. Use this session's ambient credentials only; no redirects/fallback.
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,*args,**kwargs): raise RuntimeError('ACP redirect refused')
+token=os.environ.get('CCC_TOKEN') or os.environ.get('CCC_PAT')
+if not token and os.environ.get('CCC_TOKEN_FILE'): token=Path(os.environ['CCC_TOKEN_FILE']).read_text().strip()
+if not token: raise RuntimeError('ACP ambient auth missing')
+headers={'Authorization':'Bearer '+token} if token.startswith('ccc_pat_') else {'X-CCC-Control-Token':token}
+url=os.environ['CCC_BASE_URL'].rstrip('/')+'/api/acp/sessions/260b5681-1632-4418-adb3-1e0ce7a20952/config'
+with urllib.request.build_opener(NoRedirect()).open(urllib.request.Request(url,headers=headers),timeout=15) as response:
+    raw=response.read(1024*1024+1)
+    if response.status!=200 or len(raw)>1024*1024: raise RuntimeError('ACP config status/size')
+config=json.loads(raw); options=config.get('configOptions')
+if not isinstance(options,list): raise RuntimeError('ACP options missing')
+values={}
+for option in options:
+    key=option.get('id')
+    if key in values: raise RuntimeError('ACP duplicate option')
+    values[key]=option.get('currentValue')
+if values.get('model')!='gpt-6.1-terra' or values.get('reasoning_effort')!='medium' or values.get('mode')!='agent-full-access' or values.get('collaboration_mode')!='default' or config.get('modes',{}).get('currentModeId')!='agent-full-access': raise RuntimeError('ACP effective configuration mismatch')
+config_receipt={'session':'260b5681-1632-4418-adb3-1e0ce7a20952','model':values['model'],'effort':values['reasoning_effort'],'mode':values['mode'],'collaboration':values['collaboration_mode'],'rawSHA256':hashlib.sha256(raw).hexdigest()}
+config_file=(HERE/'collection-journal'/'00b-acp-config.json') if args[0]=='collect' else (HERE/'prestart-config.json')
+with config_file.open('xb') as f:
+    f.write(json.dumps(config_receipt,sort_keys=True).encode());f.flush();os.fsync(f.fileno())
+config_dir=os.open(config_file.parent,os.O_RDONLY|os.O_DIRECTORY)
+try: os.fsync(config_dir)
+finally: os.close(config_dir)
+del token,headers,raw,config
 sys.argv = [str(ACCESS), '--entry', str(ENTRY), '--entry-sha256', ENTRY_SHA, '--'] + args + ['--executor-source-sha256', ENTRY_SHA]
 module = types.ModuleType('__main__')
 module.__dict__.update(__file__=str(ACCESS), __name__='__main__', __package__='', __spec__=None, __cached__=None)
