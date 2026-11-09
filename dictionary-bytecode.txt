@@ -1,0 +1,349 @@
+Compiled from "DiskCacheDictionary.kt"
+public final class net.rsprox.cache.dictionary.DiskCacheDictionary implements java.lang.AutoCloseable {
+  public static final net.rsprox.cache.dictionary.DiskCacheDictionary$Companion Companion;
+
+  private final java.nio.file.Path dictionaryPath;
+
+  private final java.nio.file.Path cachePath;
+
+  private final java.util.Map<net.rsprox.cache.Js5MasterIndex, net.rsprox.cache.dictionary.DiskCacheDictionary$Entry> dictionary;
+
+  private static final org.slf4j.Logger logger;
+
+  private static final com.fasterxml.jackson.databind.ObjectMapper mapper;
+
+  private net.rsprox.cache.dictionary.DiskCacheDictionary(java.nio.file.Path, java.nio.file.Path, java.util.Map<net.rsprox.cache.Js5MasterIndex, net.rsprox.cache.dictionary.DiskCacheDictionary$Entry>);
+    Code:
+       0: aload_0
+       1: invokespecial #12                 // Method java/lang/Object."<init>":()V
+       4: aload_0
+       5: aload_1
+       6: putfield      #16                 // Field dictionaryPath:Ljava/nio/file/Path;
+       9: aload_0
+      10: aload_2
+      11: putfield      #19                 // Field cachePath:Ljava/nio/file/Path;
+      14: aload_0
+      15: aload_3
+      16: putfield      #23                 // Field dictionary:Ljava/util/Map;
+      19: return
+
+  net.rsprox.cache.dictionary.DiskCacheDictionary(java.nio.file.Path, java.nio.file.Path, java.util.Map, int, kotlin.jvm.internal.DefaultConstructorMarker);
+    Code:
+       0: iload         4
+       2: iconst_4
+       3: iand
+       4: ifeq          18
+       7: new           #28                 // class java/util/LinkedHashMap
+      10: dup
+      11: invokespecial #29                 // Method java/util/LinkedHashMap."<init>":()V
+      14: checkcast     #31                 // class java/util/Map
+      17: astore_3
+      18: aload_0
+      19: aload_1
+      20: aload_2
+      21: aload_3
+      22: invokespecial #33                 // Method "<init>":(Ljava/nio/file/Path;Ljava/nio/file/Path;Ljava/util/Map;)V
+      25: return
+
+  public final net.rsprox.cache.dictionary.DiskCacheDictionary$Entry getEntry(net.rsprox.cache.Js5MasterIndex);
+    Code:
+       0: aload_1
+       1: ldc           #39                 // String masterIndex
+       3: invokestatic  #45                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: aload_0
+       7: getfield      #23                 // Field dictionary:Ljava/util/Map;
+      10: aload_1
+      11: invokeinterface #49,  2           // InterfaceMethod java/util/Map.get:(Ljava/lang/Object;)Ljava/lang/Object;
+      16: checkcast     #51                 // class net/rsprox/cache/dictionary/DiskCacheDictionary$Entry
+      19: areturn
+
+  public final java.nio.file.Path getDirectory(net.rsprox.cache.Js5MasterIndex);
+    Code:
+       0: aload_1
+       1: ldc           #39                 // String masterIndex
+       3: invokestatic  #45                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: aload_0
+       7: aload_1
+       8: invokevirtual #56                 // Method getEntry:(Lnet/rsprox/cache/Js5MasterIndex;)Lnet/rsprox/cache/dictionary/DiskCacheDictionary$Entry;
+      11: dup
+      12: ifnonnull     18
+      15: pop
+      16: aconst_null
+      17: areturn
+      18: astore_2
+      19: aload_0
+      20: getfield      #19                 // Field cachePath:Ljava/nio/file/Path;
+      23: aload_2
+      24: invokevirtual #59                 // Method net/rsprox/cache/dictionary/DiskCacheDictionary$Entry.getDirectory:()Ljava/lang/String;
+      27: invokeinterface #65,  2           // InterfaceMethod java/nio/file/Path.resolve:(Ljava/lang/String;)Ljava/nio/file/Path;
+      32: areturn
+
+  public final boolean exists(net.rsprox.cache.Js5MasterIndex);
+    Code:
+       0: aload_1
+       1: ldc           #39                 // String masterIndex
+       3: invokestatic  #45                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: aload_0
+       7: getfield      #23                 // Field dictionary:Ljava/util/Map;
+      10: aload_1
+      11: invokeinterface #73,  2           // InterfaceMethod java/util/Map.containsKey:(Ljava/lang/Object;)Z
+      16: ireturn
+
+  public final java.nio.file.Path store(net.rsprox.cache.Js5MasterIndex, java.lang.Integer);
+    Code:
+       0: aload_1
+       1: ldc           #39                 // String masterIndex
+       3: invokestatic  #45                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: aload_0
+       7: getfield      #23                 // Field dictionary:Ljava/util/Map;
+      10: aload_1
+      11: invokeinterface #73,  2           // InterfaceMethod java/util/Map.containsKey:(Ljava/lang/Object;)Z
+      16: ifeq          33
+      19: new           #77                 // class java/lang/IllegalArgumentException
+      22: dup
+      23: aload_1
+      24: invokedynamic #89,  0             // InvokeDynamic #0:makeConcatWithConstants:(Lnet/rsprox/cache/Js5MasterIndex;)Ljava/lang/String;
+      29: invokespecial #92                 // Method java/lang/IllegalArgumentException."<init>":(Ljava/lang/String;)V
+      32: athrow
+      33: aload_0
+      34: aload_1
+      35: invokespecial #95                 // Method findUnusedDirectory:(Lnet/rsprox/cache/Js5MasterIndex;)Ljava/lang/String;
+      38: astore_3
+      39: new           #51                 // class net/rsprox/cache/dictionary/DiskCacheDictionary$Entry
+      42: dup
+      43: aload_1
+      44: aload_3
+      45: aload_2
+      46: invokespecial #98                 // Method net/rsprox/cache/dictionary/DiskCacheDictionary$Entry."<init>":(Lnet/rsprox/cache/Js5MasterIndex;Ljava/lang/String;Ljava/lang/Integer;)V
+      49: astore        4
+      51: aload_0
+      52: getfield      #23                 // Field dictionary:Ljava/util/Map;
+      55: aload_1
+      56: aload         4
+      58: invokeinterface #102,  3          // InterfaceMethod java/util/Map.put:(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
+      63: pop
+      64: aload_0
+      65: getfield      #19                 // Field cachePath:Ljava/nio/file/Path;
+      68: aload_3
+      69: invokeinterface #65,  2           // InterfaceMethod java/nio/file/Path.resolve:(Ljava/lang/String;)Ljava/nio/file/Path;
+      74: dup
+      75: ldc           #104                // String resolve(...)
+      77: invokestatic  #107                // Method kotlin/jvm/internal/Intrinsics.checkNotNullExpressionValue:(Ljava/lang/Object;Ljava/lang/String;)V
+      80: areturn
+
+  public static java.nio.file.Path store$default(net.rsprox.cache.dictionary.DiskCacheDictionary, net.rsprox.cache.Js5MasterIndex, java.lang.Integer, int, java.lang.Object);
+    Code:
+       0: iload_3
+       1: iconst_2
+       2: iand
+       3: ifeq          8
+       6: aconst_null
+       7: astore_2
+       8: aload_0
+       9: aload_1
+      10: aload_2
+      11: invokevirtual #115                // Method store:(Lnet/rsprox/cache/Js5MasterIndex;Ljava/lang/Integer;)Ljava/nio/file/Path;
+      14: areturn
+
+  public final java.nio.file.Path getOrPut(net.rsprox.cache.Js5MasterIndex, java.lang.Integer);
+    Code:
+       0: aload_1
+       1: ldc           #39                 // String masterIndex
+       3: invokestatic  #45                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: aload_0
+       7: getfield      #23                 // Field dictionary:Ljava/util/Map;
+      10: aload_1
+      11: invokeinterface #49,  2           // InterfaceMethod java/util/Map.get:(Ljava/lang/Object;)Ljava/lang/Object;
+      16: checkcast     #51                 // class net/rsprox/cache/dictionary/DiskCacheDictionary$Entry
+      19: astore_3
+      20: aload_3
+      21: ifnull        44
+      24: aload_0
+      25: getfield      #19                 // Field cachePath:Ljava/nio/file/Path;
+      28: aload_3
+      29: invokevirtual #59                 // Method net/rsprox/cache/dictionary/DiskCacheDictionary$Entry.getDirectory:()Ljava/lang/String;
+      32: invokeinterface #65,  2           // InterfaceMethod java/nio/file/Path.resolve:(Ljava/lang/String;)Ljava/nio/file/Path;
+      37: dup
+      38: ldc           #104                // String resolve(...)
+      40: invokestatic  #107                // Method kotlin/jvm/internal/Intrinsics.checkNotNullExpressionValue:(Ljava/lang/Object;Ljava/lang/String;)V
+      43: areturn
+      44: aload_0
+      45: aload_1
+      46: aload_2
+      47: invokevirtual #115                // Method store:(Lnet/rsprox/cache/Js5MasterIndex;Ljava/lang/Integer;)Ljava/nio/file/Path;
+      50: areturn
+
+  private final java.lang.String findUnusedDirectory(net.rsprox.cache.Js5MasterIndex);
+    Code:
+       0: aload_1
+       1: invokevirtual #122                // Method net/rsprox/cache/Js5MasterIndex.shortHash:()Ljava/lang/String;
+       4: astore_2
+       5: aload_0
+       6: getfield      #19                 // Field cachePath:Ljava/nio/file/Path;
+       9: astore_3
+      10: aload_3
+      11: aload_2
+      12: invokeinterface #65,  2           // InterfaceMethod java/nio/file/Path.resolve:(Ljava/lang/String;)Ljava/nio/file/Path;
+      17: astore        4
+      19: aload         4
+      21: invokestatic  #126                // Method kotlin/jvm/internal/Intrinsics.checkNotNull:(Ljava/lang/Object;)V
+      24: aload         4
+      26: astore        5
+      28: iconst_1
+      29: anewarray     #128                // class java/nio/file/LinkOption
+      32: astore        6
+      34: aload         6
+      36: iconst_0
+      37: getstatic     #132                // Field java/nio/file/LinkOption.NOFOLLOW_LINKS:Ljava/nio/file/LinkOption;
+      40: aastore
+      41: aload         6
+      43: astore        6
+      45: aload         5
+      47: aload         6
+      49: aload         6
+      51: arraylength
+      52: invokestatic  #138                // Method java/util/Arrays.copyOf:([Ljava/lang/Object;I)[Ljava/lang/Object;
+      55: checkcast     #140                // class "[Ljava/nio/file/LinkOption;"
+      58: invokestatic  #145                // Method java/nio/file/Files.exists:(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z
+      61: ifne          66
+      64: aload_2
+      65: areturn
+      66: iconst_0
+      67: istore        5
+      69: iload         5
+      71: sipush        256
+      74: if_icmpge     151
+      77: aload_2
+      78: iload         5
+      80: invokedynamic #150,  0            // InvokeDynamic #1:makeConcatWithConstants:(Ljava/lang/String;I)Ljava/lang/String;
+      85: astore        6
+      87: aload_3
+      88: aload         6
+      90: invokeinterface #65,  2           // InterfaceMethod java/nio/file/Path.resolve:(Ljava/lang/String;)Ljava/nio/file/Path;
+      95: astore        7
+      97: aload         7
+      99: invokestatic  #126                // Method kotlin/jvm/internal/Intrinsics.checkNotNull:(Ljava/lang/Object;)V
+     102: aload         7
+     104: astore        8
+     106: iconst_1
+     107: anewarray     #128                // class java/nio/file/LinkOption
+     110: astore        9
+     112: aload         9
+     114: iconst_0
+     115: getstatic     #132                // Field java/nio/file/LinkOption.NOFOLLOW_LINKS:Ljava/nio/file/LinkOption;
+     118: aastore
+     119: aload         9
+     121: astore        9
+     123: aload         8
+     125: aload         9
+     127: aload         9
+     129: arraylength
+     130: invokestatic  #138                // Method java/util/Arrays.copyOf:([Ljava/lang/Object;I)[Ljava/lang/Object;
+     133: checkcast     #140                // class "[Ljava/nio/file/LinkOption;"
+     136: invokestatic  #145                // Method java/nio/file/Files.exists:(Ljava/nio/file/Path;[Ljava/nio/file/LinkOption;)Z
+     139: ifne          145
+     142: aload         6
+     144: areturn
+     145: iinc          5, 1
+     148: goto          69
+     151: new           #77                 // class java/lang/IllegalArgumentException
+     154: dup
+     155: ldc           #152                // String Master index space saturated.
+     157: invokespecial #92                 // Method java/lang/IllegalArgumentException."<init>":(Ljava/lang/String;)V
+     160: athrow
+
+  public final void write();
+    Code:
+       0: nop
+       1: getstatic     #167                // Field mapper:Lcom/fasterxml/jackson/databind/ObjectMapper;
+       4: aload_0
+       5: getfield      #23                 // Field dictionary:Ljava/util/Map;
+       8: invokeinterface #171,  1          // InterfaceMethod java/util/Map.values:()Ljava/util/Collection;
+      13: invokevirtual #177                // Method com/fasterxml/jackson/databind/ObjectMapper.writeValueAsString:(Ljava/lang/Object;)Ljava/lang/String;
+      16: astore_2
+      17: goto          74
+      20: astore_3
+      21: getstatic     #181                // Field logger:Lorg/slf4j/Logger;
+      24: astore        4
+      26: aload_3
+      27: checkcast     #183                // class java/lang/Throwable
+      30: astore        5
+      32: iconst_0
+      33: istore        6
+      35: aload         4
+      37: invokestatic  #189                // Method com/github/michaelbull/logging/InlineLogger."isErrorEnabled-impl":(Lorg/slf4j/Logger;)Z
+      40: ifeq          72
+      43: aload         4
+      45: astore        8
+      47: iconst_0
+      48: istore        7
+      50: aload_0
+      51: getfield      #23                 // Field dictionary:Ljava/util/Map;
+      54: invokedynamic #194,  0            // InvokeDynamic #2:makeConcatWithConstants:(Ljava/util/Map;)Ljava/lang/String;
+      59: aload         8
+      61: swap
+      62: invokestatic  #197                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+      65: aload         5
+      67: invokeinterface #203,  3          // InterfaceMethod org/slf4j/Logger.error:(Ljava/lang/String;Ljava/lang/Throwable;)V
+      72: nop
+      73: return
+      74: aload_2
+      75: astore_1
+      76: aload_0
+      77: getfield      #16                 // Field dictionaryPath:Ljava/nio/file/Path;
+      80: aload_1
+      81: invokestatic  #126                // Method kotlin/jvm/internal/Intrinsics.checkNotNull:(Ljava/lang/Object;)V
+      84: aload_1
+      85: invokestatic  #209                // Method net/rsprox/cache/util/AtomicFileWriteExtensionsKt.atomicWrite:(Ljava/nio/file/Path;Ljava/lang/String;)V
+      88: return
+    Exception table:
+       from    to  target type
+           0    17    20   Class java/lang/Exception
+
+  public void close();
+    Code:
+       0: aload_0
+       1: invokevirtual #220                // Method write:()V
+       4: return
+
+  public static final com.fasterxml.jackson.databind.ObjectMapper access$getMapper$cp();
+    Code:
+       0: getstatic     #167                // Field mapper:Lcom/fasterxml/jackson/databind/ObjectMapper;
+       3: areturn
+
+  public static final org.slf4j.Logger access$getLogger$cp();
+    Code:
+       0: getstatic     #181                // Field logger:Lorg/slf4j/Logger;
+       3: areturn
+
+  public net.rsprox.cache.dictionary.DiskCacheDictionary(java.nio.file.Path, java.nio.file.Path, java.util.Map, kotlin.jvm.internal.DefaultConstructorMarker);
+    Code:
+       0: aload_0
+       1: aload_1
+       2: aload_2
+       3: aload_3
+       4: invokespecial #33                 // Method "<init>":(Ljava/nio/file/Path;Ljava/nio/file/Path;Ljava/util/Map;)V
+       7: return
+
+  static {};
+    Code:
+       0: new           #230                // class net/rsprox/cache/dictionary/DiskCacheDictionary$Companion
+       3: dup
+       4: aconst_null
+       5: invokespecial #233                // Method net/rsprox/cache/dictionary/DiskCacheDictionary$Companion."<init>":(Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+       8: putstatic     #237                // Field Companion:Lnet/rsprox/cache/dictionary/DiskCacheDictionary$Companion;
+      11: iconst_0
+      12: istore_0
+      13: invokestatic  #243                // Method java/lang/invoke/MethodHandles.lookup:()Ljava/lang/invoke/MethodHandles$Lookup;
+      16: invokevirtual #249                // Method java/lang/invoke/MethodHandles$Lookup.lookupClass:()Ljava/lang/Class;
+      19: invokestatic  #255                // Method org/slf4j/LoggerFactory.getLogger:(Ljava/lang/Class;)Lorg/slf4j/Logger;
+      22: astore_1
+      23: aload_1
+      24: invokestatic  #126                // Method kotlin/jvm/internal/Intrinsics.checkNotNull:(Ljava/lang/Object;)V
+      27: aload_1
+      28: invokestatic  #259                // Method com/github/michaelbull/logging/InlineLogger."constructor-impl":(Lorg/slf4j/Logger;)Lorg/slf4j/Logger;
+      31: putstatic     #181                // Field logger:Lorg/slf4j/Logger;
+      34: invokestatic  #264                // Method com/fasterxml/jackson/module/kotlin/ExtensionsKt.jacksonObjectMapper:()Lcom/fasterxml/jackson/databind/ObjectMapper;
+      37: putstatic     #167                // Field mapper:Lcom/fasterxml/jackson/databind/ObjectMapper;
+      40: return
+}
