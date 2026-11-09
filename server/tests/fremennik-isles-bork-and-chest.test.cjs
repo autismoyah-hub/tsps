@@ -369,8 +369,14 @@ function kingOreFixture(t, level = 55) {
   let mining = level;
   const skills = f.p.getSkillManager(), originalLevel = skills.getMaxLevel.bind(skills);
   t.mock.method(skills, 'getMaxLevel', skill => skill === core.Skill.MINING ? mining : originalLevel(skill));
-  const events = [], lines = [], emit = PM.emitCustomEvent;
+  const events = [], lines = [], conditions = [], emit = PM.emitCustomEvent;
   let beforeAction = null;
+  const emitCondition = PM.emitNpcDialogueCondition;
+  t.mock.method(PM, 'emitNpcDialogueCondition', event => {
+    const result = emitCondition.call(PM, event);
+    if (event.player === f.p && event.stepId === 'wJcHc0') conditions.push({ event, result });
+    return result;
+  });
   t.mock.method(PM, 'emitCustomEvent', (name, event) => {
     if (name === 'npc-dialogue:action' && event.player === f.p) beforeAction?.(event);
     const result = emit.call(PM, name, event);
@@ -387,7 +393,7 @@ function kingOreFixture(t, level = 55) {
     for (let i = 0; i < 100 && !predicate() && manager.isActive(); i++) manager.advance();
     assert.ok(predicate(), 'dialogue reached the requested observable boundary');
   };
-  return { ...f, kingId, talk, advance, events, lines, setMining: value => { mining = value; },
+  return { ...f, kingId, talk, advance, events, lines, conditions, setMining: value => { mining = value; },
     onAction: callback => { beforeAction = callback; } };
 }
 
@@ -401,6 +407,8 @@ test('King accepts each assigned ore as notes and continues to the mission', t =
     assert.equal(core.ItemDefinition.forId(noted).getNoteId(), ore, 'note resolves back to assigned ore');
     f.inv.adds(noted, amount + 1);
     assert.equal(f.talk(), true);
+    f.advance(() => f.conditions.length > 0);
+    assert.equal(f.conditions[0].result, false, 'King rejects a full assigned noted ore stack');
     f.advance(() => f.events.some(e => e.stepId === '02jNR_'));
     assert.equal(f.inv.getAmount(noted), 1);
     assert.equal(f.inv.getAmount(I.COINS), reward);
