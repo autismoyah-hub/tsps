@@ -546,6 +546,53 @@ test('the door guard\'s jail-return branch still reaches Hengrad and the scorpio
   }
 });
 
+test('Sammy scene interruption preserves its current stage and location', () => {
+  const { quest, spawned, cleanup } = registerQuestPlugin('FightArena', 'FightArenaSammyTest', 'fight_arena', { realTranscript: true });
+  try {
+    const player = playerFixture(inventoryFixture(new Map([[I().KHAZARD_CELL_KEYS, 1]])));
+    const manager = new DialogueManager(player);
+    player.setDialogueManager(manager);
+    quest.setStage(player, 5);
+    const before = player.getLocation();
+    assert.equal(useKeysOnDoor(player, core.ObjectIdentifiers.PRISON_GATE_4), true);
+    assert.equal(quest.getStage(player), 5);
+    assert.equal(player.getLocation(), before);
+    assert.equal(spawned.length, 0);
+
+    for (let step = 0; step < 30 && player.getLocation() === before; step++) manager.advance();
+    assert.deepEqual([player.getLocation().getX(), player.getLocation().getY()], [2603, 3156]);
+    assert.equal(quest.getStage(player), 5);
+    assert.equal(spawned.length, 0);
+    assert.equal(manager.isActive(), true);
+    // reset models the dialogue state cleared by an interface close; this does
+    // not exercise the native close packet, save/load, or the live client.
+    manager.reset();
+    assert.equal(manager.isActive(), false);
+    assert.deepEqual([player.getLocation().getX(), player.getLocation().getY()], [2603, 3156]);
+    PluginManager.emitPlayerLogin({ player });
+    assert.equal(manager.isActive(), false);
+    assert.deepEqual([player.getLocation().getX(), player.getLocation().getY()], [2603, 3156]);
+    assert.equal(quest.getStage(player), 5);
+    assert.equal(spawned.length, 0);
+    assert.equal(doorToggle(player, core.ObjectIdentifiers.DOOR_9).handled, true);
+    assert.equal(player.inventory.getAmount(I().KHAZARD_CELL_KEYS), 1);
+
+    const uninterrupted = playerFixture(inventoryFixture(new Map([[I().KHAZARD_CELL_KEYS, 1]])));
+    const otherManager = new DialogueManager(uninterrupted);
+    uninterrupted.setDialogueManager(otherManager);
+    quest.setStage(uninterrupted, 5);
+    assert.equal(useKeysOnDoor(uninterrupted, core.ObjectIdentifiers.PRISON_GATE_4), true);
+    for (let step = 0; step < 30 && quest.getStage(uninterrupted) === 5; step++) otherManager.advance();
+    assert.equal(quest.getStage(uninterrupted), 6);
+    assert.equal(spawned.length, 1);
+    assert.equal(spawned[0].def.id, N().KHAZARD_OGRE);
+    assert.equal(spawned[0].def.owner, uninterrupted);
+    assert.equal(spawned[0].def.ownerOnly, true);
+  } finally {
+    cleanup();
+  }
+});
+
 test('registered stage-8 General Khazard transcript sends the player to Hengrad', () => {
   const { api, quest, cleanup } = registerQuestPlugin('FightArena', 'FightArenaRunnerTest', 'fight_arena', { realTranscript: true });
   try {
