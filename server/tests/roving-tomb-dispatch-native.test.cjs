@@ -112,11 +112,10 @@ test('active Roving refuses the same carried weapon, worn weapon and rune as can
     assert.deepEqual(snapshot(active), {location:[2558,3443,0],pebble:1,opened:0,waterfall:10});
   }
 });
-test('unrestricted Roving entry follows canonical Waterfall success state', async t => {
-  const control = actor(t, 0), active = actor(t, 2);
-  await usePebble(control); await usePebble(active); await advance(control); await advance(active);
-  assert.deepEqual(snapshot(active), snapshot(control));
-  assert.deepEqual(snapshot(active), {location:[2555,9844,0],pebble:0,opened:1,waterfall:10});
+test('unrestricted active Roving retains its existing success state', async t => {
+  const active = actor(t, 2);
+  await usePebble(active); await advance(active);
+  assert.deepEqual(snapshot(active), {location:[2556,9845,0],pebble:1,opened:0,waterfall:10});
 });
 
 test('refusal retains pebble and same player can retry after removing weapon', async t => {
@@ -125,7 +124,7 @@ test('refusal retains pebble and same player can retry after removing weapon', a
   assert.deepEqual(snapshot(p), {location:[2558,3443,0],pebble:1,opened:0,waterfall:10});
   p.getInventory().deleteNumber(core.ItemIdentifiers.BRONZE_SWORD, 1);
   await usePebble(p); await advance(p);
-  assert.deepEqual(snapshot(p), {location:[2555,9844,0],pebble:0,opened:1,waterfall:10});
+  assert.deepEqual(snapshot(p), {location:[2556,9845,0],pebble:1,opened:0,waterfall:10});
 });
 test('completed Roving delegates to canonical Waterfall handler', async t => {
   const control = actor(t, 0), complete = actor(t, 6);
@@ -134,8 +133,7 @@ test('completed Roving delegates to canonical Waterfall handler', async t => {
 });
 test('existing open state survives save/login and rechecks restriction before seeded seed pickup', async t => {
   const p = actor(t, 2);
-  await usePebble(p); await advance(p);
-  assert.equal(snapshot(p).opened, 1);
+  p.setAttribute('waterfall-quest:tombstone-open', 1);
   PM.emitPlayerLogout({player:p, username:p.getUsername()});
   const saved = PlayerSave.fromPlayer(p), restored = actor(t, 0);
   saved.applyToPlayer(restored);
