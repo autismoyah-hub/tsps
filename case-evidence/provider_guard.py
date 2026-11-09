@@ -1,5 +1,5 @@
 """Case candidate: authenticated duplicate check then unchanged pilot submit. Not selected."""
-import argparse, datetime, hashlib, json, os, subprocess, sys, types
+import argparse, base64, datetime, hashlib, json, os, subprocess, sys, time, types
 from pathlib import Path
 from huggingface_hub import HfApi
 
@@ -34,6 +34,27 @@ def main():
         proof=parser.exact_turn(transcript,session,expected)
         assert proof['turnSHA256']==pre[label+'Proof']['turnSHA256']
     assert os.environ.get('CCC_SESSION_ID')==OWNER
+    # Refresh the complete reviewed prestart from a verified source snapshot immediately before provider checks.
+    prestartpath=ROOT/'prestart.py'; prestartbytes=prestartpath.read_bytes()
+    assert hashlib.sha256(prestartbytes).hexdigest()==pre['files']['prestart.py']
+    freshpath=ROOT/('guard-prestart-'+str(time.time_ns())+'.json')
+    bootstrap="import base64,hashlib,sys,types; raw=base64.b64decode(sys.argv.pop(1),validate=True); expected=sys.argv.pop(1); path=sys.argv.pop(1); assert hashlib.sha256(raw).hexdigest()==expected; sys.argv[0]=path; m=types.ModuleType('__main__'); m.__dict__.update(__file__=path,__name__='__main__',__package__='',__spec__=None,__cached__=None); sys.modules['__main__']=m; exec(compile(raw,path,'exec'),m.__dict__)"
+    cmd=[sys.executable,'-c',bootstrap,base64.b64encode(prestartbytes).decode(),pre['files']['prestart.py'],str(prestartpath),'--plan',str(planpath),'--selection',str(selpath),'--output',str(freshpath),'--review',pre['reviewPath'],'--review-sha256',pre['reviewSHA256'],'--identity',pre['identityPath'],'--identity-sha256',pre['identitySHA256']]
+    assert all(len(x.encode())+1<131072 and '\0' not in x for x in cmd)
+    try:
+        result=subprocess.run(cmd,capture_output=True,timeout=150)
+    except subprocess.TimeoutExpired as error:
+        (ROOT/(freshpath.stem+'-stdout.txt')).write_bytes(error.stdout or b'')
+        (ROOT/(freshpath.stem+'-stderr.txt')).write_bytes(error.stderr or b'')
+        (ROOT/(freshpath.stem+'-timeout.json')).write_text(json.dumps({'outcome':'TIMEOUT','stdoutBytes':len(error.stdout or b''),'stderrBytes':len(error.stderr or b'')}))
+        raise
+    (ROOT/(freshpath.stem+'-stdout.txt')).write_bytes(result.stdout)
+    (ROOT/(freshpath.stem+'-stderr.txt')).write_bytes(result.stderr)
+    if result.returncode!=0: raise RuntimeError('Fresh prestart failed; retained output, no submission')
+    fresh=json.loads(freshpath.read_bytes())
+    assert fresh['authoritySubject']==subject and fresh['selectionSHA256']==a.selection_sha256 and fresh['planSHA256']==a.plan_sha256
+    for label in ('peerProof','ownerProof','mcProof'): assert fresh[label]['turnSHA256']==pre[label]['turnSHA256']
+    assert fresh['forkRef']==pre['forkRef'] and fresh['connectedDifferences']==pre['connectedDifferences'] and fresh['model']==pre['model'] and fresh['effort']==pre['effort'] and fresh['files']==pre['files']
     assert not (ROOT/'submission.json').exists() and not (ROOT/'exclusive-intent.json').exists()
     for candidate in ROOT.parent.rglob('submission.json'):
         prior=json.loads(candidate.read_bytes()); priorplan=prior.get('plan',{})
@@ -55,7 +76,7 @@ def main():
         # Name may be encoded in the submitted program; no log/secret is printed.
         if labels.get('source')==SOURCE or any(NAME in str(part) for part in command):
             raise RuntimeError('Matching provider source or name: stop and reconcile')
-    record={'owner':OWNER,'source':SOURCE,'name':NAME,'checkedUTC':datetime.datetime.now(datetime.timezone.utc).isoformat(),'jobsChecked':count,'planSHA256':a.plan_sha256,'prestartSHA256':a.prestart_sha256,'selectionSHA256':a.selection_sha256,'action':'SUBMISSION_STARTING_NO_RETRY','collector':OWNER}
+    record={'owner':OWNER,'source':SOURCE,'name':NAME,'checkedUTC':datetime.datetime.now(datetime.timezone.utc).isoformat(),'jobsChecked':count,'planSHA256':a.plan_sha256,'prestartSHA256':a.prestart_sha256,'freshPrestartSHA256':digest(freshpath),'freshPrestartPath':str(freshpath),'selectionSHA256':a.selection_sha256,'action':'SUBMISSION_STARTING_NO_RETRY','collector':OWNER}
     intent=ROOT/'exclusive-intent.json'
     with intent.open('x') as out:
         json.dump(record,out,indent=2); out.flush(); os.fsync(out.fileno())
