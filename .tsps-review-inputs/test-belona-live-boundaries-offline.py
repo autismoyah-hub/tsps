@@ -15,12 +15,12 @@ api=Mock();rejected(lambda:m.guarded_submit(api,None,None,None,{}),RuntimeError)
 api.assert_not_called();api.list_jobs.assert_not_called();api.inspect_job.assert_not_called();api.fetch_job_logs.assert_not_called()
 print('hard hold blocks all live boundaries before provider methods')
 source='247ed387d6a631a00440904a00aa8e1a2e44a962';name='belona-before-held'
-for records in ([{'id':'1','name':'other','labels':{'source':source}}], [{'id':'1','name':name,'labels':{'source':'other'}}], [{'id':'1','name':'other'}]):
+for records in ([{'id':'1','labels':{'source':source,'name':'other'}}], [{'id':'1','labels':{'source':'other','name':name}}], [{'id':'1','labels':{'source':'other'}}]):
  fake=Mock();fake.list_jobs.return_value=iter(records)
  rejected(lambda:m.scan_provider(fake,source,name,caller),ValueError)
 print('synthetic source OR name duplicate and incomplete provider row refused')
 def partial():
- yield {'id':'1','name':'other','labels':{'source':'other'}}
+ yield {'id':'1','labels':{'source':'other','name':'other'}}
  raise RuntimeError('incomplete iterator')
 fake=Mock();fake.list_jobs.return_value=partial();rejected(lambda:m.scan_provider(fake,source,name,caller),RuntimeError)
 print('synthetic provider iterator failure cannot become a clear scan')

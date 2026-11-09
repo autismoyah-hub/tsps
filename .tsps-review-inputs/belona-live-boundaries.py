@@ -41,7 +41,7 @@ def scan_provider(api, source, name, caller):
     for job in api.list_jobs(namespace=NAMESPACE, labels={'project':'tsps'}):
         row = object_dict(job); labels = row.get('labels')
         if not isinstance(labels,dict): raise ValueError('provider job labels missing')
-        rows.append({'id':row.get('id'), 'source':labels.get('source'), 'name':row.get('name')})
+        rows.append({'id':row.get('id'), 'source':labels.get('source'), 'name':labels.get('name')})
     caller.reject_duplicates(rows,source,name)
     return rows
 
@@ -112,8 +112,8 @@ def guarded_submit(api, caller, prestart_module, helper, ctx):
     if receipt.get('namespace')!=NAMESPACE or receipt.get('plan')!=plan or receipt.get('request')!=request:
         raise ValueError('submission binding mismatch; HOLD')
     job=receipt.get('job',{})
-    if not job.get('id') or job.get('command')!=request['command'] or job.get('labels')!=request['labels']:
-        raise ValueError('returned job mismatch; HOLD')
+    if not job.get('id'): raise ValueError('returned job ID missing; HOLD')
+    caller.require_inspection(job,NAMESPACE,job['id'],request,terminal=False)
     return {'jobId':job['id'],'requestSHA256':request_sha,'programSHA256':program_sha,
             'pilotStdoutSHA256':sha(result.stdout),'stage':'AWAIT_INSPECTION_SAME_COLLECTOR'}
 
@@ -137,7 +137,8 @@ def guarded_status_collect(api,caller,prestart_module,ctx):
     if not isinstance(job_id,str) or not job_id: raise ValueError('missing original job identity')
     if api.whoami().get('name') != NAMESPACE: raise ValueError('provider namespace mismatch')
     info=object_dict(api.inspect_job(job_id=job_id,namespace=NAMESPACE))
-    raw=(json.dumps(info,sort_keys=True,default=str)+'\n').encode()
+    observable = {key:info.get(key) for key in ('id','owner','docker_image','command','flavor','labels','retry','status','started_at','finished_at')}
+    raw=(json.dumps(observable,sort_keys=True,default=str)+'\n').encode()
     caller.create_selected(Path(ctx['caseDir'])/('inspection-'+sha(raw)+'.json'),raw)
     caller.require_inspection(info,NAMESPACE,job_id,request)
     caller.retain_log_prefix(Path(ctx['caseDir'])/'terminal-raw.log',api.fetch_job_logs(job_id=job_id,namespace=NAMESPACE,follow=False))

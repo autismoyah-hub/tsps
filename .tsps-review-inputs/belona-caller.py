@@ -79,13 +79,24 @@ def reject_duplicates(records, source, name):
         if row['source'] == source or row['name'] == name:
             raise ValueError('matching source or name already exists')
 
-def require_inspection(inspected, namespace, job_id, request):
-    if not isinstance(inspected, dict) or inspected.get('id') != job_id or inspected.get('namespace') != namespace:
-        raise ValueError('wrong job or namespace')
-    for key in ('command','image','flavor','timeout','attempts','labels'):
-        if inspected.get(key) != request[key]: raise ValueError('inspected request mismatch: '+key)
+def require_inspection(inspected, namespace, job_id, request, terminal=True):
+    """Verify observable JobInfo fields; timeout is not exposed by SDK JobInfo."""
+    if not isinstance(inspected, dict) or inspected.get('id') != job_id:
+        raise ValueError('wrong job ID')
+    owner = inspected.get('owner')
+    if not isinstance(owner,dict) or owner.get('name') != namespace:
+        raise ValueError('wrong job owner')
+    expected_labels = dict(request['labels']); expected_labels['name'] = request['name']
+    if inspected.get('labels') != expected_labels:
+        raise ValueError('inspected labels/name mismatch')
+    if inspected.get('docker_image') != request['image'] or inspected.get('command') != request['command'] or inspected.get('flavor') != request['flavor']:
+        raise ValueError('inspected image/command/flavor mismatch')
+    if inspected.get('retry') != 0 or request['attempts'] != 1 or request['timeout'] != 1800:
+        raise ValueError('retry/attempt/request timeout mismatch')
     status = inspected.get('status')
-    if not isinstance(status, dict) or status.get('stage') not in ('COMPLETED','ERROR','CANCELED','CANCELLED'):
+    if not isinstance(status, dict) or not isinstance(status.get('stage'),str):
+        raise ValueError('job status missing')
+    if terminal and status['stage'] not in ('COMPLETED','ERROR','CANCELED','CANCELLED'):
         raise ValueError('job not terminal')
 
 def retain_log_prefix(path, iterator):
