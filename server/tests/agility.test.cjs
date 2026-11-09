@@ -2272,7 +2272,11 @@ test("an admitted Varrock fall retains its damage when the player logs out", asy
     for (let i = 0; i < 32; i++) {
       const p = actor(30, hitpoints); start(p);
       if (outcomes.get(p) === false) return p;
-      drain(p); assert.deepEqual(tile(p), [3208, 3414, 3]); logout(p);
+      drain(p); assert.deepEqual(tile(p), [3208, 3414, 3]);
+      // This successful search actor is discarded; restore it before cleanup so
+      // save normalization of wounded health cannot obscure the failed roll.
+      p.getSkillManager().setCurrentLevels(Skill.HITPOINTS, 50);
+      logout(p);
     }
     assert.fail("no natural failed roll in 32 ordinary clicks: target boundary not reached");
   }
