@@ -91,3 +91,40 @@ test('No choice leaves a fresh quest and inventory unchanged', async t => {
   const f = actor(t, 24); await startChoice(f, false);
   assert.equal(quest().getStage(f.player), 0); supplies(f.player, 0);
 });
+
+// Seeded cell and stage: this exercises registered dialogue, not the preceding arrest or walk.
+test('Charlie release keeps the queued conversation after moving the player', async t => {
+  const f = actor(t, 25);
+  const { player, connection } = f;
+  quest().setStage(player, 70);
+  player.setLocation(new core.Location(2464, 3495, 3));
+  const id = core.NpcIdentifiers.CHARLIE;
+  const npc = core.NPC.create(id, new core.Location(2464, 3495, 3));
+  assert.equal(PM.emitNpcInteraction({ player, npc, npcId: id, action: 'Talk-to', clickType: 1, handled: false }), true);
+  const seen = [];
+  for (let step = 0; step < 60; step++) {
+    const current = player.getDialogueManager().getCurrent();
+    if (!current) break;
+    if (quest().getStage(player) === 70) {
+      assert.deepEqual([player.getLocation().getX(), player.getLocation().getY(), player.getLocation().getZ()], [2464, 3495, 3]);
+    }
+    const text = current.getText?.();
+    if (text) seen.push({ text, stage: quest().getStage(player) });
+    const group = player.getPacketSender().getChatboxGroupId();
+    const child = ({ 231: 5, 217: 5, 229: 4 })[group];
+    assert.notEqual(child, undefined, `known dialogue group ${group}`);
+    assert.equal(player.getPacketSender().isChatboxInterface(group), true);
+    await connection.dispatch([{ type: 'dialogue_continue', widgetId: (group << 16) | child, childIndex: -1 }]);
+    connection.processTurnPackets();
+    if (quest().getStage(player) === 80) {
+      assert.deepEqual([player.getLocation().getX(), player.getLocation().getY(), player.getLocation().getZ()], [2467, 3500, 3]);
+      assert.deepEqual([npc.getLocation().getX(), npc.getLocation().getY(), npc.getLocation().getZ()], [2464, 3495, 3]);
+    }
+  }
+  assert.equal(player.getDialogueManager().getCurrent(), undefined, 'dialogue terminates within the step limit');
+  assert.equal(quest().getStage(player), 80);
+  assert.match(seen.filter(line => line.stage === 70).map(line => line.text).join(' '), /Let me get you out of there\./, 'king offers release before relocation');
+  const afterRelease = seen.filter(line => line.stage === 80).map(line => line.text).join(' ');
+  assert.match(afterRelease, /I don't think you can trust Glough/, 'conversation continues after release');
+  assert.match(afterRelease, /I'm sorry again Traveller!/, 'conversation reaches closing line after release');
+});
