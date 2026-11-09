@@ -1653,8 +1653,8 @@ test('native cooking on a live fire', async suite => {
     const realRandom = Math.random;
     let burnRolls = 0;
     const random = t.mock.method(Math, 'random', () => {
-      const caller = new Error().stack?.split('\n')[2] ?? '';
-      if (/^\s*at isSuccess \(/.test(caller) && Cooking._test.activeSessions.size === 1
+      const stack = new Error().stack?.split('\n') ?? [];
+      if (stack.some((frame) => /^\s*at isSuccess \(/.test(frame)) && Cooking._test.activeSessions.size === 1
         && Cooking._test.activeSessions.get(a.p)?.cookable.raw === I.UNCOOKED_STEW) {
         burnRolls++;
         return 0;
