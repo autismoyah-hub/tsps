@@ -166,19 +166,19 @@ def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, run
     if Path(runtime_files['prestartSHA256']).resolve() != Path(__file__).resolve(): raise ValueError('prestart source mismatch')
     if Path(runtime_files['sdkPythonSHA256']).resolve() != Path(sys.executable).resolve(): raise ValueError('active Python mismatch')
     pinned(sdk_manifest,subject['sdkManifestSHA256'])
-    manifest = json.loads(Path(sdk_manifest).read_bytes())
-    if manifest.get('version') != '2.4.0' or not isinstance(manifest.get('files'),dict) or not manifest['files']:
+    sdk_doc = json.loads(Path(sdk_manifest).read_bytes())
+    if sdk_doc.get('version') != '2.4.0' or not isinstance(sdk_doc.get('files'),dict) or not sdk_doc['files']:
         raise ValueError('SDK manifest invalid')
-    sdk_root = Path(manifest['root']).resolve(strict=True)
+    sdk_root = Path(sdk_doc['root']).resolve(strict=True)
     actual = set()
     for entry in sdk_root.rglob('*'):
         if entry.is_symlink(): raise ValueError('SDK symlink refused')
         if entry.is_file(): actual.add(entry.relative_to(sdk_root).as_posix())
-    if actual != set(manifest['files']): raise ValueError('SDK file membership mismatch')
+    if actual != set(sdk_doc['files']): raise ValueError('SDK file membership mismatch')
     distributions = [d for d in importlib.metadata.distributions(path=[str(sdk_root)])
                      if d.metadata.get('Name','').lower().replace('_','-') == 'huggingface-hub']
     if len(distributions) != 1 or distributions[0].version != '2.4.0': raise ValueError('SDK package version mismatch')
-    for name, digest in manifest['files'].items():
+    for name, digest in sdk_doc['files'].items():
         rel = Path(name)
         if rel.is_absolute() or '..' in rel.parts: raise ValueError('SDK path escapes root')
         target = sdk_root / rel

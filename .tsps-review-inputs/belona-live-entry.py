@@ -1,5 +1,6 @@
 """Held authenticated entry draft; only loaded by the reviewed outer launcher."""
 import argparse
+import builtins
 import hashlib
 import json
 from pathlib import Path
@@ -14,6 +15,9 @@ def main():
         raise ValueError('context plan/case mismatch')
     if sha(Path(__file__).read_bytes())!=subject['entrySHA256']:raise ValueError('entry identity mismatch')
     if sha(plan_path.read_bytes())!=subject['selectedPlanSHA256']:raise ValueError('selected plan changed in auth handoff')
+    subject_digest=sha(json.dumps(subject,sort_keys=True,separators=(',',':')).encode())
+    expected={'subjectSHA256':subject_digest,'selectedPlanSHA256':subject['selectedPlanSHA256']}
+    if getattr(builtins,'__BELONA_PREAUTH_EVIDENCE__',None)!=expected:raise ValueError('outer pre-auth source gate evidence missing')
     live_path=Path(ctx['liveSource']).resolve(strict=True);raw=live_path.read_bytes()
     if sha(raw)!=subject['liveSHA256']:raise ValueError('live source mismatch')
     live=types.ModuleType('belona_verified_live');live.__file__=str(live_path);live.__dict__['__BELONA_SNAPSHOT_SHA__']=sha(raw)

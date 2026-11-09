@@ -101,3 +101,25 @@ with tempfile.TemporaryDirectory() as temp:
         rejected(lambda:m.guarded_submit(fakeapi,ctx),ValueError)
         fakecaller.claim_intent.assert_not_called();process.assert_not_called()
 print('synthetic changed launcher recheck after scan prevents intent and pilot call')
+# Exact saved prestart/scan and receipt bytes must remain the ones captured on submit.
+subject={'selectedPlanSHA256':'a'*64,'owner':m.OWNER}; plan={'source':'source1','name':'test'}
+intent={'intentId':'exclusive-'+'a'*64,'owner':m.OWNER,'plan':plan,'requestSHA256':'b'*64,'programSHA256':'c'*64,
+        'reviewSubject':subject,'state':'PENDING_NO_RETRY','prestart':{'stage':'original'},'providerScan':[]}
+encode=lambda obj:(json.dumps(obj,sort_keys=True,separators=(',',':'))+'\n').encode()
+raw=encode(intent);receipt=b'{"original":true}\n'
+binding={'stage':'SUBMITTED_SAME_OWNER_BINDING','owner':m.OWNER,'jobId':'job1','source':'source1','selectedPlanSHA256':'a'*64,
+         'requestSHA256':'b'*64,'programSHA256':'c'*64,'intentSHA256':m.sha(raw),'submissionSHA256':m.sha(receipt),
+         'prestartSHA256':m.canonical_sha(intent['prestart']),'providerScanSHA256':m.canonical_sha(intent['providerScan'])}
+m.validate_submission_binding(binding,raw,receipt,plan,'b'*64,'c'*64,'job1',subject)
+for key,value in [('prestart',{'stage':'foreign'}),('providerScan',[{'id':'foreign','source':'x','name':'y'}])]:
+    changed=dict(intent);changed[key]=value
+    rejected(lambda:m.validate_submission_binding(binding,encode(changed),receipt,plan,'b'*64,'c'*64,'job1',subject),ValueError)
+rejected(lambda:m.validate_submission_binding(binding,raw,receipt+b' ',plan,'b'*64,'c'*64,'job1',subject),ValueError)
+print('synthetic changed original prestart/scan/receipt bytes rejected by submit binding')
+
+with tempfile.TemporaryDirectory() as temp:
+    file=Path(temp)/'receipt';original=b'{"original":true}\n';file.write_bytes(original)
+    m.require_unchanged(file,original,'receipt')
+    file.write_bytes(b'{"mutated":true}\n')
+    rejected(lambda:m.require_unchanged(file,original,'receipt'),ValueError)
+print('synthetic post-log receipt mutation rejected before terminal binding')

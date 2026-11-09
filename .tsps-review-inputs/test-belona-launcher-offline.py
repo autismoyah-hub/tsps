@@ -39,7 +39,17 @@ with tempfile.TemporaryDirectory() as t:
  except ValueError:pass
  else:raise AssertionError('mismatch accepted')
  assert not calls
+import subprocess
+import sys
+fake=[sys.executable,'-c','import builtins; print("FULL_FAKE_AUTH" if hasattr(builtins,"__BELONA_PREAUTH_EVIDENCE__") else "MISSING")']
+full=launcher.complete_child_command(fake,subject,paths)
+run=subprocess.run(full,capture_output=True,text=True)
+assert run.returncode==0 and run.stdout.strip()=='FULL_FAKE_AUTH',run.stderr
+paths['selected'].write_bytes(selected+b' ')
+run=subprocess.run(full,capture_output=True,text=True)
+assert run.returncode!=0 and 'FULL_FAKE_AUTH' not in run.stdout
 selection_temp.cleanup()
+print('complete child source gate reaches fake auth only for pinned selected plan')
 print('source gate and actual selected bytes checked before fake adapter; mismatches call zero; real hard hold prevented adapter')
 # Child-side plan guard exercises a fake bootstrap, never the authentication adapter.
 import subprocess

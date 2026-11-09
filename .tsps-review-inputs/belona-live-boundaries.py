@@ -114,6 +114,21 @@ def validate_original_intent(intent,plan,request_sha,program_sha,subject):
     if not isinstance(intent.get('prestart'),dict) or not isinstance(intent.get('providerScan'),list):
         raise ValueError('original intent evidence incomplete')
 
+def canonical_sha(value):
+    return sha(json.dumps(value,sort_keys=True,separators=(',',':')).encode())
+
+def validate_submission_binding(binding, intent_raw, receipt_raw, plan, request_sha, program_sha, job_id, subject):
+    intent=json.loads(intent_raw)
+    expected={'stage':'SUBMITTED_SAME_OWNER_BINDING','owner':OWNER,'jobId':job_id,'source':plan['source'],
+              'selectedPlanSHA256':subject['selectedPlanSHA256'],'requestSHA256':request_sha,'programSHA256':program_sha,
+              'intentSHA256':sha(intent_raw),'submissionSHA256':sha(receipt_raw),
+              'prestartSHA256':canonical_sha(intent['prestart']),'providerScanSHA256':canonical_sha(intent['providerScan'])}
+    if binding != expected: raise ValueError('submission evidence binding mismatch')
+    return expected
+
+def require_unchanged(path, original, label):
+    if Path(path).read_bytes() != original: raise ValueError(label+' changed during collection')
+
 def validate_collector_marker(path,caller,plan,request_sha,program_sha,job_id,subject):
     marker={'intentId':'collector-'+subject['selectedPlanSHA256'],'owner':OWNER,'jobId':job_id,
             'source':plan['source'],'selectedPlanSHA256':subject['selectedPlanSHA256'],
@@ -154,7 +169,7 @@ def guarded_submit(api, ctx):
     recheck_launcher(ctx,subject)
     command=helper.authenticated_pilot_command(ctx['python'],ctx['adapter'],subject['adapterSHA256'],
               ctx['pilot'],subject['pilotSHA256'],ctx['plan'],ctx['sdkRoot'])
-    command=launcher.guarded_child_command(command,Path(ctx['plan']).resolve(),subject['selectedPlanSHA256'])
+    command=launcher.complete_child_command(command,subject,ctx['launcherPaths'])
     caller.claim_intent(Path(ctx['caseDir'])/'belona-intent.json',{'intentId':'exclusive-'+sha(selected_raw),
              'owner':OWNER,'plan':plan,'requestSHA256':request_sha,'programSHA256':program_sha,
              'reviewSubject':subject,'prestart':second,'providerScan':provider,'state':'PENDING_NO_RETRY'})
@@ -163,14 +178,22 @@ def guarded_submit(api, ctx):
     recheck_launcher(ctx,subject)
     result=subprocess.run(command+['--submit'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=180,check=True)
     receipt_path=Path(ctx['caseDir'])/'submission.json'
-    receipt=json.loads(receipt_path.read_bytes())
+    receipt_raw=receipt_path.read_bytes(); receipt=json.loads(receipt_raw)
     if receipt.get('namespace')!=NAMESPACE or receipt.get('plan')!=plan or receipt.get('request')!=request:
         raise ValueError('submission binding mismatch; HOLD')
     job=receipt.get('job',{})
     if not job.get('id'): raise ValueError('returned job ID missing; HOLD')
     caller.require_inspection(job,NAMESPACE,job['id'],request,terminal=False)
+    intent_raw=(Path(ctx['caseDir'])/'belona-intent.json').read_bytes();intent=json.loads(intent_raw)
+    validate_original_intent(intent,plan,request_sha,program_sha,subject)
+    binding={'stage':'SUBMITTED_SAME_OWNER_BINDING','owner':OWNER,'jobId':job['id'],'source':plan['source'],
+             'selectedPlanSHA256':sha(selected_raw),'requestSHA256':request_sha,'programSHA256':program_sha,
+             'intentSHA256':sha(intent_raw),'submissionSHA256':sha(receipt_raw),
+             'prestartSHA256':canonical_sha(intent['prestart']),'providerScanSHA256':canonical_sha(intent['providerScan'])}
+    binding_raw=(json.dumps(binding,sort_keys=True,separators=(',',':'))+'\n').encode()
+    caller.create_selected(Path(ctx['caseDir'])/'submission-binding.json',binding_raw)
     return {'jobId':job['id'],'requestSHA256':request_sha,'programSHA256':program_sha,
-            'pilotStdoutSHA256':sha(result.stdout),'stage':'AWAIT_INSPECTION_SAME_COLLECTOR'}
+            'submissionBindingSHA256':sha(binding_raw),'pilotStdoutSHA256':sha(result.stdout),'stage':'AWAIT_INSPECTION_SAME_COLLECTOR'}
 
 def guarded_status_collect(api,ctx):
     """Inspect first, persist raw identity, require terminal, then preserve partial logs."""
@@ -191,7 +214,8 @@ def guarded_status_collect(api,ctx):
     args=ctx['prestartArgs']
     if prestart_module.validate_choice_live(subject,selected_raw,choice_raw,args['review_raw'],args['cli'],args['cli_sha']) != choice: raise ValueError('owner choice mismatch')
     plan,request,program_sha,request_sha=literal_and_choice(caller,selected_raw,payload_raw,choice,ctx['subject'])
-    receipt=json.loads((Path(ctx['caseDir'])/'submission.json').read_bytes())
+    receipt_path=Path(ctx['caseDir'])/'submission.json'
+    receipt_raw=receipt_path.read_bytes();receipt=json.loads(receipt_raw)
     if receipt.get('namespace')!=NAMESPACE or receipt.get('plan')!=plan or receipt.get('request')!=request:
         raise ValueError('saved request mismatch before inspection')
     intent_raw=(Path(ctx['caseDir'])/'belona-intent.json').read_bytes();intent=json.loads(intent_raw)
@@ -199,6 +223,9 @@ def guarded_status_collect(api,ctx):
     job=receipt.get('job',{});job_id=job.get('id')
     if not isinstance(job_id,str) or not job_id: raise ValueError('missing original job identity')
     caller.require_inspection(job,NAMESPACE,job_id,request,terminal=False)
+    binding_raw=(Path(ctx['caseDir'])/'submission-binding.json').read_bytes()
+    if sha(binding_raw)!=ctx['submissionBindingSHA256']: raise ValueError('submission binding hash mismatch')
+    validate_submission_binding(json.loads(binding_raw),intent_raw,receipt_raw,plan,request_sha,program_sha,job_id,subject)
     validate_collector_marker(Path(ctx['caseDir'])/'belona-collector.json',caller,plan,request_sha,program_sha,job_id,subject)
     recheck_launcher(ctx,subject)
     if api.whoami().get('name') != NAMESPACE: raise ValueError('provider namespace mismatch')
@@ -210,8 +237,11 @@ def guarded_status_collect(api,ctx):
     recheck_launcher(ctx,subject)
     raw_path=Path(ctx['caseDir'])/'terminal-raw.log'
     caller.retain_log_prefix(raw_path,api.fetch_job_logs(job_id=job_id,namespace=NAMESPACE,follow=False))
+    require_unchanged(receipt_path,receipt_raw,'submission receipt')
+    require_unchanged(Path(ctx['caseDir'])/'belona-intent.json',intent_raw,'original intent')
+    require_unchanged(Path(ctx['caseDir'])/'submission-binding.json',binding_raw,'submission binding')
     binding={'stage':'TERMINAL_RAW_RETAINED_UNCLASSIFIED','owner':OWNER,'jobId':job_id,'source':plan['source'],
-             'selectedPlanSHA256':sha(selected_raw),'intentSHA256':sha(intent_raw),'submissionSHA256':sha((Path(ctx['caseDir'])/'submission.json').read_bytes()),
+             'selectedPlanSHA256':sha(selected_raw),'intentSHA256':sha(intent_raw),'submissionSHA256':sha(receipt_raw),'submissionBindingSHA256':sha(binding_raw),
              'requestSHA256':request_sha,'programSHA256':program_sha,'inspectionSHA256':sha(raw),
              'collectorSHA256':sha((Path(ctx['caseDir'])/'belona-collector.json').read_bytes()),'rawLogSHA256':sha(raw_path.read_bytes()),
              'closure':'terminal-inspection-and-complete-log-iterator-only; descendant closure not established'}
