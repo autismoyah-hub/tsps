@@ -1,5 +1,5 @@
 """Case-specific prestart candidate. No provider action; output is not a review."""
-import argparse, datetime, glob, hashlib, importlib.metadata, json, os, subprocess, sys, urllib.request
+import argparse, datetime, glob, hashlib, importlib.metadata, json, os, subprocess, sys, urllib.error, urllib.request
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 REPO=Path('/workspace/repo')
@@ -8,6 +8,21 @@ REF='refs/heads/woodcutting-inventory-interruption-fixture'
 OWNER='a57b09b1-fcf5-4aea-b25e-7f19910af934'
 NAME='tsps-woodcutting-eat-before-a57b-001'
 def sha(b): return hashlib.sha256(b).hexdigest()
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+ def redirect_request(self,*args,**kwargs): return None
+
+def read_exact_route(req,limit):
+ opener=urllib.request.build_opener(NoRedirect())
+ try:
+  with opener.open(req,timeout=45) as response:
+   if response.status!=200 or response.geturl()!=req.full_url: raise RuntimeError('Route/status mismatch')
+   data=response.read(limit+1)
+   if len(data)>limit: raise RuntimeError('Response byte limit')
+   return data
+ except urllib.error.HTTPError as error:
+  # Persist and surface actual refusal class/status, never the authenticated header.
+  print(json.dumps({'stage':'PRESTART_READ_REFUSED','status':error.code,'route':req.full_url}),file=sys.stderr)
+  raise
 def main():
  if not __debug__: raise RuntimeError('Optimized interpreter forbidden')
  p=argparse.ArgumentParser();p.add_argument('--plan',required=True);p.add_argument('--selection',required=True);p.add_argument('--output',required=True);p.add_argument('--review',required=True);p.add_argument('--review-sha256',required=True);p.add_argument('--identity',required=True);p.add_argument('--identity-sha256',required=True);a=p.parse_args()
@@ -30,7 +45,7 @@ def main():
  assert sel=={'owner':OWNER,'action':'SELECT_ONCE','attempts':1,'source':SOURCE,'planSHA256':sha(planraw)}
  token=os.environ['CCC_TOKEN']; headers={'Authorization':'Bearer '+token} if token.startswith('ccc_pat_') else {'X-CCC-Control-Token':token}
  req=urllib.request.Request(os.environ['CCC_BASE_URL'].rstrip('/')+'/api/acp/sessions/'+OWNER+'/config',headers=headers)
- with urllib.request.urlopen(req,timeout=15) as r: config=json.load(r)
+ config=json.loads(read_exact_route(req,1024*1024))
  opts={x['id']:x['currentValue'] for x in config['configOptions']}; assert opts['model']=='gpt-6.1-terra' and opts['reasoning_effort']=='medium'
  sessionid=os.environ['CODEX_SESSION_ID']; matches=glob.glob('/run/agent-state/codex/sessions/**/*'+sessionid+'.jsonl',recursive=True); assert len(matches)==1
  records=[json.loads(line) for line in Path(matches[0]).read_text().splitlines()]
@@ -48,7 +63,7 @@ def main():
  connected_diff=subprocess.check_output(['git','diff','587d6a8923cf7ce1f329e7e96d754463534498a3',upstream,'--',*connected],cwd=REPO)
  assert sha(connected_diff)=='ea6952fa8c4ecd465bc04667bd7d9457784fadbebccc47e8afc0b7b1cbd75498'
  spec=plan['expectedInputsRef']; url=f"https://raw.githubusercontent.com/{spec['repository']}/{spec['artifactCommit']}/{spec['path']}"
- with urllib.request.urlopen(url,timeout=45) as r: raw=r.read(spec['bytes']+1)
+ raw=read_exact_route(urllib.request.Request(url),spec['bytes'])
  assert len(raw)==spec['bytes'] and sha(raw)==spec['sha256']
  doc=json.loads(raw); assert doc['source']==SOURCE and doc['tests']==plan['tests'] and doc['expectedTestCounts']==plan['expectedTestCounts']
  assert len(doc['expectedInputs'])==spec['count'] and doc['expectedInputs'].keys()==doc['sourceBlobs'].keys()
