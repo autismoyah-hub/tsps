@@ -42,24 +42,36 @@ function actor(t, stage) {
   const c = new ClientConnection(channel); c.player = p;
   quest.setStage(p, stage);
   p.getPacketSender().sendVarbit(2020, stage >= 9 ? 1 : 0);
-  t.after(() => { PM.emitPlayerLogout({player: p, username: p.getUsername()}); p.setRegistered(false);
-    core.TaskManager.cancelTasks(p.getIndex()); core.TaskManager.cancelTasks(p); });
+  t.after(() => {
+    PM.emitPlayerLogout({player:p,username:p.getUsername()});
+    core.TaskManager.cancelTasks(p.getIndex()); core.TaskManager.cancelTasks(p);
+    const world=[...core.World.getNpcs()].filter(n=>n?.getOwner?.()===p);
+    const queued=core.World.getAddNPCQueue().filter(n=>n?.getOwner?.()===p);
+    const tasks={index:core.TaskManager.hasActiveTask(p.getIndex()),player:core.TaskManager.hasActiveTask(p)};
+    t.diagnostic(JSON.stringify({cleanup:{worldOwned:world.length,queuedOwned:queued.length,tasks}}));
+    p.setRegistered(false);
+    assert.equal(world.length,0,'owned NPCs removed on logout'); assert.equal(queued.length,0,'queued owned NPCs removed on logout');
+    assert.equal(tasks.index,false,'index tasks stopped'); assert.equal(tasks.player,false,'player tasks stopped');
+  });
   return {p,c};
 }
 async function clickExit(f, onTick) {
-  await f.c.dispatch([{type: 'object_option', id: 13933, x: 3020, y: 5188, clickType: 1}]);
-  f.c.processTurnPackets();
-  for (let i = 0; i < 40; i++) {
-    f.p.getMovementQueue().beginCycle();
-    f.p.getMovementQueue().process();
-    const record = phase => { const pos = f.p.getLocation(); onTick({phase, x:pos.getX(), y:pos.getY(), z:pos.getZ(), stage:quest.getStage(f.p)}); };
-    record('after-movement');
-    core.TaskManager.processWalkTo(f.p.getIndex());
-    record('after-interaction');
-    PM.updatePlayerZones(f.p);
-    record('after-zone');
-    core.TaskManager.process();
-  }
+  const record = phase => { const pos=f.p.getLocation(); onTick({phase,x:pos.getX(),y:pos.getY(),z:pos.getZ(),stage:quest.getStage(f.p),busy:f.p.busy(),placement:f.p.isNeedsPlacement()}); };
+  const emit=PM.emitObjectInteraction;
+  PM.emitObjectInteraction=function(event,...rest) {
+    if(event.player===f.p) { const pos=f.p.getLocation(); onTick({phase:'object-event',id:event.objectId,option:event.option,x:pos.getX(),y:pos.getY(),z:pos.getZ(),stage:quest.getStage(f.p),busy:f.p.busy(),placement:f.p.isNeedsPlacement()}); }
+    return emit.call(PM,event,...rest);
+  };
+  try {
+    record('before-exit-packet');
+    await f.c.dispatch([{type:'object_option',id:13933,x:3020,y:5188,clickType:1}]);
+    f.c.processTurnPackets(); record('after-exit-packet');
+    for(let i=0;i<40;i++) {
+      core.TaskManager.process(); f.p.getMovementQueue().beginCycle(); f.p.getMovementQueue().process();
+      record('after-movement'); core.TaskManager.processWalkTo(f.p.getIndex()); record('after-interaction');
+      PM.updatePlayerZones(f.p); record('after-zone'); f.p.resetUpdating(); record('after-reset');
+    }
+  } finally { PM.emitObjectInteraction=emit; }
 }
 async function talkToHuman(f, spawns) {
   async function continueDialogue() {
@@ -77,8 +89,8 @@ async function talkToHuman(f, spawns) {
   assert.ok(clickType);
   await f.c.dispatch([{type:'npc_option', index:human.getIndex(), clickType}]); f.c.processTurnPackets();
   for (let i = 0; i < 20; i++) {
-    f.p.getMovementQueue().beginCycle(); f.p.getMovementQueue().process();
-    core.TaskManager.processWalkTo(f.p.getIndex()); PM.updatePlayerZones(f.p); core.TaskManager.process();
+    core.TaskManager.process(); f.p.getMovementQueue().beginCycle(); f.p.getMovementQueue().process();
+    core.TaskManager.processWalkTo(f.p.getIndex()); PM.updatePlayerZones(f.p); f.p.resetUpdating();
   }
   assert.ok(f.p.getDialogueManager().isActive(), 'ordinary Talk-to opens human Tolna dialogue');
   await continueDialogue();
@@ -125,8 +137,8 @@ test('the other exit retains its existing server behavior at stage 9', async t =
   await f.c.dispatch([{type: 'object_option', id: 13932, x: 3021, y: 5211, clickType: 1}]);
   f.c.processTurnPackets();
   for (let i = 0; i < 40; i++) {
-    f.p.getMovementQueue().beginCycle(); f.p.getMovementQueue().process();
-    core.TaskManager.processWalkTo(f.p.getIndex()); PM.updatePlayerZones(f.p); core.TaskManager.process();
+    core.TaskManager.process(); f.p.getMovementQueue().beginCycle(); f.p.getMovementQueue().process();
+    core.TaskManager.processWalkTo(f.p.getIndex()); PM.updatePlayerZones(f.p); f.p.resetUpdating();
   }
   assert.equal(quest.getStage(f.p), 9);
   assert.deepEqual([f.p.getLocation().getX(), f.p.getLocation().getY()], [3310, 3455]);
@@ -151,12 +163,15 @@ async function descendRift(f, t) {
     const loc=event.sourceLocation; observed.push({id:event.objectId, option:event.option, resolved:event.definition?.id, x:loc?.x, y:loc?.y});
     return emit.call(PM,event,...rest);
   });
+  const trace=[]; const snap=phase=>{const pos=f.p.getLocation();trace.push({phase,x:pos.getX(),y:pos.getY(),z:pos.getZ(),stage:quest.getStage(f.p),busy:f.p.busy(),placement:f.p.isNeedsPlacement()});};
+  snap('before-rift-packet');
   await f.c.dispatch([{type:'object_option', id:rift.getId(), x:p.getX(), y:p.getY(), clickType}]);
-  f.c.processTurnPackets();
+  f.c.processTurnPackets(); snap('after-rift-packet');
   for (let i = 0; i < 40; i++) {
-    f.p.getMovementQueue().beginCycle(); f.p.getMovementQueue().process();
-    core.TaskManager.processWalkTo(f.p.getIndex()); PM.updatePlayerZones(f.p); core.TaskManager.process();
+    core.TaskManager.process(); f.p.getMovementQueue().beginCycle(); f.p.getMovementQueue().process();
+    core.TaskManager.processWalkTo(f.p.getIndex()); PM.updatePlayerZones(f.p); snap('before-reset'); f.p.resetUpdating(); snap('after-reset');
   }
+  t.diagnostic(JSON.stringify({riftTrace:trace,riftEvents:observed}));
   assert.ok(observed.some(e => e.id===13968 && e.resolved===13970 && e.option==='enter'), 'real packet reaches resolved rope rift Enter handler');
 }
 
@@ -168,10 +183,14 @@ test('login preserves the completed bridge after interruption of the server fina
   PM.emitPlayerLogin({player: f.p, username: f.p.getUsername()});
   assert.equal(quest.getStage(f.p), 9);
   assert.deepEqual([f.p.getLocation().getX(), f.p.getLocation().getY()], [3310, 3455]);
+  t.diagnostic(JSON.stringify({phase:'login-before-reset',busy:f.p.busy(),placement:f.p.isNeedsPlacement()}));
+  f.p.resetUpdating(); // Simulated end-of-tick after omitted world/client sync.
+  t.diagnostic(JSON.stringify({phase:'login-after-reset',busy:f.p.busy(),placement:f.p.isNeedsPlacement()}));
   await descendRift(f, t);
   assert.equal(quest.getStage(f.p), 9);
   assert.deepEqual([f.p.getLocation().getX(), f.p.getLocation().getY()], [3020, 5200]);
-  await clickExit(f, () => {});
+  const recoveryTrace=[]; await clickExit(f, tick => recoveryTrace.push(tick));
+  t.diagnostic(JSON.stringify({recoveryTrace}));
   assert.equal(quest.getStage(f.p), 10, 'the restored bridge leads to the final encounter again');
 });
 
@@ -186,7 +205,8 @@ test('the existing death hook resets an unfinished final encounter', async t => 
   f.p.getPacketSender().sendVarbit(2032, 1);
   await descendRift(f, t);
   assert.deepEqual([f.p.getLocation().getX(), f.p.getLocation().getY()], [3020,5200]);
-  await clickExit(f, () => {});
+  const recoveryTrace=[]; await clickExit(f, tick => recoveryTrace.push(tick));
+  t.diagnostic(JSON.stringify({recoveryTrace}));
   assert.equal(quest.getStage(f.p), 10);
 });
 
@@ -198,6 +218,9 @@ test('stage 11 relog and re-entry restores the server human Tolna state', async 
   PM.emitPlayerLogin({player:f.p, username:f.p.getUsername()});
   assert.equal(quest.getStage(f.p), 11);
   assert.deepEqual([f.p.getLocation().getX(), f.p.getLocation().getY()], [3310,3455]);
+  t.diagnostic(JSON.stringify({phase:'login-before-reset',busy:f.p.busy(),placement:f.p.isNeedsPlacement()}));
+  f.p.resetUpdating(); // Simulated end-of-tick after omitted world/client sync.
+  t.diagnostic(JSON.stringify({phase:'login-after-reset',busy:f.p.busy(),placement:f.p.isNeedsPlacement()}));
   const spawns = []; const spawn = PM.spawnNpc;
   t.mock.method(PM, 'spawnNpc', (definition, ...rest) => {
     const npc = spawn.call(PM, definition, ...rest); spawns.push({definition,npc}); return npc;
