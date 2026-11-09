@@ -1,0 +1,112 @@
+{
+  "name": "tsps-smithing-95e-after-001",
+  "source": "153bbba926b9f1eaaf6aada5d97958c1e19579df",
+  "repository": "autismoyah-hub/tsps",
+  "image": "node@sha256:b04ce4ae4e95b522112c2e5c52f781471a5cbc3b594527bcddedee9bc48c03a0",
+  "flavor": "cpu-upgrade",
+  "timeout": 1800,
+  "attempts": 1,
+  "payloadFile": "../native-payload-failure-seals.cjs",
+  "expectedInputs": {
+    "package.json": "bd87304cd83831481e2be6a2b40dc5d93718064799ec39424d0ff359cef09cbc",
+    ".yarnrc.yml": "473e6def86fc03638120e0c01d0c8bbab095677256460fa4ea763e5d4697f270",
+    "server/package.json": "065f68ecd80a871dac29c6a22a95e75b578448fb7770fe3f68e9076abb261c68",
+    "server/yarn.lock": "8bf2bfdf3f913eee1a26021277079d5aaf3a102b414cfc06bc301ceff739a103",
+    "server/.yarnrc.yml": "473e6def86fc03638120e0c01d0c8bbab095677256460fa4ea763e5d4697f270",
+    "server/tsconfig.json": "ae1caf6abbc0cf1e849ed5ed046b103bc0b1fe34e39b6ee66bcd86131226e032",
+    "server/target.txt": "becfddee5190008ee50ded050dc7449eb4aecd2eb789c7707b82865444d6578c",
+    "server/data/definitions/custom-definitions.json": "e4dd91440397c613126d4c083297feff7fb5815c7231e225ee6f9c849180c55a",
+    "server/data/definitions/world.json": "b0f479ee554378dcf699511baff8b6b2be81a1148be409a5c7686839568dfb54",
+    "server/tests/smithing.test.cjs": "8da763ae01165132187657e98e72d728fd6247796618e858eb404da4f2a3b8fc",
+    "server/tests/ardougne-smithing-diary.test.cjs": "50a6d182f7e4c5620b365b2849f86ad32a9509e95cdadae0bcf05e75ac26d121",
+    "server/tests/skill-max-level.test.cjs": "678894406fad4d7947a6b6fddb3351fbb171b5fff715bf4fabb3115ed2c6f9e9",
+    "server/tests/league-fragments-production.test.cjs": "61ef8cbd45142a5f3ab26c6c661fe349216e19ca709fe0d804e87aa8fe96a64c",
+    "server/tests/station-action-provenance.test.cjs": "72a7ea7a492278225829192881e2a961b50d9aaa3c8e0c77c22d1ca4b6af9626",
+    "server/plugins/skills/smithing/Sessions.Smithing.js": "940f4a60c37ad8f7738091cf3f9f506c0cc2ad0ff29e1884cd103ec0a3e76681"
+  },
+  "cacheTarget": "osrs-241_2026-10-20",
+  "cacheId": 2746,
+  "tests": [
+    "smithing.test.cjs",
+    "ardougne-smithing-diary.test.cjs",
+    "skill-max-level.test.cjs",
+    "league-fragments-production.test.cjs",
+    "station-action-provenance.test.cjs"
+  ],
+  "expectedTestCounts": {
+    "smithing.test.cjs": 53
+  },
+  "hourlyHardwareUSD": 0.03,
+  "maximumScheduledHardwareUSD": 0.015,
+  "scope": "decodednative selected World phases, not rawwire/fullWorld/client/OSRS timing/storedXP proof; preserve001fixturefailure+002causalFAIL and existingclosurelimits",
+  "executionHold": "",
+  "expectedCacheFiles": {
+    "caches/caches.json": "d3065275f41059135382583d167d06529ee0414f902c20a101415b491a222b38",
+    "caches/osrs-241_2026-10-20/info.json": "a90a7f73ac2a4f0cc64f81605cfd15ebcdd53dd451b5e41cd1e12e5a170bac51",
+    "caches/osrs-241_2026-10-20/keys.json": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+    "caches/osrs-241_2026-10-20/main_file_cache.dat2": "f1bc778ccaa971daf45c2309c03b3c7085f8f9dc95b2b4f62828b5b9dac7c1e6",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx0": "cf2bf0242a6bd24203533e3a3e2c332dceb0829e9f017602f803e3eec30f523b",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx1": "703aff8c63c2b21f023671076feb03808cbf29c72c35bb82930cb13ee27ca2e3",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx10": "67694e845ad2ca671f837f1f96f3a3214290c037ef0e6558bfac7a20cd49fd2b",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx11": "65cd1cd3384c354e441a7e5554776f00a9ae2b169f655e4c4cd3bb1fbad2520c",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx12": "168cc4938e9615755225338e456e16ec9ec5ff9e7e9a4b9de1fa577de8735e93",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx13": "6975b4fd2de62ba67d9fcc9800cdb94d3f8b236437d6dec29d7062b2f4a3987f",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx14": "00a14204a6bb3ab976921b42dcde7d2ab90c2cd3892816dda3ed0020dbb02427",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx15": "57b6bfbf903826a0d424be0fbdd165e27989294dd6bd7c00ac88e153683d1a17",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx17": "1aeb315123824d5ce97aa4da252f94b3576b12d57baa550dcf77bfbd7c00c0e6",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx18": "0cd98c833daf2ad1d1a7cff82eb1ef03e4907d2b50a1507a9452f69c02b88381",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx19": "b017b2a37f6a894116cac9dadba13508645a4d092429d8eb4c46344c4f9b6be1",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx2": "afe094d3a06d7bc6cfa117ddccbbeda7cebd0b8f44531447bf581e572a69f1a5",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx20": "549b28ffba3db83ee32dbfe0176cffc003bff80458647c8b4fe7945b03fcb407",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx21": "b0ed07e13e29507e6eee5891727d2c8651d45d761a5c65451f9ce83df5fb3e04",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx22": "6580c4b7ea277f036e4b6fb3b11159429ca6abca7ec7ea279c4127a569984776",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx24": "168f210084d6aa5c7faf96c3035fe1aa4824c2dda425644316304f76994e3c7b",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx255": "56e14741154c1682dedcac4a946ca26ac8f13a6f1d9c053b604b80a7f195fbf2",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx3": "42d1a234047d97d026fb578dce9283e7fc878c1b2be3c34fe81e27ab1bcb92bd",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx4": "13d469e5e112ccb62677fa73d4f067dc66ae30e60f695a72b373ca57c917ecd0",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx5": "f19026b395675cfd53591f6682cce128c82107e722bfedf4412f4398f7a87888",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx6": "e0711dc3a13adbfb2964b122b75a353fd91be974fc72ac1b09a98fd082699e8c",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx7": "97bbded820fa820e440b18ae5ea45ed7ab0140750863c6f7a55d362ec48132b9",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx8": "e2cfb7f142faf9ee0cc2ff92fa003697bc9fa8d0ab46de88e4eb843881c60bdc",
+    "caches/osrs-241_2026-10-20/main_file_cache.idx9": "8e2d9f69353149026c17f5120631f2d22bf27761e471a7724ef0f90b3c515e95"
+  },
+  "sourceReview": {
+    "originalRecipeSHA256": "4d011266cfb323ff0a94f60dc345ff23886332c19dba5b1fce6dd7d9b1db3caa",
+    "payloadSHA256": "d46b3773c4bb3134920efa29074f9f2e6d9cf06e99b27b28cc909a222aa67620",
+    "verdict": "REUSE_ACCEPTED_D46B_SERVER_RECIPE_NO_CODE_DELTA; fixtureSOURCE_GO_0becc310",
+    "reviewer": "88c956b1-42a4-4d28-9025-37a9d2321dc2",
+    "controls": "Author-extracted helper4/4; source/test/result hashes verified by independent runtime reviewer88; prior failedcontrol retained"
+  },
+  "ownerSelection": "95 native-after-request001 source153bbb peer0becc SOURCE_GO complete bindings-v2; one AFTER execution only, use002 actualcausalbaseline without repeatingBEFORE",
+  "reviewerFallback": [
+    "cd86b042-0639-4d3b-8594-30d4aee37b5b",
+    "3878a50e-4611-4d03-ad4f-26b8ebc6c3c3"
+  ],
+  "sourceBlobs": {
+    "package.json": "ecf00dcdb7711759cb9634923d5b9785482e144a",
+    ".yarnrc.yml": "3186f3f0795ab612d5508593672dc9ad94bccca0",
+    "server/package.json": "edf7ffea395cb5ea0bfaf31d250c15fb27f55e41",
+    "server/yarn.lock": "bf3b67f41455f43c4cfb501d4a6509735de4145c",
+    "server/.yarnrc.yml": "3186f3f0795ab612d5508593672dc9ad94bccca0",
+    "server/tsconfig.json": "627d991554255239dd15461c4f6bbfadd95a1b03",
+    "server/target.txt": "dd7f6df5d46f89803c391cf200b892671b344ae7",
+    "server/data/definitions/custom-definitions.json": "452e1ea267791db99b33bc503a83a7e6bacfe411",
+    "server/data/definitions/world.json": "8a03c9748a19f6e3720e1695f6229440f1dc67fa",
+    "server/tests/smithing.test.cjs": "8b9411c4d1da108db8903a77e105865259b01457",
+    "server/tests/ardougne-smithing-diary.test.cjs": "7b9cb09fe4818b36921bfce30082b073ed5bda87",
+    "server/tests/skill-max-level.test.cjs": "0a0517b3328bc393df1e95734140fcead7c4d4b0",
+    "server/tests/league-fragments-production.test.cjs": "2577ed3af107e19f95bdbf6eb7e0ff88da3e7666",
+    "server/tests/station-action-provenance.test.cjs": "b5474c7ac7c29782be7bba7eefa16a2325eb5919",
+    "server/plugins/skills/smithing/Sessions.Smithing.js": "d4cc1b11b0389d5bd7e7e96ecbad182b4c659766"
+  },
+  "expectedObservation": {
+    "mainTests": 53,
+    "otherTests": "All named direct shared-session consumers fullPASS; source owner independently evaluates actual outcomes",
+    "controls": "main53/53 including exact preserved native interruption target with ores preserved/no bronze/no XP, stationary/menu and new native lone-silver approach controls PASS; all other bounded direct-consumer suites fullPASS. No test failure relabeledgreen."
+  },
+  "recipients": [
+    "95e96f70-1d9c-4850-9f39-1b277b7fe892",
+    "0becc310-b4af-42e7-89e4-5e3bc3e18af3"
+  ],
+  "priorFailure": "Original001 walk precondition FAIL and002 target XP baselineFAIL preserved separately; no repeatedbaseline or automaticretry"
+}

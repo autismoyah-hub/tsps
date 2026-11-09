@@ -1,0 +1,17 @@
+{
+  "action": "SELECT_ONCE",
+  "attempts": 1,
+  "bootstrapSHA256": "b78f8b5d17bb1fde3c2026c5127a771c1de3f6c55030710115c343395e25974d",
+  "collector": "42689c7a-eddd-44ad-b8bb-04bd0f3c70de",
+  "collectorEntrySHA256": "0651119a30e01d7a94590887c93cc1390541de0920458592dec7900ead295d46",
+  "collectorLauncherSHA256": "2680be355aeb6fb577ebb36cc21dcfa70beb7105448a92a9d8ccb2e3ad643078",
+  "entrySHA256": "77cf78db51ff261991411a6e36fb5cb04b138079476702299920147a78abacbf",
+  "launcherSHA256": "7f1f8c1ebb2d8482142a54bb4ba9aeff242574989ae9e511199f465675647f86",
+  "owner": "42689c7a-eddd-44ad-b8bb-04bd0f3c70de",
+  "planSHA256": "f8013c6ec9a9bc191db918dc8d93c2903cbb1991590887420b97a77cae2b3f9f",
+  "programSHA256": "b94244afa80bf08ff4124e3c7788e64f56146ec9fd448864ddce51ed426bf5c3",
+  "requestSHA256": "dc70c6973733afa4e1463b1acb1c8a5a10805e2f4408b8258cb83b4ee393dfb4",
+  "reviewer": "d9664b7d-13e2-464d-81e5-37de82992eb2",
+  "selectedUTC": "2026-11-09T03:13:06.844425+00:00",
+  "source": "4619ba5838569a68b0f56bb46ab6b2b77c930586"
+}
