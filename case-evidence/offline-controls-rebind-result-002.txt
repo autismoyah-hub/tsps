@@ -1,0 +1,19 @@
+owner wrong/duplicate turn controls PASS
+peer wrong/duplicate turn controls PASS
+mc wrong/duplicate turn controls PASS
+Traceback (most recent call last):
+  File "/workspace/repo/.author-evidence/case/before/offline-controls.py", line 46, in <module>
+    expect_refuse(guard.main)
+  File "/workspace/repo/.author-evidence/case/before/offline-controls.py", line 13, in expect_refuse
+    try:fn()
+        ^^^^
+  File "/workspace/repo/.author-evidence/case/before/provider_guard.py", line 33, in main
+    transcript=(ROOT.parent/'mc-unique-turns.json').read_bytes() if label=='mc' else subprocess.check_output(['cuttle','--json','sessions','read',session,'--turns','200'])
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1021, in read_bytes
+    with self.open(mode='rb') as f:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/pathlib.py", line 1015, in open
+    return io.open(self, mode, buffering, encoding, errors, newline)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/tmp/mc-unique-turns.json'

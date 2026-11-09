@@ -22,7 +22,7 @@ for role,session in [('owner',owner),('peer',reviewer),('mc',mc)]:
 # Actual provider_guard.main, synthetic non-game inputs and mocked external boundaries.
 # Two refreshes: first passes; after provider scan second refuses. No intent/pilot may occur.
 with tempfile.TemporaryDirectory(prefix='wc-control-') as td:
- root=pathlib.Path(td); (root/'authority.py').write_bytes((HERE/'authority.py').read_bytes());(root/'prestart.py').write_text('# inert snapshot\n');(root/'pilot.py').write_text("raise RuntimeError('PILOT_REACHED')\n")
+ root=pathlib.Path(td)/'before';root.mkdir();(root.parent/'mc-unique-turns.json').write_bytes((HERE.parent/'mc-unique-turns.json').read_bytes()); (root/'authority.py').write_bytes((HERE/'authority.py').read_bytes());(root/'prestart.py').write_text('# inert snapshot\n');(root/'pilot.py').write_text("raise RuntimeError('PILOT_REACHED')\n")
  plan={'source':guard.SOURCE,'name':guard.NAME,'attempts':1,'timeout':1800,'expectedInputsRef':{'sha256':'a'*64}}
  pp=root/'pilot.json';pp.write_text(json.dumps(plan));sel={'owner':owner,'action':'SELECT_ONCE','attempts':1,'source':guard.SOURCE,'planSHA256':h(pp)};sp=root/'selection.json';sp.write_text(json.dumps(sel))
  files={n:h(root/n) for n in ('authority.py','prestart.py','pilot.py')}
@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix='wc-control-') as td:
  identity=json.loads((HERE.parent/'mc-authority-value.json').read_bytes()); assert hashlib.sha256(auth.canonical(identity)).hexdigest()=='4e3369be85775623307b4d51186e2fb5bfa996899ed2046b3b61aba859574cd2'
  review={'reviewer':reviewer,'verdict':'EXACT_INPUT_PROFILE_GO','subject':subject}; values={'peer':(reviewer,review),'owner':(owner,sel),'mc':(mc,identity)}
  pre={'source':guard.SOURCE,'owner':owner,'planSHA256':h(pp),'selectionSHA256':h(sp),'createdUTC':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),'files':files,'authoritySubject':subject,'identityValue':identity,'forkRef':'fixture','connectedDifferences':[],'model':'gpt-6.1-terra','effort':'medium','reviewPath':str(root/'review.json'),'reviewSHA256':'b'*64,'identityPath':str(root/'identity.json'),'identitySHA256':'c'*64}
- for label,(session,value) in values.items():pre[label+'Proof']=auth.exact_turn(transcript(value),session,value)
+ for label,(session,value) in values.items():pre[label+'Proof']=auth.exact_turn((root.parent/'mc-unique-turns.json').read_bytes() if label=='mc' else transcript(value),session,value)
  pr=root/'prestart-receipt.json';pr.write_text(json.dumps(pre));calls=[]
  class API:
   def whoami(self):return {'name':'Autismo-Yah'}

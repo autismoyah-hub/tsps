@@ -30,7 +30,8 @@ def main():
     subject={'owner':OWNER,'source':SOURCE,'planSHA256':a.plan_sha256,'manifestSHA256':plan['expectedInputsRef']['sha256'],'connectedDiffSHA256':'b5f60a95b4c4d1d066a87dbf255b16ea0fcf49133e1f31127ffc4d5fed8acc4c','files':pre['files'],'authAdapterSHA256':'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326','authHelperSHA256':'00ff45d75be1eae3bc8f04995cf8b8bcbe2bc5adc28c1162b843cfe88c87024f9'}
     assert pre['authoritySubject']==subject and hashlib.sha256(parser.canonical(pre['identityValue'])).hexdigest()=='4e3369be85775623307b4d51186e2fb5bfa996899ed2046b3b61aba859574cd2'
     for label,session,expected in [('peer','ed3a4125-645c-4266-8b86-4e199dd5bc63',{'reviewer':'ed3a4125-645c-4266-8b86-4e199dd5bc63','verdict':'EXACT_INPUT_PROFILE_GO','subject':subject}),('owner',OWNER,sel),('mc','eaae9ca0-2f2b-4c05-85cd-c3e70178aeac',pre['identityValue'])]:
-        transcript=subprocess.check_output(['cuttle','--json','sessions','read',session,'--turns','200'])
+        transcript=(ROOT.parent/'mc-unique-turns.json').read_bytes() if label=='mc' else subprocess.check_output(['cuttle','--json','sessions','read',session,'--turns','200'])
+        if label=='mc': assert hashlib.sha256(transcript).hexdigest()=='9fe18cf5221f74e80ac34b17b6717ee85644a8d7b69cda72722a39b715490a3a'
         proof=parser.exact_turn(transcript,session,expected)
         assert proof['turnSHA256']==pre[label+'Proof']['turnSHA256']
     assert os.environ.get('CCC_SESSION_ID')==OWNER

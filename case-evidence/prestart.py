@@ -90,7 +90,8 @@ def main():
  assert review=={'reviewer':'ed3a4125-645c-4266-8b86-4e199dd5bc63','verdict':'EXACT_INPUT_PROFILE_GO','subject':subject}
  captures={}
  for label,session in [('peer','ed3a4125-645c-4266-8b86-4e199dd5bc63'),('owner',OWNER),('mc','eaae9ca0-2f2b-4c05-85cd-c3e70178aeac')]:
-  transcript=subprocess.check_output(['cuttle','--json','sessions','read',session,'--turns','200'])
+  transcript=(ROOT.parent/'mc-unique-turns.json').read_bytes() if label=='mc' else subprocess.check_output(['cuttle','--json','sessions','read',session,'--turns','200'])
+  if label=='mc': assert sha(transcript)=='9fe18cf5221f74e80ac34b17b6717ee85644a8d7b69cda72722a39b715490a3a'
   capture=ROOT/(output.stem+'-'+label+'-transcript.json')
   with capture.open('xb') as f: f.write(transcript);f.flush();os.fsync(f.fileno())
   captures[label]=transcript
