@@ -63,3 +63,41 @@ for name, file in [('caller',root/'belona-caller.py'),('prestart',root/'belona-p
     assert fresh is not stale and not hasattr(fresh,'injected_unreviewed_marker')
     assert fresh.__BELONA_SNAPSHOT_SHA__ == digest
 print('caller, prestart and helper are independently reloaded from verified snapshots')
+# Synthetic original-intent and sole-collector lineage; no provider is called.
+with tempfile.TemporaryDirectory() as temp:
+    root2=Path(temp); plan={'source':'source1','name':'test'}
+    subject={'selectedPlanSHA256':'a'*64,'owner':m.OWNER}
+    intent={'intentId':'exclusive-'+'a'*64,'owner':m.OWNER,'plan':plan,'requestSHA256':'b'*64,'programSHA256':'c'*64,
+            'reviewSubject':subject,'state':'PENDING_NO_RETRY','prestart':{'stage':'test'},'providerScan':[]}
+    m.validate_original_intent(intent,plan,'b'*64,'c'*64,subject)
+    for key in ('owner','requestSHA256','programSHA256','reviewSubject','state'):
+        bad=dict(intent);bad[key]='changed';rejected(lambda:m.validate_original_intent(bad,plan,'b'*64,'c'*64,subject),ValueError)
+    marker=root2/'collector.json'
+    first=m.validate_collector_marker(marker,caller,plan,'b'*64,'c'*64,'job1',subject)
+    assert m.validate_collector_marker(marker,caller,plan,'b'*64,'c'*64,'job1',subject)==first
+    rejected(lambda:m.validate_collector_marker(marker,caller,plan,'b'*64,'c'*64,'job2',subject),ValueError)
+print('synthetic original-intent mutation and different-job collector custody refused')
+# Exercise the orchestration order with inert fakes, without opening provider APIs.
+import json
+from types import SimpleNamespace
+from unittest.mock import patch
+with tempfile.TemporaryDirectory() as temp:
+    d=Path(temp); (d/'plan').write_bytes(b'{}'); (d/'payload').write_bytes(b'p');(d/'choice').write_text('{"choice":{}}');(d/'prestart.py').write_text('')
+    subject={'callerSHA256':'f'*64,'childSHA256':'1'*64,'prestartSHA256':hashlib.sha256(b'').hexdigest(),'selectedPlanSHA256':'a'*64,'adapterSHA256':'d'*64,'pilotSHA256':'e'*64}
+    ctx={'caller':'fake-caller','helper':'fake-helper','subject':subject,'plan':str(d/'plan'),'payload':str(d/'payload'),'choice':str(d/'choice'),'caseDir':str(d),'localRoot':str(d),'prestartSource':str(d/'prestart.py'),'prestartArgs':{'subject':subject,'review_raw':b'r','cli':'c','cli_sha':'s'}}
+    fakecaller=Mock();fakecaller.reject_duplicates=lambda *args:None
+    fakehelper=Mock();fakepre=SimpleNamespace(__file__=str(d/'prestart.py'),__BELONA_SNAPSHOT_SHA__=subject['prestartSHA256'],nonsecret_prestart=lambda **kw:{'stage':'ok'},validate_choice_live=lambda *args:{})
+    fakeapi=Mock();fakeapi.whoami.return_value={'name':'Autismo-Yah'};fakeapi.list_jobs.return_value=iter([])
+    plan={'source':'source1','name':'name1'};request={'labels':{}};checks=[]
+    def modules(path,digest,name):
+        if name=='belona_verified_caller':return fakecaller
+        if name=='belona_verified_helper':return fakehelper
+        return fakepre
+    def recheck(*args):
+        checks.append('check')
+        if len(checks)==2:raise ValueError('changed before intent')
+        return SimpleNamespace(),{}
+    with patch.object(m,'unlocked'),patch.object(m,'module_snapshot',side_effect=modules),patch.object(m,'require_bindings'),patch.object(m,'literal_and_choice',return_value=(plan,request,'p','r')),patch.object(m,'recheck_launcher',side_effect=recheck),patch.object(m.subprocess,'run') as process:
+        rejected(lambda:m.guarded_submit(fakeapi,ctx),ValueError)
+        fakecaller.claim_intent.assert_not_called();process.assert_not_called()
+print('synthetic changed launcher recheck after scan prevents intent and pilot call')

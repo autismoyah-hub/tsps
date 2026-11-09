@@ -95,6 +95,36 @@ def require_bindings(ctx, caller, helper, subject):
     if sha(Path(ctx['plan']).read_bytes()) != subject['selectedPlanSHA256']: raise ValueError('plan hash mismatch')
 
 
+def recheck_launcher(ctx, subject):
+    launcher=module_snapshot(ctx['launcherSource'],subject['launcherSHA256'],'belona_verified_launcher')
+    paths=ctx['launcherPaths']
+    for left,right in (('selected','plan'),('caller','caller'),('payload','payload'),('adapter','adapter'),
+                       ('helper','helper'),('python','python'),('prestart','prestartSource'),('sdkRoot','sdkRoot')):
+        if Path(paths[left]).resolve() != Path(ctx[right]).resolve(): raise ValueError('launcher path mismatch: '+left)
+    checked=launcher.verify_before_auth(subject,paths)
+    if checked['selectedSHA256'] != subject['selectedPlanSHA256'] or Path(checked['selectedPath']) != Path(ctx['plan']).resolve():
+        raise ValueError('launcher selected mismatch')
+    return launcher,checked
+
+def validate_original_intent(intent,plan,request_sha,program_sha,subject):
+    expected={'intentId':'exclusive-'+subject['selectedPlanSHA256'],'owner':OWNER,'plan':plan,
+              'requestSHA256':request_sha,'programSHA256':program_sha,'reviewSubject':subject,'state':'PENDING_NO_RETRY'}
+    if not isinstance(intent,dict) or any(intent.get(k)!=v for k,v in expected.items()):
+        raise ValueError('original intent mismatch')
+    if not isinstance(intent.get('prestart'),dict) or not isinstance(intent.get('providerScan'),list):
+        raise ValueError('original intent evidence incomplete')
+
+def validate_collector_marker(path,caller,plan,request_sha,program_sha,job_id,subject):
+    marker={'intentId':'collector-'+subject['selectedPlanSHA256'],'owner':OWNER,'jobId':job_id,
+            'source':plan['source'],'selectedPlanSHA256':subject['selectedPlanSHA256'],
+            'requestSHA256':request_sha,'programSHA256':program_sha,'state':'SOLE_COLLECTOR_NO_REPLAY'}
+    path=Path(path)
+    if path.exists():
+        if json.loads(path.read_bytes()) != marker: raise ValueError('collector ownership mismatch')
+    else:
+        caller.claim_intent(path,marker)
+    return marker
+
 def guarded_submit(api, ctx):
     """No retry; prestart, complete duplicate scans, prestart, then durable intent."""
     unlocked(ctx['subject'])
@@ -103,6 +133,7 @@ def guarded_submit(api, ctx):
     helper=module_snapshot(ctx['helper'],subject['childSHA256'],'belona_verified_helper')
     prestart_module=module_snapshot(ctx['prestartSource'],subject['prestartSHA256'],'belona_verified_prestart')
     require_bindings(ctx,caller,helper,subject)
+    launcher,_=recheck_launcher(ctx,subject)
     selected_raw=Path(ctx['plan']).read_bytes();payload_raw=Path(ctx['payload']).read_bytes()
     choice_raw=Path(ctx['choice']).read_bytes(); choice=json.loads(choice_raw)['choice']; subject=ctx['subject']
     plan,request,program_sha,request_sha=literal_and_choice(caller,selected_raw,payload_raw,choice,subject)
@@ -119,12 +150,17 @@ def guarded_submit(api, ctx):
     second=prestart_module.nonsecret_prestart(**prestart_args)
     if prestart_module.validate_choice_live(subject,selected_raw,choice_raw,prestart_args['review_raw'],prestart_args['cli'],prestart_args['cli_sha']) != choice: raise ValueError('owner choice changed')
     if first != second: raise ValueError('prestarts differ')
+    require_bindings(ctx,caller,helper,subject)
+    recheck_launcher(ctx,subject)
     command=helper.authenticated_pilot_command(ctx['python'],ctx['adapter'],subject['adapterSHA256'],
               ctx['pilot'],subject['pilotSHA256'],ctx['plan'],ctx['sdkRoot'])
+    command=launcher.guarded_child_command(command,Path(ctx['plan']).resolve(),subject['selectedPlanSHA256'])
     caller.claim_intent(Path(ctx['caseDir'])/'belona-intent.json',{'intentId':'exclusive-'+sha(selected_raw),
              'owner':OWNER,'plan':plan,'requestSHA256':request_sha,'programSHA256':program_sha,
              'reviewSubject':subject,'prestart':second,'providerScan':provider,'state':'PENDING_NO_RETRY'})
     # A timeout or any error after this point remains ambiguous; the intent is never deleted.
+    require_bindings(ctx,caller,helper,subject)
+    recheck_launcher(ctx,subject)
     result=subprocess.run(command+['--submit'],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=180,check=True)
     receipt_path=Path(ctx['caseDir'])/'submission.json'
     receipt=json.loads(receipt_path.read_bytes())
@@ -141,6 +177,7 @@ def guarded_status_collect(api,ctx):
     unlocked(ctx['subject'])
     subject=ctx['subject']
     caller=module_snapshot(ctx['caller'],subject['callerSHA256'],'belona_verified_caller')
+    recheck_launcher(ctx,subject)
     prestart_module=module_snapshot(ctx['prestartSource'],subject['prestartSHA256'],'belona_verified_prestart')
     snapshot(ctx['caller'],subject['callerSHA256']); snapshot(ctx['payload'],subject['payloadSHA256'])
     snapshot(ctx['prestartSource'],ctx['subject']['prestartSHA256'])
@@ -157,14 +194,26 @@ def guarded_status_collect(api,ctx):
     receipt=json.loads((Path(ctx['caseDir'])/'submission.json').read_bytes())
     if receipt.get('namespace')!=NAMESPACE or receipt.get('plan')!=plan or receipt.get('request')!=request:
         raise ValueError('saved request mismatch before inspection')
-    job_id=receipt.get('job',{}).get('id')
+    intent_raw=(Path(ctx['caseDir'])/'belona-intent.json').read_bytes();intent=json.loads(intent_raw)
+    validate_original_intent(intent,plan,request_sha,program_sha,subject)
+    job=receipt.get('job',{});job_id=job.get('id')
     if not isinstance(job_id,str) or not job_id: raise ValueError('missing original job identity')
+    caller.require_inspection(job,NAMESPACE,job_id,request,terminal=False)
+    validate_collector_marker(Path(ctx['caseDir'])/'belona-collector.json',caller,plan,request_sha,program_sha,job_id,subject)
+    recheck_launcher(ctx,subject)
     if api.whoami().get('name') != NAMESPACE: raise ValueError('provider namespace mismatch')
     info=object_dict(api.inspect_job(job_id=job_id,namespace=NAMESPACE))
     observable = {key:info.get(key) for key in ('id','owner','docker_image','command','flavor','labels','retry','status','started_at','finished_at')}
     raw=(json.dumps(observable,sort_keys=True,default=str)+'\n').encode()
     caller.create_selected(Path(ctx['caseDir'])/('inspection-'+sha(raw)+'.json'),raw)
     caller.require_inspection(info,NAMESPACE,job_id,request)
-    caller.retain_log_prefix(Path(ctx['caseDir'])/'terminal-raw.log',api.fetch_job_logs(job_id=job_id,namespace=NAMESPACE,follow=False))
-    return {'jobId':job_id,'requestSHA256':request_sha,'programSHA256':program_sha,
-            'inspectionSHA256':sha(raw),'stage':'TERMINAL_RAW_RETAINED_UNCLASSIFIED'}
+    recheck_launcher(ctx,subject)
+    raw_path=Path(ctx['caseDir'])/'terminal-raw.log'
+    caller.retain_log_prefix(raw_path,api.fetch_job_logs(job_id=job_id,namespace=NAMESPACE,follow=False))
+    binding={'stage':'TERMINAL_RAW_RETAINED_UNCLASSIFIED','owner':OWNER,'jobId':job_id,'source':plan['source'],
+             'selectedPlanSHA256':sha(selected_raw),'intentSHA256':sha(intent_raw),'submissionSHA256':sha((Path(ctx['caseDir'])/'submission.json').read_bytes()),
+             'requestSHA256':request_sha,'programSHA256':program_sha,'inspectionSHA256':sha(raw),
+             'collectorSHA256':sha((Path(ctx['caseDir'])/'belona-collector.json').read_bytes()),'rawLogSHA256':sha(raw_path.read_bytes()),
+             'closure':'terminal-inspection-and-complete-log-iterator-only; descendant closure not established'}
+    caller.create_selected(Path(ctx['caseDir'])/'terminal-binding.json',(json.dumps(binding,sort_keys=True)+'\n').encode())
+    return binding
