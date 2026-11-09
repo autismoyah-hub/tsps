@@ -1,0 +1,19 @@
+{
+  "action": "UNSELECTED_DRAFT",
+  "bindingSHA256": "722073938c846568ff073098702b72c2fd083b3d55081af050decd4b9b0daab6",
+  "bootstrapSHA256": "a50d48a80bb4d742a574fa1bcdba4be529a922c44bf8be4349020b25eacd25ea",
+  "claimCommit": "15ecdacb4b53366c5d06ddd79adb1f9c480a0461",
+  "collector": "42689c7a-eddd-44ad-b8bb-04bd0f3c70de",
+  "controllerSHA256": "565e79e713f6881cca014107e3a7d9bf502fc77dc8e3ead152baffed5a53d487",
+  "entrySHA256": "a109e3b2633fa2f93561ad7d97a63b934ba3fa920153cf537b0ea232722a70ed",
+  "framesSHA256": "f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76",
+  "helperSHA256": "4663c9f62db6556261be389ab9830db755c711e1f7182f69f187df2635d97853",
+  "jobId": "6af14d46e6320c66fad7d183",
+  "launcherSHA256": "490ccbe806dbb0e470ddd09ddd86bce18e0735065c08e79801f7b2243f668d9a",
+  "originalSelectionSHA256": "cadc7fa79eba914b2fc46fb444dc35f9cee5239e2a07dcd8dde480eb7aff35f8",
+  "owner": "42689c7a-eddd-44ad-b8bb-04bd0f3c70de",
+  "recordsSHA256": "b37e74ba6bde114d968dead3a0ad2b4d7f2306976e6c402af98368584826b22c",
+  "reviewer": "d9664b7d-13e2-464d-81e5-37de82992eb2",
+  "selectedUTC": null,
+  "wrapperSHA256": "fe33c0f548236836256fae770ffb4dedf42c8ac66b71694c7940b5dafcb2f755"
+}
