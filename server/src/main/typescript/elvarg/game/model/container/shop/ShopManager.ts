@@ -679,9 +679,8 @@ export class ShopManager {
             return;
         }
 
-        // Content may hand the purchase over as another item ("shop:delivery", a league relic's noted purchases), or as
-        // a bundle of several per item bought (`amount`, the PvP Arena's Blighted surge sack (x50)).
-        const delivery = { player, shopId: shop.definition.getId(), currency: shop.definition.getCurrency(), itemId, deliverId: itemId, amount: 1 };
+        // Content may deliver another item or a bundle; receipt capture is opt-in.
+        const delivery = { player, shopId: shop.definition.getId(), currency: shop.definition.getCurrency(), itemId, deliverId: itemId, amount: 1, captureDelivery: false };
         PluginManager.emitCustomEvent("shop:delivery", delivery);
         const deliverId = Number.isInteger(delivery.deliverId) && delivery.deliverId > 0 ? delivery.deliverId : itemId;
         const perPurchase = Number.isInteger(delivery.amount) && delivery.amount > 0 ? delivery.amount : 1;
@@ -710,11 +709,16 @@ export class ShopManager {
             shop.definition.getCurrency(),
             removed * price
         );
+        // Capture the exact delivered object only for one nonstackable item, not a bundle.
+        const deliveredSlot = delivery.captureDelivery && removed === 1 && perPurchase === 1 && !delivered.isStackable?.()
+            ? inventory.getEmptySlot() : -1;
         inventory.adds(deliverId, removed * perPurchase);
+        const deliveredItem = deliveredSlot >= 0 ? inventory.getItems()[deliveredSlot] : null;
         PluginManager.emitCustomEvent("shop:purchase", {
             player, shopId: shop.definition.getId(), shopName: shop.definition.getName(),
             itemId, amount: removed, originalStock: (shop.originalAmounts.get(itemId) ?? 0) > 0,
             currency: shop.definition.getCurrency(),
+            ...(delivery.captureDelivery ? { deliverId, deliveredSlot, deliveredItem } : {}),
         });
         Sounds.sendSound(player, Sound.PICK_UP_ITEM);
         this.refresh(shop.definition.getId());
