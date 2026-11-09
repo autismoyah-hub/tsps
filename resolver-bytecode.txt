@@ -1,0 +1,648 @@
+Compiled from "HistoricCacheResolver.kt"
+public final class net.rsprox.cache.resolver.HistoricCacheResolver implements net.rsprox.cache.resolver.CacheResolver {
+  private static final net.rsprox.cache.resolver.HistoricCacheResolver$Companion Companion;
+
+  private final net.rsprox.cache.dictionary.DiskCacheDictionary diskCacheDictionary;
+
+  private final net.rsprox.cache.dictionary.OpenRs2CacheDictionary openrs2CacheDictionary;
+
+  private final net.rsprox.cache.identifier.DiskCacheIdentifier diskCacheIdentifier;
+
+  private final net.rsprox.cache.identifier.OpenRs2CacheIdentifier openrs2CacheIdentifier;
+
+  private static final org.slf4j.Logger logger;
+
+  public net.rsprox.cache.resolver.HistoricCacheResolver();
+    Code:
+       0: aload_0
+       1: invokespecial #10                 // Method java/lang/Object."<init>":()V
+       4: aload_0
+       5: getstatic     #16                 // Field net/rsprox/cache/dictionary/DiskCacheDictionary.Companion:Lnet/rsprox/cache/dictionary/DiskCacheDictionary$Companion;
+       8: invokestatic  #22                 // Method net/rsprox/cache/DiskPathsKt.getDISK_CACHE_DICTIONARY_PATH:()Ljava/nio/file/Path;
+      11: invokestatic  #25                 // Method net/rsprox/cache/DiskPathsKt.getCACHES_DIRECTORY:()Ljava/nio/file/Path;
+      14: invokevirtual #31                 // Method net/rsprox/cache/dictionary/DiskCacheDictionary$Companion.create:(Ljava/nio/file/Path;Ljava/nio/file/Path;)Lnet/rsprox/cache/dictionary/DiskCacheDictionary;
+      17: putfield      #35                 // Field diskCacheDictionary:Lnet/rsprox/cache/dictionary/DiskCacheDictionary;
+      20: aload_0
+      21: new           #37                 // class net/rsprox/cache/dictionary/OpenRs2CacheDictionary
+      24: dup
+      25: invokespecial #38                 // Method net/rsprox/cache/dictionary/OpenRs2CacheDictionary."<init>":()V
+      28: putfield      #42                 // Field openrs2CacheDictionary:Lnet/rsprox/cache/dictionary/OpenRs2CacheDictionary;
+      31: aload_0
+      32: new           #44                 // class net/rsprox/cache/identifier/DiskCacheIdentifier
+      35: dup
+      36: aload_0
+      37: getfield      #35                 // Field diskCacheDictionary:Lnet/rsprox/cache/dictionary/DiskCacheDictionary;
+      40: invokespecial #47                 // Method net/rsprox/cache/identifier/DiskCacheIdentifier."<init>":(Lnet/rsprox/cache/dictionary/DiskCacheDictionary;)V
+      43: putfield      #51                 // Field diskCacheIdentifier:Lnet/rsprox/cache/identifier/DiskCacheIdentifier;
+      46: aload_0
+      47: new           #53                 // class net/rsprox/cache/identifier/OpenRs2CacheIdentifier
+      50: dup
+      51: aload_0
+      52: getfield      #35                 // Field diskCacheDictionary:Lnet/rsprox/cache/dictionary/DiskCacheDictionary;
+      55: aload_0
+      56: getfield      #42                 // Field openrs2CacheDictionary:Lnet/rsprox/cache/dictionary/OpenRs2CacheDictionary;
+      59: invokespecial #56                 // Method net/rsprox/cache/identifier/OpenRs2CacheIdentifier."<init>":(Lnet/rsprox/cache/dictionary/DiskCacheDictionary;Lnet/rsprox/cache/dictionary/OpenRs2CacheDictionary;)V
+      62: putfield      #60                 // Field openrs2CacheIdentifier:Lnet/rsprox/cache/identifier/OpenRs2CacheIdentifier;
+      65: return
+
+  public io.netty.buffer.ByteBuf get(net.rsprox.cache.Js5MasterIndex, int, int);
+    Code:
+       0: aload_1
+       1: ldc           #68                 // String masterIndex
+       3: invokestatic  #74                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+       9: astore        4
+      11: iconst_0
+      12: istore        5
+      14: aload         4
+      16: invokestatic  #84                 // Method com/github/michaelbull/logging/InlineLogger."isDebugEnabled-impl":(Lorg/slf4j/Logger;)Z
+      19: ifeq          55
+      22: aload         4
+      24: astore        9
+      26: iconst_0
+      27: istore        6
+      29: iload_2
+      30: iload_3
+      31: aload_1
+      32: invokevirtual #90                 // Method net/rsprox/cache/Js5MasterIndex.getRevision:()I
+      35: aload_1
+      36: invokevirtual #94                 // Method net/rsprox/cache/Js5MasterIndex.shortHash:()Ljava/lang/String;
+      39: invokedynamic #106,  0            // InvokeDynamic #0:makeConcatWithConstants:(IIILjava/lang/String;)Ljava/lang/String;
+      44: aload         9
+      46: swap
+      47: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+      50: invokeinterface #118,  2          // InterfaceMethod org/slf4j/Logger.debug:(Ljava/lang/String;)V
+      55: nop
+      56: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+      59: astore        4
+      61: iconst_0
+      62: istore        5
+      64: aload         4
+      66: invokestatic  #84                 // Method com/github/michaelbull/logging/InlineLogger."isDebugEnabled-impl":(Lorg/slf4j/Logger;)Z
+      69: ifeq          97
+      72: aload         4
+      74: astore        9
+      76: iconst_0
+      77: istore        6
+      79: iload_2
+      80: iload_3
+      81: invokedynamic #123,  0            // InvokeDynamic #1:makeConcatWithConstants:(II)Ljava/lang/String;
+      86: aload         9
+      88: swap
+      89: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+      92: invokeinterface #118,  2          // InterfaceMethod org/slf4j/Logger.debug:(Ljava/lang/String;)V
+      97: nop
+      98: aload_0
+      99: aload_1
+     100: iload_2
+     101: iload_3
+     102: invokespecial #126                // Method resolveLocal:(Lnet/rsprox/cache/Js5MasterIndex;II)Lio/netty/buffer/ByteBuf;
+     105: astore        4
+     107: aload         4
+     109: ifnull        157
+     112: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+     115: astore        5
+     117: iconst_0
+     118: istore        6
+     120: aload         5
+     122: invokestatic  #84                 // Method com/github/michaelbull/logging/InlineLogger."isDebugEnabled-impl":(Lorg/slf4j/Logger;)Z
+     125: ifeq          153
+     128: aload         5
+     130: astore        9
+     132: iconst_0
+     133: istore        7
+     135: iload_2
+     136: iload_3
+     137: invokedynamic #129,  0            // InvokeDynamic #2:makeConcatWithConstants:(II)Ljava/lang/String;
+     142: aload         9
+     144: swap
+     145: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+     148: invokeinterface #118,  2          // InterfaceMethod org/slf4j/Logger.debug:(Ljava/lang/String;)V
+     153: nop
+     154: aload         4
+     156: areturn
+     157: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+     160: astore        5
+     162: iconst_0
+     163: istore        6
+     165: aload         5
+     167: invokestatic  #84                 // Method com/github/michaelbull/logging/InlineLogger."isDebugEnabled-impl":(Lorg/slf4j/Logger;)Z
+     170: ifeq          198
+     173: aload         5
+     175: astore        9
+     177: iconst_0
+     178: istore        7
+     180: iload_2
+     181: iload_3
+     182: invokedynamic #132,  0            // InvokeDynamic #3:makeConcatWithConstants:(II)Ljava/lang/String;
+     187: aload         9
+     189: swap
+     190: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+     193: invokeinterface #118,  2          // InterfaceMethod org/slf4j/Logger.debug:(Ljava/lang/String;)V
+     198: nop
+     199: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+     202: astore        5
+     204: iconst_0
+     205: istore        6
+     207: aload         5
+     209: invokestatic  #84                 // Method com/github/michaelbull/logging/InlineLogger."isDebugEnabled-impl":(Lorg/slf4j/Logger;)Z
+     212: ifeq          240
+     215: aload         5
+     217: astore        9
+     219: iconst_0
+     220: istore        7
+     222: iload_2
+     223: iload_3
+     224: invokedynamic #135,  0            // InvokeDynamic #4:makeConcatWithConstants:(II)Ljava/lang/String;
+     229: aload         9
+     231: swap
+     232: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+     235: invokeinterface #118,  2          // InterfaceMethod org/slf4j/Logger.debug:(Ljava/lang/String;)V
+     240: nop
+     241: aload_0
+     242: aload_1
+     243: iload_2
+     244: iload_3
+     245: invokespecial #138                // Method resolveOpenRs2:(Lnet/rsprox/cache/Js5MasterIndex;II)Lio/netty/buffer/ByteBuf;
+     248: astore        5
+     250: aload         5
+     252: ifnull        300
+     255: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+     258: astore        6
+     260: iconst_0
+     261: istore        7
+     263: aload         6
+     265: invokestatic  #84                 // Method com/github/michaelbull/logging/InlineLogger."isDebugEnabled-impl":(Lorg/slf4j/Logger;)Z
+     268: ifeq          296
+     271: aload         6
+     273: astore        9
+     275: iconst_0
+     276: istore        8
+     278: iload_2
+     279: iload_3
+     280: invokedynamic #141,  0            // InvokeDynamic #5:makeConcatWithConstants:(II)Ljava/lang/String;
+     285: aload         9
+     287: swap
+     288: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+     291: invokeinterface #118,  2          // InterfaceMethod org/slf4j/Logger.debug:(Ljava/lang/String;)V
+     296: nop
+     297: aload         5
+     299: areturn
+     300: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+     303: astore        6
+     305: iconst_0
+     306: istore        7
+     308: aload         6
+     310: invokestatic  #84                 // Method com/github/michaelbull/logging/InlineLogger."isDebugEnabled-impl":(Lorg/slf4j/Logger;)Z
+     313: ifeq          341
+     316: aload         6
+     318: astore        9
+     320: iconst_0
+     321: istore        8
+     323: iload_2
+     324: iload_3
+     325: invokedynamic #144,  0            // InvokeDynamic #6:makeConcatWithConstants:(II)Ljava/lang/String;
+     330: aload         9
+     332: swap
+     333: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+     336: invokeinterface #118,  2          // InterfaceMethod org/slf4j/Logger.debug:(Ljava/lang/String;)V
+     341: nop
+     342: aconst_null
+     343: areturn
+
+  public java.util.Map<net.rsprox.cache.util.CacheGroupRequest, io.netty.buffer.ByteBuf> getBulk(net.rsprox.cache.Js5MasterIndex, java.util.List<net.rsprox.cache.util.CacheGroupRequest>);
+    Code:
+       0: aload_1
+       1: ldc           #68                 // String masterIndex
+       3: invokestatic  #74                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: aload_2
+       7: ldc           #167                // String requests
+       9: invokestatic  #74                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+      12: invokestatic  #173                // Method kotlin/collections/MapsKt.createMapBuilder:()Ljava/util/Map;
+      15: astore_3
+      16: aload_3
+      17: astore        4
+      19: iconst_0
+      20: istore        5
+      22: aload_2
+      23: checkcast     #175                // class java/util/Collection
+      26: invokestatic  #181                // Method kotlin/collections/CollectionsKt.toMutableList:(Ljava/util/Collection;)Ljava/util/List;
+      29: astore        6
+      31: aload         6
+      33: invokeinterface #187,  1          // InterfaceMethod java/util/List.iterator:()Ljava/util/Iterator;
+      38: astore        7
+      40: aload         7
+      42: invokeinterface #193,  1          // InterfaceMethod java/util/Iterator.hasNext:()Z
+      47: ifeq          106
+      50: aload         7
+      52: invokeinterface #197,  1          // InterfaceMethod java/util/Iterator.next:()Ljava/lang/Object;
+      57: checkcast     #199                // class net/rsprox/cache/util/CacheGroupRequest
+      60: astore        8
+      62: aload_0
+      63: aload_1
+      64: aload         8
+      66: invokevirtual #202                // Method net/rsprox/cache/util/CacheGroupRequest.getArchive:()I
+      69: aload         8
+      71: invokevirtual #205                // Method net/rsprox/cache/util/CacheGroupRequest.getGroup:()I
+      74: invokespecial #126                // Method resolveLocal:(Lnet/rsprox/cache/Js5MasterIndex;II)Lio/netty/buffer/ByteBuf;
+      77: astore        9
+      79: aload         9
+      81: ifnull        40
+      84: aload         4
+      86: aload         8
+      88: aload         9
+      90: invokeinterface #211,  3          // InterfaceMethod java/util/Map.put:(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
+      95: pop
+      96: aload         7
+      98: invokeinterface #214,  1          // InterfaceMethod java/util/Iterator.remove:()V
+     103: goto          40
+     106: aload         6
+     108: checkcast     #175                // class java/util/Collection
+     111: invokeinterface #217,  1          // InterfaceMethod java/util/Collection.isEmpty:()Z
+     116: ifne          123
+     119: iconst_1
+     120: goto          124
+     123: iconst_0
+     124: ifeq          163
+     127: aload_0
+     128: aload_1
+     129: aload         6
+     131: invokespecial #220                // Method resolveOpenRs2Bulk:(Lnet/rsprox/cache/Js5MasterIndex;Ljava/util/List;)Ljava/util/Map;
+     134: astore        8
+     136: aload         6
+     138: aload         8
+     140: invokeinterface #224,  1          // InterfaceMethod java/util/Map.keySet:()Ljava/util/Set;
+     145: checkcast     #175                // class java/util/Collection
+     148: invokeinterface #228,  2          // InterfaceMethod java/util/List.removeAll:(Ljava/util/Collection;)Z
+     153: pop
+     154: aload         4
+     156: aload         8
+     158: invokeinterface #232,  2          // InterfaceMethod java/util/Map.putAll:(Ljava/util/Map;)V
+     163: aload         6
+     165: checkcast     #175                // class java/util/Collection
+     168: invokeinterface #217,  1          // InterfaceMethod java/util/Collection.isEmpty:()Z
+     173: ifne          180
+     176: iconst_1
+     177: goto          181
+     180: iconst_0
+     181: ifeq          226
+     184: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+     187: astore        8
+     189: iconst_0
+     190: istore        9
+     192: aload         8
+     194: invokestatic  #235                // Method com/github/michaelbull/logging/InlineLogger."isWarnEnabled-impl":(Lorg/slf4j/Logger;)Z
+     197: ifeq          225
+     200: aload         8
+     202: astore        10
+     204: iconst_0
+     205: istore        11
+     207: aload         6
+     209: invokedynamic #240,  0            // InvokeDynamic #7:makeConcatWithConstants:(Ljava/util/List;)Ljava/lang/String;
+     214: aload         10
+     216: swap
+     217: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+     220: invokeinterface #243,  2          // InterfaceMethod org/slf4j/Logger.warn:(Ljava/lang/String;)V
+     225: nop
+     226: nop
+     227: aload_3
+     228: invokestatic  #247                // Method kotlin/collections/MapsKt.build:(Ljava/util/Map;)Ljava/util/Map;
+     231: areturn
+
+  private final io.netty.buffer.ByteBuf resolveLocal(net.rsprox.cache.Js5MasterIndex, int, int);
+    Code:
+       0: nop
+       1: aload_0
+       2: getfield      #51                 // Field diskCacheIdentifier:Lnet/rsprox/cache/identifier/DiskCacheIdentifier;
+       5: aload_1
+       6: invokevirtual #265                // Method net/rsprox/cache/identifier/DiskCacheIdentifier.identify:(Lnet/rsprox/cache/Js5MasterIndex;)Ljava/nio/file/Path;
+       9: dup
+      10: ifnonnull     16
+      13: pop
+      14: aconst_null
+      15: areturn
+      16: astore        4
+      18: new           #267                // class net/rsprox/cache/store/DiskGroupStore
+      21: dup
+      22: aload         4
+      24: invokespecial #270                // Method net/rsprox/cache/store/DiskGroupStore."<init>":(Ljava/nio/file/Path;)V
+      27: iload_2
+      28: iload_3
+      29: invokevirtual #273                // Method net/rsprox/cache/store/DiskGroupStore.get:(II)Lio/netty/buffer/ByteBuf;
+      32: astore        4
+      34: goto          94
+      37: astore        5
+      39: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+      42: astore        6
+      44: aload         5
+      46: checkcast     #275                // class java/lang/Throwable
+      49: astore        7
+      51: iconst_0
+      52: istore        8
+      54: aload         6
+      56: invokestatic  #235                // Method com/github/michaelbull/logging/InlineLogger."isWarnEnabled-impl":(Lorg/slf4j/Logger;)Z
+      59: ifeq          90
+      62: aload         6
+      64: astore        10
+      66: iconst_0
+      67: istore        9
+      69: iload_2
+      70: iload_3
+      71: aload_1
+      72: invokedynamic #280,  0            // InvokeDynamic #8:makeConcatWithConstants:(IILnet/rsprox/cache/Js5MasterIndex;)Ljava/lang/String;
+      77: aload         10
+      79: swap
+      80: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+      83: aload         7
+      85: invokeinterface #283,  3          // InterfaceMethod org/slf4j/Logger.warn:(Ljava/lang/String;Ljava/lang/Throwable;)V
+      90: nop
+      91: aconst_null
+      92: astore        4
+      94: aload         4
+      96: areturn
+    Exception table:
+       from    to  target type
+           0    34    37   Class java/lang/Exception
+
+  private final io.netty.buffer.ByteBuf resolveOpenRs2(net.rsprox.cache.Js5MasterIndex, int, int);
+    Code:
+       0: nop
+       1: aload_0
+       2: getfield      #60                 // Field openrs2CacheIdentifier:Lnet/rsprox/cache/identifier/OpenRs2CacheIdentifier;
+       5: aload_1
+       6: invokevirtual #295                // Method net/rsprox/cache/identifier/OpenRs2CacheIdentifier.identify:(Lnet/rsprox/cache/Js5MasterIndex;)Ljava/lang/Integer;
+       9: dup
+      10: ifnull        19
+      13: invokevirtual #300                // Method java/lang/Integer.intValue:()I
+      16: goto          22
+      19: pop
+      20: aconst_null
+      21: areturn
+      22: istore        4
+      24: invokestatic  #303                // Method net/rsprox/cache/DiskPathsKt.getOPENRS2_DISK_CACHES_DIRECTORY:()Ljava/nio/file/Path;
+      27: iload         4
+      29: invokestatic  #306                // Method java/lang/String.valueOf:(I)Ljava/lang/String;
+      32: invokeinterface #310,  2          // InterfaceMethod java/nio/file/Path.resolve:(Ljava/lang/String;)Ljava/nio/file/Path;
+      37: astore        5
+      39: new           #312                // class net/rsprox/cache/store/OpenRs2DiskCacheStore
+      42: dup
+      43: iload         4
+      45: aload         5
+      47: invokestatic  #316                // Method kotlin/jvm/internal/Intrinsics.checkNotNull:(Ljava/lang/Object;)V
+      50: aload         5
+      52: aload_1
+      53: invokespecial #319                // Method net/rsprox/cache/store/OpenRs2DiskCacheStore."<init>":(ILjava/nio/file/Path;Lnet/rsprox/cache/Js5MasterIndex;)V
+      56: iload_2
+      57: iload_3
+      58: invokevirtual #320                // Method net/rsprox/cache/store/OpenRs2DiskCacheStore.get:(II)Lio/netty/buffer/ByteBuf;
+      61: astore        4
+      63: goto          123
+      66: astore        5
+      68: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+      71: astore        6
+      73: aload         5
+      75: checkcast     #275                // class java/lang/Throwable
+      78: astore        7
+      80: iconst_0
+      81: istore        8
+      83: aload         6
+      85: invokestatic  #235                // Method com/github/michaelbull/logging/InlineLogger."isWarnEnabled-impl":(Lorg/slf4j/Logger;)Z
+      88: ifeq          119
+      91: aload         6
+      93: astore        10
+      95: iconst_0
+      96: istore        9
+      98: iload_2
+      99: iload_3
+     100: aload_1
+     101: invokedynamic #323,  0            // InvokeDynamic #9:makeConcatWithConstants:(IILnet/rsprox/cache/Js5MasterIndex;)Ljava/lang/String;
+     106: aload         10
+     108: swap
+     109: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+     112: aload         7
+     114: invokeinterface #283,  3          // InterfaceMethod org/slf4j/Logger.warn:(Ljava/lang/String;Ljava/lang/Throwable;)V
+     119: nop
+     120: aconst_null
+     121: astore        4
+     123: aload         4
+     125: areturn
+    Exception table:
+       from    to  target type
+           0    63    66   Class java/lang/Exception
+
+  private final java.util.Map<net.rsprox.cache.util.CacheGroupRequest, io.netty.buffer.ByteBuf> resolveOpenRs2Bulk(net.rsprox.cache.Js5MasterIndex, java.util.List<net.rsprox.cache.util.CacheGroupRequest>);
+    Code:
+       0: nop
+       1: aload_0
+       2: getfield      #60                 // Field openrs2CacheIdentifier:Lnet/rsprox/cache/identifier/OpenRs2CacheIdentifier;
+       5: aload_1
+       6: invokevirtual #295                // Method net/rsprox/cache/identifier/OpenRs2CacheIdentifier.identify:(Lnet/rsprox/cache/Js5MasterIndex;)Ljava/lang/Integer;
+       9: dup
+      10: ifnull        19
+      13: invokevirtual #300                // Method java/lang/Integer.intValue:()I
+      16: goto          24
+      19: pop
+      20: invokestatic  #329                // Method kotlin/collections/MapsKt.emptyMap:()Ljava/util/Map;
+      23: areturn
+      24: istore_3
+      25: invokestatic  #303                // Method net/rsprox/cache/DiskPathsKt.getOPENRS2_DISK_CACHES_DIRECTORY:()Ljava/nio/file/Path;
+      28: iload_3
+      29: invokestatic  #306                // Method java/lang/String.valueOf:(I)Ljava/lang/String;
+      32: invokeinterface #310,  2          // InterfaceMethod java/nio/file/Path.resolve:(Ljava/lang/String;)Ljava/nio/file/Path;
+      37: astore        4
+      39: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+      42: astore        5
+      44: iconst_0
+      45: istore        6
+      47: aload         5
+      49: invokestatic  #84                 // Method com/github/michaelbull/logging/InlineLogger."isDebugEnabled-impl":(Lorg/slf4j/Logger;)Z
+      52: ifeq          79
+      55: aload         5
+      57: astore        17
+      59: iconst_0
+      60: istore        7
+      62: aload_2
+      63: invokedynamic #332,  0            // InvokeDynamic #10:makeConcatWithConstants:(Ljava/util/List;)Ljava/lang/String;
+      68: aload         17
+      70: swap
+      71: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+      74: invokeinterface #118,  2          // InterfaceMethod org/slf4j/Logger.debug:(Ljava/lang/String;)V
+      79: nop
+      80: new           #312                // class net/rsprox/cache/store/OpenRs2DiskCacheStore
+      83: dup
+      84: iload_3
+      85: aload         4
+      87: invokestatic  #316                // Method kotlin/jvm/internal/Intrinsics.checkNotNull:(Ljava/lang/Object;)V
+      90: aload         4
+      92: aload_1
+      93: invokespecial #319                // Method net/rsprox/cache/store/OpenRs2DiskCacheStore."<init>":(ILjava/nio/file/Path;Lnet/rsprox/cache/Js5MasterIndex;)V
+      96: astore        5
+      98: aload         5
+     100: aload_2
+     101: checkcast     #334                // class java/lang/Iterable
+     104: astore        7
+     106: astore        17
+     108: iconst_0
+     109: istore        8
+     111: aload         7
+     113: astore        9
+     115: new           #336                // class java/util/ArrayList
+     118: dup
+     119: aload         7
+     121: bipush        10
+     123: invokestatic  #340                // Method kotlin/collections/CollectionsKt.collectionSizeOrDefault:(Ljava/lang/Iterable;I)I
+     126: invokespecial #343                // Method java/util/ArrayList."<init>":(I)V
+     129: checkcast     #175                // class java/util/Collection
+     132: astore        10
+     134: iconst_0
+     135: istore        11
+     137: aload         9
+     139: invokeinterface #344,  1          // InterfaceMethod java/lang/Iterable.iterator:()Ljava/util/Iterator;
+     144: astore        12
+     146: aload         12
+     148: invokeinterface #193,  1          // InterfaceMethod java/util/Iterator.hasNext:()Z
+     153: ifeq          210
+     156: aload         12
+     158: invokeinterface #197,  1          // InterfaceMethod java/util/Iterator.next:()Ljava/lang/Object;
+     163: astore        13
+     165: aload         10
+     167: aload         13
+     169: checkcast     #199                // class net/rsprox/cache/util/CacheGroupRequest
+     172: astore        14
+     174: astore        18
+     176: iconst_0
+     177: istore        15
+     179: aload         14
+     181: invokevirtual #202                // Method net/rsprox/cache/util/CacheGroupRequest.getArchive:()I
+     184: invokestatic  #347                // Method java/lang/Integer.valueOf:(I)Ljava/lang/Integer;
+     187: aload         14
+     189: invokevirtual #205                // Method net/rsprox/cache/util/CacheGroupRequest.getGroup:()I
+     192: invokestatic  #347                // Method java/lang/Integer.valueOf:(I)Ljava/lang/Integer;
+     195: invokestatic  #353                // Method kotlin/TuplesKt.to:(Ljava/lang/Object;Ljava/lang/Object;)Lkotlin/Pair;
+     198: aload         18
+     200: swap
+     201: invokeinterface #357,  2          // InterfaceMethod java/util/Collection.add:(Ljava/lang/Object;)Z
+     206: pop
+     207: goto          146
+     210: aload         10
+     212: checkcast     #183                // class java/util/List
+     215: nop
+     216: aload         17
+     218: swap
+     219: invokevirtual #360                // Method net/rsprox/cache/store/OpenRs2DiskCacheStore.getBulk:(Ljava/util/List;)Ljava/util/Map;
+     222: astore        6
+     224: invokestatic  #173                // Method kotlin/collections/MapsKt.createMapBuilder:()Ljava/util/Map;
+     227: astore        7
+     229: aload         7
+     231: astore        8
+     233: iconst_0
+     234: istore        9
+     236: aload_2
+     237: invokeinterface #187,  1          // InterfaceMethod java/util/List.iterator:()Ljava/util/Iterator;
+     242: astore        10
+     244: aload         10
+     246: invokeinterface #193,  1          // InterfaceMethod java/util/Iterator.hasNext:()Z
+     251: ifeq          370
+     254: aload         10
+     256: invokeinterface #197,  1          // InterfaceMethod java/util/Iterator.next:()Ljava/lang/Object;
+     261: checkcast     #199                // class net/rsprox/cache/util/CacheGroupRequest
+     264: astore        11
+     266: aload         6
+     268: aload         11
+     270: invokevirtual #202                // Method net/rsprox/cache/util/CacheGroupRequest.getArchive:()I
+     273: invokestatic  #347                // Method java/lang/Integer.valueOf:(I)Ljava/lang/Integer;
+     276: aload         11
+     278: invokevirtual #205                // Method net/rsprox/cache/util/CacheGroupRequest.getGroup:()I
+     281: invokestatic  #347                // Method java/lang/Integer.valueOf:(I)Ljava/lang/Integer;
+     284: invokestatic  #353                // Method kotlin/TuplesKt.to:(Ljava/lang/Object;Ljava/lang/Object;)Lkotlin/Pair;
+     287: invokeinterface #363,  2          // InterfaceMethod java/util/Map.get:(Ljava/lang/Object;)Ljava/lang/Object;
+     292: checkcast     #162                // class io/netty/buffer/ByteBuf
+     295: dup
+     296: ifnonnull     303
+     299: pop
+     300: goto          244
+     303: astore        12
+     305: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+     308: astore        13
+     310: iconst_0
+     311: istore        14
+     313: aload         13
+     315: invokestatic  #84                 // Method com/github/michaelbull/logging/InlineLogger."isDebugEnabled-impl":(Lorg/slf4j/Logger;)Z
+     318: ifeq          354
+     321: aload         13
+     323: astore        15
+     325: iconst_0
+     326: istore        16
+     328: aload         11
+     330: invokevirtual #202                // Method net/rsprox/cache/util/CacheGroupRequest.getArchive:()I
+     333: aload         11
+     335: invokevirtual #205                // Method net/rsprox/cache/util/CacheGroupRequest.getGroup:()I
+     338: invokedynamic #141,  0            // InvokeDynamic #5:makeConcatWithConstants:(II)Ljava/lang/String;
+     343: aload         15
+     345: swap
+     346: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+     349: invokeinterface #118,  2          // InterfaceMethod org/slf4j/Logger.debug:(Ljava/lang/String;)V
+     354: nop
+     355: aload         8
+     357: aload         11
+     359: aload         12
+     361: invokeinterface #211,  3          // InterfaceMethod java/util/Map.put:(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;
+     366: pop
+     367: goto          244
+     370: nop
+     371: aload         7
+     373: invokestatic  #247                // Method kotlin/collections/MapsKt.build:(Ljava/util/Map;)Ljava/util/Map;
+     376: astore_3
+     377: goto          437
+     380: astore        4
+     382: getstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+     385: astore        5
+     387: aload         4
+     389: checkcast     #275                // class java/lang/Throwable
+     392: astore        6
+     394: iconst_0
+     395: istore        7
+     397: aload         5
+     399: invokestatic  #235                // Method com/github/michaelbull/logging/InlineLogger."isWarnEnabled-impl":(Lorg/slf4j/Logger;)Z
+     402: ifeq          432
+     405: aload         5
+     407: astore        17
+     409: iconst_0
+     410: istore        8
+     412: aload_2
+     413: aload_1
+     414: invokedynamic #368,  0            // InvokeDynamic #11:makeConcatWithConstants:(Ljava/util/List;Lnet/rsprox/cache/Js5MasterIndex;)Ljava/lang/String;
+     419: aload         17
+     421: swap
+     422: invokestatic  #112                // Method java/lang/String.valueOf:(Ljava/lang/Object;)Ljava/lang/String;
+     425: aload         6
+     427: invokeinterface #283,  3          // InterfaceMethod org/slf4j/Logger.warn:(Ljava/lang/String;Ljava/lang/Throwable;)V
+     432: nop
+     433: invokestatic  #329                // Method kotlin/collections/MapsKt.emptyMap:()Ljava/util/Map;
+     436: astore_3
+     437: aload_3
+     438: areturn
+    Exception table:
+       from    to  target type
+           0   377   380   Class java/lang/Exception
+
+  static {};
+    Code:
+       0: new           #392                // class net/rsprox/cache/resolver/HistoricCacheResolver$Companion
+       3: dup
+       4: aconst_null
+       5: invokespecial #395                // Method net/rsprox/cache/resolver/HistoricCacheResolver$Companion."<init>":(Lkotlin/jvm/internal/DefaultConstructorMarker;)V
+       8: putstatic     #398                // Field Companion:Lnet/rsprox/cache/resolver/HistoricCacheResolver$Companion;
+      11: iconst_0
+      12: istore_0
+      13: invokestatic  #404                // Method java/lang/invoke/MethodHandles.lookup:()Ljava/lang/invoke/MethodHandles$Lookup;
+      16: invokevirtual #410                // Method java/lang/invoke/MethodHandles$Lookup.lookupClass:()Ljava/lang/Class;
+      19: invokestatic  #416                // Method org/slf4j/LoggerFactory.getLogger:(Ljava/lang/Class;)Lorg/slf4j/Logger;
+      22: astore_1
+      23: aload_1
+      24: invokestatic  #316                // Method kotlin/jvm/internal/Intrinsics.checkNotNull:(Ljava/lang/Object;)V
+      27: aload_1
+      28: invokestatic  #420                // Method com/github/michaelbull/logging/InlineLogger."constructor-impl":(Lorg/slf4j/Logger;)Lorg/slf4j/Logger;
+      31: putstatic     #78                 // Field logger:Lorg/slf4j/Logger;
+      34: return
+}

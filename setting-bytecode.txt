@@ -1,0 +1,551 @@
+Compiled from "Setting.kt"
+public final class net.rsprox.shared.settings.Setting extends java.lang.Enum<net.rsprox.shared.settings.Setting> {
+  private final net.rsprox.shared.settings.SettingGroup group;
+
+  private final net.rsprox.shared.settings.SettingCategory category;
+
+  private final java.lang.String label;
+
+  private final boolean enabled;
+
+  private final java.lang.String tooltip;
+
+  public static final net.rsprox.shared.settings.Setting PREFER_SINGLE_QUOTE_ON_STRINGS;
+
+  public static final net.rsprox.shared.settings.Setting SHOW_IDS_AFTER_SYMBOLS;
+
+  public static final net.rsprox.shared.settings.Setting CONVERT_COORD_TO_JAGCOORD;
+
+  public static final net.rsprox.shared.settings.Setting TRANSLATE_INSTANCED_COORDS;
+
+  public static final net.rsprox.shared.settings.Setting COLLAPSE_INSTANCE_ZONES;
+
+  public static final net.rsprox.shared.settings.Setting HIDE_RS3_LOBBY;
+
+  public static final net.rsprox.shared.settings.Setting SKIP_FIRST_TICK;
+
+  public static final net.rsprox.shared.settings.Setting HIDE_UNNECESSARY_VARPS;
+
+  public static final net.rsprox.shared.settings.Setting HIDE_SAME_VALUE_VARPS;
+
+  public static final net.rsprox.shared.settings.Setting INFER_CLIENTSCRIPT_NAMES;
+
+  public static final net.rsprox.shared.settings.Setting INFER_CLIENTSCRIPT_TYPES;
+
+  public static final net.rsprox.shared.settings.Setting COLLAPSE_CLIENTSCRIPT_PARAMS;
+
+  public static final net.rsprox.shared.settings.Setting DISABLE_DICTIONARY_NAMES;
+
+  public static final net.rsprox.shared.settings.Setting USE_OFFICIAL_DICTIONARY;
+
+  public static final net.rsprox.shared.settings.Setting PREFER_OFFICIAL_DICTIONARY;
+
+  public static final net.rsprox.shared.settings.Setting PLAYER_EXT_INFO_INLINE;
+
+  public static final net.rsprox.shared.settings.Setting PLAYER_HIDE_INDEX;
+
+  public static final net.rsprox.shared.settings.Setting PLAYER_INFO_HIDE_EMPTY;
+
+  public static final net.rsprox.shared.settings.Setting PLAYER_INFO_LOCAL_PLAYER_ONLY;
+
+  public static final net.rsprox.shared.settings.Setting NPC_EXT_INFO_INDICATOR;
+
+  public static final net.rsprox.shared.settings.Setting HIDE_NPC_INDICES;
+
+  public static final net.rsprox.shared.settings.Setting NPC_INFO_HIDE_EMPTY;
+
+  public static final net.rsprox.shared.settings.Setting EXACTMOVE_SUBTRACT_FIRST_DELAY;
+
+  public static final net.rsprox.shared.settings.Setting WORLDENTITY_INFO_HIDE_EMPTY;
+
+  public static final net.rsprox.shared.settings.Setting WORLDENTITY_INFO_DECIMAL_COORDS;
+
+  private static final net.rsprox.shared.settings.Setting[] $VALUES;
+
+  private static final kotlin.enums.EnumEntries $ENTRIES;
+
+  private net.rsprox.shared.settings.Setting(net.rsprox.shared.settings.SettingGroup, net.rsprox.shared.settings.SettingCategory, java.lang.String, boolean, java.lang.String);
+    Code:
+       0: aload_0
+       1: aload_1
+       2: iload_2
+       3: invokespecial #11                 // Method java/lang/Enum."<init>":(Ljava/lang/String;I)V
+       6: aload_0
+       7: aload_3
+       8: putfield      #15                 // Field group:Lnet/rsprox/shared/settings/SettingGroup;
+      11: aload_0
+      12: aload         4
+      14: putfield      #19                 // Field category:Lnet/rsprox/shared/settings/SettingCategory;
+      17: aload_0
+      18: aload         5
+      20: putfield      #23                 // Field label:Ljava/lang/String;
+      23: aload_0
+      24: iload         6
+      26: putfield      #27                 // Field enabled:Z
+      29: aload_0
+      30: aload         7
+      32: putfield      #30                 // Field tooltip:Ljava/lang/String;
+      35: return
+
+  net.rsprox.shared.settings.Setting(java.lang.String, int, net.rsprox.shared.settings.SettingGroup, net.rsprox.shared.settings.SettingCategory, java.lang.String, boolean, java.lang.String, int, kotlin.jvm.internal.DefaultConstructorMarker);
+    Code:
+       0: iload         8
+       2: bipush        16
+       4: iand
+       5: ifeq          11
+       8: aconst_null
+       9: astore        7
+      11: aload_0
+      12: aload_1
+      13: iload_2
+      14: aload_3
+      15: aload         4
+      17: aload         5
+      19: iload         6
+      21: aload         7
+      23: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+      26: return
+
+  public final net.rsprox.shared.settings.SettingGroup getGroup();
+    Code:
+       0: aload_0
+       1: getfield      #15                 // Field group:Lnet/rsprox/shared/settings/SettingGroup;
+       4: areturn
+
+  public final net.rsprox.shared.settings.SettingCategory getCategory();
+    Code:
+       0: aload_0
+       1: getfield      #19                 // Field category:Lnet/rsprox/shared/settings/SettingCategory;
+       4: areturn
+
+  public final java.lang.String getLabel();
+    Code:
+       0: aload_0
+       1: getfield      #23                 // Field label:Ljava/lang/String;
+       4: areturn
+
+  public final boolean getEnabled();
+    Code:
+       0: aload_0
+       1: getfield      #27                 // Field enabled:Z
+       4: ireturn
+
+  public final java.lang.String getTooltip();
+    Code:
+       0: aload_0
+       1: getfield      #30                 // Field tooltip:Ljava/lang/String;
+       4: areturn
+
+  public static net.rsprox.shared.settings.Setting[] values();
+    Code:
+       0: getstatic     #55                 // Field $VALUES:[Lnet/rsprox/shared/settings/Setting;
+       3: invokevirtual #61                 // Method java/lang/Object.clone:()Ljava/lang/Object;
+       6: checkcast     #62                 // class "[Lnet/rsprox/shared/settings/Setting;"
+       9: areturn
+
+  public static net.rsprox.shared.settings.Setting valueOf(java.lang.String);
+    Code:
+       0: ldc           #2                  // class net/rsprox/shared/settings/Setting
+       2: aload_0
+       3: invokestatic  #67                 // Method java/lang/Enum.valueOf:(Ljava/lang/Class;Ljava/lang/String;)Ljava/lang/Enum;
+       6: checkcast     #2                  // class net/rsprox/shared/settings/Setting
+       9: areturn
+
+  public static kotlin.enums.EnumEntries<net.rsprox.shared.settings.Setting> getEntries();
+    Code:
+       0: getstatic     #75                 // Field $ENTRIES:Lkotlin/enums/EnumEntries;
+       3: areturn
+
+  private static final net.rsprox.shared.settings.Setting[] $values();
+    Code:
+       0: bipush        25
+       2: anewarray     #2                  // class net/rsprox/shared/settings/Setting
+       5: astore_0
+       6: aload_0
+       7: iconst_0
+       8: getstatic     #79                 // Field PREFER_SINGLE_QUOTE_ON_STRINGS:Lnet/rsprox/shared/settings/Setting;
+      11: aastore
+      12: aload_0
+      13: iconst_1
+      14: getstatic     #82                 // Field SHOW_IDS_AFTER_SYMBOLS:Lnet/rsprox/shared/settings/Setting;
+      17: aastore
+      18: aload_0
+      19: iconst_2
+      20: getstatic     #85                 // Field CONVERT_COORD_TO_JAGCOORD:Lnet/rsprox/shared/settings/Setting;
+      23: aastore
+      24: aload_0
+      25: iconst_3
+      26: getstatic     #88                 // Field TRANSLATE_INSTANCED_COORDS:Lnet/rsprox/shared/settings/Setting;
+      29: aastore
+      30: aload_0
+      31: iconst_4
+      32: getstatic     #91                 // Field COLLAPSE_INSTANCE_ZONES:Lnet/rsprox/shared/settings/Setting;
+      35: aastore
+      36: aload_0
+      37: iconst_5
+      38: getstatic     #94                 // Field HIDE_RS3_LOBBY:Lnet/rsprox/shared/settings/Setting;
+      41: aastore
+      42: aload_0
+      43: bipush        6
+      45: getstatic     #97                 // Field SKIP_FIRST_TICK:Lnet/rsprox/shared/settings/Setting;
+      48: aastore
+      49: aload_0
+      50: bipush        7
+      52: getstatic     #100                // Field HIDE_UNNECESSARY_VARPS:Lnet/rsprox/shared/settings/Setting;
+      55: aastore
+      56: aload_0
+      57: bipush        8
+      59: getstatic     #103                // Field HIDE_SAME_VALUE_VARPS:Lnet/rsprox/shared/settings/Setting;
+      62: aastore
+      63: aload_0
+      64: bipush        9
+      66: getstatic     #106                // Field INFER_CLIENTSCRIPT_NAMES:Lnet/rsprox/shared/settings/Setting;
+      69: aastore
+      70: aload_0
+      71: bipush        10
+      73: getstatic     #109                // Field INFER_CLIENTSCRIPT_TYPES:Lnet/rsprox/shared/settings/Setting;
+      76: aastore
+      77: aload_0
+      78: bipush        11
+      80: getstatic     #112                // Field COLLAPSE_CLIENTSCRIPT_PARAMS:Lnet/rsprox/shared/settings/Setting;
+      83: aastore
+      84: aload_0
+      85: bipush        12
+      87: getstatic     #115                // Field DISABLE_DICTIONARY_NAMES:Lnet/rsprox/shared/settings/Setting;
+      90: aastore
+      91: aload_0
+      92: bipush        13
+      94: getstatic     #118                // Field USE_OFFICIAL_DICTIONARY:Lnet/rsprox/shared/settings/Setting;
+      97: aastore
+      98: aload_0
+      99: bipush        14
+     101: getstatic     #121                // Field PREFER_OFFICIAL_DICTIONARY:Lnet/rsprox/shared/settings/Setting;
+     104: aastore
+     105: aload_0
+     106: bipush        15
+     108: getstatic     #124                // Field PLAYER_EXT_INFO_INLINE:Lnet/rsprox/shared/settings/Setting;
+     111: aastore
+     112: aload_0
+     113: bipush        16
+     115: getstatic     #127                // Field PLAYER_HIDE_INDEX:Lnet/rsprox/shared/settings/Setting;
+     118: aastore
+     119: aload_0
+     120: bipush        17
+     122: getstatic     #130                // Field PLAYER_INFO_HIDE_EMPTY:Lnet/rsprox/shared/settings/Setting;
+     125: aastore
+     126: aload_0
+     127: bipush        18
+     129: getstatic     #133                // Field PLAYER_INFO_LOCAL_PLAYER_ONLY:Lnet/rsprox/shared/settings/Setting;
+     132: aastore
+     133: aload_0
+     134: bipush        19
+     136: getstatic     #136                // Field NPC_EXT_INFO_INDICATOR:Lnet/rsprox/shared/settings/Setting;
+     139: aastore
+     140: aload_0
+     141: bipush        20
+     143: getstatic     #139                // Field HIDE_NPC_INDICES:Lnet/rsprox/shared/settings/Setting;
+     146: aastore
+     147: aload_0
+     148: bipush        21
+     150: getstatic     #142                // Field NPC_INFO_HIDE_EMPTY:Lnet/rsprox/shared/settings/Setting;
+     153: aastore
+     154: aload_0
+     155: bipush        22
+     157: getstatic     #145                // Field EXACTMOVE_SUBTRACT_FIRST_DELAY:Lnet/rsprox/shared/settings/Setting;
+     160: aastore
+     161: aload_0
+     162: bipush        23
+     164: getstatic     #148                // Field WORLDENTITY_INFO_HIDE_EMPTY:Lnet/rsprox/shared/settings/Setting;
+     167: aastore
+     168: aload_0
+     169: bipush        24
+     171: getstatic     #151                // Field WORLDENTITY_INFO_DECIMAL_COORDS:Lnet/rsprox/shared/settings/Setting;
+     174: aastore
+     175: aload_0
+     176: areturn
+
+  static {};
+    Code:
+       0: new           #2                  // class net/rsprox/shared/settings/Setting
+       3: dup
+       4: ldc           #154                // String PREFER_SINGLE_QUOTE_ON_STRINGS
+       6: iconst_0
+       7: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+      10: getstatic     #164                // Field net/rsprox/shared/settings/SettingCategory.PREFS:Lnet/rsprox/shared/settings/SettingCategory;
+      13: ldc           #166                // String Prefer Single Quote
+      15: iconst_0
+      16: ldc           #168                // String When enabled, uses single quote whenever logging string-types. Otherwise, sticks to double quote.
+      18: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+      21: putstatic     #79                 // Field PREFER_SINGLE_QUOTE_ON_STRINGS:Lnet/rsprox/shared/settings/Setting;
+      24: new           #2                  // class net/rsprox/shared/settings/Setting
+      27: dup
+      28: ldc           #169                // String SHOW_IDS_AFTER_SYMBOLS
+      30: iconst_1
+      31: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+      34: getstatic     #164                // Field net/rsprox/shared/settings/SettingCategory.PREFS:Lnet/rsprox/shared/settings/SettingCategory;
+      37: ldc           #171                // String Show Ids After Symbols
+      39: iconst_1
+      40: ldc           #173                // String When enabled and a symbol dictionary is provided, will show ids after symbol names, e.g. \"armadyl_godsword (11802)\"
+      42: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+      45: putstatic     #82                 // Field SHOW_IDS_AFTER_SYMBOLS:Lnet/rsprox/shared/settings/Setting;
+      48: new           #2                  // class net/rsprox/shared/settings/Setting
+      51: dup
+      52: ldc           #174                // String CONVERT_COORD_TO_JAGCOORD
+      54: iconst_2
+      55: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+      58: getstatic     #164                // Field net/rsprox/shared/settings/SettingCategory.PREFS:Lnet/rsprox/shared/settings/SettingCategory;
+      61: ldc           #176                // String Convert to Jag Coords
+      63: iconst_0
+      64: ldc           #178                // String Translates coords to the Jag format, e.g. (3200, 3200, 0) -> (0_50_50_0_0)
+      66: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+      69: putstatic     #85                 // Field CONVERT_COORD_TO_JAGCOORD:Lnet/rsprox/shared/settings/Setting;
+      72: new           #2                  // class net/rsprox/shared/settings/Setting
+      75: dup
+      76: ldc           #179                // String TRANSLATE_INSTANCED_COORDS
+      78: iconst_3
+      79: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+      82: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+      85: ldc           #184                // String Translate Instanced Coords
+      87: iconst_1
+      88: ldc           #186                // String Translates instanced coords to the static counterparts if possible.
+      90: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+      93: putstatic     #88                 // Field TRANSLATE_INSTANCED_COORDS:Lnet/rsprox/shared/settings/Setting;
+      96: new           #2                  // class net/rsprox/shared/settings/Setting
+      99: dup
+     100: ldc           #187                // String COLLAPSE_INSTANCE_ZONES
+     102: iconst_4
+     103: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     106: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     109: ldc           #189                // String Collapse Instanced Zones
+     111: iconst_0
+     112: ldc           #191                // String Collapses a set of zones that is copied in a 1:1 manner in logging.
+     114: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     117: putstatic     #91                 // Field COLLAPSE_INSTANCE_ZONES:Lnet/rsprox/shared/settings/Setting;
+     120: new           #2                  // class net/rsprox/shared/settings/Setting
+     123: dup
+     124: ldc           #192                // String HIDE_RS3_LOBBY
+     126: iconst_5
+     127: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     130: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     133: ldc           #194                // String Hide RS3 Lobby
+     135: iconst_0
+     136: ldc           #196                // String Hides RuneScape 3 lobby packets in live and saved transcripts. Binary recordings retain all lobby data.
+     138: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     141: putstatic     #94                 // Field HIDE_RS3_LOBBY:Lnet/rsprox/shared/settings/Setting;
+     144: new           #2                  // class net/rsprox/shared/settings/Setting
+     147: dup
+     148: ldc           #197                // String SKIP_FIRST_TICK
+     150: bipush        6
+     152: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     155: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     158: ldc           #199                // String Skip First Tick
+     160: iconst_0
+     161: ldc           #201                // String Skips logging all packets on game tick 0. Most of this is the initial state being assigned. RuneScape 3 lobby packets are unaffected.
+     163: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     166: putstatic     #97                 // Field SKIP_FIRST_TICK:Lnet/rsprox/shared/settings/Setting;
+     169: new           #2                  // class net/rsprox/shared/settings/Setting
+     172: dup
+     173: ldc           #202                // String HIDE_UNNECESSARY_VARPS
+     175: bipush        7
+     177: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     180: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     183: ldc           #204                // String Hide Unnecessary Varps
+     185: iconst_1
+     186: ldc           #206                // String Hides the varp packet header if all the bit changes can be explained by varbits.
+     188: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     191: putstatic     #100                // Field HIDE_UNNECESSARY_VARPS:Lnet/rsprox/shared/settings/Setting;
+     194: new           #2                  // class net/rsprox/shared/settings/Setting
+     197: dup
+     198: ldc           #207                // String HIDE_SAME_VALUE_VARPS
+     200: bipush        8
+     202: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     205: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     208: ldc           #209                // String Hide Same Value Varps
+     210: iconst_1
+     211: ldc           #211                // String Hides varp entries if the old and new values are the same
+     213: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     216: putstatic     #103                // Field HIDE_SAME_VALUE_VARPS:Lnet/rsprox/shared/settings/Setting;
+     219: new           #2                  // class net/rsprox/shared/settings/Setting
+     222: dup
+     223: ldc           #212                // String INFER_CLIENTSCRIPT_NAMES
+     225: bipush        9
+     227: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     230: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     233: ldc           #214                // String Infer Clientscript Names
+     235: iconst_1
+     236: ldc           #216                // String Uses cache-specific clientscript names from RSProx Archive in the official dictionary.
+     238: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     241: putstatic     #106                // Field INFER_CLIENTSCRIPT_NAMES:Lnet/rsprox/shared/settings/Setting;
+     244: new           #2                  // class net/rsprox/shared/settings/Setting
+     247: dup
+     248: ldc           #217                // String INFER_CLIENTSCRIPT_TYPES
+     250: bipush        10
+     252: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     255: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     258: ldc           #219                // String Infer Clientscript Types
+     260: iconst_1
+     261: ldc           #221                // String Uses cache-specific clientscript signatures from RSProx Archive to identify argument types.
+     263: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     266: putstatic     #109                // Field INFER_CLIENTSCRIPT_TYPES:Lnet/rsprox/shared/settings/Setting;
+     269: new           #2                  // class net/rsprox/shared/settings/Setting
+     272: dup
+     273: ldc           #222                // String COLLAPSE_CLIENTSCRIPT_PARAMS
+     275: bipush        11
+     277: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     280: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     283: ldc           #224                // String Collapse Clientscript Params
+     285: iconst_1
+     286: ldc           #226                // String Collapses clientscript params & types by putting them all in one line.
+     288: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     291: putstatic     #112                // Field COLLAPSE_CLIENTSCRIPT_PARAMS:Lnet/rsprox/shared/settings/Setting;
+     294: new           #2                  // class net/rsprox/shared/settings/Setting
+     297: dup
+     298: ldc           #227                // String DISABLE_DICTIONARY_NAMES
+     300: bipush        12
+     302: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     305: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     308: ldc           #229                // String Disable Dictionary Names
+     310: iconst_0
+     311: ldc           #231                // String Temporarily disable provided dictionary names for types. Dictionaries allow you to map number ids to text.
+     313: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     316: putstatic     #115                // Field DISABLE_DICTIONARY_NAMES:Lnet/rsprox/shared/settings/Setting;
+     319: new           #2                  // class net/rsprox/shared/settings/Setting
+     322: dup
+     323: ldc           #232                // String USE_OFFICIAL_DICTIONARY
+     325: bipush        13
+     327: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     330: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     333: ldc           #234                // String Use Official Dictionary
+     335: iconst_1
+     336: ldc           #236                // String Enables official gameval dictionary loaded from the cache. This will override custom user dictionary.
+     338: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     341: putstatic     #118                // Field USE_OFFICIAL_DICTIONARY:Lnet/rsprox/shared/settings/Setting;
+     344: new           #2                  // class net/rsprox/shared/settings/Setting
+     347: dup
+     348: ldc           #237                // String PREFER_OFFICIAL_DICTIONARY
+     350: bipush        14
+     352: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     355: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     358: ldc           #239                // String Prefer Official Dictionary
+     360: iconst_1
+     361: ldc           #241                // String Prefers official dictionary results over custom dictionary, if available. Only works if official dictionary is enabled alongside.
+     363: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     366: putstatic     #121                // Field PREFER_OFFICIAL_DICTIONARY:Lnet/rsprox/shared/settings/Setting;
+     369: new           #2                  // class net/rsprox/shared/settings/Setting
+     372: dup
+     373: ldc           #242                // String PLAYER_EXT_INFO_INLINE
+     375: bipush        15
+     377: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     380: getstatic     #245                // Field net/rsprox/shared/settings/SettingCategory.PLAYER_INFO:Lnet/rsprox/shared/settings/SettingCategory;
+     383: ldc           #247                // String Ext. Info Player Indicator
+     385: iconst_0
+     386: ldc           #249                // String Adds a short entry in-front of any extended info blocks, indicating the player on whom it is applied.
+     388: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     391: putstatic     #124                // Field PLAYER_EXT_INFO_INLINE:Lnet/rsprox/shared/settings/Setting;
+     394: new           #2                  // class net/rsprox/shared/settings/Setting
+     397: dup
+     398: ldc           #250                // String PLAYER_HIDE_INDEX
+     400: bipush        16
+     402: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     405: getstatic     #245                // Field net/rsprox/shared/settings/SettingCategory.PLAYER_INFO:Lnet/rsprox/shared/settings/SettingCategory;
+     408: ldc           #252                // String Hide Player Indices
+     410: iconst_0
+     411: ldc           #254                // String Hides the index property in player info logs for all players.
+     413: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     416: putstatic     #127                // Field PLAYER_HIDE_INDEX:Lnet/rsprox/shared/settings/Setting;
+     419: new           #2                  // class net/rsprox/shared/settings/Setting
+     422: dup
+     423: ldc           #255                // String PLAYER_INFO_HIDE_EMPTY
+     425: bipush        17
+     427: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     430: getstatic     #245                // Field net/rsprox/shared/settings/SettingCategory.PLAYER_INFO:Lnet/rsprox/shared/settings/SettingCategory;
+     433: ldc_w         #257                // String Hide Empty Player Info
+     436: iconst_1
+     437: ldc_w         #259                // String Hides the player info packet entry if there are no logged entries to show.
+     440: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     443: putstatic     #130                // Field PLAYER_INFO_HIDE_EMPTY:Lnet/rsprox/shared/settings/Setting;
+     446: new           #2                  // class net/rsprox/shared/settings/Setting
+     449: dup
+     450: ldc_w         #260                // String PLAYER_INFO_LOCAL_PLAYER_ONLY
+     453: bipush        18
+     455: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     458: getstatic     #245                // Field net/rsprox/shared/settings/SettingCategory.PLAYER_INFO:Lnet/rsprox/shared/settings/SettingCategory;
+     461: ldc_w         #262                // String Local Player Only
+     464: iconst_1
+     465: ldc_w         #264                // String Only show player info updates for the local player - everyone else shall be skipped.
+     468: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     471: putstatic     #133                // Field PLAYER_INFO_LOCAL_PLAYER_ONLY:Lnet/rsprox/shared/settings/Setting;
+     474: new           #2                  // class net/rsprox/shared/settings/Setting
+     477: dup
+     478: ldc_w         #265                // String NPC_EXT_INFO_INDICATOR
+     481: bipush        19
+     483: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     486: getstatic     #268                // Field net/rsprox/shared/settings/SettingCategory.NPC_INFO:Lnet/rsprox/shared/settings/SettingCategory;
+     489: ldc_w         #270                // String Ext. Info NPC Indicator
+     492: iconst_0
+     493: ldc_w         #272                // String Adds a short entry in-front of any extended info blocks, indicating the NPC on whom it is applied.
+     496: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     499: putstatic     #136                // Field NPC_EXT_INFO_INDICATOR:Lnet/rsprox/shared/settings/Setting;
+     502: new           #2                  // class net/rsprox/shared/settings/Setting
+     505: dup
+     506: ldc_w         #273                // String HIDE_NPC_INDICES
+     509: bipush        20
+     511: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     514: getstatic     #268                // Field net/rsprox/shared/settings/SettingCategory.NPC_INFO:Lnet/rsprox/shared/settings/SettingCategory;
+     517: ldc_w         #275                // String Hide NPC Indices
+     520: iconst_0
+     521: ldc_w         #277                // String Hides the index property in NPC info logs for all NPCs.
+     524: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     527: putstatic     #139                // Field HIDE_NPC_INDICES:Lnet/rsprox/shared/settings/Setting;
+     530: new           #2                  // class net/rsprox/shared/settings/Setting
+     533: dup
+     534: ldc_w         #278                // String NPC_INFO_HIDE_EMPTY
+     537: bipush        21
+     539: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     542: getstatic     #268                // Field net/rsprox/shared/settings/SettingCategory.NPC_INFO:Lnet/rsprox/shared/settings/SettingCategory;
+     545: ldc_w         #280                // String Hide Empty Npc Info
+     548: iconst_1
+     549: ldc_w         #282                // String Hides the NPC info packet entry if there are no logged entries to show.
+     552: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     555: putstatic     #142                // Field NPC_INFO_HIDE_EMPTY:Lnet/rsprox/shared/settings/Setting;
+     558: new           #2                  // class net/rsprox/shared/settings/Setting
+     561: dup
+     562: ldc_w         #283                // String EXACTMOVE_SUBTRACT_FIRST_DELAY
+     565: bipush        22
+     567: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     570: getstatic     #182                // Field net/rsprox/shared/settings/SettingCategory.MISC:Lnet/rsprox/shared/settings/SettingCategory;
+     573: ldc_w         #285                // String Exactmove Delays
+     576: iconst_0
+     577: ldc_w         #287                // String Subtracts delay1 from delay2 when logging exactmove. The variables will be logged as \"delay\" and \"duration\" afterwards.
+     580: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     583: putstatic     #145                // Field EXACTMOVE_SUBTRACT_FIRST_DELAY:Lnet/rsprox/shared/settings/Setting;
+     586: new           #2                  // class net/rsprox/shared/settings/Setting
+     589: dup
+     590: ldc_w         #288                // String WORLDENTITY_INFO_HIDE_EMPTY
+     593: bipush        23
+     595: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     598: getstatic     #291                // Field net/rsprox/shared/settings/SettingCategory.WORLDENTITY_INFO:Lnet/rsprox/shared/settings/SettingCategory;
+     601: ldc_w         #293                // String Hide Empty World Entity Info
+     604: iconst_1
+     605: ldc_w         #295                // String Hides the World Entity info packet entry if there are no logged entries to show.
+     608: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     611: putstatic     #148                // Field WORLDENTITY_INFO_HIDE_EMPTY:Lnet/rsprox/shared/settings/Setting;
+     614: new           #2                  // class net/rsprox/shared/settings/Setting
+     617: dup
+     618: ldc_w         #296                // String WORLDENTITY_INFO_DECIMAL_COORDS
+     621: bipush        24
+     623: getstatic     #159                // Field net/rsprox/shared/settings/SettingGroup.LOGGING:Lnet/rsprox/shared/settings/SettingGroup;
+     626: getstatic     #291                // Field net/rsprox/shared/settings/SettingCategory.WORLDENTITY_INFO:Lnet/rsprox/shared/settings/SettingCategory;
+     629: ldc_w         #298                // String World Entity Info Decimal Coords
+     632: iconst_1
+     633: ldc_w         #300                // String Shows decimal coordinates for world entities (e.g. 3200.75 instead of x=3200, finex=96). Does not work if Jagex-style coordinates are enabled.
+     636: invokespecial #38                 // Method "<init>":(Ljava/lang/String;ILnet/rsprox/shared/settings/SettingGroup;Lnet/rsprox/shared/settings/SettingCategory;Ljava/lang/String;ZLjava/lang/String;)V
+     639: putstatic     #151                // Field WORLDENTITY_INFO_DECIMAL_COORDS:Lnet/rsprox/shared/settings/Setting;
+     642: invokestatic  #302                // Method $values:()[Lnet/rsprox/shared/settings/Setting;
+     645: putstatic     #55                 // Field $VALUES:[Lnet/rsprox/shared/settings/Setting;
+     648: getstatic     #55                 // Field $VALUES:[Lnet/rsprox/shared/settings/Setting;
+     651: checkcast     #304                // class "[Ljava/lang/Enum;"
+     654: invokestatic  #310                // Method kotlin/enums/EnumEntriesKt.enumEntries:([Ljava/lang/Enum;)Lkotlin/enums/EnumEntries;
+     657: putstatic     #75                 // Field $ENTRIES:Lkotlin/enums/EnumEntries;
+     660: return
+}
