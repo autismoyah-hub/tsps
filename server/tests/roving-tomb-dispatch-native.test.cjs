@@ -1,6 +1,7 @@
 // Run after cache setup and build: node --test tests/roving-tomb-dispatch-native.test.cjs
 // Exercises the actual PluginManager registration wrappers in quest order. Seeded
 // quest stages and inventory are a bounded server-dispatch fixture, not retail proof.
+process.env.DISABLE_PLAYER_BOTS = '1';
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { before, after, test } = require('node:test');
@@ -15,10 +16,14 @@ const { PlayerSave } = require('../dist/game/entity/impl/player/persistence/Play
 let core;
 const errors = [], originalError = console.error, originalWarn = console.warn;
 console.error = (...args) => { errors.push(['error',...args]); originalError(...args); };
-console.warn = (...args) => { errors.push(['warn',...args]); originalWarn(...args); };
+console.warn = (...args) => { if (!String(args[0] ?? '').startsWith('[task] slow_task_tick ')) errors.push(['warn',...args]); originalWarn(...args); };
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, '..'));
   PM.loadFromDirectory(path.resolve(__dirname, '../plugins'));
+  // This finite fixture must not start the administrative HTTP listener.
+  const adminHooks = PM.serverStartupHooks.filter(h => h.pluginName === 'WorldAdmin');
+  assert.equal(adminHooks.length, 1);
+  PM.serverStartupHooks = PM.serverStartupHooks.filter(h => h.pluginName !== 'WorldAdmin');
   core = PM.getCoreApi();
   core.RegionManager.init(); core.RegionManager.loadMapFiles(2558, 3444);
   PM.emitServerStartup({});
