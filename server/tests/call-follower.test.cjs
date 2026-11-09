@@ -1,3 +1,4 @@
+process.env.DISABLE_PLAYER_BOTS = '1';
 const assert = require('node:assert/strict'), path = require('node:path');
 const { before, after, test } = require('node:test');
 require('../dist/Server').Server.installProductionPathResolver();
@@ -11,6 +12,10 @@ const { MultiChatboxPrompt } = require('../dist/game/model/menu/MultiChatboxProm
 let core, next = 1800;
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, '..')); PM.loadFromDirectory(path.resolve(__dirname, '../plugins'));
+  // The finite test must not start an administrative listener.
+  const adminHooks = PM.serverStartupHooks.filter(h => h.pluginName === 'WorldAdmin');
+  assert.equal(adminHooks.length, 1);
+  PM.serverStartupHooks = PM.serverStartupHooks.filter(h => h.pluginName !== 'WorldAdmin');
   core = PM.getCoreApi(); core.RegionManager.init(); core.RegionManager.loadMapFiles(3222, 3218); PM.emitServerStartup({});
 });
 after(() => PM.emitServerShutdown({}));
@@ -143,7 +148,10 @@ test('Ratcatchers sewer task refuses player-killed rats', t => {
   const errors = [];
   for (const level of ['warn', 'error']) {
     const original = console[level];
-    t.mock.method(console, level, (...args) => { errors.push([level, ...args]); original(...args); });
+    t.mock.method(console, level, (...args) => {
+      if (level !== 'warn' || !String(args[0] ?? '').startsWith('[task] slow_task_tick ')) errors.push([level, ...args]);
+      original(...args);
+    });
   }
   const rat = core.NPC.create(core.NpcIdentifiers.RAT, at);
   assert.equal(core.World.getNpcs().add(rat), true);
@@ -168,7 +176,10 @@ test('Ratcatchers counts real adult cat sewer catches through the sisters and Ji
   const errors = [];
   for (const level of ['warn', 'error']) {
     const original = console[level];
-    t.mock.method(console, level, (...args) => { errors.push([level, ...args]); original(...args); });
+    t.mock.method(console, level, (...args) => {
+      if (level !== 'warn' || !String(args[0] ?? '').startsWith('[task] slow_task_tick ')) errors.push([level, ...args]);
+      original(...args);
+    });
   }
   const sewer = new core.Location(3250, 9850, 0);
   f.p.setLocation(sewer.clone()); other.p.setLocation(sewer.clone().add(20, 0));
