@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+"""Inspect public 2211 tar against an externally extracted trimmed 3027 master.
+Only archives 2 and 3 are compared. Not a full cache validator.
+"""
+import argparse,bz2,gzip,hashlib,re,struct,tarfile,zlib
+from collections import Counter
+p=argparse.ArgumentParser(); p.add_argument('tar'); p.add_argument('master'); a=p.parse_args()
+master=open(a.master,'rb').read(); assert hashlib.sha256(master).hexdigest()=='72c3ad092dcea8aa8d2494b208270b9c5054ef8e6de991c84fd0e026d95d7d57'; assert len(master)==205 and master[:5]==bytes.fromhex('00000000c8')
+found={}; allowed={2,3,255}
+with tarfile.open(a.tar,'r:gz') as t:
+ for m in t:
+  match=re.fullmatch(r'cache/(2|3|255)/(\d+)\.dat',m.name)
+  if not match: continue
+  if not m.isfile(): raise ValueError('non-regular selected member')
+  key=(int(match[1]),int(match[2]))
+  if key in found: raise ValueError('duplicate member')
+  found[key]=t.extractfile(m).read()
+def crc(b):return zlib.crc32(b)&0xffffffff
+for i in range(25):
+ want,version=struct.unpack_from('>II',master,5+i*8); row=found.get((255,i))
+ if want==0:
+  if row is not None: raise ValueError('zero slot unexpectedly present')
+ elif row is None or crc(row)!=want: raise ValueError(f'reference mismatch {i}')
+def unpack(b):
+ kind=b[0]; n=int.from_bytes(b[1:5],'big')
+ if kind==0: return b[5:5+n]
+ if kind==1:return bz2.decompress(b'BZh1'+b[9:9+n])
+ if kind==2:return gzip.decompress(b[9:9+n])
+ raise ValueError('compression')
+for archive in (2,3):
+ b=unpack(found[(255,archive)]); pos=0
+ def read(n):
+  global pos
+  if pos+n>len(b): raise ValueError('truncated index')
+  v=int.from_bytes(b[pos:pos+n],'big'); pos+=n; return v
+ def smart():return read(4)&0x7fffffff if b[pos]&128 else read(2)
+ if read(1)!=7: raise ValueError('expected protocol 7')
+ read(4); flags=read(1)
+ if flags!=4: raise ValueError('unexpected flags')
+ n=smart(); ids=[]; cur=0
+ for _ in range(n):
+  cur+=smart()
+  if ids and cur<=ids[-1]: raise ValueError('duplicate/nonmonotone group')
+  ids.append(cur)
+ crcs=[read(4) for _ in ids]; pos+=8*n
+ actual={key[1] for key in found if key[0]==archive}
+ if actual!=set(ids): raise ValueError(f'group membership mismatch {archive}')
+ for group,want in zip(ids,crcs):
+  data=found[(archive,group)]
+  if crc(data)!=want and (len(data)<2 or crc(data[:-2])!=want): raise ValueError(f'group CRC mismatch {archive}:{group}')
+ print(f'archive {archive}: {n} groups match CRCs and membership')
+print('reference tables: 23 nonzero master slots match; zero slots absent')
