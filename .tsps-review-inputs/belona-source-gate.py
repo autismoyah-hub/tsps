@@ -10,7 +10,7 @@ def sha(raw): return hashlib.sha256(raw).hexdigest()
 def git_source(source, path):
     return subprocess.check_output(['git','show',source+':'+path],stderr=subprocess.PIPE)
 
-def verify_source_profile(plan, manifest_raw, payload_raw, profile, read_source=git_source):
+def verify_source_profile(plan, manifest_raw, payload_raw, profile, inventory_raw, read_source=git_source):
     ref=plan.get('expectedInputsRef',{})
     if len(manifest_raw) != ref.get('bytes') or sha(manifest_raw) != ref.get('sha256'): raise ValueError('manifest identity mismatch')
     manifest=json.loads(manifest_raw)
@@ -49,6 +49,12 @@ def verify_source_profile(plan, manifest_raw, payload_raw, profile, read_source=
         raise ValueError('native payload/profile mismatch')
     for marker in ("scripts/ensure-cache.ts", "target !== PLAN.cacheTarget", "cacheInfo.id !== PLAN.cacheId"):
         if marker not in payload: raise ValueError('payload cache guard missing')
+    if sha(inventory_raw) != profile.get('cacheInventorySHA256'): raise ValueError('cache inventory identity mismatch')
+    inventory=json.loads(inventory_raw)
+    if inventory.get('schema') != 1 or inventory.get('target') != target or inventory.get('cacheId') != plan['cacheId']:
+        raise ValueError('cache inventory target/id mismatch')
+    if inventory.get('expectedCacheFiles') != plan.get('expectedCacheFiles'):
+        raise ValueError('cache inventory files mismatch')
     expected_cache=plan.get('expectedCacheFiles')
     if not isinstance(expected_cache,dict) or not expected_cache: raise ValueError('cache file evidence missing')
     prefix='caches/'+target+'/'
@@ -58,10 +64,10 @@ def verify_source_profile(plan, manifest_raw, payload_raw, profile, read_source=
         raise ValueError('cache file evidence incomplete')
     return {'source':plan['source'],'target':target,'cacheId':plan['cacheId'],'nodeEngine':engine,'nativeVersion':version,'image':plan['image']}
 
-def guard_before_adapter(held_raw,manifest_raw,payload_raw,profile,caller,adapter,read_source=git_source):
+def guard_before_adapter(held_raw,manifest_raw,payload_raw,profile,inventory_raw,caller,adapter,read_source=git_source):
     """Only a synthetic adapter may be supplied before independent case review."""
     _,selected=caller.prepare_selected(held_raw)
     plan=json.loads(selected)
-    result=verify_source_profile(plan,manifest_raw,payload_raw,profile,read_source)
+    result=verify_source_profile(plan,manifest_raw,payload_raw,profile,inventory_raw,read_source)
     adapter()
     return result

@@ -1,5 +1,6 @@
 {
   "cacheId": 2746,
+  "cacheInventorySHA256": "7dc817d45cf625dc6b19db92d5014850c05fb7d21c827a1de9fe3686333703cc",
   "cacheTarget": "osrs-241_2026-10-20",
   "image": "node@sha256:b04ce4ae4e95b522112c2e5c52f781471a5cbc3b594527bcddedee9bc48c03a0",
   "nativeAssetSHA256": "1a31d28a7aec9c1538cb96b76260d062399715b4dcea0ff3a0ebd6f58df5e391",

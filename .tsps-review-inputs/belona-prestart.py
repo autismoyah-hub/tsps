@@ -35,7 +35,7 @@ def durable_create(path, raw):
 def canonical_subject(subject):
     required = {'owner','reviewer','model','reasoningEffort','source','heldPlanSHA256','selectedPlanSHA256','manifestSHA256',
                 'callerSHA256','prestartSHA256','payloadSHA256','pilotSHA256','adapterSHA256',
-                'childSHA256','classifierSHA256','liveSHA256','launcherSHA256','sourceGateSHA256','sourceProfileSHA256','sdkPythonSHA256','sdkManifestSHA256','cliSHA256','sdkVersion','requestSHA256'}
+                'childSHA256','classifierSHA256','liveSHA256','entrySHA256','launcherSHA256','sourceGateSHA256','sourceProfileSHA256','cacheInventorySHA256','sdkPythonSHA256','sdkManifestSHA256','cliSHA256','sdkVersion','requestSHA256'}
     if not isinstance(subject,dict) or set(subject) != required: raise ValueError('authority subject schema')
     if subject['owner'] != OWNER or subject['reviewer'] != REVIEWER or subject['model'] != 'gpt-6.1-terra' or subject['reasoningEffort'] != 'medium' or subject['sdkVersion'] != '2.4.0':
         raise ValueError('authority identity mismatch')
@@ -160,7 +160,7 @@ def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, run
     if os.environ.get('CCC_SESSION_ID') != OWNER: raise ValueError('session environment mismatch')
     if subject['cliSHA256'] != cli_sha or subject['callerSHA256'] != CALLER_SHA: raise ValueError('CLI/caller subject mismatch')
     pinned(cli,cli_sha); pinned(preflight,PREFLIGHT_SHA); pinned(caller,CALLER_SHA)
-    keys = {'payloadSHA256','pilotSHA256','adapterSHA256','childSHA256','classifierSHA256','liveSHA256','launcherSHA256','sourceGateSHA256','sourceProfileSHA256','sdkPythonSHA256','prestartSHA256'}
+    keys = {'payloadSHA256','pilotSHA256','adapterSHA256','childSHA256','classifierSHA256','liveSHA256','entrySHA256','launcherSHA256','sourceGateSHA256','sourceProfileSHA256','cacheInventorySHA256','sdkPythonSHA256','prestartSHA256'}
     if set(runtime_files) != keys: raise ValueError('runtime file keyset mismatch')
     for key in keys: pinned(runtime_files[key],subject[key])
     if Path(runtime_files['prestartSHA256']).resolve() != Path(__file__).resolve(): raise ValueError('prestart source mismatch')
@@ -193,7 +193,7 @@ def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, run
     case_caller=types.ModuleType('belona_verified_source_caller');case_caller.__file__=str(caller_path)
     exec(compile(caller_raw,str(caller_path),'exec'),case_caller.__dict__)
     profile=json.loads(Path(runtime_files['sourceProfileSHA256']).read_bytes())
-    gate.guard_before_adapter(held_raw,manifest_raw,Path(runtime_files['payloadSHA256']).read_bytes(),profile,case_caller,lambda:None)
+    gate.guard_before_adapter(held_raw,manifest_raw,Path(runtime_files['payloadSHA256']).read_bytes(),profile,Path(runtime_files['cacheInventorySHA256']).read_bytes(),case_caller,lambda:None)
     validate_review(review_raw,subject,cli_sha)
     config = effective_config()
     if config['model'] != subject['model'] or config['reasoningEffort'] != subject['reasoningEffort']: raise ValueError('subject/config mismatch')
