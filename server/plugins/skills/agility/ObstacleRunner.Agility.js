@@ -179,7 +179,8 @@ function expandSteps(steps) {
 function createObstacleTask(Task) {
   return class ObstacleTask extends Task {
     constructor(context, steps, onFinish) {
-      super(1, context.player, true);
+      // Each attempt owns its key; other content cancels player-keyed work during logout.
+      super(1, context, true);
       this.context = context;
       this.player = context.player;
       this.steps = expandSteps(steps);

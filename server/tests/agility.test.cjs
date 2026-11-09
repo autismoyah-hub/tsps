@@ -53,6 +53,7 @@ const agilityApi = {
   onObjectFirstClick: (ids, handler) => ids.forEach((id) => hooks.click.set(id, handler)),
   onObjectInteraction: (name, actions) => hooks.objectActions.set(name, { ...(hooks.objectActions.get(name) ?? {}), ...actions }),
   onCanTeleport: (handler) => hooks.teleport.push(handler),
+  onCanRemovePlayer() {},
   registerArea: (area) => hooks.areas.push(area),
   onPlayerLogout: (handler) => hooks.logout.push(handler),
   onPlayerLogin: (handler) => hooks.login.push(handler),
@@ -2157,4 +2158,228 @@ test("Broken Raft checks the grapple requirements on both approaches", async (t)
     check("raftboostst", east, 8, 19, 37, true, true, { baseStrength: 18 }));
   await t.test("Ranged boosted above base reaches the grapple requirement", () =>
     check("raftboostra", west, 8, 19, 37, true, true, { baseRanged: 36 }));
+});
+
+test("an admitted Varrock fall retains its damage when the player logs out", async (t) => {
+  const { Player } = require("../dist/game/entity/impl/player/Player");
+  const { PlayerSession } = require("../dist/net/PlayerSession");
+  const { PlayerSave } = require("../dist/game/entity/impl/player/persistence/PlayerSave");
+  const { ObjectActionPacketListener } = require("../dist/net/packet/impl/ObjectActionPacketListener");
+  const core = PluginManager.getCoreApi();
+  const { World, RegionManager, MapObjects } = core;
+  const actors = new Set(), snapshots = new Map(), outcomes = new Map(), ownedTasks = new Set(), errors = [];
+  const channels = new WeakMap(), initialHitpoints = new WeakMap(), experienceRequests = new WeakMap();
+  const oldBots = process.env.DISABLE_PLAYER_BOTS, oldSubmit = core.TaskManager.submit, oldError = console.error;
+  let persistence = null, oldSave = null;
+  let started = false, serial = 0;
+  process.env.DISABLE_PLAYER_BOTS = "1";
+  t.after(() => {
+    try {
+      for (const p of actors) {
+        const task = p.getAttribute("agility.obstacle");
+        if (task?.isRunning()) task.stop();
+        if (p.isRegistered()) World.getPlayers().removes(p);
+      }
+      if (started) PluginManager.emitServerShutdown({});
+      for (const task of ownedTasks) if (task.isRunning()) task.stop();
+      World.process();
+      assert.ok([...ownedTasks].every(task => !task.isRunning()), "fixture tasks stop");
+      assert.deepEqual(errors, [], "no plugin or teardown errors were hidden");
+    } finally {
+      if (persistence) persistence.save = oldSave;
+      core.TaskManager.submit = oldSubmit;
+      console.error = oldError;
+      if (oldBots === undefined) delete process.env.DISABLE_PLAYER_BOTS; else process.env.DISABLE_PLAYER_BOTS = oldBots;
+    }
+  });
+  core.TaskManager.submit = function (...args) { if (args[0]) ownedTasks.add(args[0]); return oldSubmit.apply(this, args); };
+  console.error = (...args) => { errors.push(args.map(String).join(" ")); return oldError.apply(console, args); };
+  core.ObjectDefinition.init(); core.RegionManager.init();
+  PluginManager.loadFromDirectory(path.resolve(__dirname, "../plugins"));
+  assert.ok(PluginManager.loadedPlugins.includes("Agility"));
+  assert.equal(core.WorldDefinition.isMembersWorld(), true);
+  PluginManager.createApi("AgilityLogoutFixture").onCustomEvent("agility:obstacle-start", event => {
+    if (actors.has(event.player) && event.objectId === ObjectIds.CLOTHES_LINE) outcomes.set(event.player, event.success);
+  });
+  PluginManager.emitServerStartup({}); started = true;
+  persistence = core.GameConstants.PLAYER_PERSISTENCE; oldSave = persistence.save;
+  // Keep the production logout/save call and serializer; the fixture owns only an in-memory backend.
+  persistence.save = function (p, reason) {
+    assert.ok(actors.has(p), "only fixture actors may be saved");
+    assert.ok(reason === "logout" || reason === "death", "only owned logout/death saves");
+    const saves = snapshots.get(p) ?? [];
+    saves.push({ reason, save: PlayerSave.fromPlayer(p) }); snapshots.set(p, saves);
+  };
+  const loc = new Location(3213, 3414, 3);
+  RegionManager.loadMapFiles(loc.getX(), loc.getY());
+  const line = MapObjects.get(ObjectIds.CLOTHES_LINE, loc, null);
+  assert.ok(line, "the active map contains the course clothes line");
+  assert.equal(line.getDefinition().getName(), "Clothes line");
+  assert.equal(line.getDefinition().getInteractions()[0], "Cross");
+  const tile = p => [p.getLocation().getX(), p.getLocation().getY(), p.getLocation().getZ()];
+  function actor(level, hitpoints = 50) {
+    let open = true;
+    const channel = { kind: "test", remoteAddress: "127.0.0.1", isOpen: () => open, send: () => open,
+      close() { open = false; }, onData() {}, onError() {}, onClose() {} };
+    const p = new Player(new PlayerSession(channel)); actors.add(p); channels.set(p, channel);
+    initialHitpoints.set(p, hitpoints);
+    p.setUsername(`aglogout${++serial}`); p.setLongUsername(core.Misc.stringToLongBigInt(p.getUsername()));
+    p.setLocation(new Location(3214, 3414, 3));
+    assert.equal(RegionManager.blocked(p.getLocation(), null), false, "seeded approach is walkable");
+    assert.equal(World.getPlayers().add(p), true); p.needsPlacement = false;
+    const sm = p.getSkillManager();
+    const addExperiences = sm.addExperiences; experienceRequests.set(p, []);
+    sm.addExperiences = function (...args) { experienceRequests.get(p).push(args); return addExperiences.apply(this, args); };
+    for (const [skill, value] of [[Skill.AGILITY, level], [Skill.HITPOINTS, 50]]) {
+      sm.setExperiences(skill, core.SkillManager.getExperienceForLevel(value), false);
+      sm.setMaxLevel(skill, value); sm.setCurrentLevels(skill, value);
+    }
+    sm.setCurrentLevels(Skill.HITPOINTS, hitpoints); // Legal wounded checkpoint; the obstacle supplies the damage.
+    assert.equal(sm.getMaxLevel(Skill.HITPOINTS), 50);
+    assert.equal(p.getHitpoints(), hitpoints);
+    assert.equal(p.logoutRefusal(), null, "no combat logout hold");
+    return p;
+  }
+  function start(p) {
+    new ObjectActionPacketListener().executeAction(p, ObjectIds.CLOTHES_LINE, loc.getX(), loc.getY(), 1);
+    for (let i = 0; i < 20 && !outcomes.has(p); i++) World.process();
+    assert.equal(outcomes.has(p), true, "real registered object action reached an obstacle outcome");
+    assert.ok(p.getAttribute("agility.obstacle")?.isRunning(), "the committed action is still in progress");
+    assert.equal(p.getHitpoints(), initialHitpoints.get(p), "fall damage has not landed at the selected boundary");
+    assert.equal(p.getSkillManager().getMaxLevel(Skill.AGILITY), p.getSkillManager().getCurrentLevel(Skill.AGILITY));
+  }
+  function drain(p) {
+    for (let i = 0; i < 35 && p.getAttribute("agility.obstacle"); i++) World.process();
+    World.process();
+    assert.equal(p.getAttribute("agility.obstacle"), null);
+    assert.equal(p.getMovementQueue().isMovementBlocked(), false);
+  }
+  function logout(p, disconnected = false) {
+    if (disconnected) {
+      channels.get(p).close();
+      p.setDisconnectSource("socket-closed");
+      World.getRemovePlayerQueue().push(p); // The production closed-connection removal queue, without a real socket.
+    }
+    for (let i = 0; i < 40 && p.isRegistered(); i++) {
+      if (!disconnected) World.queueLogoutRequest(p);
+      World.process();
+    }
+    assert.equal(p.isRegistered(), false, "ordinary logout eventually removes the actor");
+    assert.equal(channels.get(p).isOpen(), false, "the transport has closed before the final save is observed");
+    const saves = (snapshots.get(p) ?? []).filter(snapshot => snapshot.reason === "logout");
+    assert.equal(saves.length, 1, "the real logout path saved exactly once");
+    const restored = new Player(new PlayerSession({ kind: "test", remoteAddress: "127.0.0.1", isOpen: () => true,
+      send: () => true, close() {}, onData() {}, onError() {}, onClose() {} }));
+    saves[0].save.applyToPlayer(restored);
+    assert.deepEqual(tile(restored), tile(p), "serialized landing restores");
+    assert.equal(restored.getHitpoints(), p.getHitpoints(), "serialized health restores");
+    return restored;
+  }
+  function failedActor({ hitpoints = 50 } = {}) {
+    // Observe natural production rolls without RNG replacement or fabricated outcome events.
+    // Successful repetitions are completed and saved too; a missing failure is a setup failure.
+    for (let i = 0; i < 32; i++) {
+      const p = actor(30, hitpoints); start(p);
+      if (outcomes.get(p) === false) return p;
+      drain(p); assert.deepEqual(tile(p), [3208, 3414, 3]);
+      // This successful search actor is discarded; restore it before cleanup so
+      // save normalization of wounded health cannot obscure the failed roll.
+      p.getSkillManager().setCurrentLevels(Skill.HITPOINTS, 50);
+      logout(p);
+    }
+    assert.fail("no natural failed roll in 32 ordinary clicks: target boundary not reached");
+  }
+  function walkRestored(restored) {
+    restored.setUsername(`agrestore${++serial}`);
+    restored.setLongUsername(core.Misc.stringToLongBigInt(restored.getUsername()));
+    restored.setAttribute("bot-skip-persistence", true);
+    actors.add(restored);
+    RegionManager.loadMapFiles(restored.getLocation().getX(), restored.getLocation().getY());
+    assert.equal(World.getPlayers().add(restored), true, "the restored actor enters the real world");
+    restored.needsPlacement = false;
+    assert.equal(restored.getMovementQueue().isMovementBlocked(), false, "restoration has no movement lock");
+    const from = restored.getLocation().clone(), hp = restored.getHitpoints();
+    const next = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dy]) => from.transform(dx, dy))
+      .find(tile => RegionManager.canMovestart(from, tile, 1, 1, null));
+    assert.ok(next, "the saved landing has an ordinary walkable neighbor");
+    restored.getMovementQueue().requestWalk(next);
+    assert.ok(restored.getMovementQueue().getDestination()?.equals(next), "ordinary movement queued the selected endpoint");
+    for (let i = 0; i < 8 && !restored.getLocation().equals(next); i++) World.process();
+    assert.ok(restored.getLocation().equals(next), "the restored actor completed the next ordinary walk");
+    assert.equal(restored.getHitpoints(), hp, "the next action did not replay fall damage");
+    World.getPlayers().removes(restored);
+  }
+  await t.test("successful obstacle logout preserves landing and XP", () => {
+    const p = actor(46), xp = p.getSkillManager().getExperience(Skill.AGILITY); start(p);
+    assert.equal(outcomes.get(p), true);
+    const restored = logout(p);
+    assert.deepEqual(tile(restored), [3208, 3414, 3]); assert.equal(restored.getHitpoints(), 50);
+    assert.ok(restored.getSkillManager().getExperience(Skill.AGILITY) > xp);
+    assert.deepEqual(experienceRequests.get(p).filter(([skill]) => skill === Skill.AGILITY).map(([, xp]) => xp), [23],
+      "the real XP manager received this obstacle exactly once");
+    walkRestored(restored);
+  });
+  await t.test("completed failure applies its damage once before logout", () => {
+    const p = failedActor(), xp = p.getSkillManager().getExperience(Skill.AGILITY); drain(p);
+    assert.deepEqual(tile(p), [3212, 3414, 0]);
+    const hp = p.getHitpoints(); assert.ok(hp >= 42 && hp <= 47, `normal fall health ${hp}`);
+    const restored = logout(p); assert.equal(restored.getHitpoints(), hp);
+    assert.equal(restored.getSkillManager().getExperience(Skill.AGILITY), xp);
+    World.process(); assert.equal(p.getHitpoints(), hp, "removed actor takes no second damage");
+  });
+  await t.test("logout during a committed failure preserves its damage", () => {
+    const p = failedActor(), xp = p.getSkillManager().getExperience(Skill.AGILITY);
+    assert.equal(outcomes.get(p), false);
+    const restored = logout(p);
+    assert.deepEqual(tile(restored), [3212, 3414, 0]);
+    assert.equal(restored.getSkillManager().getExperience(Skill.AGILITY), xp);
+    const hp = restored.getHitpoints();
+    assert.ok(hp >= 42 && hp <= 47, `a committed fall retains 3-8 damage in the logout save; health ${hp}`);
+    walkRestored(restored);
+  });
+  await t.test("a fall queued on the removal tick reaches the saved health", () => {
+    const p = failedActor();
+    let beforeImpact = false;
+    for (let i = 0; i < 20; i++) {
+      const task = p.getAttribute("agility.obstacle");
+      const next = task?.steps[task.index];
+      if (task?.isRunning() && task.waitTicks > 0 && next?.tele?.[2] === 0) {
+        beforeImpact = true; break;
+      }
+      World.process();
+    }
+    assert.equal(beforeImpact, true, "observed the real task before its final landing/hit phase");
+    assert.deepEqual(tile(p), [3212, 3414, 3]);
+    assert.equal(p.getHitpoints(), 50);
+    const restored = logout(p);
+    assert.deepEqual(tile(restored), [3212, 3414, 0]);
+    assert.ok(restored.getHitpoints() >= 42 && restored.getHitpoints() <= 47,
+      `the hit queued before removal must be saved; health ${restored.getHitpoints()}`);
+  });
+  await t.test("a closed connection also finishes the committed fall before saving", () => {
+    const p = failedActor(), xp = p.getSkillManager().getExperience(Skill.AGILITY);
+    const restored = logout(p, true);
+    assert.deepEqual(tile(restored), [3212, 3414, 0]);
+    assert.equal(restored.getSkillManager().getExperience(Skill.AGILITY), xp);
+    assert.ok(restored.getHitpoints() >= 42 && restored.getHitpoints() <= 47,
+      `a dropped connection retains the admitted fall damage; health ${restored.getHitpoints()}`);
+  });
+  await t.test("a lethal fall completes its ordinary death before the logout save", () => {
+    const normal = failedActor({ hitpoints: 3 });
+    for (let i = 0; i < 35 && normal.getAttribute("agility.obstacle"); i++) World.process();
+    assert.equal(normal.getAttribute("agility.obstacle"), null);
+    assert.equal(normal.getHitpoints(), 0, "the real failed obstacle reaches lethal damage");
+    for (let i = 0; i < 12 && normal.getHitpoints() <= 0; i++) World.process();
+    assert.equal(normal.getHitpoints(), 50, "the normal death task restored base health");
+    assert.notDeepEqual(tile(normal), [3212, 3414, 0], "the normal death task moved to its respawn");
+    const expected = { hp: normal.getHitpoints(), tile: tile(normal) };
+    const ordinary = logout(normal);
+    assert.equal(ordinary.getHitpoints(), expected.hp);
+    assert.deepEqual(tile(ordinary), expected.tile);
+    const p = failedActor({ hitpoints: 3 });
+    const restored = logout(p);
+    assert.equal(restored.getHitpoints(), expected.hp, "a logout must not discard a lethal fall or save a dead actor");
+    assert.deepEqual(tile(restored), expected.tile, "the logout snapshot retains the normal respawn");
+    assert.equal(p.getMovementQueue().isMovementBlocked(), false);
+  });
 });
