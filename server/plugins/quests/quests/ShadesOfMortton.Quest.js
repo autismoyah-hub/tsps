@@ -234,6 +234,7 @@ module.exports = function registerShadesOfMorttonQuest(api) {
   const TABLE_SEARCHED_ATTRIBUTE = "quest.shades_of_mortton.table_searched";
   const TEMPLE_REPAIRED_ATTRIBUTE = "shades-of-mortton:temple-repaired";
   const TEMPLE_SANCTITY_ATTRIBUTE = "shades-of-mortton:temple-sanctity";
+  const SANCTITY_RESET_ATTRIBUTE = "shades-of-mortton:sanctity-reset";
   // Older saves stored a 0..5 wall-repair count under this key.
   const LEGACY_TEMPLE_BUILD_ATTRIBUTE = "quest.shades_of_mortton.temple_build";
   const PERM_ULSQUIRE_ATTRIBUTE = "shades-of-mortton:perm-ulsquire";
@@ -295,7 +296,7 @@ module.exports = function registerShadesOfMorttonQuest(api) {
   function templeProgress(player) {
     const oldRepaired = Math.min(100, Number(player.getAttribute(TEMPLE_REPAIRED_ATTRIBUTE)) || 0);
     let sanctity = Math.min(100, Number(player.getAttribute(TEMPLE_SANCTITY_ATTRIBUTE)) || 0);
-    if (oldRepaired === 0 && sanctity === 0) {
+    if (oldRepaired === 0 && sanctity === 0 && !player.getAttribute(SANCTITY_RESET_ATTRIBUTE)) {
       // Preserve old personal sanctity without inferring a world repair percentage.
       if (quest.getStage(player) >= STAGE_CAN_LIGHT_ALTAR) {
         sanctity = 20;
@@ -1115,6 +1116,11 @@ module.exports = function registerShadesOfMorttonQuest(api) {
     syncCuredNpcs(player);
   }
 
+  function handleLogout({ player }) {
+    player.setAttribute(SANCTITY_RESET_ATTRIBUTE, true);
+    player.setAttribute(TEMPLE_SANCTITY_ATTRIBUTE, 0);
+  }
+
   api.persistAttribute(KILLS_ATTRIBUTE);
   api.persistAttribute(MET_ULSQUIRE_ATTRIBUTE);
   api.persistAttribute(MET_RAZMIRE_ATTRIBUTE);
@@ -1122,6 +1128,7 @@ module.exports = function registerShadesOfMorttonQuest(api) {
   api.persistAttribute(TABLE_SEARCHED_ATTRIBUTE);
   api.persistAttribute(TEMPLE_REPAIRED_ATTRIBUTE, 0);
   api.persistAttribute(TEMPLE_SANCTITY_ATTRIBUTE, 0);
+  api.persistAttribute(SANCTITY_RESET_ATTRIBUTE, false);
   api.persistAttribute(PERM_ULSQUIRE_ATTRIBUTE, false);
   api.persistAttribute(PERM_RAZMIRE_ATTRIBUTE, false);
   api.persistAttribute(MULTI_ATTRIBUTE);
@@ -1160,4 +1167,5 @@ module.exports = function registerShadesOfMorttonQuest(api) {
   api.onCustomEvent("shades-of-mortton:cremated", cremated);
   api.onRegionLoaded(installAltar);
   api.onPlayerLogin(handleLogin);
+  api.onPlayerLogout(handleLogout);
 };
