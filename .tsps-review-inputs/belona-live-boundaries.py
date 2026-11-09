@@ -64,17 +64,19 @@ def local_records(root, caller, source, name):
     caller.reject_duplicates(rows,source,name)
     return rows
 
-def validate_choice(choice, selected_raw, caller):
+def validate_choice(choice, selected_raw, caller, subject):
     plan=json.loads(selected_raw)
     expected={'action':'SELECT_ONCE','owner':OWNER,'source':plan['source'],
               'selectedPlanSHA256':sha(selected_raw),'manifestSHA256':plan['expectedInputsRef']['sha256'],
+              'requestSHA256':subject['requestSHA256'],
+              'subjectSHA256':sha(json.dumps(subject,sort_keys=True,separators=(',',':')).encode()),
               'attempts':1,'name':plan['name']}
     if choice != expected or sha(selected_raw) not in caller.SELECTED_SHA.values():
         raise ValueError('choice identity mismatch')
     return plan
 
 def literal_and_choice(caller,selected_raw,payload_raw,choice,subject):
-    plan=validate_choice(choice,selected_raw,caller)
+    plan=validate_choice(choice,selected_raw,caller,subject)
     request,program_sha=caller.literal_request(selected_raw,payload_raw)
     request_sha=sha(json.dumps(request,sort_keys=True,separators=(',',':')).encode())
     if subject.get('owner')!=OWNER or subject.get('source')!=plan['source'] or subject.get('selectedPlanSHA256')!=sha(selected_raw) or subject.get('manifestSHA256')!=plan['expectedInputsRef']['sha256'] or subject.get('requestSHA256')!=request_sha:
@@ -102,17 +104,20 @@ def guarded_submit(api, ctx):
     prestart_module=module_snapshot(ctx['prestartSource'],subject['prestartSHA256'],'belona_verified_prestart')
     require_bindings(ctx,caller,helper,subject)
     selected_raw=Path(ctx['plan']).read_bytes();payload_raw=Path(ctx['payload']).read_bytes()
-    choice=json.loads(Path(ctx['choice']).read_bytes()); subject=ctx['subject']
+    choice_raw=Path(ctx['choice']).read_bytes(); choice=json.loads(choice_raw)['choice']; subject=ctx['subject']
     plan,request,program_sha,request_sha=literal_and_choice(caller,selected_raw,payload_raw,choice,subject)
-    if api.whoami().get('name') != NAMESPACE: raise ValueError('provider namespace mismatch')
     snapshot(ctx['prestartSource'],subject['prestartSHA256'])
     if Path(prestart_module.__file__).resolve() != Path(ctx['prestartSource']).resolve() or getattr(prestart_module,'__BELONA_SNAPSHOT_SHA__',None) != subject['prestartSHA256']: raise ValueError('prestart module mismatch')
     prestart_args=ctx['prestartArgs']
     if prestart_args.get('subject') != subject: raise ValueError('prestart subject mismatch')
     first=prestart_module.nonsecret_prestart(**prestart_args)
+    actual_choice=prestart_module.validate_choice_live(subject,selected_raw,choice_raw,prestart_args['review_raw'],prestart_args['cli'],prestart_args['cli_sha'])
+    if actual_choice != choice: raise ValueError('owner choice mismatch')
+    if api.whoami().get('name') != NAMESPACE: raise ValueError('provider namespace mismatch')
     local_records(ctx['localRoot'],caller,plan['source'],plan['name'])
     provider=scan_provider(api,plan['source'],plan['name'],caller)
     second=prestart_module.nonsecret_prestart(**prestart_args)
+    if prestart_module.validate_choice_live(subject,selected_raw,choice_raw,prestart_args['review_raw'],prestart_args['cli'],prestart_args['cli_sha']) != choice: raise ValueError('owner choice changed')
     if first != second: raise ValueError('prestarts differ')
     command=helper.authenticated_pilot_command(ctx['python'],ctx['adapter'],subject['adapterSHA256'],
               ctx['pilot'],subject['pilotSHA256'],ctx['plan'],ctx['sdkRoot'])
@@ -145,7 +150,9 @@ def guarded_status_collect(api,ctx):
     if Path(caller.__file__).resolve() != Path(ctx['caller']).resolve() or getattr(caller,'__BELONA_SNAPSHOT_SHA__',None) != subject['callerSHA256']: raise ValueError('loaded caller mismatch')
     if Path(ctx['plan']).resolve().parent != Path(ctx['caseDir']).resolve(): raise ValueError('plan/case directory mismatch')
     selected_raw=Path(ctx['plan']).read_bytes();payload_raw=Path(ctx['payload']).read_bytes()
-    choice=json.loads(Path(ctx['choice']).read_bytes())
+    choice_raw=Path(ctx['choice']).read_bytes(); choice=json.loads(choice_raw)['choice']
+    args=ctx['prestartArgs']
+    if prestart_module.validate_choice_live(subject,selected_raw,choice_raw,args['review_raw'],args['cli'],args['cli_sha']) != choice: raise ValueError('owner choice mismatch')
     plan,request,program_sha,request_sha=literal_and_choice(caller,selected_raw,payload_raw,choice,ctx['subject'])
     receipt=json.loads((Path(ctx['caseDir'])/'submission.json').read_bytes())
     if receipt.get('namespace')!=NAMESPACE or receipt.get('plan')!=plan or receipt.get('request')!=request:

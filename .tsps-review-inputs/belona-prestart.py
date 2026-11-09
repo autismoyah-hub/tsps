@@ -6,6 +6,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import urllib.request
+import urllib.error
+from datetime import datetime
 
 OWNER = '49676823-be5e-408f-be58-047e80dadbb2'
 REVIEWER = 'ed3a4125-645c-4266-8b86-4e199dd5bc63'
@@ -30,13 +33,13 @@ def durable_create(path, raw):
     if path.read_bytes() != raw: raise ValueError('capture readback mismatch')
 
 def canonical_subject(subject):
-    required = {'owner','reviewer','source','heldPlanSHA256','selectedPlanSHA256','manifestSHA256',
+    required = {'owner','reviewer','model','reasoningEffort','source','heldPlanSHA256','selectedPlanSHA256','manifestSHA256',
                 'callerSHA256','prestartSHA256','payloadSHA256','pilotSHA256','adapterSHA256',
                 'childSHA256','classifierSHA256','liveSHA256','sdkPythonSHA256','sdkManifestSHA256','cliSHA256','sdkVersion','requestSHA256'}
     if not isinstance(subject,dict) or set(subject) != required: raise ValueError('authority subject schema')
-    if subject['owner'] != OWNER or subject['reviewer'] != REVIEWER or subject['sdkVersion'] != '2.4.0':
+    if subject['owner'] != OWNER or subject['reviewer'] != REVIEWER or subject['model'] != 'gpt-6.1-terra' or subject['reasoningEffort'] != 'medium' or subject['sdkVersion'] != '2.4.0':
         raise ValueError('authority identity mismatch')
-    for name in required - {'owner','reviewer','source','sdkVersion'}:
+    for name in required - {'owner','reviewer','model','reasoningEffort','source','sdkVersion'}:
         value=subject[name]
         if not isinstance(value,str) or len(value)!=64 or any(c not in '0123456789abcdef' for c in value):
             raise ValueError('authority hash malformed')
@@ -81,6 +84,85 @@ def validate_review(receipt_raw, subject, cli_sha):
     if not isinstance(receipt.get('rawTranscriptSHA256'),str) or len(receipt['rawTranscriptSHA256']) != 64:
         raise ValueError('review transcript hash missing')
 
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self,*args,**kwargs): raise ValueError('config redirect refused')
+
+def effective_config():
+    base=os.environ.get('CCC_BASE_URL','').rstrip('/')
+    token=os.environ.get('CCC_TOKEN') or os.environ.get('CCC_PAT')
+    if not base or not token: raise ValueError('own ambient config credentials unavailable')
+    headers={'Authorization':'Bearer '+token} if token.startswith('ccc_pat_') else {'X-CCC-Control-Token':token}
+    request=urllib.request.Request(base+'/api/acp/sessions/'+OWNER+'/config',headers=headers)
+    with urllib.request.build_opener(NoRedirect()).open(request,timeout=30) as response:
+        if response.status != 200: raise ValueError('effective config unavailable')
+        raw=response.read(1024*1024+1)
+    if len(raw)>1024*1024: raise ValueError('config response exceeds bound')
+    data=json.loads(raw)
+    if data.get('ok') is not True: raise ValueError('effective config rejected')
+    options=data.get('configOptions')
+    if not isinstance(options,list): raise ValueError('config options missing')
+    values={}
+    for item in options:
+        if not isinstance(item,dict): raise ValueError('invalid config option')
+        key=item.get('id')
+        if key in ('model','reasoning_effort'):
+            if key in values: raise ValueError('duplicate effective config')
+            values[key]=item.get('currentValue')
+    if values != {'model':'gpt-6.1-terra','reasoning_effort':'medium'}:
+        raise ValueError('effective model/effort mismatch')
+    return {'model':values['model'],'reasoningEffort':values['reasoning_effort'],'configSHA256':sha(raw)}
+
+def selected_choice(subject, selected_raw):
+    digest=sha(canonical_subject(subject))
+    if sha(selected_raw)!=subject['selectedPlanSHA256']: raise ValueError('selected plan mismatch')
+    selected=json.loads(selected_raw)
+    if selected.get('source')!=subject['source'] or selected.get('expectedInputsRef',{}).get('sha256')!=subject['manifestSHA256']:
+        raise ValueError('choice source/manifest mismatch')
+    return {'action':'SELECT_ONCE','owner':OWNER,'source':selected['source'],
+            'selectedPlanSHA256':sha(selected_raw),'manifestSHA256':subject['manifestSHA256'],
+            'requestSHA256':subject['requestSHA256'],'subjectSHA256':digest,'attempts':1,'name':selected['name']}
+
+def capture_choice(subject, selected_raw, review_raw, cli, cli_sha, output):
+    """A distinct exact owner assistant turn is required; never creates the turn."""
+    if os.environ.get('CCC_SESSION_ID') != OWNER: raise ValueError('session environment mismatch')
+    validate_review(review_raw,subject,cli_sha)
+    if subject['cliSHA256']!=cli_sha: raise ValueError('CLI subject mismatch')
+    pinned(cli,cli_sha)
+    choice=selected_choice(subject,selected_raw)
+    result=subprocess.run([str(Path(cli).resolve()),'--json','sessions','read','--turns','100',OWNER],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30,check=True)
+    turns=json.loads(result.stdout).get('turns',[])
+    text='BELONA_SELECT_ONCE '+choice['subjectSHA256']+' '+choice['selectedPlanSHA256']+' '+choice['requestSHA256']
+    matches=[t for t in turns if t.get('role')=='assistant' and t.get('kind')!='thinking' and t.get('text','').strip()==text]
+    if len(matches)!=1: raise ValueError('exact owner choice missing or ambiguous')
+    review_turn=json.loads(review_raw)['turn']; turn=matches[0]
+    try:
+        selected_at=datetime.fromisoformat(turn['ts'].replace('Z','+00:00'))
+        reviewed_at=datetime.fromisoformat(review_turn['ts'].replace('Z','+00:00'))
+    except (ValueError,KeyError,TypeError): raise ValueError('choice/review timestamps invalid')
+    if selected_at<=reviewed_at: raise ValueError('choice not later than review')
+    receipt={'type':'DIRECT_OWNER_CHOICE_CAPTURE','choice':choice,'turn':turn,'rawTranscriptSHA256':sha(result.stdout),'cliSHA256':cli_sha}
+    raw=(json.dumps(receipt,sort_keys=True,indent=2)+'\n').encode();durable_create(output,raw);return sha(raw)
+
+def validate_choice_live(subject, selected_raw, choice_raw, review_raw, cli, cli_sha):
+    if os.environ.get('CCC_SESSION_ID') != OWNER: raise ValueError('session environment mismatch')
+    validate_review(review_raw,subject,cli_sha)
+    if subject['cliSHA256'] != cli_sha: raise ValueError('CLI subject mismatch')
+    pinned(cli,cli_sha)
+    receipt=json.loads(choice_raw);choice=selected_choice(subject,selected_raw)
+    if receipt.get('type')!='DIRECT_OWNER_CHOICE_CAPTURE' or receipt.get('choice')!=choice or receipt.get('cliSHA256')!=cli_sha:
+        raise ValueError('choice receipt mismatch')
+    result=subprocess.run([str(Path(cli).resolve()),'--json','sessions','read','--turns','100',OWNER],stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30,check=True)
+    text='BELONA_SELECT_ONCE '+choice['subjectSHA256']+' '+choice['selectedPlanSHA256']+' '+choice['requestSHA256']
+    matches=[t for t in json.loads(result.stdout).get('turns',[]) if t.get('role')=='assistant' and t.get('kind')!='thinking' and t.get('text','').strip()==text]
+    if len(matches)!=1 or matches[0]!=receipt.get('turn'): raise ValueError('live owner choice mismatch')
+    try:
+        selected_at=datetime.fromisoformat(matches[0]['ts'].replace('Z','+00:00'))
+        reviewed_at=datetime.fromisoformat(json.loads(review_raw)['turn']['ts'].replace('Z','+00:00'))
+    except (ValueError,KeyError,TypeError): raise ValueError('choice/review timestamps invalid')
+    if selected_at<=reviewed_at: raise ValueError('choice not later than review')
+    return choice
+
 def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, runtime_files, sdk_manifest):
     """Recheck connected identity, authenticated peer turn and local source preflight; no provider."""
     if os.environ.get('CCC_SESSION_ID') != OWNER: raise ValueError('session environment mismatch')
@@ -111,6 +193,8 @@ def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, run
         if target.is_symlink() or not target.resolve(strict=True).is_relative_to(sdk_root): raise ValueError('SDK link/path invalid')
         pinned(target,digest)
     validate_review(review_raw,subject,cli_sha)
+    config = effective_config()
+    if config['model'] != subject['model'] or config['reasoningEffort'] != subject['reasoningEffort']: raise ValueError('subject/config mismatch')
     info = json.loads(subprocess.check_output([str(Path(cli).resolve()),'--json','sessions','get',OWNER],timeout=30))
     if info.get('id') != OWNER or info.get('projectId') != PROJECT or info.get('model') != 'gpt-6.1-terra' or info.get('status') != 'running':
         raise ValueError('connected owner/model/project mismatch')
@@ -125,4 +209,4 @@ def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, run
     if source.get('stage') != 'SOURCE_PREFLIGHT_ONLY' or source.get('selection') is not False or source.get('providerContact') is not False:
         raise ValueError('source preflight mismatch')
     return {'stage':'NONSECRET_PRESTART_ONLY','owner':OWNER,'model':info['model'],'subjectSHA256':sha(canonical_subject(subject)),
-            'sourcePreflightSHA256':sha(run.stdout),'reviewReceiptSHA256':sha(review_raw),'providerContact':False,'selection':False}
+            'sourcePreflightSHA256':sha(run.stdout),'reviewReceiptSHA256':sha(review_raw),'config':config,'providerContact':False,'selection':False}
