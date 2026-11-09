@@ -25,3 +25,18 @@ for field in ('image','command','name'):
  except ValueError:continue
  raise AssertionError('mutated request accepted '+field)
 print('saved request image, command and name mutations refused PASS')
+# Execute corrected peer verifier with synthetic transcript: mismatched reviewed files must stop.
+import tempfile,types
+from unittest.mock import patch
+with tempfile.TemporaryDirectory(prefix='wc-collector-authority-') as td:
+ root=pathlib.Path(td);names=('correction-verify.py','job_identity-corrected.py','status-corrected.py','status-invoke-corrected.py','collector-entry-corrected.py','collect-corrected.py','submission.json','prestart-004.json','pilot.json','exclusive-intent.json','authority.py')
+ for n in names:(root/n).write_bytes((r/n).read_bytes())
+ spec=importlib.util.spec_from_file_location('correction',root/'correction-verify.py');v=importlib.util.module_from_spec(spec);spec.loader.exec_module(v)
+ subject={'owner':'a57b09b1-fcf5-4aea-b25e-7f19910af934','jobId':v.JOB,'submissionSHA256':v.RECEIPT,'prestartSHA256':v.PRESTART,'planSHA256':v.PLAN,'files':{n:hashlib.sha256((root/n).read_bytes()).hexdigest() for n in names[:6]}}
+ receipt={'reviewer':v.PEER,'verdict':'COLLECTION_DELTA_GO','subject':subject};rp=root/'review.json';rp.write_text(json.dumps(receipt));transcript=json.dumps({'turns':[{'role':'assistant','kind':'text','ts':'2026-11-09T00:00:00Z','text':json.dumps(receipt)}]}).encode()
+ with patch.object(v.subprocess,'check_output',return_value=transcript):
+  actual,_=v.verify(rp,hashlib.sha256(rp.read_bytes()).hexdigest());assert actual==subject
+  (root/'status-corrected.py').write_text('altered')
+  try:v.verify(rp,hashlib.sha256(rp.read_bytes()).hexdigest());raise AssertionError('modified file accepted')
+  except ValueError:pass
+print('correction peer subject authentic-turn matching and altered file refusal PASS (synthetic transcript)')

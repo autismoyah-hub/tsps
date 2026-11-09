@@ -1,0 +1,4 @@
+original returned receipt matches corrected exact label union PASS
+returned/inspected label, command, image, owner mutations refused PASS
+saved request image, command and name mutations refused PASS
+correction peer subject authentic-turn matching and altered file refusal PASS (synthetic transcript)
