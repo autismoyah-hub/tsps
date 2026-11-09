@@ -652,7 +652,7 @@ test('Defender of Varrock forged stale trapdoor choice cannot descend without th
   // Simulate a forged/stale menu selection before the unlock action: drop the key.
   p.items.set(I.GRUBBY_KEY_4, 0);
   p.attrs.set('quest.defender_of_varrock.key', '');
-  h.emit('npc-dialogue:choice', { player: p, npcId: N.ELIAS_WHITE, option: "Let's do it." });
+  h.emit('npc-dialogue:choice', { player: p, npcId: N.ELIAS_WHITE_2, pages: [{ page: 'Defender of Varrock', variants: ['organised-zombies-opening-the-trapdoor'] }], option: "Let's do it." });
   assert.equal(h.quest.getStage(p), 12);
   assert.notDeepEqual([p.getLocation().getX(), p.getLocation().getY()], [3560, 4551]);
 });
@@ -665,6 +665,8 @@ test('Defender of Varrock persisted unlock flag allows keyless re-entry after re
   h.hooks.onPlayerLogin[0]({ player: p });
   p.moveTo(new core.Location(3342, 3515, 0));
   h.object(p, DOV_TRAPDOOR, 'Enter', 3343, 3515);
+  h.continueUntil(p, () => Boolean(p.prompt));
+  h.choose(p, "Let's do it.");
   assert.equal(h.quest.getStage(p), 14, 'the persisted unlock flag needs no key');
   assert.deepEqual([p.getLocation().getX(), p.getLocation().getY()], [3560, 4551]);
 });
