@@ -42,7 +42,7 @@ function actor(t) {
   p.setAttribute(STAGE_KEY, 8);
   const messages = [];
   t.mock.method(p.getPacketSender(), 'sendMessage', text => { messages.push(text); return p.getPacketSender(); });
-  t.mock.method(p, 'getMovementQueue', () => ({ walkToEntity: (_npc, arrive) => arrive(), reset() {}, walkToReset() {} }));
+  t.mock.method(p.getMovementQueue(), 'walkToEntity', (_npc, arrive) => arrive());
   t.after(() => { core.ShopManager.close(p); PM.emitPlayerLogout({ player: p, username: p.getUsername() }); p.setRegistered(false); core.TaskManager.cancelTasks(p.getIndex()); });
   return { p, messages };
 }
