@@ -1,0 +1,26 @@
+{
+  "owner": "a57b09b1-fcf5-4aea-b25e-7f19910af934",
+  "source": "9e20a9f3b3f84c21cc248d8eff15384a4f66b063",
+  "planSHA256": "b410af3bcb87138f74128ef818ffd762181014441ebec0cf57586482d944c07c",
+  "manifestSHA256": "a2dd655f3a51184502fd08b01201e8cb09b50ec5bf6a7703c84dae667497c2af",
+  "connectedDiffSHA256": "b5f60a95b4c4d1d066a87dbf255b16ea0fcf49133e1f31127ffc4d5fed8acc4c",
+  "files": {
+    "prestart.py": "c919704939e6084cfaef808a02d98fb76434f949d4382c3d97155efd7a106814",
+    "provider_guard.py": "c3811d342a083c5a5cca5cb580dab8f4c59e721ef3022cca185c182d2d4b34ee",
+    "invoke.py": "d4dbd55bdaed1a165c6da9e7dc8f477efe4acaf483fb1bb34416663f05521521",
+    "collect.py": "3f7e9681e668cdc57e63c64e4e54a82d05c4d7770510f0c4c68e021b022528bd",
+    "collector_entry.py": "25f10f1efea76d9ab5a2b0dd81fa293826fb135877cbe3a14336f6d1af179828",
+    "job_identity.py": "e4e6db8015a1f72e279a89f5f17302dc3a6119dc6f1ced48f96a10c68392ad64",
+    "status.py": "c1aea4c2f0602395257186258d90c79a6fec27283629133ddd8486f0518324ad",
+    "status_invoke.py": "1830defc43b2186f1bb083a741b3a3cc2779ed451a1135df7aee3e981368eb6f",
+    "authority.py": "218404c595589d13c18658b64c13eb924d146544d1ed40fbfc221cae96002e63",
+    "pilot.py": "2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200",
+    "payload.cjs": "220ef3554ec1bf8951c22dc8e50b849feeeaaa5b0b0b06f664ea7b393cb1dde4",
+    "package.json": "ac9cb75167ec66ac1c1f4345d65bda679a20ac1b9a85aba45dd1919dcd18ac78",
+    "frame_transport.py": "f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76",
+    "retain-job-result.py": "bdcb7f104ebfa8c26d2aa68c1dd31cf7780f12174eb92d3e98ffb928797a9071",
+    "retain-contiguous-inputs003.py": "b399ca13e8fbfee6f7633a9d430d85c8204774c2941a2e4d5f74c642820fa690"
+  },
+  "authAdapterSHA256": "fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326",
+  "authHelperSHA256": "00ff45d75be1eae3bc8f04995cfb8bcbe2bc5adc28c1162b843cfe88c87024f9"
+}
