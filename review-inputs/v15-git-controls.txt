@@ -1,0 +1,3 @@
+owned git -C isolated temporary index: PASS
+normal index absent: PASS
+provider or remote calls: none
