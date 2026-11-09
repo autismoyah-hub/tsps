@@ -577,7 +577,7 @@ for (const finished of [false, true]) {
         const widgetId = (CREATION_MENU_GROUP_ID << 16) | CREATION_MENU_FIRST_ITEM_COMPONENT;
         const frame = Buffer.alloc(7);
         frame[0] = 62; // Native RESUME_PAUSEBUTTON: quantity shortAddLE, widget int.
-        frame[1] = (amount + 128) & 255; frame[2] = amount >>> 8;
+        frame[1] = amount >>> 8; frame[2] = (amount + 128) & 255;
         frame.writeInt32BE(widgetId, 3);
         const packets = decodeClientPackets(frame);
         assert.deepEqual(packets, [{ type: "dialogue_continue", childIndex: amount, widgetId }]);
