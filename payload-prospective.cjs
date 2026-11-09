@@ -25,12 +25,12 @@ function scopedManifest(directory, excludeOutputs) {
   function walk(relative) {
     if (excludeOutputs && excluded.has(relative)) return;
     const full=path.join(directory,relative), stat=fs.lstatSync(full);
-    if (stat.isSymbolicLink()) throw new Error(`Scoped symlink ${relative}`);
+    if (stat.isSymbolicLink()) throw new Error(`Scoped symlink pathSHA256=${sha(relative)}`);
     if (stat.isDirectory()) {
       for (const name of fs.readdirSync(full).sort()) walk(`${relative}/${name}`);
     } else if (stat.isFile()) {
       result[relative]={sha256:fileHash(full),mode:(stat.mode & 0o111) ? '100755' : '100644'};
-    } else throw new Error(`Scoped non-file ${relative}`);
+    } else throw new Error(`Scoped non-file pathSHA256=${sha(relative)}`);
   }
   walk('server');
   for (const file of ['.yarnrc.yml','package.json','yarn.lock','scripts/run-with-env.mjs']) {
@@ -44,11 +44,10 @@ function verifyScope(directory, inputs, modes, excludeOutputs) {
   if (JSON.stringify(actualKeys)!==JSON.stringify(keys)) {
     const actualSet=new Set(actualKeys), expectedSet=new Set(keys);
     const added=actualKeys.filter(k=>!expectedSet.has(k)), missing=keys.filter(k=>!actualSet.has(k));
-    const safe=xs=>xs.slice(0,100).map(k=>/^[A-Za-z0-9_./-]{1,240}$/.test(k)?k:'<redacted>');
-    emit({event:'source-keyset-mismatch',addedCount:added.length,missingCount:missing.length,added:safe(added),missing:safe(missing),truncated:added.length>100||missing.length>100});
+    emit({event:'source-keyset-mismatch',addedCount:added.length,missingCount:missing.length,addedSetSHA256:sha(JSON.stringify(added)),missingSetSHA256:sha(JSON.stringify(missing)),pathsEmitted:false});
     throw new Error('Scoped source keyset differs');
   }
-  for (const file of keys) if (actual[file].sha256!==inputs[file] || actual[file].mode!==modes[file]) throw new Error(`Scoped source differs: ${file}`);
+  for (const file of keys) if (actual[file].sha256!==inputs[file] || actual[file].mode!==modes[file]) throw new Error(`Scoped source differs pathSHA256=${sha(file)}`);
   return sha(JSON.stringify(Object.keys(actual).sort().map(file => [file,actual[file]])));
 }
 
@@ -76,13 +75,13 @@ function captureSeals(afterFailure) {
     postSourceHash = sha(JSON.stringify(postSource));
     sourceStatus = postSourceHash === sourceManifestHash ? 'PASS' : 'MISMATCH';
     if (sourceStatus !== 'PASS') errors.push('Tracked source content changed');
-  } catch (error) { sourceStatus = 'MISMATCH'; errors.push(`Source seal: ${error.message}`); }
+  } catch (error) { sourceStatus = 'MISMATCH'; errors.push(`Source seal errorSHA256=${sha(String(error.message))}`); }
   if (distManifest) {
     try {
       postDistHash = sha(JSON.stringify(treeManifest(path.join(server, 'dist'))));
       distStatus = postDistHash === sha(JSON.stringify(distManifest)) ? 'PASS' : 'MISMATCH';
       if (distStatus !== 'PASS') errors.push('Compiled output changed');
-    } catch (error) { distStatus = 'MISMATCH'; errors.push(`Dist seal: ${error.message}`); }
+    } catch (error) { distStatus = 'MISMATCH'; errors.push(`Dist seal errorSHA256=${sha(String(error.message))}`); }
   }
   if (cacheFiles) {
     try {
@@ -105,7 +104,7 @@ function captureSeals(afterFailure) {
         if (actual[file] !== cacheFiles[file]) cacheMismatches.push(file);
       }
       cacheStatus = cacheMismatches.length ? 'MISMATCH' : 'PASS';
-    } catch (error) { cacheStatus = 'MISMATCH'; errors.push(`Cache seal: ${error.message}`); }
+    } catch (error) { cacheStatus = 'MISMATCH'; errors.push(`Cache seal errorSHA256=${sha(String(error.message))}`); }
     if (cacheMismatches.length) errors.push('Cache membership or content changed');
   }
   const complete = sourceStatus !== 'UNAVAILABLE' && distStatus !== 'UNAVAILABLE' && cacheStatus !== 'UNAVAILABLE';
@@ -114,7 +113,7 @@ function captureSeals(afterFailure) {
     postSourceHash, originalSourceFiles: originalSource.length,
     distManifestHash: distManifest ? sha(JSON.stringify(distManifest)) : null,
     postDistHash, postCacheFilesChecked: cacheFiles ? Object.keys(cacheFiles).length : 0,
-    sourceStatus, distStatus, cacheStatus, complete, cacheMismatches, errors, sealsUnchanged,
+    sourceStatus, distStatus, cacheStatus, complete, cacheMismatchCount:cacheMismatches.length, cacheMismatchSetSHA256:sha(JSON.stringify(cacheMismatches)), errors, sealsUnchanged,
     limitation: 'Content identities only; no process or sandbox-wide closure inference'});
   return sealsUnchanged;
 }
