@@ -21,8 +21,13 @@ def exact(path,digest):
     data=Path(path).read_bytes()
     if sha(data)!=digest: raise RuntimeError('Input identity mismatch')
     return data
+def syncdir(path):
+    fd=os.open(path,os.O_RDONLY|os.O_DIRECTORY)
+    try: os.fsync(fd)
+    finally: os.close(fd)
 def exclusive(path,data):
     with path.open('xb') as f: f.write(data); f.flush(); os.fsync(f.fileno())
+    syncdir(path.parent)
 def utc(): return datetime.now(timezone.utc).isoformat()
 SNAPSHOT_BOOTSTRAP = """import base64,hashlib,sys,types
 snapshot=base64.b64decode(sys.argv.pop(1),validate=True)
@@ -121,6 +126,7 @@ def main():
         exclusive(HERE/'collection-journal'/'05-logs-start.json',canon({'query':'logs','jobId':job_id,'stage':'START'}))
         log_path=HERE/f'logs-{stamp}.txt'
         with log_path.open('xb') as stream:
+            stream.flush(); os.fsync(stream.fileno()); syncdir(log_path.parent)
             for fragment in api.fetch_job_logs(job_id=job_id,namespace='Autismo-Yah',follow=False):
                 stream.write((fragment+'\n').encode());stream.flush();os.fsync(stream.fileno())
         exclusive(HERE/'collection-journal'/'06-logs-result.json',canon({'query':'logs','jobId':job_id,'logFile':log_path.name,'sha256':sha(log_path.read_bytes())}))
