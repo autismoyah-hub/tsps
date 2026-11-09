@@ -9,7 +9,7 @@ OWNER='3f20dcbd-b1d9-4e4a-bc47-a3b02d6ee6bc'
 REVIEWER='10e752da-405a-47bd-8d0e-21f4054a25f9'
 SOURCE='57e96673bf57e6dc65de5508d60c383b90064ed2'
 PLAN_SHA='a77dc6fa3f6e3c23b9e17fc6b7f0f2e5ff3726f6caec3205983071f6805c669c'
-PINS={'plan.json':PLAN_SHA,'payload.cjs':'4e2aa37bd921c81b49f3bb9a96546b288628a360dc26760ae65797d4832224a1','pilot.py':'2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200','package.json':'00dc1f0f6032fabd7a953de4eb35f29afdd84ed65266fab2992009a87ce56b6b','collector.py':'16af68b3a57f52deaceb685681a209858a7b7cfdf0ef86b7a7bf63c8bcdbfeec','frame_transport.py':'f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76','retain-contiguous-inputs003.py':'b399ca13e8fbfee6f7633a9d430d85c8204774c2941a2e4d5f74c642820fa690'}
+PINS={'plan.json':PLAN_SHA,'payload.cjs':'4e2aa37bd921c81b49f3bb9a96546b288628a360dc26760ae65797d4832224a1','pilot.py':'2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200','package.json':'00dc1f0f6032fabd7a953de4eb35f29afdd84ed65266fab2992009a87ce56b6b','collector.py':'fc08b552ba44e8f2085204631b1001d7c1fcf763f3ba1523ea263b3d6ed3d3ac','frame_transport.py':'f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76','retain-contiguous-inputs003.py':'b399ca13e8fbfee6f7633a9d430d85c8204774c2941a2e4d5f74c642820fa690'}
 sha=lambda raw:hashlib.sha256(raw).hexdigest()
 def bound(path,digest):
  raw=Path(path).read_bytes();assert sha(raw)==digest,f'Identity mismatch: {path}';return raw
@@ -89,6 +89,12 @@ def current_review(plan):
  proof={'subject':subject,'reviewer':REVIEWER,'recipient':OWNER,'recipientTurn':owner_row,'sender':sent[0]}
  return {'subject':subject,'correlatedCaptureSHA256':sha(json.dumps(proof,sort_keys=True,separators=(',',':')).encode()),'proof':proof}
 
+def checked_pr_files(detail, rows, touched):
+ count=detail.get('changed_files'); assert type(count) is int and 0<=count<3000, 'PR file count unknown or endpoint cap'
+ assert isinstance(rows,list) and all(isinstance(page,list) for page in rows)
+ files=[file for page in rows for file in page]; assert len(files)==count and all(isinstance(file,dict) and isinstance(file.get('filename'),str) for file in files), 'PR files incomplete'
+ return any(file.get('filename') in touched or file.get('previous_filename') in touched for file in files)
+
 def current_fit(plan):
  repo=ROOT.parents[1]
  remote=subprocess.check_output(['git','-C',str(repo),'ls-remote','https://github.com/RSPSApp/tsps.git','refs/heads/main'],text=True,timeout=40).split()
@@ -103,9 +109,9 @@ def current_fit(plan):
  prs=[pr for page in pages for pr in page];touched=set(connected[:2]);overlap=[]
  for pr in prs:
   number=pr.get('number');assert type(number) is int and number>0
-  rows=json.loads(bounded(['gh','api','--paginate','--slurp',f'repos/RSPSApp/tsps/pulls/{number}/files?per_page=100'],timeout=90));assert sum(len(x) for x in rows)<=10000
-  assert isinstance(rows,list) and all(isinstance(page,list) for page in rows)
-  if any(file.get('filename') in touched for page in rows for file in page):overlap.append(number)
+  detail=json.loads(bounded(['gh','api',f'repos/RSPSApp/tsps/pulls/{number}'],timeout=90))
+  rows=json.loads(bounded(['gh','api','--paginate','--slurp',f'repos/RSPSApp/tsps/pulls/{number}/files?per_page=100'],timeout=90))
+  if checked_pr_files(detail,rows,touched):overlap.append(number)
  assert not overlap,f'Open PR overlaps: {overlap}'
  return {'main':main,'connectedPaths':connected,'openPRCount':len(prs),'exactOverlap':overlap}
 

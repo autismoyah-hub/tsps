@@ -21,8 +21,8 @@ def load_bindings():
  return plan,receipt,binding,intent
 
 def retain(stamp,recovery):
- complete=json.loads((ROOT/'raw-complete.json').read_bytes());status=CASE/f'status-{stamp}.json';log=CASE/f'logs-{stamp}.txt'
- req(complete['stamp']==stamp and digest(status.read_bytes())==complete['statusSHA256'] and digest(log.read_bytes())==complete['rawSHA256'],'raw completion binding')
+ complete=json.loads((ROOT/'iterator-ended.json').read_bytes());status=CASE/f'status-{stamp}.json';log=CASE/f'logs-{stamp}.txt'
+ req(complete['stamp']==stamp and digest(status.read_bytes())==complete['statusSHA256'] and digest(log.read_bytes())==complete['rawSHA256'],'iterator-ended binding')
  out=CASE/(('native-recovery-' if recovery else 'native-input-')+stamp)
  tag='offline-retain' if recovery else 'native-retain'
  stdout=ROOT/(tag+'-stdout.txt');stderr=ROOT/(tag+'-stderr.txt')
@@ -34,11 +34,16 @@ def retain(stamp,recovery):
  if run.returncode:raise ValueError('native retainer failed; retained raw remains authoritative')
  print(json.dumps({'state':'RAW_RETAINED','nativeInput':'PASS','jobId':complete['jobId'],'terminal':complete['stage']}))
 
+def classify_stage(stage):
+ if stage in ('SCHEDULING','RUNNING'):return 'NONTERMINAL'
+ req(stage in ('COMPLETED','ERROR','CANCELED'),'unknown or unsupported provider stage')
+ return 'TERMINAL'
+
 def main():
  p=argparse.ArgumentParser();p.add_argument('--recover-offline',action='store_true');a=p.parse_args();plan,receipt,binding,intent=load_bindings()
  if a.recover_offline:
-  req((ROOT/'collection-intent.json').exists() and (ROOT/'raw-complete.json').exists() and not (ROOT/'offline-retain-intent.json').exists(),'offline recovery prerequisites')
-  complete=json.loads((ROOT/'raw-complete.json').read_bytes());req(complete['jobId']==binding['jobId'],'offline job')
+  req((ROOT/'collection-intent.json').exists() and (ROOT/'iterator-ended.json').exists() and not (ROOT/'offline-retain-intent.json').exists(),'offline recovery prerequisites')
+  complete=json.loads((ROOT/'iterator-ended.json').read_bytes()); original=json.loads((ROOT/'collection-intent.json').read_bytes());req(complete['jobId']==binding['jobId'] and original.get('jobId')==binding['jobId'] and original.get('collector')==OWNER and original.get('planSHA256')==PLAN and original.get('stamp')==complete.get('stamp') and original.get('state')=='COLLECTION_STARTING_NO_REPLAY','offline intent binding')
   exclusive(ROOT/'offline-retain-intent.json',{'jobId':binding['jobId'],'state':'OFFLINE_ONLY_NO_PROVIDER'})
   return retain(complete['stamp'],True)
  req(not (ROOT/'collection-intent.json').exists(),'collection attempted; reconcile, do not refetch')
@@ -48,7 +53,7 @@ def main():
  req(info.id==binding['jobId'] and info.command==request['command'] and info.owner.name=='Autismo-Yah' and info.docker_image==request['image'] and info.flavor==request['flavor'],'provider tuple')
  req(isinstance(labels,dict) and labels.get('name')==request['name'] and all(labels.get(k)==v for k,v in request['labels'].items()),'provider labels')
  stage=getattr(info.status.stage,'value',info.status.stage)
- if stage not in ('COMPLETED','ERROR','CANCELED','CANCELLED'):
+ if classify_stage(stage)=='NONTERMINAL':
   print(json.dumps({'state':'NONTERMINAL','jobId':info.id,'stage':stage}));return
  stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ');exclusive(ROOT/'collection-intent.json',{'jobId':info.id,'collector':OWNER,'planSHA256':PLAN,'stamp':stamp,'state':'COLLECTION_STARTING_NO_REPLAY'})
  status=CASE/f'status-{stamp}.json';exclusive(status,{'id':info.id,'status':{'stage':stage,'message':info.status.message},'command':info.command,'owner':info.owner.name,'image':info.docker_image,'flavor':info.flavor,'labels':labels,'retry':info.retry,'started_at':str(info.started_at),'finished_at':str(info.finished_at),'planSHA256':PLAN})
@@ -60,6 +65,6 @@ def main():
    f.write(data);h.update(data)
   f.flush();os.fsync(f.fileno())
  fd=os.open(CASE,os.O_RDONLY);os.fsync(fd);os.close(fd)
- exclusive(ROOT/'raw-complete.json',{'jobId':info.id,'stamp':stamp,'stage':stage,'statusSHA256':digest(status.read_bytes()),'rawSHA256':h.hexdigest(),'rawBytes':total})
+ exclusive(ROOT/'iterator-ended.json',{'jobId':info.id,'stamp':stamp,'stage':stage,'statusSHA256':digest(status.read_bytes()),'rawSHA256':h.hexdigest(),'rawBytes':total,'scope':'SDK iterator ended; not proof of complete provider logs'})
  return retain(stamp,False)
 if __name__=='__main__':main()

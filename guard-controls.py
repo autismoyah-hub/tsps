@@ -83,7 +83,12 @@ with tempfile.TemporaryDirectory() as d:
    else:raise AssertionError('missing raw accepted')
    stamp='20261109T000000Z';status=c.CASE/f'status-{stamp}.json';log=c.CASE/f'logs-{stamp}.txt';status.write_text(json.dumps({'id':'fixture-id','status':{'stage':'COMPLETED'},'command':request['command']}));log.write_text('malformed raw\n')
    (c.CASE/'input-manifest.json').write_text('{}')
-   (c.ROOT/'raw-complete.json').write_text(json.dumps({'jobId':'fixture-id','stamp':stamp,'stage':'COMPLETED','statusSHA256':c.digest(status.read_bytes()),'rawSHA256':c.digest(log.read_bytes())}))
+   (c.ROOT/'iterator-ended.json').write_text(json.dumps({'jobId':'fixture-id','stamp':stamp,'stage':'COMPLETED','statusSHA256':c.digest(status.read_bytes()),'rawSHA256':c.digest(log.read_bytes())}))
+   try:c.main()
+   except ValueError:pass
+   else:raise AssertionError('mismatched collection intent accepted')
+   assert not (c.ROOT/'offline-retain-intent.json').exists()
+   (c.ROOT/'collection-intent.json').write_text(json.dumps({'jobId':'fixture-id','collector':c.OWNER,'planSHA256':c.PLAN,'stamp':stamp,'state':'COLLECTION_STARTING_NO_REPLAY'}))
    try:c.main()
    except ValueError:pass
    else:raise AssertionError('malformed native raw accepted')
@@ -101,8 +106,22 @@ with tempfile.TemporaryDirectory() as d:
  (c.CASE/'submission.json').write_text(json.dumps({'plan':plan,'job':{'id':'fixture-id','command':command},'request':{'command':command}}))
  status=c.CASE/f'status-{stamp}.json';status.write_text(json.dumps({'id':'fixture-id','status':{'stage':'COMPLETED'},'command':command}))
  log=c.CASE/f'logs-{stamp}.txt';log.write_text(json.dumps({'event':'inputs','source':plan['source'],'inputs':manifest['expectedInputs']},separators=(',',':'))+'\n')
- (c.ROOT/'raw-complete.json').write_text(json.dumps({'jobId':'fixture-id','stamp':stamp,'stage':'COMPLETED','statusSHA256':c.digest(status.read_bytes()),'rawSHA256':c.digest(log.read_bytes())}))
+ (c.ROOT/'iterator-ended.json').write_text(json.dumps({'jobId':'fixture-id','stamp':stamp,'stage':'COMPLETED','statusSHA256':c.digest(status.read_bytes()),'rawSHA256':c.digest(log.read_bytes())}))
  c.retain(stamp,False)
  assert json.loads((c.ROOT/'native-retain-result.json').read_bytes())['exit']==0
  assert (c.CASE/f'native-input-{stamp}'/'fragment-receipt.json').is_file()
 print('actual offline native retainer accepted synthetic full input event')
+
+assert g.checked_pr_files({'changed_files':1},[[{'filename':'new','previous_filename':'old'}]],{'old'})
+for detail,rows in [({'changed_files':3000},[[]]),({'changed_files':2},[[{'filename':'x'}]]),({},[[]])]:
+ try:g.checked_pr_files(detail,rows,{'x'})
+ except AssertionError:pass
+ else:raise AssertionError('incomplete PR list accepted')
+print('PR cap, truncation, missing count and renamed-path controls passed')
+
+assert c.classify_stage('SCHEDULING')=='NONTERMINAL' and c.classify_stage('COMPLETED')=='TERMINAL'
+for stage in (None,'DELETED','UNKNOWN','CANCELLED'):
+ try:c.classify_stage(stage)
+ except ValueError:pass
+ else:raise AssertionError('unsupported stage accepted')
+print('recognized active and unsupported stage controls passed')
