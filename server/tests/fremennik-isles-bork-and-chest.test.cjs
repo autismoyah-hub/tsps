@@ -370,7 +370,9 @@ function kingOreFixture(t, level = 55) {
   const skills = f.p.getSkillManager(), originalLevel = skills.getMaxLevel.bind(skills);
   t.mock.method(skills, 'getMaxLevel', skill => skill === core.Skill.MINING ? mining : originalLevel(skill));
   const events = [], lines = [], emit = PM.emitCustomEvent;
+  let beforeAction = null;
   t.mock.method(PM, 'emitCustomEvent', (name, event) => {
+    if (name === 'npc-dialogue:action' && event.player === f.p) beforeAction?.(event);
     const result = emit.call(PM, name, event);
     if (name === 'npc-dialogue:line' && event.player === f.p) lines.push({ ...event });
     if (name === 'npc-dialogue:action' && ['-UQEZy', '02jNR_'].includes(event.stepId)) {
@@ -385,7 +387,8 @@ function kingOreFixture(t, level = 55) {
     for (let i = 0; i < 100 && !predicate() && manager.isActive(); i++) manager.advance();
     assert.ok(predicate(), 'dialogue reached the requested observable boundary');
   };
-  return { ...f, kingId, talk, advance, events, lines, setMining: value => { mining = value; } };
+  return { ...f, kingId, talk, advance, events, lines, setMining: value => { mining = value; },
+    onAction: callback => { beforeAction = callback; } };
 }
 
 test('King accepts each assigned ore as notes and continues to the mission', t => {
@@ -395,6 +398,7 @@ test('King accepts each assigned ore as notes and continues to the mission', t =
     const f = kingOreFixture(t, level);
     const noted = core.ItemDefinition.forId(ore).getNoteId();
     assert.equal(core.ItemDefinition.forId(noted).isNoted(), true);
+    assert.equal(core.ItemDefinition.forId(noted).getNoteId(), ore, 'note resolves back to assigned ore');
     f.inv.adds(noted, amount + 1);
     assert.equal(f.talk(), true);
     f.advance(() => f.events.some(e => e.stepId === '02jNR_'));
@@ -404,10 +408,15 @@ test('King accepts each assigned ore as notes and continues to the mission', t =
     assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(f.p), 4);
     assert.equal(f.events[0].pages, f.events[1].pages, 'both messages belong to one playback');
     const first = f.events[0].pages;
+    const linesBefore = f.lines.length;
     f.p.closeInterruptibleInterfaces();
     assert.equal(f.talk(), true);
     assert.notEqual(f.p.getDialogueManager().getCurrent(), undefined, 'the next King conversation is available');
+    assert.ok(f.lines.length > linesBefore, 'the next conversation actually emitted a line');
     assert.notEqual(f.lines.at(-1).pages, first, 'a fresh playback has a different identity');
+    f.p.closeInterruptibleInterfaces();
+    jesterChest(f)();
+    assert.deepEqual(jesterIds().map(id => f.inv.getAmount(id)), [1, 1, 1, 1], 'the next quest chest is usable');
     const replay = { ...f.events[1], pages: first, step: { ...f.events[1].step } };
     PM.emitCustomEvent('npc-dialogue:action', replay);
     assert.equal(f.inv.getAmount(I.COINS), reward, 'a repeated reward event does not pay twice');
@@ -439,6 +448,12 @@ test('noted ore exchange conserves inventory when the reward cannot fit', t => {
   assert.equal(f.inv.getAmount(noted), 7);
   assert.equal(f.inv.getAmount(I.COINS), 0);
   assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(f.p), 3);
+  assert.ok(f.messages.includes('Not enough space in your inventory.'));
+  f.inv.setItem(27, new core.Item(-1, 0));
+  assert.equal(f.talk(), true);
+  f.advance(() => f.events.some(e => e.stepId === '02jNR_'));
+  assert.equal(f.inv.getAmount(noted), 1);
+  assert.equal(f.inv.getAmount(I.COINS), 6000);
 });
 
 test('King keeps the unnoted route and refuses a stale noted exchange', t => {
@@ -490,4 +505,91 @@ test('a freed note slot or existing coin stack can hold the reward, but an overf
       assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(f.p), 4);
     }
   }
+});
+
+test('split noted stacks follow the inventory ID deletion order and retain remaining metadata', t => {
+  for (const mode of ['slot-freed', 'no-slot-freed']) {
+    const f = kingOreFixture(t);
+    const noted = core.ItemDefinition.forId(I.MITHRIL_ORE).getNoteId();
+    const tagged = mode === 'slot-freed' ? 3 : 7;
+    f.inv.setItem(0, new core.Item(noted, tagged).setMeta({ fixture: 'tagged' }));
+    f.inv.setItem(1, new core.Item(noted, mode === 'slot-freed' ? 4 : 1));
+    for (let slot = 2; slot < 28; slot++) f.inv.setItem(slot, new core.Item(I.SHARK, 1));
+    assert.equal(f.talk(), true);
+    f.advance(() => f.events.some(e => e.stepId === '-UQEZy'));
+    if (mode === 'slot-freed') {
+      assert.equal(f.inv.getAmount(noted), 1);
+      assert.equal(f.inv.getItems()[1].getAmount(), 1);
+      assert.equal(f.inv.getItems()[1].getMeta(), null);
+      assert.equal(f.inv.getAmount(I.COINS), 6000);
+    } else {
+      assert.equal(f.events[0].end, true);
+      assert.equal(f.inv.getItems()[0].getAmount(), 7);
+      assert.deepEqual(f.inv.getItems()[0].getMeta(), { fixture: 'tagged' });
+      assert.equal(f.inv.getItems()[1].getAmount(), 1);
+      assert.equal(f.inv.getAmount(I.COINS), 0);
+      assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(f.p), 3);
+    }
+  }
+});
+
+test('short or removed notes do not advance the King exchange', t => {
+  const noted = core.ItemDefinition.forId(I.MITHRIL_ORE).getNoteId();
+  const short = kingOreFixture(t);
+  short.inv.adds(noted, 5);
+  assert.equal(short.talk(), true);
+  short.advance(() => !short.p.getDialogueManager().isActive());
+  assert.equal(short.events.length, 0);
+  assert.equal(short.inv.getAmount(noted), 5);
+  assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(short.p), 3);
+
+  const removed = kingOreFixture(t);
+  removed.inv.adds(noted, 6);
+  removed.onAction(event => {
+    if (event.stepId === '-UQEZy') removed.inv.deleteNumber(noted, 1);
+  });
+  assert.equal(removed.talk(), true);
+  removed.advance(() => removed.events.some(e => e.stepId === '-UQEZy'));
+  assert.equal(removed.events[0].end, true);
+  assert.equal(removed.inv.getAmount(noted), 5);
+  assert.equal(removed.inv.getAmount(I.COINS), 0);
+  assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(removed.p), 3);
+});
+
+test('King playback rejects injected stale, cross-player and wrong-NPC actions', t => {
+  const f = kingOreFixture(t);
+  const other = actor(t, 4);
+  const quest = QuestRuntime.questNamed('The Fremennik Isles');
+  const noted = core.ItemDefinition.forId(I.MITHRIL_ORE).getNoteId();
+  f.inv.adds(noted, 6);
+  let testedCommit = false, testedReward = false, injecting = false;
+  f.onAction(event => {
+    if (injecting) return;
+    if (event.stepId === '-UQEZy' && !testedCommit) {
+      testedCommit = true; injecting = true;
+      quest.setStage(f.p, 4);
+      const stale = { ...event, step: { ...event.step } };
+      PM.emitCustomEvent('npc-dialogue:action', stale);
+      assert.equal(stale.end, true);
+      assert.equal(f.inv.getAmount(noted), 6);
+      quest.setStage(f.p, 3); injecting = false;
+    }
+    if (event.stepId === '02jNR_' && !testedReward) {
+      testedReward = true; injecting = true;
+      const cross = { ...event, player: other.p, step: { ...event.step } };
+      PM.emitCustomEvent('npc-dialogue:action', cross);
+      assert.equal(cross.end, true);
+      const wrongNpc = { ...event, npcId: core.NpcIdentifiers.THORKEL_SILKBEARD, step: { ...event.step } };
+      PM.emitCustomEvent('npc-dialogue:action', wrongNpc);
+      assert.equal(wrongNpc.end, true);
+      assert.equal(other.inv.getAmount(I.COINS), 0);
+      injecting = false;
+    }
+  });
+  assert.equal(f.talk(), true);
+  f.advance(() => f.events.some(e => e.stepId === '02jNR_'));
+  assert.ok(testedCommit && testedReward);
+  assert.equal(f.inv.getAmount(noted), 0);
+  assert.equal(f.inv.getAmount(I.COINS), 6000);
+  assert.equal(quest.getStage(f.p), 4);
 });
