@@ -39,6 +39,7 @@ def main():
     count=0
     for job in api.list_jobs(namespace='Autismo-Yah'):
         count+=1
+        if count>100000: raise RuntimeError('Provider scan bound exceeded: duplicate state unknown')
         labels=job.labels or {}; command=job.command
         if command is None and labels.get('source') != SOURCE:
             raise RuntimeError('Provider returned incomplete command: duplicate state unknown')

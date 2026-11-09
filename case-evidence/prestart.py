@@ -10,7 +10,7 @@ NAME='tsps-woodcutting-eat-before-a57b-001'
 def sha(b): return hashlib.sha256(b).hexdigest()
 def main():
  if not __debug__: raise RuntimeError('Optimized interpreter forbidden')
- p=argparse.ArgumentParser();p.add_argument('--plan',required=True);p.add_argument('--selection',required=True);p.add_argument('--output',required=True);p.add_argument('--review',required=True);p.add_argument('--review-sha256',required=True);p.add_argument('--identity',required=True);p.add_argument('--identity-sha256',required=True);a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--plan',required=True);p.add_argument('--selection',required=True);p.add_argument('--output',required=True);p.add_argument('--review',required=True);p.add_argument('--review-sha256',required=True);p.add_argument('--identity',required=True);p.add_argument('--identity-sha256',required=True);p.add_argument('--identity-direct',required=True);p.add_argument('--identity-direct-sha256',required=True);a=p.parse_args()
  planpath=Path(a.plan).resolve();selpath=Path(a.selection).resolve();output=Path(a.output).resolve()
  assert all(x.parent==ROOT for x in (planpath,selpath,output)) and not output.exists()
  assert os.environ['CCC_SESSION_ID']==OWNER
@@ -20,6 +20,11 @@ def main():
  reviewraw=Path(a.review).read_bytes(); identityraw=Path(a.identity).read_bytes()
  assert sha(reviewraw)==a.review_sha256 and sha(identityraw)==a.identity_sha256
  review=json.loads(reviewraw); identity=json.loads(identityraw)
+ direct=Path(a.identity_direct).read_bytes(); assert sha(direct)==a.identity_direct_sha256==identity['directTranscriptSHA256']
+ text=direct.decode(); assert text.startswith('[From Cuttle session \"TSPS Mission Control') and 'eaae9ca0-2f2b-4c05-85cd-c3e70178aeac' in text
+ original=json.loads(text[text.index('{'):]); b=original['binding']; pvc=b['pvcBindings'][0]; resources=b['resources'][0]
+ assert identity['session']==b['session'] and identity['node']==b['node'] and identity['podUID']==b['uid'] and identity['containerID']==b['containerIDs'][0] and identity['pvcUID']==pvc['uid']
+ assert original['source']=='MC own kubectl pods/PVC readback on actual nodes' and b['phase']=='Running' and b['ready'] is True and b['deletionTimestamp'] is None and pvc['phase']=='Bound' and resources['limits']=={'cpu':'500m','memory':'2Gi'}
  # These records must be authentic direct peer and MC captures, not authored assertions.
  assert review['reviewer']=='ed3a4125-645c-4266-8b86-4e199dd5bc63' and review['verdict']=='EXACT_INPUT_PROFILE_GO'
  assert review['source']==SOURCE and review['planSHA256']==sha(planpath.read_bytes())
