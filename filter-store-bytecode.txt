@@ -1,0 +1,82 @@
+Compiled from "DefaultPropertyFilterSetStore.kt"
+public final class net.rsprox.proxy.filters.DefaultPropertyFilterSetStore$Companion {
+  private net.rsprox.proxy.filters.DefaultPropertyFilterSetStore$Companion();
+    Code:
+       0: aload_0
+       1: invokespecial #8                  // Method java/lang/Object."<init>":()V
+       4: return
+
+  public final net.rsprox.shared.filters.PropertyFilterSetStore load(java.nio.file.Path);
+    Code:
+       0: aload_1
+       1: ldc           #17                 // String path
+       3: invokestatic  #23                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: iconst_1
+       7: anewarray     #25                 // class net/rsprox/shared/filters/PropertyFilterSet
+      10: astore_3
+      11: aload_3
+      12: iconst_0
+      13: new           #27                 // class net/rsprox/proxy/filters/UnmodifiablePropertyFilterSet
+      16: dup
+      17: invokespecial #28                 // Method net/rsprox/proxy/filters/UnmodifiablePropertyFilterSet."<init>":()V
+      20: aastore
+      21: aload_3
+      22: invokestatic  #34                 // Method kotlin/collections/CollectionsKt.mutableListOf:([Ljava/lang/Object;)Ljava/util/List;
+      25: astore_2
+      26: aload_1
+      27: invokeinterface #40,  1           // InterfaceMethod java/nio/file/Path.toFile:()Ljava/io/File;
+      32: dup
+      33: ldc           #42                 // String toFile(...)
+      35: invokestatic  #45                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullExpressionValue:(Ljava/lang/Object;Ljava/lang/String;)V
+      38: invokestatic  #51                 // Method kotlin/io/FilesKt.walkTopDown:(Ljava/io/File;)Lkotlin/io/FileTreeWalk;
+      41: astore_3
+      42: aload_3
+      43: invokevirtual #57                 // Method kotlin/io/FileTreeWalk.iterator:()Ljava/util/Iterator;
+      46: astore        4
+      48: aload         4
+      50: invokeinterface #63,  1           // InterfaceMethod java/util/Iterator.hasNext:()Z
+      55: ifeq          125
+      58: aload         4
+      60: invokeinterface #67,  1           // InterfaceMethod java/util/Iterator.next:()Ljava/lang/Object;
+      65: checkcast     #69                 // class java/io/File
+      68: astore        5
+      70: aload         5
+      72: invokevirtual #72                 // Method java/io/File.isFile:()Z
+      75: ifeq          48
+      78: nop
+      79: getstatic     #78                 // Field net/rsprox/proxy/filters/DefaultPropertyFilterSet.Companion:Lnet/rsprox/proxy/filters/DefaultPropertyFilterSet$Companion;
+      82: aload         5
+      84: invokevirtual #82                 // Method java/io/File.toPath:()Ljava/nio/file/Path;
+      87: dup
+      88: ldc           #84                 // String toPath(...)
+      90: invokestatic  #45                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullExpressionValue:(Ljava/lang/Object;Ljava/lang/String;)V
+      93: invokevirtual #89                 // Method net/rsprox/proxy/filters/DefaultPropertyFilterSet$Companion.load:(Ljava/nio/file/Path;)Lnet/rsprox/proxy/filters/DefaultPropertyFilterSet;
+      96: astore        7
+      98: goto          106
+     101: astore        8
+     103: goto          48
+     106: aload         7
+     108: astore        6
+     110: aload_2
+     111: checkcast     #91                 // class java/util/Collection
+     114: aload         6
+     116: invokeinterface #95,  2           // InterfaceMethod java/util/Collection.add:(Ljava/lang/Object;)Z
+     121: pop
+     122: goto          48
+     125: new           #97                 // class net/rsprox/proxy/filters/DefaultPropertyFilterSetStore
+     128: dup
+     129: aload_1
+     130: aload_2
+     131: invokespecial #100                // Method net/rsprox/proxy/filters/DefaultPropertyFilterSetStore."<init>":(Ljava/nio/file/Path;Ljava/util/List;)V
+     134: checkcast     #102                // class net/rsprox/shared/filters/PropertyFilterSetStore
+     137: areturn
+    Exception table:
+       from    to  target type
+          78    98   101   Class java/lang/Exception
+
+  public net.rsprox.proxy.filters.DefaultPropertyFilterSetStore$Companion(kotlin.jvm.internal.DefaultConstructorMarker);
+    Code:
+       0: aload_0
+       1: invokespecial #117                // Method "<init>":()V
+       4: return
+}

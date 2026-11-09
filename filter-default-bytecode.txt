@@ -1,0 +1,100 @@
+Compiled from "UnmodifiablePropertyFilterSet.kt"
+public final class net.rsprox.proxy.filters.UnmodifiablePropertyFilterSet implements net.rsprox.shared.filters.PropertyFilterSet {
+  public net.rsprox.proxy.filters.UnmodifiablePropertyFilterSet();
+    Code:
+       0: aload_0
+       1: invokespecial #10                 // Method java/lang/Object."<init>":()V
+       4: return
+
+  public long getCreationTime();
+    Code:
+       0: ldc2_w        #15                 // long -9223372036854775808l
+       3: lreturn
+
+  public java.lang.String getName();
+    Code:
+       0: ldc           #21                 // String Default
+       2: areturn
+
+  public void setName(java.lang.String);
+    Code:
+       0: aload_1
+       1: ldc           #25                 // String name
+       3: invokestatic  #31                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: return
+
+  public void deleteBackingFile();
+    Code:
+       0: return
+
+  public boolean get(net.rsprox.shared.filters.PropertyFilter);
+    Code:
+       0: aload_1
+       1: ldc           #37                 // String filter
+       3: invokestatic  #31                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: aload_1
+       7: invokevirtual #43                 // Method net/rsprox/shared/filters/PropertyFilter.getEnabled:()Z
+      10: ireturn
+
+  public void set(net.rsprox.shared.filters.PropertyFilter, boolean);
+    Code:
+       0: aload_1
+       1: ldc           #37                 // String filter
+       3: invokestatic  #31                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: return
+
+  public void set(net.rsprox.shared.filters.ProtCategory, boolean);
+    Code:
+       0: aload_1
+       1: ldc           #51                 // String category
+       3: invokestatic  #31                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: return
+
+  public void set(net.rsprox.shared.StreamDirection, boolean);
+    Code:
+       0: aload_1
+       1: ldc           #55                 // String streamDirection
+       3: invokestatic  #31                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: return
+
+  public void setAll(boolean);
+    Code:
+       0: return
+
+  public void setDefaults();
+    Code:
+       0: return
+
+  public java.util.List<net.rsprox.shared.filters.RegexFilter> getRegexFilters();
+    Code:
+       0: invokestatic  #67                 // Method kotlin/collections/CollectionsKt.emptyList:()Ljava/util/List;
+       3: areturn
+
+  public void addRegexFilter(net.rsprox.shared.filters.RegexFilter);
+    Code:
+       0: aload_1
+       1: ldc           #71                 // String regexFilter
+       3: invokestatic  #31                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: return
+
+  public void removeRegexFilter(net.rsprox.shared.filters.RegexFilter);
+    Code:
+       0: aload_1
+       1: ldc           #71                 // String regexFilter
+       3: invokestatic  #31                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: return
+
+  public void replaceRegexFilter(net.rsprox.shared.filters.RegexFilter, net.rsprox.shared.filters.RegexFilter);
+    Code:
+       0: aload_1
+       1: ldc           #77                 // String oldRegexFilter
+       3: invokestatic  #31                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: aload_2
+       7: ldc           #79                 // String newRegexFilter
+       9: invokestatic  #31                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+      12: return
+
+  public void clearRegexFilters();
+    Code:
+       0: return
+}

@@ -1,0 +1,86 @@
+Compiled from "DefaultSettingSetStore.kt"
+public final class net.rsprox.proxy.settings.DefaultSettingSetStore$Companion {
+  private net.rsprox.proxy.settings.DefaultSettingSetStore$Companion();
+    Code:
+       0: aload_0
+       1: invokespecial #8                  // Method java/lang/Object."<init>":()V
+       4: return
+
+  public final net.rsprox.shared.settings.SettingSetStore load(java.nio.file.Path);
+    Code:
+       0: aload_1
+       1: ldc           #17                 // String path
+       3: invokestatic  #23                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: new           #25                 // class java/util/ArrayList
+       9: dup
+      10: invokespecial #26                 // Method java/util/ArrayList."<init>":()V
+      13: checkcast     #28                 // class java/util/List
+      16: astore_2
+      17: aload_1
+      18: invokeinterface #34,  1           // InterfaceMethod java/nio/file/Path.toFile:()Ljava/io/File;
+      23: dup
+      24: ldc           #36                 // String toFile(...)
+      26: invokestatic  #39                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullExpressionValue:(Ljava/lang/Object;Ljava/lang/String;)V
+      29: invokestatic  #45                 // Method kotlin/io/FilesKt.walkTopDown:(Ljava/io/File;)Lkotlin/io/FileTreeWalk;
+      32: astore_3
+      33: aload_3
+      34: invokevirtual #51                 // Method kotlin/io/FileTreeWalk.iterator:()Ljava/util/Iterator;
+      37: astore        4
+      39: aload         4
+      41: invokeinterface #57,  1           // InterfaceMethod java/util/Iterator.hasNext:()Z
+      46: ifeq          116
+      49: aload         4
+      51: invokeinterface #61,  1           // InterfaceMethod java/util/Iterator.next:()Ljava/lang/Object;
+      56: checkcast     #63                 // class java/io/File
+      59: astore        5
+      61: aload         5
+      63: invokevirtual #66                 // Method java/io/File.isFile:()Z
+      66: ifeq          39
+      69: nop
+      70: getstatic     #72                 // Field net/rsprox/proxy/settings/DefaultSettingSet.Companion:Lnet/rsprox/proxy/settings/DefaultSettingSet$Companion;
+      73: aload         5
+      75: invokevirtual #76                 // Method java/io/File.toPath:()Ljava/nio/file/Path;
+      78: dup
+      79: ldc           #78                 // String toPath(...)
+      81: invokestatic  #39                 // Method kotlin/jvm/internal/Intrinsics.checkNotNullExpressionValue:(Ljava/lang/Object;Ljava/lang/String;)V
+      84: invokevirtual #83                 // Method net/rsprox/proxy/settings/DefaultSettingSet$Companion.load:(Ljava/nio/file/Path;)Lnet/rsprox/proxy/settings/DefaultSettingSet;
+      87: astore        7
+      89: goto          97
+      92: astore        8
+      94: goto          39
+      97: aload         7
+      99: astore        6
+     101: aload_2
+     102: checkcast     #85                 // class java/util/Collection
+     105: aload         6
+     107: invokeinterface #89,  2           // InterfaceMethod java/util/Collection.add:(Ljava/lang/Object;)Z
+     112: pop
+     113: goto          39
+     116: aload_2
+     117: invokeinterface #92,  1           // InterfaceMethod java/util/List.isEmpty:()Z
+     122: ifeq          144
+     125: aload_2
+     126: checkcast     #85                 // class java/util/Collection
+     129: getstatic     #72                 // Field net/rsprox/proxy/settings/DefaultSettingSet.Companion:Lnet/rsprox/proxy/settings/DefaultSettingSet$Companion;
+     132: aload_1
+     133: ldc           #94                 // String Settings
+     135: invokevirtual #98                 // Method net/rsprox/proxy/settings/DefaultSettingSet$Companion.create:(Ljava/nio/file/Path;Ljava/lang/String;)Lnet/rsprox/proxy/settings/DefaultSettingSet;
+     138: invokeinterface #89,  2           // InterfaceMethod java/util/Collection.add:(Ljava/lang/Object;)Z
+     143: pop
+     144: new           #100                // class net/rsprox/proxy/settings/DefaultSettingSetStore
+     147: dup
+     148: aload_1
+     149: aload_2
+     150: invokespecial #103                // Method net/rsprox/proxy/settings/DefaultSettingSetStore."<init>":(Ljava/nio/file/Path;Ljava/util/List;)V
+     153: checkcast     #105                // class net/rsprox/shared/settings/SettingSetStore
+     156: areturn
+    Exception table:
+       from    to  target type
+          69    89    92   Class java/lang/Exception
+
+  public net.rsprox.proxy.settings.DefaultSettingSetStore$Companion(kotlin.jvm.internal.DefaultConstructorMarker);
+    Code:
+       0: aload_0
+       1: invokespecial #118                // Method "<init>":()V
+       4: return
+}

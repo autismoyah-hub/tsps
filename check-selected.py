@@ -5,13 +5,18 @@ Only archives 2 and 3 are compared. Not a full cache validator.
 import argparse,bz2,gzip,hashlib,re,struct,tarfile,zlib
 from collections import Counter
 p=argparse.ArgumentParser(); p.add_argument('tar'); p.add_argument('master'); a=p.parse_args()
+
+with open(a.tar,'rb') as f:
+ h=hashlib.sha256()
+ for chunk in iter(lambda:f.read(1048576),b''): h.update(chunk)
+if h.hexdigest()!='ec27efb9575484c249cb53351e367e747344c3def7285b0570dca1a5d1d45677': raise ValueError('tar hash')
 master=open(a.master,'rb').read(); assert hashlib.sha256(master).hexdigest()=='72c3ad092dcea8aa8d2494b208270b9c5054ef8e6de991c84fd0e026d95d7d57'; assert len(master)==205 and master[:5]==bytes.fromhex('00000000c8')
 found={}; allowed={2,3,255}
 with tarfile.open(a.tar,'r:gz') as t:
  for m in t:
   match=re.fullmatch(r'cache/(2|3|255)/(\d+)\.dat',m.name)
   if not match: continue
-  if not m.isfile(): raise ValueError('non-regular selected member')
+  if not m.isfile() or m.size<1 or m.size>16*1024*1024: raise ValueError('invalid selected member')
   key=(int(match[1]),int(match[2]))
   if key in found: raise ValueError('duplicate member')
   found[key]=t.extractfile(m).read()
@@ -22,11 +27,13 @@ for i in range(25):
   if row is not None: raise ValueError('zero slot unexpectedly present')
  elif row is None or crc(row)!=want: raise ValueError(f'reference mismatch {i}')
 def unpack(b):
- kind=b[0]; n=int.from_bytes(b[1:5],'big')
- if kind==0: return b[5:5+n]
- if kind==1:return bz2.decompress(b'BZh1'+b[9:9+n])
- if kind==2:return gzip.decompress(b[9:9+n])
- raise ValueError('compression')
+ if len(b)<9: raise ValueError('short container')
+ kind=b[0]; n=int.from_bytes(b[1:5],'big'); outlen=int.from_bytes(b[5:9],'big')
+ if kind not in (1,2) or n>16*1024*1024 or outlen>16*1024*1024 or len(b)!=n+9: raise ValueError('container bounds')
+ decoder=bz2.BZ2Decompressor() if kind==1 else zlib.decompressobj(16+zlib.MAX_WBITS)
+ data=decoder.decompress((b'BZh1' if kind==1 else b'')+b[9:],max_length=outlen+1)
+ if len(data)!=outlen or not decoder.eof or decoder.unused_data: raise ValueError('container output mismatch')
+ return data
 for archive in (2,3):
  b=unpack(found[(255,archive)]); pos=0
  def read(n):
@@ -43,6 +50,15 @@ for archive in (2,3):
   if ids and cur<=ids[-1]: raise ValueError('duplicate/nonmonotone group')
   ids.append(cur)
  crcs=[read(4) for _ in ids]; pos+=8*n
+ for _ in ids: read(4)  # group revisions
+ counts=[smart() for _ in ids]
+ for count in counts:
+  prior=-1; current=0
+  for _ in range(count):
+   current+=smart()
+   if current<=prior: raise ValueError('duplicate/nonmonotone file id')
+   prior=current
+ if pos!=len(b): raise ValueError('index trailing data')
  actual={key[1] for key in found if key[0]==archive}
  if actual!=set(ids): raise ValueError(f'group membership mismatch {archive}')
  for group,want in zip(ids,crcs):
