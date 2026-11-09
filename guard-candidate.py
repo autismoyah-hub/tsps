@@ -38,9 +38,17 @@ def validate_source(plan):
    assert kind=='blob' and mode in ('100644','100755');tree[name]=(mode,oid)
  assert len(tree)==ref['count']==5031
  assert set(tree)==set(doc['expectedInputs'])==set(doc['sourceBlobs'])==set(doc['sourceModes'])
- for file,(mode,oid) in tree.items():
-  assert doc['sourceBlobs'][file]==oid and doc['sourceModes'][file]==mode
-  data=git('cat-file','blob',oid);assert sha(data)==doc['expectedInputs'][file]
+ proc=subprocess.Popen(['git','-C',str(ROOT.parents[1]),'cat-file','--batch'],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
+ try:
+  for file,(mode,oid) in tree.items():
+   assert doc['sourceBlobs'][file]==oid and doc['sourceModes'][file]==mode
+   proc.stdin.write((oid+'\n').encode());proc.stdin.flush()
+   header=proc.stdout.readline().decode().split();assert len(header)==3 and header[0]==oid and header[1]=='blob'
+   n=int(header[2]);assert 0<=n<=128*1024*1024
+   data=proc.stdout.read(n);assert len(data)==n and proc.stdout.read(1)==b'\n' and sha(data)==doc['expectedInputs'][file]
+ finally:
+  proc.stdin.close()
+  if proc.wait()!=0:raise ValueError('git batch failed')
  return {'url':url,'sha256':sha(raw),'count':len(tree)}
 
 def current_review(plan):
@@ -69,6 +77,32 @@ def current_review(plan):
  proof={'subject':subject,'reviewer':REVIEWER,'recipient':OWNER,'recipientTurn':owner_row,'sender':sent[0]}
  return {'subject':subject,'correlatedCaptureSHA256':sha(json.dumps(proof,sort_keys=True,separators=(',',':')).encode()),'proof':proof}
 
+def current_fit(plan):
+ repo=ROOT.parents[1]
+ remote=subprocess.check_output(['git','-C',str(repo),'ls-remote','https://github.com/RSPSApp/tsps.git','refs/heads/main'],text=True,timeout=40).split()
+ assert len(remote)==2 and re.fullmatch('[0-9a-f]{40}',remote[0]) and remote[1]=='refs/heads/main'
+ main=remote[0]
+ subprocess.run(['git','-C',str(repo),'-c','maintenance.auto=false','fetch','--no-tags','--no-write-fetch-head','https://github.com/RSPSApp/tsps.git',main],capture_output=True,check=True,timeout=90)
+ connected=['server/plugins/quests/quests/EnakhrasLament.Quest.js','server/tests/qh728-q032.test.cjs','server/plugins/quests/QuestRuntime.js','server/plugins/quests/Quests.plugin.js','server/src/main/typescript/elvarg/plugins/PluginManager.ts','server/src/main/typescript/elvarg/plugins/PluginTypes.ts','server/src/main/typescript/elvarg/net/packet/impl/UseItemPacketListener.ts','server/src/main/typescript/elvarg/game/model/container/impl/Inventory.ts']
+ diff=git('diff','--name-only','97a4da5efeae2336161a39ca8b0285ea5f5331b3',main,'--',*connected).decode().splitlines()
+ assert not diff, f'Connected main paths changed: {diff}'
+ prs=json.loads(subprocess.check_output(['gh','pr','list','--repo','RSPSApp/tsps','--state','open','--limit','200','--json','number,files'],timeout=60))
+ assert len(prs)<200,'Open PR listing incomplete'
+ touched=set(connected[:2]);overlap=[]
+ for pr in prs:
+  assert isinstance(pr.get('files'),list) and len(pr['files'])<100,'PR file listing may be truncated'
+  if any(x.get('path') in touched for x in pr['files']):overlap.append(pr['number'])
+ assert not overlap,f'Open PR overlaps: {overlap}'
+ return {'main':main,'connectedPaths':connected,'openPRCount':len(prs),'exactOverlap':overlap}
+
+def selected(review):
+ raw=(ROOT/'selection.json').read_bytes();record=json.loads(raw)
+ assert set(record)=={'action','owner','source','planSHA256','reviewCaptureSHA256','createdUTC'}
+ assert record['action']=='SELECT_ONCE' and record['owner']==OWNER and record['source']==SOURCE and record['planSHA256']==PLAN_SHA and record['reviewCaptureSHA256']==review['correlatedCaptureSHA256']
+ age=(datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(record['createdUTC'])).total_seconds()
+ assert 0<=age<=300,'Selection stale or future'
+ return {'sha256':sha(raw),'createdUTC':record['createdUTC']}
+
 def check():
  assert os.environ.get('CCC_SESSION_ID')==OWNER and re.fullmatch('[a-f0-9-]{36}',REVIEWER) and REVIEWER!=OWNER
  for name,digest in PINS.items():bound(CASE/name,digest)
@@ -77,17 +111,17 @@ def check():
  assert git('rev-parse','HEAD').decode().strip()==SOURCE and not git('status','--porcelain')
  ref=subprocess.check_output(['git','ls-remote','https://github.com/autismoyah-hub/tsps.git','refs/heads/enakhra-camel-mask-d427'],text=True).split()
  assert len(ref)==2 and ref[0]==SOURCE
- source=validate_source(plan);review=current_review(plan)
+ source=validate_source(plan);review=current_review(plan);selection=selected(review);fit=current_fit(plan)
  assert not (CASE/'submission.json').exists() and not (ROOT/'submission-intent.json').exists()
  # Scan all case-owned retained intent/receipt files; malformed files fail closed.
  for file in ROOT.rglob('submission.json'):
   old=json.loads(file.read_bytes());oldplan=old.get('plan',{})
   assert not(oldplan.get('source')==SOURCE and set(oldplan.get('tests',[])) & set(plan['tests'])),str(file)
- return plan,source,review
+ return plan,source,review,selection,fit
 
 def main():
  parser=argparse.ArgumentParser();parser.add_argument('--submit-once',action='store_true',required=True);parser.parse_args()
- plan,source,review=check()
+ plan,source,review,selection,fit=check()
  from huggingface_hub import HfApi
  api=HfApi();identity=api.whoami()['name'];assert identity=='Autismo-Yah'
  matches=[]
@@ -97,11 +131,11 @@ def main():
   if labels.get('source')==SOURCE:matches.append(job_id)
  assert not matches,'Matching prior provider job: reconcile without submission'
  # Recheck all local and remote state immediately after provider reconciliation.
- again,source2,review2=check();assert again==plan and source2==source and review2==review
+ again,source2,review2,selection2,fit2=check();assert again==plan and source2==source and review2==review and selection2==selection and fit2==fit
  preview=json.loads(subprocess.check_output([sys.executable,'-E','-S',str(CASE/'pilot.py'),'--plan',str(CASE/'plan.json')],env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8','TZ':'UTC'}))
  request=preview['request'];assert preview['plan']==plan and request['attempts']==1 and request['timeout']==1800
  assert all(len(arg.encode())+1<131072 and '\0' not in arg for arg in request['command'])
- intent={'owner':OWNER,'collector':OWNER,'source':SOURCE,'planSHA256':PLAN_SHA,'payloadSHA256':PINS['payload.cjs'],'requestSHA256':sha(json.dumps(request,sort_keys=True,separators=(',',':')).encode()),'review':review,'sourceReadback':source,'createdUTC':datetime.datetime.now(datetime.timezone.utc).isoformat(),'state':'SUBMISSION_STARTING_RECONCILIATION_REQUIRED','noReplay':True}
+ intent={'owner':OWNER,'collector':OWNER,'source':SOURCE,'planSHA256':PLAN_SHA,'payloadSHA256':PINS['payload.cjs'],'requestSHA256':sha(json.dumps(request,sort_keys=True,separators=(',',':')).encode()),'review':review,'selection':selection,'currentFit':fit,'sourceReadback':source,'createdUTC':datetime.datetime.now(datetime.timezone.utc).isoformat(),'state':'SUBMISSION_STARTING_RECONCILIATION_REQUIRED','noReplay':True}
  open_exclusive(ROOT/'submission-intent.json',intent)
  # Direct call once: intent is durable before the network mutation. Any error is ambiguous.
  job=api.run_job(namespace=identity,**request)
