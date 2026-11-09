@@ -13,18 +13,26 @@ const { ClientConnection } = require('../dist/net/NetworkBuilder');
 const QuestRuntime = require('../plugins/quests/QuestRuntime');
 const { MapObjects } = require('../dist/game/entity/impl/object/MapObjects');
 let core, quest, nextIndex = 6100;
+const hookErrors=[]; const originalWarn=console.warn, originalError=console.error;
 before(async () => {
+  console.warn=(...args)=>{ if (String(args[0]).includes('[plugins]') && /failed|threw/i.test(String(args[0]))) hookErrors.push(args.map(String).join(' ')); originalWarn(...args); };
+  console.error=(...args)=>{ hookErrors.push(args.map(String).join(' ')); originalError(...args); };
   await CachePipeline.initialize(path.resolve(__dirname, '..'));
-  PM.loadFromDirectory(path.resolve(__dirname, '../plugins'));
   core = PM.getCoreApi();
   core.RegionManager.init();
+  // Scope to the real quest and transcript handlers; omit unrelated plugin lifecycle hooks.
+  require('../plugins/npcs/NpcDialogues.plugin').register(PM.createApi('NpcDialogues'));
+  require('../plugins/quests/quests/SoulsBane.Quest')(PM.createApi('Quests'));
   core.RegionManager.loadMapFiles(3020, 5200);
   quest = QuestRuntime.getRegisteredQuests().find(q => q.key === 'a_souls_bane');
   assert.ok(quest);
   assert.equal(core.CacheDefinitions.getObject(13933).actions[0], 'Use');
   assert.ok(MapObjects.get(13933, new core.Location(3020, 5188, 0), null), 'cache places the bridge exit');
 });
-after(() => PM.emitServerShutdown({}));
+after(() => {
+  PM.emitServerShutdown({}); console.warn=originalWarn; console.error=originalError;
+  assert.deepEqual(hookErrors, [], 'no hidden plugin hook or engine errors');
+});
 function actor(t, stage) {
   const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true, send: () => true,
     close() {}, onData() {}, onError() {}, onClose() {} };
@@ -99,7 +107,7 @@ test('the bridge exit is used after crossing before the Tolna encounter starts',
   assert.deepEqual([f.p.getLocation().getX(), f.p.getLocation().getY()], [3086, 5302]);
   const heads = spawns.filter(s => s.definition.owner === f.p && [1075,1076,1077].includes(s.definition.id));
   assert.equal(heads.length, 3, 'existing fallback encounter supplies three heads');
-  for (const {npc} of heads) PM.emitNpcDeath({npc, killer: f.p});
+  for (const {npc} of heads) { PM.emitNpcDeath({npc, killer: f.p}); PM.removeNpc(npc); }
   assert.equal(quest.getStage(f.p), 11, 'direct death hooks reach the server human-Tolna state; combat is not tested');
   await talkToHuman(f, spawns);
 });
@@ -124,7 +132,7 @@ test('the other exit retains its existing server behavior at stage 9', async t =
   assert.deepEqual([f.p.getLocation().getX(), f.p.getLocation().getY()], [3310, 3455]);
 });
 
-async function descendRift(f) {
+async function descendRift(f, t) {
   core.RegionManager.loadMapFiles(3310, 3455);
   const rift = [...MapObjects.mapObjects.values()].flat().find(object => {
     const p = object.getLocation();
@@ -132,15 +140,24 @@ async function descendRift(f) {
   });
   assert.ok(rift, 'cache places the rift near the surface return');
   const def = core.ObjectDefinition.forPlayer(rift.getId(), f.p);
-  const clickType = def.getInteractions().findIndex(option => option?.toLowerCase() === 'climb-down') + 1;
-  assert.ok(clickType, 'attached rope offers Climb-down');
+  assert.equal(f.p.getPacketSender().getVarbit(2032), 1, 'attached rope varbit is active');
+  assert.equal(def.id, 13970, 'rift resolves to the rope-attached cache child');
+  const clickType = def.getInteractions().findIndex(option => option?.toLowerCase() === 'enter') + 1;
+  assert.equal(clickType, 1, 'rope-attached rift offers Enter');
   const p = rift.getLocation();
+  assert.ok(MapObjects.getPrivateArea(f.p, rift.getId(), p.clone()), 'resolved parent loc exists for this player');
+  const observed=[]; const emit=PM.emitObjectInteraction;
+  t.mock.method(PM, 'emitObjectInteraction', (event,...rest) => {
+    const loc=event.sourceLocation; observed.push({id:event.objectId, option:event.option, resolved:event.definition?.id, x:loc?.x, y:loc?.y});
+    return emit.call(PM,event,...rest);
+  });
   await f.c.dispatch([{type:'object_option', id:rift.getId(), x:p.getX(), y:p.getY(), clickType}]);
   f.c.processTurnPackets();
   for (let i = 0; i < 40; i++) {
     f.p.getMovementQueue().beginCycle(); f.p.getMovementQueue().process();
     core.TaskManager.processWalkTo(f.p.getIndex()); PM.updatePlayerZones(f.p); core.TaskManager.process();
   }
+  assert.ok(observed.some(e => e.id===13968 && e.resolved===13970 && e.option==='enter'), 'real packet reaches resolved rope rift Enter handler');
 }
 
 test('login preserves the completed bridge after interruption of the server final room', async t => {
@@ -151,7 +168,7 @@ test('login preserves the completed bridge after interruption of the server fina
   PM.emitPlayerLogin({player: f.p, username: f.p.getUsername()});
   assert.equal(quest.getStage(f.p), 9);
   assert.deepEqual([f.p.getLocation().getX(), f.p.getLocation().getY()], [3310, 3455]);
-  await descendRift(f);
+  await descendRift(f, t);
   assert.equal(quest.getStage(f.p), 9);
   assert.deepEqual([f.p.getLocation().getX(), f.p.getLocation().getY()], [3020, 5200]);
   await clickExit(f, () => {});
@@ -167,7 +184,7 @@ test('the existing death hook resets an unfinished final encounter', async t => 
   f.p.setLocation(new core.Location(3310,3455,0));
   f.p.setAttribute('souls-bane:rope-attached', 1);
   f.p.getPacketSender().sendVarbit(2032, 1);
-  await descendRift(f);
+  await descendRift(f, t);
   assert.deepEqual([f.p.getLocation().getX(), f.p.getLocation().getY()], [3020,5200]);
   await clickExit(f, () => {});
   assert.equal(quest.getStage(f.p), 10);
@@ -185,7 +202,7 @@ test('stage 11 relog and re-entry restores the server human Tolna state', async 
   t.mock.method(PM, 'spawnNpc', (definition, ...rest) => {
     const npc = spawn.call(PM, definition, ...rest); spawns.push({definition,npc}); return npc;
   });
-  await descendRift(f);
+  await descendRift(f, t);
   assert.equal(quest.getStage(f.p), 11);
   assert.deepEqual([f.p.getLocation().getX(), f.p.getLocation().getY()], [3086,5302]);
   assert.ok(spawns.some(s => s.definition.id === 1058 && s.definition.owner === f.p && s.npc), 'human Tolna is restored');
