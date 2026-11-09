@@ -4065,3 +4065,290 @@ test('Tourist Trap driver: exactly 100 coins reaches the bribe acceptance branch
   f.search();
   assert.equal(f.stage(), 27);
 });
+
+// Selim's partisan sale: a seeded dialogue message checkpoint, not natural
+// actor placement or a claim about the retail full-inventory response.
+function selimSaleFixture(t) {
+  const f = fixture(t);
+  const quest = require('../plugins/quests/QuestRuntime').questNamed('Beneath Cursed Sands');
+  assert.ok(quest, 'registered quest exists');
+  quest.setStage(f.player, 108);
+  assert.equal(quest.isComplete(f.player), true);
+  const npc = core.NPC.create(core.NpcIdentifiers.SELIM, new core.Location(3293, 3180));
+  const messages = [];
+  const sendMessage = f.player.sendMessage.bind(f.player);
+  f.player.sendMessage = (...args) => { messages.push(args[0]); return sendMessage(...args); };
+  const pages = [{ page: 'Selim', variants: ['subsequent-dialogue'] }];
+  const event = () => ({ player: f.player, npc, npcId: core.NpcIdentifiers.SELIM,
+    definition: npc.getCurrentDefinition(f.player), pages, kind: 'message', stepId: 'DIC4H2',
+    text: 'Selim hands you a Keris partisan in exchange for 60,000 coins.', handled: false });
+  const condition = stepId => PM.emitNpcDialogueCondition({ player: f.player, npc,
+    npcId: core.NpcIdentifiers.SELIM, definition: npc.getCurrentDefinition(f.player), pages, stepId,
+    text: stepId === 'D3sMpc' ? "If the player doesn't have enough coins:" : 'If the player has enough coins:' });
+  return { ...f, npc, quest, messages, event, condition, inv: f.player.getInventory() };
+}
+function selimInventory(inv) {
+  return inv.getItems().map(item => ({ id: item.getId(), amount: item.getAmount(), meta: item.getMeta() }));
+}
+function selimFill(inv, from) {
+  for (let i = from; i < inv.capacity(); i++) inv.setItem(i, new core.Item(core.ItemIdentifiers.KNIFE, 1));
+}
+function selimAction(f) {
+  const event = f.event();
+  PM.emitCustomEvent('npc-dialogue:action', event);
+  return event;
+}
+
+test('Selim partisan sale consumes the exact coins and survives PlayerSave hydration', t => {
+  const f = selimSaleFixture(t), coins = core.ItemIdentifiers.COINS, partisan = core.ItemIdentifiers.KERIS_PARTISAN;
+  f.inv.setItem(0, new core.Item(coins, 120000));
+  f.inv.setItem(1, new core.Item(partisan, 1));
+  assert.equal(f.condition('-dvb1Z'), true);
+  assert.equal(f.condition('D3sMpc'), false);
+  const sender = f.player.getPacketSender(), sendContainer = sender.sendItemContainer.bind(sender);
+  const refreshed = [];
+  t.mock.method(sender, 'sendItemContainer', (container, interfaceId) => {
+    refreshed.push({ container, interfaceId });
+    return sendContainer(container, interfaceId);
+  });
+  const event = selimAction(f);
+  assert.ok(refreshed.some(entry => entry.container === f.inv && entry.interfaceId === core.Inventory.INTERFACE_ID),
+    'the real inventory refresh reaches the packet sender');
+  assert.equal(f.inv.getAmount(coins), 60000, 'the sale consumes 60,000 coins');
+  assert.equal(f.inv.getAmount(partisan), 2, 'owning a partisan does not prevent another purchase');
+  assert.notEqual(event.end, true);
+  const { PlayerSave } = require('../dist/game/entity/impl/player/persistence/PlayerSave');
+  const { JsonPlayerPersistence } = require('../plugins/persistence/JsonPlayerPersistence.plugin');
+  const codec = new JsonPlayerPersistence();
+  const saved = JSON.parse(JSON.stringify(PlayerSave.fromPlayer(f.player), codec.replacer.bind(codec)), codec.reviver.bind(codec));
+  const restored = fixture(t).player;
+  codec.hydratePlayerSave(saved).applyToPlayer(restored);
+  assert.deepEqual(selimInventory(restored.getInventory()), selimInventory(f.inv));
+  assert.equal(f.quest.isComplete(restored), true);
+});
+
+test('Selim sale previews freed coin slots and preserves remaining stack metadata', t => {
+  const f = selimSaleFixture(t), coins = core.ItemIdentifiers.COINS, partisan = core.ItemIdentifiers.KERIS_PARTISAN;
+  f.inv.setItem(0, new core.Item(coins, 30000, { source: 'first' }));
+  f.inv.setItem(1, new core.Item(coins, 40000, { source: 'second' }));
+  selimFill(f.inv, 2);
+  assert.equal(f.inv.getFreeSlots(), 0);
+  assert.equal(f.condition('-dvb1Z'), true);
+  selimAction(f);
+  assert.equal(f.inv.getAmount(coins), 10000);
+  assert.equal(f.inv.getAmount(partisan), 1, 'the consumed first stack frees a slot');
+  assert.deepEqual(f.inv.getItems()[1].getMeta(), { source: 'second' });
+  assert.equal(f.inv.getItems()[1].getAmount(), 10000);
+});
+
+test('Selim sale preserves inventory and suppresses success when coins or room are missing', t => {
+  for (const amount of [59999, 60001]) {
+    const f = selimSaleFixture(t), coins = core.ItemIdentifiers.COINS;
+    f.inv.setItem(0, new core.Item(coins, amount, { source: 'kept' }));
+    selimFill(f.inv, 1);
+    const before = selimInventory(f.inv);
+    assert.equal(f.condition('D3sMpc'), amount < 60000);
+    assert.equal(f.condition('-dvb1Z'), amount >= 60000);
+    const event = selimAction(f);
+    assert.deepEqual(selimInventory(f.inv), before);
+    assert.equal(event.end, true, 'the generic success message must not run');
+  }
+});
+
+test('Selim sale preserves untouched item identities and rejects a failed planned addition', t => {
+  const f = selimSaleFixture(t), coins = core.ItemIdentifiers.COINS;
+  f.inv.setItem(0, new core.Item(coins, 60000));
+  f.inv.setItem(1, new core.Item(core.ItemIdentifiers.KNIFE, 1, { origin: 'kept' }));
+  const held = f.inv.getItems()[1], before = selimInventory(f.inv);
+  const add = core.Inventory.prototype.add;
+  t.mock.method(core.Inventory.prototype, 'add', function (item, refresh) {
+    if (this !== f.inv && item.getId() === core.ItemIdentifiers.KERIS_PARTISAN) return this;
+    return add.call(this, item, refresh);
+  });
+  const event = selimAction(f);
+  assert.deepEqual(selimInventory(f.inv), before);
+  assert.equal(f.inv.getItems()[1], held);
+  assert.equal(event.end, true);
+});
+
+test('Selim sale retains untouched item identity after committing', t => {
+  const f = selimSaleFixture(t);
+  f.inv.setItem(0, new core.Item(core.ItemIdentifiers.COINS, 60000));
+  f.inv.setItem(1, new core.Item(core.ItemIdentifiers.KNIFE, 1));
+  const held = f.inv.getItems()[1];
+  const event = selimAction(f);
+  assert.equal(f.inv.getItems()[1], held);
+  assert.equal(f.inv.getAmount(core.ItemIdentifiers.KERIS_PARTISAN), 1);
+  assert.notEqual(event.end, true);
+});
+
+test('Selim sale refuses a changed live slot before commit', t => {
+  const f = selimSaleFixture(t);
+  f.inv.setItem(0, new core.Item(core.ItemIdentifiers.COINS, 60000));
+  f.inv.setItem(1, new core.Item(core.ItemIdentifiers.KNIFE, 1));
+  const held = f.inv.getItems()[1];
+  const add = core.Inventory.prototype.add;
+  t.mock.method(core.Inventory.prototype, 'add', function (item, refresh) {
+    if (this !== f.inv && item.getId() === core.ItemIdentifiers.KERIS_PARTISAN) held.setAmount(2);
+    return add.call(this, item, refresh);
+  });
+  const event = selimAction(f);
+  assert.equal(f.inv.getAmount(core.ItemIdentifiers.COINS), 60000);
+  assert.equal(f.inv.getAmount(core.ItemIdentifiers.KERIS_PARTISAN), 0);
+  assert.equal(held.getAmount(), 2, 'the external mutation is not rolled back');
+  assert.equal(event.end, true);
+});
+
+test('Selim sale refuses same-content item replacement or a replaced inventory array', t => {
+  for (const mode of ['item', 'array']) {
+    const f = selimSaleFixture(t);
+    f.inv.setItem(0, new core.Item(core.ItemIdentifiers.COINS, 60000));
+    f.inv.setItem(1, new core.Item(core.ItemIdentifiers.KNIFE, 1, { origin: 'kept' }));
+    const before = selimInventory(f.inv), original = f.inv.getItems(), originalItem = original[1];
+    const add = core.Inventory.prototype.add;
+    const mock = t.mock.method(core.Inventory.prototype, 'add', function (item, refresh) {
+      if (this !== f.inv && item.getId() === core.ItemIdentifiers.KERIS_PARTISAN) {
+        if (mode === 'item') original[1] = originalItem.clone();
+        else f.inv.setItems(original.slice());
+      }
+      return add.call(this, item, refresh);
+    });
+    const event = selimAction(f);
+    mock.mock.restore();
+    assert.deepEqual(selimInventory(f.inv), before);
+    assert.equal(event.end, true, mode);
+    if (mode === 'item') assert.notEqual(f.inv.getItems()[1], originalItem);
+    else assert.notEqual(f.inv.getItems(), original);
+  }
+});
+
+test('Selim sale replaces the changed coin stack and preserves untouched item and metadata identities', t => {
+  const f = selimSaleFixture(t);
+  f.inv.setItem(0, new core.Item(core.ItemIdentifiers.COINS, 120000, { source: 'coin' }));
+  f.inv.setItem(1, new core.Item(core.ItemIdentifiers.KNIFE, 1, { nested: { source: 'kept' } }));
+  const coin = f.inv.getItems()[0], held = f.inv.getItems()[1], metadata = held.getMeta();
+  const event = selimAction(f);
+  assert.equal(f.inv.getAmount(core.ItemIdentifiers.COINS), 60000);
+  assert.notEqual(f.inv.getItems()[0], coin);
+  assert.deepEqual(f.inv.getItems()[0].getMeta(), { source: 'coin' });
+  assert.equal(f.inv.getItems()[1], held);
+  assert.equal(f.inv.getItems()[1].getMeta(), metadata);
+  assert.notEqual(event.end, true);
+});
+
+test('Selim transcript runner suppresses success after a postcommit refresh exception', t => {
+  const f = selimSaleFixture(t), step = selimMessageStep();
+  f.inv.setItem(0, new core.Item(core.ItemIdentifiers.COINS, 60000));
+  t.mock.method(f.inv, 'refreshItems', () => { throw new Error('synthetic refresh failure'); });
+  let observed;
+  const hooks = PM.customEventHooks.get('npc-dialogue:action');
+  const previousHooks = new Set(hooks);
+  PM.createApi('SelimRefreshObserver').onCustomEvent('npc-dialogue:action', event => {
+    if (event.player === f.player && event.stepId === step.id) observed = event;
+  });
+  const observer = hooks.find(hook => !previousHooks.has(hook));
+  assert.ok(observer);
+  t.after(() => { const index = hooks.indexOf(observer); if (index >= 0) hooks.splice(index, 1); });
+  const request = { player: f.player, npc: f.npc, npcId: core.NpcIdentifiers.SELIM,
+    definition: f.npc.getCurrentDefinition(f.player), variant: { page: 'Selim', variant: 'subsequent-dialogue' },
+    exact: true, select: () => [step] };
+  PM.emitCustomEvent('npc-dialogue:start', request);
+  assert.equal(request.handled, true);
+  assert.ok(observed);
+  assert.equal(observed.handled, true);
+  assert.equal(observed.end, true);
+  assert.equal(f.inv.getAmount(core.ItemIdentifiers.COINS), 0);
+  assert.equal(f.inv.getAmount(core.ItemIdentifiers.KERIS_PARTISAN), 1);
+  assert.ok(!f.messages.includes(step.text));
+  assert.notEqual(f.player.getDialogueManager().getCurrent()?.getText?.(), step.text);
+  f.player.getSession().flushPackets();
+  assert.equal(Buffer.concat(f.packets).includes(Buffer.from(step.text)), false);
+});
+
+test('Selim sale rechecks coins, capacity, quest and actor at the handover', t => {
+  const f = selimSaleFixture(t), coins = core.ItemIdentifiers.COINS;
+  f.inv.setItem(0, new core.Item(coins, 60000));
+  assert.equal(f.condition('-dvb1Z'), true, 'the earlier prompt saw enough coins');
+  f.inv.setItem(0, new core.Item(coins, 59999));
+  let before = selimInventory(f.inv), event = selimAction(f);
+  assert.deepEqual(selimInventory(f.inv), before);
+  assert.equal(event.end, true);
+  f.inv.setItem(0, new core.Item(coins, 60001));
+  selimFill(f.inv, 1);
+  before = selimInventory(f.inv); event = selimAction(f);
+  assert.deepEqual(selimInventory(f.inv), before);
+  assert.equal(event.end, true);
+  f.inv.resetItems(); f.inv.setItem(0, new core.Item(coins, 60000));
+  f.quest.setStage(f.player, 0);
+  before = selimInventory(f.inv); event = selimAction(f);
+  assert.deepEqual(selimInventory(f.inv), before);
+  assert.equal(event.end, true);
+  f.quest.setStage(f.player, 108);
+  event = f.event(); event.npcId = core.NpcIdentifiers.OSMAN;
+  PM.emitCustomEvent('npc-dialogue:action', event);
+  assert.deepEqual(selimInventory(f.inv), before, 'another actor cannot trigger the sale');
+});
+
+function selimMessageStep() {
+  const record = require('../data/definitions/npc-dialogues.json').Selim;
+  const visit = steps => {
+    for (const step of steps ?? []) {
+      if (step.id === 'DIC4H2') return step;
+      const nested = visit(step.steps) ?? (step.options ?? []).map(option => visit(option.steps)).find(Boolean);
+      if (nested) return nested;
+    }
+    return null;
+  };
+  const step = Object.values(record.variants).map(visit).find(Boolean);
+  assert.equal(step?.type, 'message');
+  assert.equal(step.text, 'Selim hands you a Keris partisan in exchange for 60,000 coins.');
+  return step;
+}
+
+test('Selim transcript runner refuses a full inventory without showing the purchase message or box', t => {
+  const f = selimSaleFixture(t), coins = core.ItemIdentifiers.COINS;
+  f.inv.setItem(0, new core.Item(coins, 60001, { source: 'kept' }));
+  selimFill(f.inv, 1);
+  const before = selimInventory(f.inv), step = selimMessageStep();
+  let seen = 0;
+  const hooks = PM.customEventHooks.get('npc-dialogue:action');
+  const previousHooks = new Set(hooks);
+  PM.createApi('SelimSaleObserver').onCustomEvent('npc-dialogue:action', event => {
+    if (event.player === f.player && event.stepId === step.id && event.kind === 'message') seen++;
+  });
+  const observer = hooks.find(hook => !previousHooks.has(hook));
+  assert.ok(observer, 'the source action observer was registered');
+  t.after(() => { const index = hooks.indexOf(observer); if (index >= 0) hooks.splice(index, 1); });
+  const request = { player: f.player, npc: f.npc, npcId: core.NpcIdentifiers.SELIM,
+    definition: f.npc.getCurrentDefinition(f.player), variant: { page: 'Selim', variant: 'subsequent-dialogue' },
+    exact: true, select: () => [step] };
+  PM.emitCustomEvent('npc-dialogue:start', request);
+  assert.equal(request.handled, true, 'actual transcript runner accepted the source message');
+  assert.equal(seen, 1, 'the runner emitted the source message action exactly once');
+  assert.deepEqual(selimInventory(f.inv), before);
+  assert.ok(!f.messages.includes(step.text), 'generic purchase success was not sent');
+  assert.notEqual(f.player.getDialogueManager().getCurrent()?.getText?.(), step.text, 'success was not mounted in a dialogue box');
+  f.player.getSession().flushPackets();
+  assert.equal(Buffer.concat(f.packets).includes(Buffer.from(step.text)), false, 'success text was not encoded in packets');
+});
+
+test('Selim condition and action do not claim another page or a different actor', t => {
+  const f = selimSaleFixture(t), coins = core.ItemIdentifiers.COINS;
+  f.inv.setItem(0, new core.Item(coins, 60000, { source: 'kept' }));
+  const before = selimInventory(f.inv);
+  const osman = core.NPC.create(core.NpcIdentifiers.OSMAN, new core.Location(3286, 3180));
+  for (const context of [
+    { npc: f.npc, npcId: core.NpcIdentifiers.SELIM, pages: [{ page: 'Unrelated' }] },
+    { npc: osman, npcId: core.NpcIdentifiers.OSMAN, pages: [{ page: 'Selim' }] },
+  ]) {
+    const definition = context.npc.getCurrentDefinition(f.player);
+    const condition = PM.emitNpcDialogueCondition({ player: f.player, ...context, definition,
+      stepId: '-dvb1Z', text: 'If the player has enough coins:' });
+    assert.equal(condition, null, 'foreign context is not answered by the purchase handler');
+    const event = { ...f.event(), ...context, definition };
+    PM.emitCustomEvent('npc-dialogue:action', event);
+    assert.deepEqual(selimInventory(f.inv), before);
+    assert.equal(event.handled, false);
+    assert.notEqual(event.end, true);
+  }
+});
