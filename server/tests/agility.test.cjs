@@ -2272,7 +2272,10 @@ test("an admitted Varrock fall retains its damage when the player logs out", asy
       send: () => true, close() {}, onData() {}, onError() {}, onClose() {} }));
     saves[0].save.applyToPlayer(restored);
     assert.deepEqual(tile(restored), tile(p), "serialized landing restores");
-    assert.equal(restored.getHitpoints(), p.getHitpoints(), "serialized health restores");
+    // Snapshot preserves live health; loading enforces the server's 10 HP minimum.
+    const savedHp = saves[0].save.getSkills().level[Skill.HITPOINTS.getIndex()];
+    assert.equal(savedHp, p.getHitpoints(), "snapshot preserves live health");
+    assert.equal(restored.getHitpoints(), Math.max(10, savedHp), "loaded health follows the serializer minimum");
     return restored;
   }
   function failedActor({ hitpoints = 50 } = {}) {
