@@ -1,0 +1,430 @@
+Compiled from "OpenRs2ApiExtensions.kt"
+public final class net.rsprox.cache.util.OpenRs2ApiExtensionsKt {
+  public static final int CONNECT_TIMEOUT_MS;
+
+  private static final java.net.URI ROOT_URI;
+
+  public static final java.lang.String CACHES_ENDPOINT;
+
+  private static final com.fasterxml.jackson.databind.ObjectMapper mapper;
+
+  public static void getCONNECT_TIMEOUT_MS$annotations();
+    Code:
+       0: return
+
+  public static final java.net.URI getROOT_URI();
+    Code:
+       0: getstatic     #14                 // Field ROOT_URI:Ljava/net/URI;
+       3: areturn
+
+  public static void getROOT_URI$annotations();
+    Code:
+       0: return
+
+  public static void getCACHES_ENDPOINT$annotations();
+    Code:
+       0: return
+
+  public static final com.fasterxml.jackson.databind.ObjectMapper getMapper();
+    Code:
+       0: getstatic     #22                 // Field mapper:Lcom/fasterxml/jackson/databind/ObjectMapper;
+       3: areturn
+
+  public static void getMapper$annotations();
+    Code:
+       0: return
+
+  public static final <T> T downloadCacheListings();
+    Code:
+       0: iconst_0
+       1: istore_0
+       2: invokestatic  #30                 // Method getROOT_URI:()Ljava/net/URI;
+       5: ldc           #32                 // String caches.json
+       7: invokevirtual #38                 // Method java/net/URI.resolve:(Ljava/lang/String;)Ljava/net/URI;
+      10: invokevirtual #42                 // Method java/net/URI.toURL:()Ljava/net/URL;
+      13: invokevirtual #48                 // Method java/net/URL.openConnection:()Ljava/net/URLConnection;
+      16: astore_1
+      17: aload_1
+      18: sipush        8000
+      21: invokevirtual #54                 // Method java/net/URLConnection.setConnectTimeout:(I)V
+      24: aload_1
+      25: invokevirtual #58                 // Method java/net/URLConnection.getInputStream:()Ljava/io/InputStream;
+      28: checkcast     #60                 // class java/io/Closeable
+      31: astore_2
+      32: aconst_null
+      33: astore_3
+      34: nop
+      35: aload_2
+      36: checkcast     #62                 // class java/io/InputStream
+      39: astore        4
+      41: iconst_0
+      42: istore        5
+      44: invokestatic  #64                 // Method getMapper:()Lcom/fasterxml/jackson/databind/ObjectMapper;
+      47: astore        6
+      49: new           #66                 // class java/lang/String
+      52: dup
+      53: aload         4
+      55: invokestatic  #72                 // Method kotlin/jvm/internal/Intrinsics.checkNotNull:(Ljava/lang/Object;)V
+      58: aload         4
+      60: invokestatic  #78                 // Method kotlin/io/ByteStreamsKt.readBytes:(Ljava/io/InputStream;)[B
+      63: getstatic     #84                 // Field kotlin/text/Charsets.UTF_8:Ljava/nio/charset/Charset;
+      66: invokespecial #88                 // Method java/lang/String."<init>":([BLjava/nio/charset/Charset;)V
+      69: astore        7
+      71: nop
+      72: iconst_0
+      73: istore        8
+      75: aload         6
+      77: aload         7
+      79: iconst_0
+      80: istore        9
+      82: invokestatic  #91                 // Method kotlin/jvm/internal/Intrinsics.needClassReification:()V
+      85: new           #93                 // class net/rsprox/cache/util/OpenRs2ApiExtensionsKt$downloadCacheListings$lambda$0$$inlined$readValue$1
+      88: dup
+      89: invokespecial #95                 // Method net/rsprox/cache/util/OpenRs2ApiExtensionsKt$downloadCacheListings$lambda$0$$inlined$readValue$1."<init>":()V
+      92: checkcast     #97                 // class com/fasterxml/jackson/core/type/TypeReference
+      95: invokevirtual #103                // Method com/fasterxml/jackson/databind/ObjectMapper.readValue:(Ljava/lang/String;Lcom/fasterxml/jackson/core/type/TypeReference;)Ljava/lang/Object;
+      98: astore        9
+     100: nop
+     101: iconst_0
+     102: istore        10
+     104: aload         9
+     106: iconst_3
+     107: ldc           #105                // String T
+     109: invokestatic  #109                // Method kotlin/jvm/internal/Intrinsics.reifiedOperationMarker:(ILjava/lang/String;)V
+     112: instanceof    #4                  // class java/lang/Object
+     115: ifne          236
+     118: aconst_null
+     119: iconst_3
+     120: ldc           #105                // String T
+     122: invokestatic  #109                // Method kotlin/jvm/internal/Intrinsics.reifiedOperationMarker:(ILjava/lang/String;)V
+     125: instanceof    #4                  // class java/lang/Object
+     128: ifeq          136
+     131: ldc           #111                // String ?
+     133: goto          138
+     136: ldc           #113                // String (non-null)
+     138: astore        11
+     140: new           #115                // class java/lang/StringBuilder
+     143: dup
+     144: invokespecial #116                // Method java/lang/StringBuilder."<init>":()V
+     147: ldc           #118                // String Deserialized value did not match the specified type; specified
+     149: invokevirtual #122                // Method java/lang/StringBuilder.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;
+     152: iconst_4
+     153: ldc           #105                // String T
+     155: invokestatic  #109                // Method kotlin/jvm/internal/Intrinsics.reifiedOperationMarker:(ILjava/lang/String;)V
+     158: ldc           #4                  // class java/lang/Object
+     160: invokestatic  #128                // Method kotlin/jvm/internal/Reflection.getOrCreateKotlinClass:(Ljava/lang/Class;)Lkotlin/reflect/KClass;
+     163: invokeinterface #134,  1          // InterfaceMethod kotlin/reflect/KClass.getQualifiedName:()Ljava/lang/String;
+     168: invokevirtual #122                // Method java/lang/StringBuilder.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;
+     171: aload         11
+     173: invokevirtual #122                // Method java/lang/StringBuilder.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;
+     176: ldc           #136                // String  but was
+     178: invokevirtual #122                // Method java/lang/StringBuilder.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;
+     181: aload         9
+     183: dup
+     184: ifnull        216
+     187: astore        12
+     189: astore        13
+     191: iconst_0
+     192: istore        14
+     194: aload         12
+     196: invokevirtual #140                // Method java/lang/Object.getClass:()Ljava/lang/Class;
+     199: invokestatic  #128                // Method kotlin/jvm/internal/Reflection.getOrCreateKotlinClass:(Ljava/lang/Class;)Lkotlin/reflect/KClass;
+     202: invokeinterface #134,  1          // InterfaceMethod kotlin/reflect/KClass.getQualifiedName:()Ljava/lang/String;
+     207: aload         13
+     209: swap
+     210: checkcast     #66                 // class java/lang/String
+     213: goto          218
+     216: pop
+     217: aconst_null
+     218: invokevirtual #122                // Method java/lang/StringBuilder.append:(Ljava/lang/String;)Ljava/lang/StringBuilder;
+     221: invokevirtual #143                // Method java/lang/StringBuilder.toString:()Ljava/lang/String;
+     224: astore        15
+     226: new           #145                // class com/fasterxml/jackson/databind/RuntimeJsonMappingException
+     229: dup
+     230: aload         15
+     232: invokespecial #148                // Method com/fasterxml/jackson/databind/RuntimeJsonMappingException."<init>":(Ljava/lang/String;)V
+     235: athrow
+     236: aload         9
+     238: nop
+     239: nop
+     240: astore        4
+     242: iconst_1
+     243: invokestatic  #153                // Method kotlin/jvm/internal/InlineMarker.finallyStart:(I)V
+     246: aload_2
+     247: aload_3
+     248: invokestatic  #159                // Method kotlin/io/CloseableKt.closeFinally:(Ljava/io/Closeable;Ljava/lang/Throwable;)V
+     251: iconst_1
+     252: invokestatic  #162                // Method kotlin/jvm/internal/InlineMarker.finallyEnd:(I)V
+     255: aload         4
+     257: goto          286
+     260: astore        5
+     262: aload         5
+     264: astore_3
+     265: aload         5
+     267: athrow
+     268: astore        5
+     270: iconst_1
+     271: invokestatic  #153                // Method kotlin/jvm/internal/InlineMarker.finallyStart:(I)V
+     274: aload_2
+     275: aload_3
+     276: invokestatic  #159                // Method kotlin/io/CloseableKt.closeFinally:(Ljava/io/Closeable;Ljava/lang/Throwable;)V
+     279: iconst_1
+     280: invokestatic  #162                // Method kotlin/jvm/internal/InlineMarker.finallyEnd:(I)V
+     283: aload         5
+     285: athrow
+     286: areturn
+    Exception table:
+       from    to  target type
+          34   242   260   Class java/lang/Throwable
+          34   242   268   any
+         260   268   268   any
+         268   270   268   any
+
+  public static final byte[] downloadOpenRs2Group(net.rsprox.cache.dictionary.openrs2.CacheScope, int, int, int);
+    Code:
+       0: aload_0
+       1: ldc           #184                // String scope
+       3: invokestatic  #188                // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: getstatic     #14                 // Field ROOT_URI:Ljava/net/URI;
+       9: aload_0
+      10: invokevirtual #193                // Method net/rsprox/cache/dictionary/openrs2/CacheScope.getLabel:()Ljava/lang/String;
+      13: iload_1
+      14: iload_2
+      15: iload_3
+      16: invokedynamic #205,  0            // InvokeDynamic #0:makeConcatWithConstants:(Ljava/lang/String;III)Ljava/lang/String;
+      21: invokevirtual #38                 // Method java/net/URI.resolve:(Ljava/lang/String;)Ljava/net/URI;
+      24: invokevirtual #42                 // Method java/net/URI.toURL:()Ljava/net/URL;
+      27: invokevirtual #48                 // Method java/net/URL.openConnection:()Ljava/net/URLConnection;
+      30: astore        4
+      32: aload         4
+      34: sipush        8000
+      37: invokevirtual #54                 // Method java/net/URLConnection.setConnectTimeout:(I)V
+      40: aload         4
+      42: invokevirtual #58                 // Method java/net/URLConnection.getInputStream:()Ljava/io/InputStream;
+      45: checkcast     #60                 // class java/io/Closeable
+      48: astore        5
+      50: aconst_null
+      51: astore        6
+      53: nop
+      54: aload         5
+      56: checkcast     #62                 // class java/io/InputStream
+      59: astore        7
+      61: iconst_0
+      62: istore        8
+      64: aload         7
+      66: invokestatic  #72                 // Method kotlin/jvm/internal/Intrinsics.checkNotNull:(Ljava/lang/Object;)V
+      69: aload         7
+      71: invokestatic  #78                 // Method kotlin/io/ByteStreamsKt.readBytes:(Ljava/io/InputStream;)[B
+      74: astore        7
+      76: aload         5
+      78: aload         6
+      80: invokestatic  #159                // Method kotlin/io/CloseableKt.closeFinally:(Ljava/io/Closeable;Ljava/lang/Throwable;)V
+      83: aload         7
+      85: goto          109
+      88: astore        8
+      90: aload         8
+      92: astore        6
+      94: aload         8
+      96: athrow
+      97: astore        8
+      99: aload         5
+     101: aload         6
+     103: invokestatic  #159                // Method kotlin/io/CloseableKt.closeFinally:(Ljava/io/Closeable;Ljava/lang/Throwable;)V
+     106: aload         8
+     108: athrow
+     109: areturn
+    Exception table:
+       from    to  target type
+          53    76    88   Class java/lang/Throwable
+          53    76    97   any
+          88    97    97   any
+          97    99    97   any
+
+  public static final java.io.InputStream openOpenRs2DiskCache(net.rsprox.cache.dictionary.openrs2.CacheScope, int);
+    Code:
+       0: aload_0
+       1: ldc           #184                // String scope
+       3: invokestatic  #188                // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: getstatic     #14                 // Field ROOT_URI:Ljava/net/URI;
+       9: aload_0
+      10: invokevirtual #193                // Method net/rsprox/cache/dictionary/openrs2/CacheScope.getLabel:()Ljava/lang/String;
+      13: iload_1
+      14: invokedynamic #219,  0            // InvokeDynamic #1:makeConcatWithConstants:(Ljava/lang/String;I)Ljava/lang/String;
+      19: invokevirtual #38                 // Method java/net/URI.resolve:(Ljava/lang/String;)Ljava/net/URI;
+      22: invokevirtual #42                 // Method java/net/URI.toURL:()Ljava/net/URL;
+      25: invokevirtual #48                 // Method java/net/URL.openConnection:()Ljava/net/URLConnection;
+      28: astore_2
+      29: aload_2
+      30: sipush        8000
+      33: invokevirtual #54                 // Method java/net/URLConnection.setConnectTimeout:(I)V
+      36: aload_2
+      37: invokevirtual #58                 // Method java/net/URLConnection.getInputStream:()Ljava/io/InputStream;
+      40: dup
+      41: ldc           #221                // String getInputStream(...)
+      43: invokestatic  #224                // Method kotlin/jvm/internal/Intrinsics.checkNotNullExpressionValue:(Ljava/lang/Object;Ljava/lang/String;)V
+      46: areturn
+
+  public static final byte[] downloadOpenRs2Group(net.rsprox.cache.dictionary.openrs2.CacheScope, int, int, int, int, int);
+    Code:
+       0: aload_0
+       1: ldc           #184                // String scope
+       3: invokestatic  #188                // Method kotlin/jvm/internal/Intrinsics.checkNotNullParameter:(Ljava/lang/Object;Ljava/lang/String;)V
+       6: iload         5
+       8: ifle          15
+      11: iconst_1
+      12: goto          16
+      15: iconst_0
+      16: ifne          36
+      19: ldc           #227                // String Failed requirement.
+      21: astore        7
+      23: new           #229                // class java/lang/IllegalArgumentException
+      26: dup
+      27: aload         7
+      29: invokevirtual #230                // Method java/lang/Object.toString:()Ljava/lang/String;
+      32: invokespecial #231                // Method java/lang/IllegalArgumentException."<init>":(Ljava/lang/String;)V
+      35: athrow
+      36: getstatic     #14                 // Field ROOT_URI:Ljava/net/URI;
+      39: aload_0
+      40: invokevirtual #193                // Method net/rsprox/cache/dictionary/openrs2/CacheScope.getLabel:()Ljava/lang/String;
+      43: iload_1
+      44: iload_2
+      45: iload_3
+      46: iload         4
+      48: invokedynamic #236,  0            // InvokeDynamic #2:makeConcatWithConstants:(Ljava/lang/String;IIII)Ljava/lang/String;
+      53: invokevirtual #38                 // Method java/net/URI.resolve:(Ljava/lang/String;)Ljava/net/URI;
+      56: invokevirtual #42                 // Method java/net/URI.toURL:()Ljava/net/URL;
+      59: invokevirtual #48                 // Method java/net/URL.openConnection:()Ljava/net/URLConnection;
+      62: astore        6
+      64: aload         6
+      66: sipush        8000
+      69: invokevirtual #54                 // Method java/net/URLConnection.setConnectTimeout:(I)V
+      72: aload         6
+      74: sipush        30000
+      77: invokevirtual #239                // Method java/net/URLConnection.setReadTimeout:(I)V
+      80: aload         6
+      82: invokevirtual #58                 // Method java/net/URLConnection.getInputStream:()Ljava/io/InputStream;
+      85: checkcast     #60                 // class java/io/Closeable
+      88: astore        8
+      90: aconst_null
+      91: astore        9
+      93: nop
+      94: aload         8
+      96: checkcast     #62                 // class java/io/InputStream
+      99: astore        10
+     101: iconst_0
+     102: istore        11
+     104: iload         5
+     106: ldc           #240                // int 2147483647
+     108: if_icmpne     124
+     111: aload         10
+     113: invokestatic  #72                 // Method kotlin/jvm/internal/Intrinsics.checkNotNull:(Ljava/lang/Object;)V
+     116: aload         10
+     118: invokestatic  #78                 // Method kotlin/io/ByteStreamsKt.readBytes:(Ljava/io/InputStream;)[B
+     121: goto          221
+     124: aload         6
+     126: invokevirtual #244                // Method java/net/URLConnection.getContentLengthLong:()J
+     129: iload         5
+     131: i2l
+     132: lcmp
+     133: ifgt          140
+     136: iconst_1
+     137: goto          141
+     140: iconst_0
+     141: ifne          164
+     144: iconst_0
+     145: istore        12
+     147: ldc           #246                // String OpenRS2 group exceeds download limit
+     149: astore        12
+     151: new           #229                // class java/lang/IllegalArgumentException
+     154: dup
+     155: aload         12
+     157: invokevirtual #230                // Method java/lang/Object.toString:()Ljava/lang/String;
+     160: invokespecial #231                // Method java/lang/IllegalArgumentException."<init>":(Ljava/lang/String;)V
+     163: athrow
+     164: aload         10
+     166: iload         5
+     168: iconst_1
+     169: iadd
+     170: invokevirtual #250                // Method java/io/InputStream.readNBytes:(I)[B
+     173: astore        13
+     175: aload         13
+     177: astore        12
+     179: iconst_0
+     180: istore        14
+     182: aload         12
+     184: arraylength
+     185: iload         5
+     187: if_icmpgt     194
+     190: iconst_1
+     191: goto          195
+     194: iconst_0
+     195: ifne          218
+     198: iconst_0
+     199: istore        15
+     201: ldc           #246                // String OpenRS2 group exceeds download limit
+     203: astore        15
+     205: new           #229                // class java/lang/IllegalArgumentException
+     208: dup
+     209: aload         15
+     211: invokevirtual #230                // Method java/lang/Object.toString:()Ljava/lang/String;
+     214: invokespecial #231                // Method java/lang/IllegalArgumentException."<init>":(Ljava/lang/String;)V
+     217: athrow
+     218: nop
+     219: aload         13
+     221: nop
+     222: astore        10
+     224: aload         8
+     226: aload         9
+     228: invokestatic  #159                // Method kotlin/io/CloseableKt.closeFinally:(Ljava/io/Closeable;Ljava/lang/Throwable;)V
+     231: aload         10
+     233: goto          257
+     236: astore        11
+     238: aload         11
+     240: astore        9
+     242: aload         11
+     244: athrow
+     245: astore        11
+     247: aload         8
+     249: aload         9
+     251: invokestatic  #159                // Method kotlin/io/CloseableKt.closeFinally:(Ljava/io/Closeable;Ljava/lang/Throwable;)V
+     254: aload         11
+     256: athrow
+     257: dup
+     258: ldc           #252                // String use(...)
+     260: invokestatic  #224                // Method kotlin/jvm/internal/Intrinsics.checkNotNullExpressionValue:(Ljava/lang/Object;Ljava/lang/String;)V
+     263: areturn
+    Exception table:
+       from    to  target type
+          93   224   236   Class java/lang/Throwable
+          93   224   245   any
+         236   245   245   any
+         245   247   245   any
+
+  public static byte[] downloadOpenRs2Group$default(net.rsprox.cache.dictionary.openrs2.CacheScope, int, int, int, int, int, int, java.lang.Object);
+    Code:
+       0: iload         6
+       2: bipush        32
+       4: iand
+       5: ifeq          12
+       8: ldc           #240                // int 2147483647
+      10: istore        5
+      12: aload_0
+      13: iload_1
+      14: iload_2
+      15: iload_3
+      16: iload         4
+      18: iload         5
+      20: invokestatic  #264                // Method downloadOpenRs2Group:(Lnet/rsprox/cache/dictionary/openrs2/CacheScope;IIIII)[B
+      23: areturn
+
+  static {};
+    Code:
+       0: new           #34                 // class java/net/URI
+       3: dup
+       4: ldc_w         #267                // String https://archive.openrs2.org/
+       7: invokespecial #268                // Method java/net/URI."<init>":(Ljava/lang/String;)V
+      10: putstatic     #14                 // Field ROOT_URI:Ljava/net/URI;
+      13: invokestatic  #273                // Method com/fasterxml/jackson/module/kotlin/ExtensionsKt.jacksonObjectMapper:()Lcom/fasterxml/jackson/databind/ObjectMapper;
+      16: putstatic     #22                 // Field mapper:Lcom/fasterxml/jackson/databind/ObjectMapper;
+      19: return
+}

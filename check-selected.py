@@ -6,20 +6,25 @@ import argparse,bz2,gzip,hashlib,re,struct,tarfile,zlib
 from collections import Counter
 p=argparse.ArgumentParser(); p.add_argument('tar'); p.add_argument('master'); a=p.parse_args()
 
-with open(a.tar,'rb') as f:
- h=hashlib.sha256()
- for chunk in iter(lambda:f.read(1048576),b''): h.update(chunk)
-if h.hexdigest()!='ec27efb9575484c249cb53351e367e747344c3def7285b0570dca1a5d1d45677': raise ValueError('tar hash')
-master=open(a.master,'rb').read(); assert hashlib.sha256(master).hexdigest()=='72c3ad092dcea8aa8d2494b208270b9c5054ef8e6de991c84fd0e026d95d7d57'; assert len(master)==205 and master[:5]==bytes.fromhex('00000000c8')
+master=open(a.master,'rb').read()
+if hashlib.sha256(master).hexdigest()!='72c3ad092dcea8aa8d2494b208270b9c5054ef8e6de991c84fd0e026d95d7d57' or len(master)!=205 or master[:5]!=bytes.fromhex('00000000c8'): raise ValueError('master hash/format')
 found={}; allowed={2,3,255}
-with tarfile.open(a.tar,'r:gz') as t:
- for m in t:
-  match=re.fullmatch(r'cache/(2|3|255)/(\d+)\.dat',m.name)
-  if not match: continue
-  if not m.isfile() or m.size<1 or m.size>16*1024*1024: raise ValueError('invalid selected member')
-  key=(int(match[1]),int(match[2]))
-  if key in found: raise ValueError('duplicate member')
-  found[key]=t.extractfile(m).read()
+with open(a.tar,'rb') as source:
+ h=hashlib.sha256()
+ for chunk in iter(lambda:source.read(1048576),b''): h.update(chunk)
+ if h.hexdigest()!='ec27efb9575484c249cb53351e367e747344c3def7285b0570dca1a5d1d45677': raise ValueError('tar hash')
+ source.seek(0)
+ with tarfile.open(fileobj=source,mode='r:gz') as t:
+  for m in t:
+   match=re.fullmatch(r'cache/(2|3|255)/(\d+)\.dat',m.name)
+   if not match: continue
+   if not m.isfile() or m.size<1 or m.size>16*1024*1024: raise ValueError('invalid selected member')
+   key=(int(match[1]),int(match[2]))
+   if key in found: raise ValueError('duplicate member')
+   found[key]=t.extractfile(m).read()
+ source.seek(0); endhash=hashlib.sha256()
+ for chunk in iter(lambda:source.read(1048576),b''): endhash.update(chunk)
+ if endhash.hexdigest()!=h.hexdigest(): raise ValueError('tar changed during parse')
 def crc(b):return zlib.crc32(b)&0xffffffff
 for i in range(25):
  want,version=struct.unpack_from('>II',master,5+i*8); row=found.get((255,i))
