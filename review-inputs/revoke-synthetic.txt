@@ -1,0 +1,5 @@
+assistant tool True
+user delivery True
+assistant text True
+assistant tool_result False
+user delivery False
