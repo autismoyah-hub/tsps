@@ -130,3 +130,143 @@ test('actual Bank.open and native Price Checker remain open while their follower
     await call(f); assert.notEqual(current(f), n); assert.equal(f.p.getStatus(), status); assert.equal(f.p.getInterfaceId(), modal);
   }
 });
+
+// Ratcatchers adult-cat sewer route: run after server build with this full file.
+// Wiki Ratcatchers: sniff precedes eight sewer catches; the eighth starts the cat
+// dialogue and the sisters then give a rat pole and send the player to Jimmy.
+// This deliberately does not claim kitten/overgrown, mansion, King Rat or tune parity.
+test('Ratcatchers sewer task refuses player-killed rats', t => {
+  const runtime = require('../plugins/quests/QuestRuntime');
+  const quest = runtime.getRegisteredQuests().findLast(q => q.key === 'ratcatchers');
+  const f = actor(t), at = new core.Location(3250, 9850, 0);
+  f.p.setLocation(at); quest.setStage(f.p, 2);
+  const errors = [];
+  for (const level of ['warn', 'error']) {
+    const original = console[level];
+    t.mock.method(console, level, (...args) => { errors.push([level, ...args]); original(...args); });
+  }
+  const rat = core.NPC.create(core.NpcIdentifiers.RAT, at);
+  assert.equal(core.World.getNpcs().add(rat), true);
+  t.after(() => {
+    core.TaskManager.cancelTasks(rat.getIndex()); core.TaskManager.cancelTasks(rat);
+    core.World.getNpcs().remove(rat);
+    for (const queue of [core.World.getAddNPCQueue(), core.World.getRemoveNPCQueue()]) {
+      for (let i=queue.length-1; i>=0; i--) if (queue[i] === rat) queue.splice(i, 1);
+    }
+    assert.deepEqual(errors, [], 'no swallowed plugin errors');
+  });
+  PM.emitNpcDeath({killer:f.p, npc:rat, npcId:rat.getId(), location:at});
+  assert.equal(Number(f.p.getAttribute('quest.ratcatchers.rats')) || 0, 0,
+    'player killing a rat does not count');
+});
+test('Ratcatchers counts real adult cat sewer catches through the sisters and Jimmy', async t => {
+  const runtime = require('../plugins/quests/QuestRuntime');
+  const quest = runtime.getRegisteredQuests().findLast(q => q.key === 'ratcatchers');
+  assert.ok(quest, 'production quest registered');
+  core.RegionManager.loadMapFiles(3250, 9850);
+  const f = actor(t), other = actor(t);
+  const errors = [];
+  for (const level of ['warn', 'error']) {
+    const original = console[level];
+    t.mock.method(console, level, (...args) => { errors.push([level, ...args]); original(...args); });
+  }
+  const sewer = new core.Location(3250, 9850, 0);
+  f.p.setLocation(sewer.clone()); other.p.setLocation(sewer.clone().add(20, 0));
+  quest.setStage(f.p, 1); quest.setStage(other.p, 2);
+  const cat = pet(f, core.ItemIdentifiers.PET_CAT, 1);
+  const otherCat = pet(other, core.ItemIdentifiers.PET_CAT, 1);
+  const rats = [], actors = [];
+  t.after(() => {
+    for (const n of [...rats, ...actors]) {
+      core.TaskManager.cancelTasks(n.getIndex()); core.TaskManager.cancelTasks(n);
+      core.World.getNpcs().remove(n);
+      for (const queue of [core.World.getAddNPCQueue(), core.World.getRemoveNPCQueue()]) {
+        for (let i = queue.length - 1; i >= 0; i--) if (queue[i] === n) queue.splice(i, 1);
+      }
+    }
+    assert.deepEqual(errors, [], 'no swallowed plugin errors');
+  });
+  const count = p => Number(p.getAttribute('quest.ratcatchers.rats')) || 0;
+  const spawn = (id, at) => {
+    const n = core.NPC.create(id, at.clone());
+    assert.equal(core.World.getNpcs().add(n), true); rats.push(n); return n;
+  };
+  async function chase(id = core.NpcIdentifiers.RAT, success = true, owner = f, follower = cat) {
+    const n = spawn(id, follower.getLocation().clone());
+    t.mock.method(Math, 'random', () => success ? 0 : 0.999);
+    await catMenu(owner, follower); await catChoice(owner, 2);
+    Math.random.mock.restore();
+    const caught = core.World.getRemoveNPCQueue().includes(n);
+    core.TaskManager.cancelTasks(n.getIndex()); core.TaskManager.cancelTasks(n);
+    core.World.getNpcs().remove(n);
+    for (const queue of [core.World.getAddNPCQueue(), core.World.getRemoveNPCQueue()]) {
+      for (let i = queue.length - 1; i >= 0; i--) if (queue[i] === n) queue.splice(i, 1);
+    }
+    assert.equal(caught, success, 'real pet chase success or failure control');
+  }
+  await chase();
+  assert.equal(count(f.p), 0, 'a catch before the sisters sniff does not count');
+  PM.emitCustomEvent('npc-dialogue:action', { player:f.p, npcId:core.NpcIdentifiers.GRIMESQUIT, stepId:'y8ZblR' });
+  assert.equal(quest.getStage(f.p), 2, 'sniff begins task');
+  await chase(core.NpcIdentifiers.RAT, false);
+  assert.equal(count(f.p), 0, 'failed chase does not count');
+  const outside = new core.Location(3222, 3218, 0);
+  f.p.setLocation(outside); cat.setLocation(outside.clone().add(1, 0));
+  await chase();
+  assert.equal(count(f.p), 0, 'catch outside sewer does not count');
+  f.p.setLocation(sewer.clone()); cat.setLocation(sewer.clone().add(1, 0));
+  await chase(core.NpcIdentifiers.HELL_RAT);
+  assert.equal(count(f.p), 0, 'hell-rat does not count');
+  await chase(core.NpcIdentifiers.RAT, true, other, otherCat);
+  assert.equal(count(other.p), 1, 'second player gets credit for their own cat catch');
+  assert.equal(count(f.p), 0, 'the first player receives no credit for the other cat');
+  for (let i = 0; i < 7; i++) await chase();
+  assert.equal(count(f.p), 7, 'seven distinct successful sewer catches');
+  assert.equal(quest.getStage(f.p), 2, 'seven is insufficient');
+  const sisterContext = {player:f.p, npcId:core.NpcIdentifiers.GRIMESQUIT};
+  assert.equal(PM.emitNpcDialogueVariant(sisterContext)?.variant,
+    'grimesquit-phingspet-before-catching-8-rats', 'sister refuses early hand-in');
+  PM.emitPlayerLogout({ player:f.p, username:f.p.getUsername() });
+  const saved = PlayerSave.fromPlayer(f.p), restored = actor(t);
+  saved.applyToPlayer(restored.p);
+  PM.emitPlayerLogin({ player:restored.p, username:restored.p.getUsername(), isNewAccount:false });
+  assert.equal(count(restored.p), 7, 'seven survives actual save and login');
+  // Continue with the restored player's actual restored follower.
+  const restoredCat = restored.p.getAttribute('pets:current');
+  assert.ok(restoredCat?.isRegistered(), 'cat follower restored');
+  restored.p.setLocation(sewer.clone()); restoredCat.setLocation(sewer.clone().add(1, 0));
+  const eighth = spawn(core.NpcIdentifiers.RAT, restoredCat.getLocation());
+  t.mock.method(Math, 'random', () => 0);
+  await catMenu(restored, restoredCat); await catChoice(restored, 2);
+  Math.random.mock.restore();
+  assert.ok(core.World.getRemoveNPCQueue().includes(eighth), 'eighth catch produced by the pet');
+  assert.equal(count(restored.p), 8, 'eighth catch counted after relog');
+  assert.ok(restored.p.getDialogueManager().isActive(), 'eighth catch starts cat dialogue');
+  assert.match(restored.p.getDialogueManager().getCurrent()?.getText?.() ?? '', /Good job puss, we really showed those rats what for/, 'eighth catch starts the expected transcript');
+  const next = async () => {
+    const group = restored.p.getPacketSender().getChatboxGroupId();
+    const child = ({231:5, 217:5, 193:0, 229:2})[group];
+    assert.notEqual(child, undefined, `known dialogue group ${group}`);
+    await packet(restored, {type:'dialogue_continue', widgetId:(group << 16) | child, childIndex:-1});
+    core.TaskManager.process();
+  };
+  for (let i=0; i<20 && restored.p.getDialogueManager().isActive(); i++) await next();
+  assert.equal(PM.emitNpcDialogueVariant({player:restored.p,npcId:core.NpcIdentifiers.GRIMESQUIT})?.variant,
+    'grimesquit-phingspet-talking-to-the-sisters-after-completing-their-task');
+  async function talk(id) {
+    const n = core.NPC.create(id, restored.p.getLocation().clone().add(1, 0));
+    assert.equal(core.World.getNpcs().add(n), true); actors.push(n);
+    const option = n.getCurrentDefinition(restored.p).getActions().indexOf('Talk-to') + 1;
+    assert.ok(option > 0); await packet(restored, {type:'npc_option', index:n.getIndex(), clickType:option});
+    for (let i=0; i<8; i++) { core.TaskManager.processWalkTo(restored.p.getIndex()); restored.p.getMovementQueue().process(); core.TaskManager.process(); }
+    assert.ok(restored.p.getDialogueManager().isActive(), 'real NPC talk starts transcript');
+    for (let i=0; i<75 && restored.p.getDialogueManager().isActive(); i++) await next();
+    assert.equal(restored.p.getDialogueManager().isActive(), false, 'transcript finished');
+  }
+  await talk(core.NpcIdentifiers.GRIMESQUIT);
+  assert.equal(restored.p.getInventory().getAmount(core.ItemIdentifiers.RAT_POLE), 1, 'actual sisters dialogue gives pole');
+  assert.equal(quest.getStage(restored.p), 3, 'sisters advance to Jimmy');
+  await talk(core.NpcIdentifiers.JIMMY_DAZZLER);
+  assert.equal(restored.p.getInventory().getAmount(core.ItemIdentifiers.DIRECTIONS), 1, 'Jimmy provides directions');
+  assert.equal(quest.getStage(restored.p), 4, 'connected next action is reached');
+});
