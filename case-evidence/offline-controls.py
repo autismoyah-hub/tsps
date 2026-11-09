@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='wc-control-') as td:
  plan={'source':guard.SOURCE,'name':guard.NAME,'attempts':1,'timeout':1800,'expectedInputsRef':{'sha256':'a'*64}}
  pp=root/'pilot.json';pp.write_text(json.dumps(plan));sel={'owner':owner,'action':'SELECT_ONCE','attempts':1,'source':guard.SOURCE,'planSHA256':h(pp)};sp=root/'selection.json';sp.write_text(json.dumps(sel))
  files={n:h(root/n) for n in ('authority.py','prestart.py','pilot.py')}
- subject={'owner':owner,'source':guard.SOURCE,'planSHA256':h(pp),'manifestSHA256':'a'*64,'connectedDiffSHA256':'b5f60a95b4c4d1d066a87dbf255b16ea0fcf49133e1f31127ffc4d5fed8acc4c','files':files,'authAdapterSHA256':'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326','authHelperSHA256':'00ff45d75be1eae3bc8f04995cf8b8bcbe2bc5adc28c1162b843cfe88c87024f9'}
+ subject={'owner':owner,'source':guard.SOURCE,'planSHA256':h(pp),'manifestSHA256':'a'*64,'connectedDiffSHA256':'b5f60a95b4c4d1d066a87dbf255b16ea0fcf49133e1f31127ffc4d5fed8acc4c','files':files,'authAdapterSHA256':'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326','authHelperSHA256':'00ff45d75be1eae3bc8f04995cfb8bcbe2bc5adc28c1162b843cfe88c87024f9'}
  identity=json.loads((HERE.parent/'mc-authority-value.json').read_bytes()); assert hashlib.sha256(auth.canonical(identity)).hexdigest()=='4e3369be85775623307b4d51186e2fb5bfa996899ed2046b3b61aba859574cd2'
  review={'reviewer':reviewer,'verdict':'EXACT_INPUT_PROFILE_GO','subject':subject}; values={'peer':(reviewer,review),'owner':(owner,sel),'mc':(mc,identity)}
  pre={'source':guard.SOURCE,'owner':owner,'planSHA256':h(pp),'selectionSHA256':h(sp),'createdUTC':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),'files':files,'authoritySubject':subject,'identityValue':identity,'forkRef':'fixture','connectedDifferences':[],'model':'gpt-6.1-terra','effort':'medium','reviewPath':str(root/'review.json'),'reviewSHA256':'b'*64,'identityPath':str(root/'identity.json'),'identitySHA256':'c'*64}
@@ -156,3 +156,8 @@ with tempfile.TemporaryDirectory(prefix='wc-status-entry-control-') as td:
  argv=['status_invoke.py','--plan',str(root/'pilot.json'),'--plan-sha256','a'*64,'--entry-sha256',h(entry),'--prestart',str(prepath),'--prestart-sha256',h(prepath)]
  with patch.object(statusinvoke,'ROOT',root),patch.object(statusinvoke.subprocess,'run',side_effect=lambda *a,**k:calls.append('adapter')),patch.object(sys,'argv',argv),patch.dict(os.environ,{'CCC_SESSION_ID':owner}):expect_refuse(statusinvoke.main)
  assert calls==[];print('altered status entry with matching caller hash refused before adapter PASS')
+# Bind each helper reference to actual accepted artifact bytes, not a transcribed digest.
+helper=HERE.parents[1]/'control-cache'/'hf-author-control'/'004'/'files'/'authenticated-child-snapshot-command.py';actual=h(helper);assert len(actual)==64
+for name in ('prestart.py','provider_guard.py','invoke.py','status_invoke.py','collect.py'):
+ text=(HERE/name).read_text();assert actual in text
+print('all helper pins match verified artifact bytes PASS')

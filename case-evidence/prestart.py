@@ -86,7 +86,7 @@ def main():
  parserraw=(ROOT/'authority.py').read_bytes(); assert sha(parserraw)=='218404c595589d13c18658b64c13eb924d146544d1ed40fbfc221cae96002e63'
  import types
  parser=types.ModuleType('case_authority');exec(compile(parserraw,str(ROOT/'authority.py'),'exec'),parser.__dict__)
- subject={'owner':OWNER,'source':SOURCE,'planSHA256':sha(planraw),'manifestSHA256':sha(raw),'connectedDiffSHA256':sha(connected_diff),'files':files,'authAdapterSHA256':'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326','authHelperSHA256':'00ff45d75be1eae3bc8f04995cf8b8bcbe2bc5adc28c1162b843cfe88c87024f9'}
+ subject={'owner':OWNER,'source':SOURCE,'planSHA256':sha(planraw),'manifestSHA256':sha(raw),'connectedDiffSHA256':sha(connected_diff),'files':files,'authAdapterSHA256':'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326','authHelperSHA256':'00ff45d75be1eae3bc8f04995cfb8bcbe2bc5adc28c1162b843cfe88c87024f9'}
  assert review=={'reviewer':'ed3a4125-645c-4266-8b86-4e199dd5bc63','verdict':'EXACT_INPUT_PROFILE_GO','subject':subject}
  captures={}
  for label,session in [('peer','ed3a4125-645c-4266-8b86-4e199dd5bc63'),('owner',OWNER),('mc','eaae9ca0-2f2b-4c05-85cd-c3e70178aeac')]:

@@ -14,7 +14,7 @@ def main():
  pre=json.loads(Path(a.prestart).read_bytes()); assert sha(Path(a.prestart))==a.prestart_sha256 and sys.executable=='/usr/bin/python3' and sha(Path(sys.executable))==pre['pythonSHA256']
  adapter=TOOLS/'hf-project-access-v4.py'; helper=TOOLS/'authenticated-child-snapshot-command.py'; guard=ROOT/'provider_guard.py'
  assert sha(adapter)=='fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326'
- source=helper.read_bytes(); assert hashlib.sha256(source).hexdigest()=='00ff45d75be1eae3bc8f04995cf8b8bcbe2bc5adc28c1162b843cfe88c87024f9' and sha(guard)==a.guard_sha256
+ source=helper.read_bytes(); assert hashlib.sha256(source).hexdigest()=='00ff45d75be1eae3bc8f04995cfb8bcbe2bc5adc28c1162b843cfe88c87024f9' and sha(guard)==a.guard_sha256
  module=importlib.util.module_from_spec(importlib.util.spec_from_loader('case_snapshot_helper',loader=None));exec(compile(source,str(helper),'exec'),module.__dict__)
  # Accepted helper binds adapter and entry snapshots. This guard is the entry.
  cmd=module.authenticated_pilot_command(sys.executable,adapter,sha(adapter),guard,a.guard_sha256,a.plan,sdk_target=SDK)

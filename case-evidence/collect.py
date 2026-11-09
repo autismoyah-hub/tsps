@@ -24,7 +24,7 @@ def main():
  finally:os.close(fd)
  adapter=TOOLS/'hf-project-access-v4.py';helper=TOOLS/'authenticated-child-snapshot-command.py';entry=ROOT/'collector_entry.py'
  assert sha(adapter)=='fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326'
- source=helper.read_bytes();assert hashlib.sha256(source).hexdigest()=='00ff45d75be1eae3bc8f04995cf8b8bcbe2bc5adc28c1162b843cfe88c87024f9'
+ source=helper.read_bytes();assert hashlib.sha256(source).hexdigest()=='00ff45d75be1eae3bc8f04995cfb8bcbe2bc5adc28c1162b843cfe88c87024f9'
  mod=importlib.util.module_from_spec(importlib.util.spec_from_loader('case_snapshot_helper',loader=None));exec(compile(source,str(helper),'exec'),mod.__dict__)
  cmd=mod.authenticated_pilot_command(sys.executable,adapter,sha(adapter),entry,sha(entry),plan,sdk_target=SDK)+['--plan-sha256',a.plan_sha256,'--status',str(statuspath),'--status-sha256',a.status_sha256]
  subprocess.run(cmd,check=True)
