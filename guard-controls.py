@@ -20,25 +20,89 @@ print('real JobInfo datetime summary serialized; duplicate and partial receipt r
 # Synthetic reviewer/selection provenance: recipient text alone is insufficient.
 import datetime
 from unittest.mock import patch
-subject={'planSHA256':g.PLAN_SHA,'source':g.SOURCE,'payloadSHA256':g.PINS['payload.cjs'],'guardSHA256':g.sha((root/'guard-v2.py').read_bytes()),'collectorSHA256':g.PINS['collector.py'],'preflightSHA256':'55120973ff22dbb93c42b0c1e27f7e61081c04025636e9d142306ff19e92e36a','selectorSHA256':'c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
+subject={'planSHA256':g.PLAN_SHA,'source':g.SOURCE,'payloadSHA256':g.PINS['payload.cjs'],'guardSHA256':g.sha((root/'guard-v2.py').read_bytes()),'collectorSHA256':g.PINS['collector.py'],'preflightSHA256':'b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca','selectorSHA256':'c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
 message='EXACT_CASE_GO '+' '.join(subject.values())
-owner={'turns':[{'role':'user','text':'[From Cuttle session "peer" · '+g.REVIEWER+']\n'+message}]}
-peer={'turns':[{'role':'assistant','kind':'tool','tool':{'name':'cuttle sessions send '+g.OWNER+' '+message,'id':'t1'}},{'role':'user','kind':'tool_result','tool':{'id':'t1','ok':True}}]}
+stamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+owner={'turns':[{'role':'user','ts':stamp,'text':'[From Cuttle session "peer" · '+g.REVIEWER+']\n'+message}]}
+peer={'turns':[{'role':'assistant','kind':'tool','ts':stamp,'tool':{'name':'cuttle sessions send '+g.OWNER+" --stdin <<'EOF'\n"+message+'\nEOF','id':'t1'}},{'role':'user','kind':'tool_result','tool':{'id':'t1','ok':True}}]}
 def stub(args,**kwargs):return json.dumps(owner if args[-1]==g.OWNER else peer).encode()
-with patch.object(g.subprocess,'check_output',side_effect=stub): review=g.current_review(None)
+with patch.object(g,'bounded',side_effect=stub): review=g.current_review(None)
 assert review['subject']==subject
 bad={'turns':[]}
 def missing(args,**kwargs):return json.dumps(owner if args[-1]==g.OWNER else bad).encode()
-with patch.object(g.subprocess,'check_output',side_effect=missing):
+with patch.object(g,'bounded',side_effect=missing):
  try:g.current_review(None)
  except AssertionError:pass
  else:raise AssertionError('forged recipient accepted')
+spoof={'turns':[{'role':'assistant','kind':'tool','ts':stamp,'tool':{'name':'echo '+peer['turns'][0]['tool']['name'],'id':'t1'}},peer['turns'][1]]}
+def inert(args,**kwargs):return json.dumps(owner if args[-1]==g.OWNER else spoof).encode()
+with patch.object(g,'bounded',side_effect=inert):
+ try:g.current_review(None)
+ except AssertionError:pass
+ else:raise AssertionError('inert sender accepted')
 with tempfile.TemporaryDirectory() as d:
  g.ROOT=Path(d); now=datetime.datetime.now(datetime.timezone.utc); r={'action':'SELECT_ONCE','owner':g.OWNER,'source':g.SOURCE,'planSHA256':g.PLAN_SHA,'reviewCaptureSHA256':review['correlatedCaptureSHA256'],'createdUTC':now.isoformat()}; f=g.ROOT/'selection.json';f.write_text(json.dumps(r));f.chmod(0o600)
  cmd='/usr/bin/python3 -E -S -B '+str(g.ROOT/'select.py'); turns={'turns':[{'role':'assistant','kind':'tool','ts':(now-datetime.timedelta(seconds=1)).isoformat(),'tool':{'name':cmd,'id':'s1'}},{'role':'user','kind':'tool_result','tool':{'id':'s1','ok':True},'text':''}]}
- with patch.object(g.subprocess,'check_output',return_value=json.dumps(turns).encode()):assert g.selected(review)['sha256']==g.sha(f.read_bytes())
- with patch.object(g.subprocess,'check_output',return_value=b'{"turns":[]}'):
+ with patch.object(g,'bounded',return_value=json.dumps(turns).encode()):assert g.selected(review)['sha256']==g.sha(f.read_bytes())
+ with patch.object(g,'bounded',return_value=b'{"turns":[]}'):
   try:g.selected(review)
   except AssertionError:pass
   else:raise AssertionError('unobserved selection accepted')
-print('synthetic two-sided review and successful selection call accepted; forged/missing sender refused')
+print('synthetic two-sided review and successful selection call accepted; forged/missing/inert sender refused')
+
+# Real collector module, synthetic JobInfo and private temporary receipts; no network.
+import os,shutil
+spec=importlib.util.spec_from_file_location('collector',root/'collector.py');c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
+with tempfile.TemporaryDirectory() as d:
+ c.ROOT=Path(d);c.CASE=c.ROOT/'candidate';c.CASE.mkdir()
+ for name in ('plan.json','payload.cjs','retain-contiguous-inputs003.py'):shutil.copyfile(root/name,c.CASE/name)
+ plan=json.loads((c.CASE/'plan.json').read_bytes());request={'name':plan['name'],'image':plan['image'],'flavor':plan['flavor'],'command':['node','-e','fixture'],'labels':{'project':'tsps','source':plan['source'],'purpose':'overflow-qualification'}}
+ labels={**request['labels'],'name':request['name']};jobrow={'id':'fixture-id','command':request['command'],'owner':'Autismo-Yah','docker_image':request['image'],'flavor':request['flavor'],'labels':labels}
+ receipt={'plan':plan,'namespace':'Autismo-Yah','request':request,'job':jobrow,'payloadSHA256':c.digest(b'fixture')};intent={'owner':c.OWNER,'collector':c.OWNER,'planSHA256':c.PLAN,'payloadSHA256':c.digest((c.CASE/'payload.cjs').read_bytes()),'requestSHA256':c.digest(json.dumps(request,sort_keys=True,separators=(',',':')).encode())}
+ for path,obj in [(c.CASE/'submission.json',receipt),(c.ROOT/'submission-intent.json',intent),(c.ROOT/'submitted-job-id.json',{'jobId':'fixture-id','planSHA256':c.PLAN})]:path.write_text(json.dumps(obj))
+ class ExplicitTokenApi:
+  def __init__(self,job):self.job=job
+  def whoami(self):return {'name':'Autismo-Yah'}
+  def inspect_job(self,**kwargs):return self.job
+  def fetch_job_logs(self,**kwargs):raise AssertionError('must not fetch')
+ def info(stage='RUNNING',image=None,lab=None):return JobInfo(id='fixture-id',createdAt='2026-11-09T00:00:00Z',dockerImage=image or request['image'],command=request['command'],flavor=request['flavor'],labels=labels if lab is None else lab,status={'stage':stage},owner={'id':'fixture','name':'Autismo-Yah','type':'org'})
+ import huggingface_hub
+ with patch.dict(os.environ,{'CCC_SESSION_ID':c.OWNER}),patch.object(c.sys,'argv',['collector']):
+  with patch.object(huggingface_hub,'HfApi',lambda:ExplicitTokenApi(info())):c.main()
+  assert not (c.ROOT/'collection-intent.json').exists()
+  for wrong in (info(image='wrong'),info(lab={})):
+   with patch.object(huggingface_hub,'HfApi',lambda:ExplicitTokenApi(wrong)):
+    try:c.main()
+    except ValueError:pass
+    else:raise AssertionError('wrong provider tuple accepted')
+  assert not (c.ROOT/'collection-intent.json').exists()
+  (c.ROOT/'collection-intent.json').write_text('{}')
+  with patch.object(c.sys,'argv',['collector','--recover-offline']):
+   try:c.main()
+   except ValueError:pass
+   else:raise AssertionError('missing raw accepted')
+   stamp='20261109T000000Z';status=c.CASE/f'status-{stamp}.json';log=c.CASE/f'logs-{stamp}.txt';status.write_text(json.dumps({'id':'fixture-id','status':{'stage':'COMPLETED'},'command':request['command']}));log.write_text('malformed raw\n')
+   (c.CASE/'input-manifest.json').write_text('{}')
+   (c.ROOT/'raw-complete.json').write_text(json.dumps({'jobId':'fixture-id','stamp':stamp,'stage':'COMPLETED','statusSHA256':c.digest(status.read_bytes()),'rawSHA256':c.digest(log.read_bytes())}))
+   try:c.main()
+   except ValueError:pass
+   else:raise AssertionError('malformed native raw accepted')
+   assert log.read_text()=='malformed raw\n' and (c.ROOT/'offline-retain-intent.json').exists()
+   try:c.main()
+   except ValueError:pass
+   else:raise AssertionError('offline recovery replay accepted')
+print('synthetic collector nonterminal, wrong tuple, partial raw, retainer failure and no-replay controls passed')
+
+# Actual native retainer invocation on synthetic input-event bytes with the real pinned manifest.
+with tempfile.TemporaryDirectory() as d:
+ c.ROOT=Path(d);c.CASE=c.ROOT/'candidate';c.CASE.mkdir()
+ for name in ('plan.json','payload.cjs','retain-contiguous-inputs003.py','input-manifest.json'):shutil.copyfile(root/name,c.CASE/name)
+ plan=json.loads((c.CASE/'plan.json').read_bytes()); manifest=json.loads((c.CASE/'input-manifest.json').read_bytes()); command=['node','-e','fixture']; stamp='20261109T000000Z'
+ (c.CASE/'submission.json').write_text(json.dumps({'plan':plan,'job':{'id':'fixture-id','command':command},'request':{'command':command}}))
+ status=c.CASE/f'status-{stamp}.json';status.write_text(json.dumps({'id':'fixture-id','status':{'stage':'COMPLETED'},'command':command}))
+ log=c.CASE/f'logs-{stamp}.txt';log.write_text(json.dumps({'event':'inputs','source':plan['source'],'inputs':manifest['expectedInputs']},separators=(',',':'))+'\n')
+ (c.ROOT/'raw-complete.json').write_text(json.dumps({'jobId':'fixture-id','stamp':stamp,'stage':'COMPLETED','statusSHA256':c.digest(status.read_bytes()),'rawSHA256':c.digest(log.read_bytes())}))
+ c.retain(stamp,False)
+ assert json.loads((c.ROOT/'native-retain-result.json').read_bytes())['exit']==0
+ assert (c.CASE/f'native-input-{stamp}'/'fragment-receipt.json').is_file()
+print('actual offline native retainer accepted synthetic full input event')

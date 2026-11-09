@@ -1,0 +1,6 @@
+real JobInfo datetime summary serialized; duplicate and partial receipt refused
+synthetic two-sided review and successful selection call accepted; forged/missing/inert sender refused
+{"state": "NONTERMINAL", "jobId": "fixture-id", "stage": "RUNNING"}
+synthetic collector nonterminal, wrong tuple, partial raw, retainer failure and no-replay controls passed
+{"state": "RAW_RETAINED", "nativeInput": "PASS", "jobId": "fixture-id", "terminal": "COMPLETED"}
+actual offline native retainer accepted synthetic full input event

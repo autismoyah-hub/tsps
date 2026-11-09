@@ -1,6 +1,6 @@
 """Held source candidate: one selected case, single submission, no replay."""
 from pathlib import Path
-import argparse, datetime, hashlib, json, os, re, subprocess, sys, urllib.request
+import argparse, datetime, hashlib, json, os, re, resource, subprocess, sys, tempfile, urllib.request
 
 if sys.flags.optimize or not sys.flags.dont_write_bytecode: raise RuntimeError('required interpreter flags')
 ROOT=Path(__file__).resolve().parent
@@ -9,12 +9,19 @@ OWNER='3f20dcbd-b1d9-4e4a-bc47-a3b02d6ee6bc'
 REVIEWER='10e752da-405a-47bd-8d0e-21f4054a25f9'
 SOURCE='57e96673bf57e6dc65de5508d60c383b90064ed2'
 PLAN_SHA='a77dc6fa3f6e3c23b9e17fc6b7f0f2e5ff3726f6caec3205983071f6805c669c'
-PINS={'plan.json':PLAN_SHA,'payload.cjs':'4e2aa37bd921c81b49f3bb9a96546b288628a360dc26760ae65797d4832224a1','pilot.py':'2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200','package.json':'00dc1f0f6032fabd7a953de4eb35f29afdd84ed65266fab2992009a87ce56b6b','collector.py':'2c5726ac93f14887331f18edb31dc9be13008ea51e772a62ec884a171bf462a5','frame_transport.py':'f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76'}
+PINS={'plan.json':PLAN_SHA,'payload.cjs':'4e2aa37bd921c81b49f3bb9a96546b288628a360dc26760ae65797d4832224a1','pilot.py':'2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200','package.json':'00dc1f0f6032fabd7a953de4eb35f29afdd84ed65266fab2992009a87ce56b6b','collector.py':'16af68b3a57f52deaceb685681a209858a7b7cfdf0ef86b7a7bf63c8bcdbfeec','frame_transport.py':'f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76','retain-contiguous-inputs003.py':'b399ca13e8fbfee6f7633a9d430d85c8204774c2941a2e4d5f74c642820fa690'}
 sha=lambda raw:hashlib.sha256(raw).hexdigest()
 def bound(path,digest):
  raw=Path(path).read_bytes();assert sha(raw)==digest,f'Identity mismatch: {path}';return raw
 
-def git(*args):return subprocess.check_output(['git','-C',str(ROOT.parents[1]),*args])
+def bounded(argv,timeout=90,limit=8*1024*1024,**kw):
+ def cap():resource.setrlimit(resource.RLIMIT_FSIZE,(limit,limit))
+ with tempfile.TemporaryFile() as out,tempfile.TemporaryFile() as err:
+  run=subprocess.run(argv,stdout=out,stderr=err,timeout=timeout,preexec_fn=cap,**kw)
+  assert run.returncode==0,'bounded command failed'
+  assert out.tell()<=limit and err.tell()<=limit,'bounded command output'
+  out.seek(0);return out.read()
+def git(*args):return bounded(['git','-C',str(ROOT.parents[1]),*args])
 def open_exclusive(path, data):
  with path.open('x',encoding='utf8') as f:
   json.dump(data,f,indent=2,default=str);f.write('\n');f.flush();os.fsync(f.fileno())
@@ -56,9 +63,9 @@ def validate_source(plan):
 def current_review(plan):
  # Fetch both authenticated Cuttle transcripts fresh; correlate sender call and recipient message.
  def read_session(sid):
-  raw=subprocess.check_output(['/workspace/runtime/bin/cuttle','--json','sessions','read','--turns','300',sid],timeout=30)
+  raw=bounded(['/workspace/runtime/bin/cuttle','--json','sessions','read','--turns','300',sid],timeout=30)
   data=json.loads(raw);assert isinstance(data.get('turns'),list);return data['turns']
- subject={'planSHA256':PLAN_SHA,'source':SOURCE,'payloadSHA256':PINS['payload.cjs'],'guardSHA256':sha(Path(__file__).read_bytes()),'collectorSHA256':PINS['collector.py'],'preflightSHA256':'55120973ff22dbb93c42b0c1e27f7e61081c04025636e9d142306ff19e92e36a','selectorSHA256':'c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
+ subject={'planSHA256':PLAN_SHA,'source':SOURCE,'payloadSHA256':PINS['payload.cjs'],'guardSHA256':sha(Path(__file__).read_bytes()),'collectorSHA256':PINS['collector.py'],'preflightSHA256':'b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca','selectorSHA256':'c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
  owner_turns=read_session(OWNER);peer_turns=read_session(REVIEWER)
  selected=[]
  for row in owner_turns:
@@ -71,10 +78,13 @@ def current_review(plan):
  sent=[]
  for index,row in enumerate(peer_turns):
   tool=row.get('tool',{});command=tool.get('name','')
-  if row.get('role')!='assistant' or row.get('kind')!='tool' or msg not in command:continue
-  if f'cuttle sessions send {OWNER}' not in command:continue
+  if row.get('role')!='assistant' or row.get('kind')!='tool':continue
+  expected='cuttle sessions send '+OWNER+" --stdin <<'EOF'\n"+msg+'\nEOF'
+  if command.strip()!=expected:continue
   result=next((x for x in peer_turns[index+1:] if x.get('kind')=='tool_result' and x.get('tool',{}).get('id')==tool.get('id')),None)
-  if result and result.get('tool',{}).get('ok') is True:sent.append({'call':row,'result':result})
+  if result and result.get('tool',{}).get('ok') is True:
+   sent_at=datetime.datetime.fromisoformat(row['ts'].replace('Z','+00:00'));received=datetime.datetime.fromisoformat(owner_row['ts'].replace('Z','+00:00'))
+   if 0 <= (received-sent_at).total_seconds() <= 120:sent.append({'call':row,'result':result})
  assert len(sent)==1,'Missing or ambiguous reviewer-side send'
  proof={'subject':subject,'reviewer':REVIEWER,'recipient':OWNER,'recipientTurn':owner_row,'sender':sent[0]}
  return {'subject':subject,'correlatedCaptureSHA256':sha(json.dumps(proof,sort_keys=True,separators=(',',':')).encode()),'proof':proof}
@@ -88,12 +98,12 @@ def current_fit(plan):
  connected=['server/plugins/quests/quests/TheFremennikIsles.Quest.js','server/tests/fremennik-isles-bork-and-chest.test.cjs','server/plugins/quests/QuestRuntime.js','server/plugins/quests/Quests.plugin.js','server/src/main/typescript/elvarg/plugins/PluginManager.ts','server/src/main/typescript/elvarg/plugins/PluginTypes.ts','server/src/main/typescript/elvarg/net/packet/impl/UseItemPacketListener.ts','server/src/main/typescript/elvarg/game/model/container/impl/Inventory.ts','server/src/main/typescript/elvarg/game/model/container/ItemContainer.ts','server/src/main/typescript/elvarg/game/definition/ItemDefinition.ts','server/plugins/npcs/NpcDialogues.plugin.js','server/target.txt','server/data/definitions/npc-dialogues.json','server/data/definitions/npc-dialogue-index.json']
  diff=git('diff','--name-only','fad19aaea3d66a304618a37606c4affeeffbb57c',main,'--',*connected).decode().splitlines()
  assert not diff, f'Connected main paths changed: {diff}'
- pages=json.loads(subprocess.check_output(['gh','api','--paginate','--slurp','repos/RSPSApp/tsps/pulls?state=open&per_page=100'],timeout=90))
+ pages=json.loads(bounded(['gh','api','--paginate','--slurp','repos/RSPSApp/tsps/pulls?state=open&per_page=100'],timeout=90));assert sum(len(x) for x in pages)<=500
  assert isinstance(pages,list) and all(isinstance(page,list) for page in pages)
  prs=[pr for page in pages for pr in page];touched=set(connected[:2]);overlap=[]
  for pr in prs:
   number=pr.get('number');assert type(number) is int and number>0
-  rows=json.loads(subprocess.check_output(['gh','api','--paginate','--slurp',f'repos/RSPSApp/tsps/pulls/{number}/files?per_page=100'],timeout=90))
+  rows=json.loads(bounded(['gh','api','--paginate','--slurp',f'repos/RSPSApp/tsps/pulls/{number}/files?per_page=100'],timeout=90));assert sum(len(x) for x in rows)<=10000
   assert isinstance(rows,list) and all(isinstance(page,list) for page in rows)
   if any(file.get('filename') in touched for page in rows for file in page):overlap.append(number)
  assert not overlap,f'Open PR overlaps: {overlap}'
@@ -107,7 +117,7 @@ def selected(review):
  age=(datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(record['createdUTC'])).total_seconds()
  assert 0<=age<=300,'Selection stale or future'
  # Confirm an actual successful invocation by this owner, not just a JSON file.
- turns=json.loads(subprocess.check_output(['/workspace/runtime/bin/cuttle','--json','sessions','read','--turns','300',OWNER],timeout=30))['turns']
+ turns=json.loads(bounded(['/workspace/runtime/bin/cuttle','--json','sessions','read','--turns','300',OWNER],timeout=30))['turns']
  wanted='/usr/bin/python3 -E -S -B '+str(ROOT/'select.py')
  calls=[]
  for i,row in enumerate(turns):
@@ -124,10 +134,10 @@ def selected(review):
 def check():
  assert sys.flags.optimize==0 and sys.flags.dont_write_bytecode
  assert ROOT.stat().st_uid==os.getuid() and ROOT.stat().st_mode & 0o077 == 0
- assert sha((ROOT/'preflight.py').read_bytes())=='55120973ff22dbb93c42b0c1e27f7e61081c04025636e9d142306ff19e92e36a'
+ assert sha((ROOT/'preflight.py').read_bytes())=='b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca'
  assert sha((ROOT/'select.py').read_bytes())=='c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2'
  assert sha((ROOT/'sdk-manifest.json').read_bytes())=='32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'
- req=urllib.request.Request(os.environ['CCC_BASE_URL']+'/api/acp/sessions/'+OWNER+'/config',headers={'X-CCC-Control-Token':os.environ['CCC_TOKEN']})
+ req=urllib.request.Request(os.environ['CCC_BASE_URL']+'/api/acp/sessions/'+OWNER+'/config',headers=({'Authorization':'Bearer '+os.environ['CCC_TOKEN']} if os.environ['CCC_TOKEN'].startswith('ccc_pat_') else {'X-CCC-Control-Token':os.environ['CCC_TOKEN']}))
  with urllib.request.urlopen(req,timeout=20) as r: cfg=json.load(r)
  opts={x['id']:x.get('currentValue') for x in cfg['configOptions']}
  assert opts.get('model')=='gpt-6.1-terra' and opts.get('reasoning_effort')=='medium'
@@ -142,7 +152,9 @@ def check():
  source=validate_source(plan);review=current_review(plan);selection=selected(review);fit=current_fit(plan)
  assert not (CASE/'submission.json').exists() and not (ROOT/'submission-intent.json').exists()
  # Audit owned git-control roots; skip Git internals, reject malformed relevant receipts.
+ scanned=0
  for base,dirs,files in os.walk(ROOT.parent,followlinks=False):
+  scanned+=len(dirs)+len(files);assert scanned<=50000,'control scan bound'
   dirs[:]=[d for d in dirs if d not in ('objects','logs','refs','hooks') and not (Path(base)/d).is_symlink()]
   for name in files:
    if name not in ('submission.json','submission-intent.json','submitted-job-id.json'):continue
@@ -154,7 +166,7 @@ def check():
   ancestors.add(pid)
   try: pid=int(Path('/proc/'+str(pid)+'/stat').read_text().rsplit(')',1)[1].split()[1])
   except (OSError,ValueError,IndexError):break
- for line in subprocess.check_output(['ps','-eo','pid=,args='],text=True).splitlines():
+ for line in bounded(['ps','-eo','pid=,args=']).decode().splitlines():
   parts=line.strip().split(None,1)
   if len(parts)<2 or int(parts[0]) in ancestors:continue
   assert not (str(ROOT) in parts[1] and any(x in parts[1] for x in ('guard-v2.py','preflight.py','collector.py','pilot.py'))),'matching process'
@@ -188,9 +200,9 @@ def main():
  labels=getattr(job,'labels',None);owner=getattr(getattr(job,'owner',None),'name',None)
  result={'id':job_id,'command':returned_command,'owner':owner,'docker_image':getattr(job,'docker_image',None),'flavor':getattr(job,'flavor',None),'labels':labels,'retry':getattr(job,'retry',None),'created_at':str(getattr(job,'created_at',None)),'status':str(getattr(getattr(job,'status',None),'stage',None))}
  open_exclusive(ROOT/'returned-summary.json',result)
- open_exclusive(CASE/'submission.json',{'stage':'SUBMITTED','namespace':identity,'request':request,'plan':plan,'job':result,'payloadSHA256':sha(request['command'][-1].encode())})
  assert returned_command==request['command'] and owner==identity and result['docker_image']==request['image'] and result['flavor']==request['flavor'],'Returned provider identity mismatch; retain same-job custody'
  assert isinstance(labels,dict) and all(labels.get(k)==v for k,v in request['labels'].items()) and labels.get('name')==request['name'],'Returned labels mismatch; retain same-job custody'
+ open_exclusive(CASE/'submission.json',{'stage':'SUBMITTED','namespace':identity,'request':request,'plan':plan,'job':result,'payloadSHA256':sha(request['command'][-1].encode())})
  # JobInfo.retry is a provider field, not proven equivalent to requested attempts.
  # Timeout is absent from JobInfo. Preserve both as unclassified rather than infer.
 
