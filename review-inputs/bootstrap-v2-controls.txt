@@ -1,0 +1,4 @@
+verified snapshot propagated: 0 PASS
+wrong digest refused: 1 PASS
+changed snapshot refused: 1 PASS
+two snapshot layers propagated: 0 PASS
