@@ -32,7 +32,7 @@ def durable_create(path, raw):
 def canonical_subject(subject):
     required = {'owner','reviewer','source','heldPlanSHA256','selectedPlanSHA256','manifestSHA256',
                 'callerSHA256','prestartSHA256','payloadSHA256','pilotSHA256','adapterSHA256',
-                'childSHA256','classifierSHA256','sdkPythonSHA256','sdkManifestSHA256','cliSHA256','sdkVersion','requestSHA256'}
+                'childSHA256','classifierSHA256','liveSHA256','sdkPythonSHA256','sdkManifestSHA256','cliSHA256','sdkVersion','requestSHA256'}
     if not isinstance(subject,dict) or set(subject) != required: raise ValueError('authority subject schema')
     if subject['owner'] != OWNER or subject['reviewer'] != REVIEWER or subject['sdkVersion'] != '2.4.0':
         raise ValueError('authority identity mismatch')
@@ -86,7 +86,7 @@ def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, run
     if os.environ.get('CCC_SESSION_ID') != OWNER: raise ValueError('session environment mismatch')
     if subject['cliSHA256'] != cli_sha or subject['callerSHA256'] != CALLER_SHA: raise ValueError('CLI/caller subject mismatch')
     pinned(cli,cli_sha); pinned(preflight,PREFLIGHT_SHA); pinned(caller,CALLER_SHA)
-    keys = {'payloadSHA256','pilotSHA256','adapterSHA256','childSHA256','classifierSHA256','sdkPythonSHA256','prestartSHA256'}
+    keys = {'payloadSHA256','pilotSHA256','adapterSHA256','childSHA256','classifierSHA256','liveSHA256','sdkPythonSHA256','prestartSHA256'}
     if set(runtime_files) != keys: raise ValueError('runtime file keyset mismatch')
     for key in keys: pinned(runtime_files[key],subject[key])
     if Path(runtime_files['prestartSHA256']).resolve() != Path(__file__).resolve(): raise ValueError('prestart source mismatch')

@@ -24,11 +24,19 @@ def module_snapshot(path, digest, name):
     path, raw = snapshot(path,digest)
     spec = importlib.util.spec_from_loader(name,loader=None)
     module = importlib.util.module_from_spec(spec); module.__file__ = str(path)
+    module.__dict__['__BELONA_SNAPSHOT_SHA__'] = sha(raw)
     exec(compile(raw,str(path),'exec'),module.__dict__)
     return module
 
-def unlocked():
+def verify_live_snapshot(subject):
+    expected=subject.get('liveSHA256')
+    if not isinstance(expected,str) or len(expected)!=64: raise ValueError('live source hash missing')
+    if globals().get('__BELONA_SNAPSHOT_SHA__') != expected: raise ValueError('live module was not loaded from reviewed snapshot')
+    snapshot(__file__,expected)
+
+def unlocked(subject):
     if HARD_RUNTIME_HOLD: raise RuntimeError('HARD_RUNTIME_HOLD: no provider action')
+    verify_live_snapshot(subject)
 
 def object_dict(value):
     if dataclasses.is_dataclass(value): return dataclasses.asdict(value)
@@ -85,7 +93,7 @@ def require_bindings(ctx, caller, helper, subject):
 
 def guarded_submit(api, caller, prestart_module, helper, ctx):
     """No retry; prestart, complete duplicate scans, prestart, then durable intent."""
-    unlocked()
+    unlocked(ctx['subject'])
     require_bindings(ctx,caller,helper,ctx['subject'])
     selected_raw=Path(ctx['plan']).read_bytes();payload_raw=Path(ctx['payload']).read_bytes()
     choice=json.loads(Path(ctx['choice']).read_bytes()); subject=ctx['subject']
@@ -119,7 +127,7 @@ def guarded_submit(api, caller, prestart_module, helper, ctx):
 
 def guarded_status_collect(api,caller,prestart_module,ctx):
     """Inspect first, persist raw identity, require terminal, then preserve partial logs."""
-    unlocked()
+    unlocked(ctx['subject'])
     snapshot(ctx['caller'],ctx['subject']['callerSHA256']); snapshot(ctx['payload'],ctx['subject']['payloadSHA256'])
     snapshot(ctx['prestartSource'],ctx['subject']['prestartSHA256'])
     if Path(prestart_module.__file__).resolve() != Path(ctx['prestartSource']).resolve(): raise ValueError('prestart module mismatch')
