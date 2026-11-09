@@ -14,7 +14,7 @@ def rejected(fn, error=ValueError):
     except error: return
     raise AssertionError('expected refusal')
 
-held = (ROOT / 'before-held-plan.json').read_bytes()
+held = (ROOT / 'belona-before-held-plan.json').read_bytes()
 side, selected = caller.prepare_selected(held)
 assert side == 'before'
 a, b = json.loads(held), json.loads(selected)
@@ -24,7 +24,7 @@ for key, value in [('source','bad'), ('name','bad'), ('attempts',2), ('expectedI
     rejected(lambda: caller.prepare_selected(json.dumps(changed).encode()))
 print('a: held transform exact; mutated held bytes refused')
 
-payload = (ROOT / 'native-payload-mapref-candidate.cjs').read_bytes()
+payload = (ROOT / 'belona-native-payload.cjs').read_bytes()
 request, digest = caller.literal_request(selected, payload)
 assert len(digest) == 64
 for key in ('image','command'):
