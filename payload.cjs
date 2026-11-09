@@ -178,6 +178,16 @@ function stage(name, command, args, cwd, timeoutMs) {
   });
 }
 
+async function boundedBytes(response, limit) {
+  const chunks=[]; let total=0;
+  for await (const chunk of response.body) {
+    total += chunk.length;
+    if (total > limit) throw new Error('Download exceeds bounded size');
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
 function baselineTest() {
   return new Promise((resolve, reject) => {
     const args = ['--max-old-space-size=3072', '--test', '--test-concurrency=1', '--test-reporter=tap', '--test-name-pattern=the jester chest needs room for all four pieces|King accepts each assigned ore as notes', 'tests/fremennik-isles-bork-and-chest.test.cjs'];
@@ -195,10 +205,12 @@ function baselineTest() {
       try {process.kill(-child.pid,0);leftover=true;process.kill(-child.pid,'SIGKILL');} catch {}
       const block=output.match(/not ok \d+ - King accepts each assigned ore as notes and continues to the mission[\s\S]*?(?=\n(?:ok|not ok) \d+ -|\n1\.\.|$)/)?.[0] ?? '';
       const target=block.length>0;
-      const causal=/dialogue reached the requested observable boundary/.test(block) && /fremennik-isles-bork-and-chest\.test\.cjs/.test(block);
+      const causal=/King rejects a full assigned noted ore stack/.test(block) && /fremennik-isles-bork-and-chest\.test\.cjs/.test(block);
+      const namedControl=/^ok \d+ - the jester chest needs room for all four pieces before it gives any$/m.test(output);
+      const counts=/# tests 18$/m.test(output) && /# skipped 16$/m.test(output) && /# cancelled 0$/m.test(output);
       const pass=/# pass 1$/m.test(output), fail=/# fail 1$/m.test(output);
-      const valid=!exceeded&&!timeout&&!leftover&&code===1&&!signal&&target&&causal&&pass&&fail;
-      emit({event:'baseline-result',code,signal,timeout,leftover,target,causal,valid,closureScope:'process-group only'});
+      const valid=!exceeded&&!timeout&&!leftover&&code===1&&!signal&&target&&causal&&namedControl&&counts&&pass&&fail;
+      emit({event:'baseline-result',code,signal,timeout,leftover,target,causal,namedControl,counts,valid,closureScope:'process-group only'});
       if (!valid) reject(new Error('Baseline red unclassified')); else resolve();
     });
   });
@@ -269,6 +281,7 @@ async function resolveInputManifest(plan, fetcher = fetch) {
   const archive = Buffer.concat(chunks);
   fs.writeFileSync('/tmp/tsps-native.tar.gz', archive);
   fs.mkdirSync(root);
+  emit({event:'source-archive-boundary', limitation:'GitHub codeload transport and immutable commit are trusted; tar member paths and extraction size are not prevalidated'});
   await stage('extract', 'tar', ['-xzf', '/tmp/tsps-native.tar.gz', '-C', root, '--strip-components=1'], '/tmp', 60000);
   const originalSource = treeManifest(root);
   const sourceManifestHash = sha(JSON.stringify(originalSource));
@@ -298,7 +311,7 @@ async function resolveInputManifest(plan, fetcher = fetch) {
   const yarnURL = 'https://repo.yarnpkg.com/4.12.0/packages/yarnpkg-cli/bin/yarn.js';
   const yarnResponse = await fetch(yarnURL, {signal: AbortSignal.timeout(60000)});
   if (!yarnResponse.ok) throw new Error(`Yarn HTTP ${yarnResponse.status}`);
-  const yarnBytes = Buffer.from(await yarnResponse.arrayBuffer());
+  const yarnBytes = await boundedBytes(yarnResponse, 16 * 1024 * 1024);
   const yarnSHA512 = crypto.createHash('sha512').update(yarnBytes).digest('hex');
   if (yarnSHA512 !== yarnPin[1]) throw new Error('Yarn CLI bytes do not match declared packageManager SHA512');
   const yarnPath = '/tmp/yarn-4.12.0.cjs';
@@ -309,7 +322,7 @@ async function resolveInputManifest(plan, fetcher = fetch) {
   const nativeURL = 'https://github.com/murat-dogan/node-datachannel/releases/download/v0.32.1/node-datachannel-v0.32.1-napi-v8-linux-x64.tar.gz';
   const nativeResponse = await fetch(nativeURL, {signal: AbortSignal.timeout(60000)});
   if (!nativeResponse.ok) throw new Error(`Native asset HTTP ${nativeResponse.status}`);
-  const nativeArchive = Buffer.from(await nativeResponse.arrayBuffer());
+  const nativeArchive = await boundedBytes(nativeResponse, 20 * 1024 * 1024);
   if (sha(nativeArchive) !== '1a31d28a7aec9c1538cb96b76260d062399715b4dcea0ff3a0ebd6f58df5e391') throw new Error('Native release digest mismatch');
   const tar = zlib.gunzipSync(nativeArchive, {maxOutputLength: 20 * 1024 * 1024});
   const member = tar.subarray(0, 100).toString().replace(/\0.*$/s, '');
