@@ -7,10 +7,12 @@ SDK=ROOT.parents[1]/'sdk'/'site-packages'
 def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
 def main():
  if not __debug__:raise RuntimeError('Optimized interpreter forbidden')
- p=argparse.ArgumentParser();p.add_argument('--plan',required=True);p.add_argument('--plan-sha256',required=True);a=p.parse_args()
+ p=argparse.ArgumentParser();p.add_argument('--plan',required=True);p.add_argument('--plan-sha256',required=True);p.add_argument('--status',required=True);p.add_argument('--status-sha256',required=True);a=p.parse_args()
  if os.environ.get('CCC_SESSION_ID')!='a57b09b1-fcf5-4aea-b25e-7f19910af934':raise RuntimeError('Wrong owner')
  plan=Path(a.plan).resolve(); assert plan.parent==ROOT and sha(plan)==a.plan_sha256
  submission=json.loads((ROOT/'submission.json').read_bytes()); assert submission['plan']==json.loads(plan.read_bytes()) and submission['job']['id'] and submission['namespace']=='Autismo-Yah'
+ statuspath=Path(a.status).resolve(); assert statuspath.parent==ROOT and sha(statuspath)==a.status_sha256
+ status=json.loads(statuspath.read_bytes()); assert status['id']==submission['job']['id'] and status['status']['stage'] in ('COMPLETED','ERROR','CANCELED','CANCELLED')
  intent=json.loads((ROOT/'exclusive-intent.json').read_bytes()); assert intent['owner']==os.environ['CCC_SESSION_ID'] and intent['planSHA256']==a.plan_sha256
  marker=ROOT/'collector-intent.json'; data={'owner':intent['owner'],'jobId':submission['job']['id'],'planSHA256':a.plan_sha256,'collection':'one designated owner; no submission'}
  assert not marker.exists(), 'Existing collector intent: retain and reconcile without replay'
