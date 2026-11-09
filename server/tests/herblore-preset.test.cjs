@@ -455,3 +455,156 @@ test("a plain unicorn horn is still ground with a pestle and mortar", async (t) 
   assert.equal(plainOf(f, I.UNICORN_HORN_DUST), 1);
   assert.equal(f.inv.getAmount(I.UNICORN_HORN), 0);
 });
+
+// Native registry/player/inventory, with seeded supplies and manual TaskManager ticks.
+// This isolates item-action interruption; it is not a full World-cycle or acquisition test.
+for (const route of ["uninterrupted", "inventory Eat", "widget Eat", "Examine", "equipment Remove"]) {
+  test(`ordinary grinding: ${route} and the same player's next grind`, async (t) => {
+    const { decodeClientPackets } = require("../dist/net/protocol/ClientProtocol");
+    const f = actor(t);
+    if (route === "equipment Remove") f.eq.set(core.Equipment.WEAPON_SLOT, item(I.BRONZE_DAGGER));
+    f.p.getSkillManager().setCurrentLevels(core.Skill.HITPOINTS, 5, false);
+    for (const [id, amount] of [[I.PESTLE_AND_MORTAR, 1], [I.UNICORN_HORN, 3], [I.SHARK, 1]]) {
+      f.inv.add(item(id, amount), false);
+    }
+    assert.equal(f.inv.getAmount(I.UNICORN_HORN), 3);
+    assert.equal(f.inv.getAmount(I.UNICORN_HORN_DUST), 0);
+    assert.equal(f.inv.getAmount(I.SHARK), 1);
+    assert.ok(f.p.getHitpoints() > 0);
+    assert.equal(f.p.getSkill() ?? null, null, "grinding does not rely on a legacy Skillable");
+    const xp = () => core.Skill.values().map((skill) => f.p.getSkillManager().getExperience(skill));
+    const originalXp = xp();
+    const toolSlot = slotOfId(f, I.PESTLE_AND_MORTAR), tool = f.inv.getItems()[toolSlot];
+    async function decodeAndSend(frame, expected) {
+      const packets = decodeClientPackets(frame);
+      assert.deepEqual(packets, [expected], "the production protocol reader resolves the intended input");
+      await f.c.dispatch(packets);
+      f.c.processTurnPackets();
+    }
+    async function startGrind() {
+      const hornSlot = slotOfId(f, I.UNICORN_HORN);
+      assert.ok(hornSlot >= 0);
+      const body = Buffer.alloc(13);
+      body.writeUInt16BE(toolSlot, 0); body.writeUInt16BE(I.PESTLE_AND_MORTAR, 2);
+      body[4] = 4;
+      body.writeUInt16BE(hornSlot, 9); body.writeUInt16BE(I.UNICORN_HORN, 11);
+      await decodeAndSend(Buffer.concat([Buffer.from([241, body.length]), body]), {
+        type: "inventory_use_on", slot: toolSlot, itemId: I.PESTLE_AND_MORTAR,
+        target: { kind: "inventory", slot: hornSlot, itemId: I.UNICORN_HORN },
+      });
+    }
+    await startGrind();
+    assert.deepEqual([f.inv.getAmount(I.UNICORN_HORN), f.inv.getAmount(I.UNICORN_HORN_DUST)], [2, 1],
+      "the ordinary registered grinder commits its immediate first action");
+    assert.equal(core.TaskManager.hasActiveTask(f.p.getIndex()), true, "automatic continuation is pending");
+    ticks(1);
+    assert.deepEqual([f.inv.getAmount(I.UNICORN_HORN), f.inv.getAmount(I.UNICORN_HORN_DUST)], [2, 1],
+      "the next grind is not due yet");
+    const interrupted = route === "inventory Eat" || route === "widget Eat";
+    if (interrupted) {
+      const slot = slotOfId(f, I.SHARK), hp = f.p.getHitpoints();
+      if (route === "inventory Eat") {
+        const body = Buffer.alloc(12);
+        body.writeUInt16BE(slot, 0); body.writeUInt16BE(I.SHARK, 2);
+        body.write("Eat", 8, "ascii"); // legacy high-level string is NUL-terminated.
+        await decodeAndSend(Buffer.concat([Buffer.from([240, body.length]), body]), {
+          type: "inventory_action", slot, itemId: I.SHARK, widgetId: 3214, option: "Eat",
+        });
+      } else {
+        const op = widgetOpFor(I.SHARK, "Eat");
+        assert.equal(op, 2, "cache inventory Eat maps to the second native widget op");
+        const frame = Buffer.alloc(9);
+        frame[0] = 25; // NativeClientPackets.IF_BUTTON2, fixed eight-byte body.
+        frame.writeInt32BE(149 << 16, 1); frame.writeUInt16BE(slot, 5); frame.writeUInt16BE(I.SHARK, 7);
+        await decodeAndSend(frame, {
+          type: "widget_action", widgetId: 149 << 16, groupId: 149, childId: 0,
+          buttonNum: 2, slot, itemId: I.SHARK,
+        });
+      }
+      assert.equal(f.inv.getAmount(I.SHARK), 0, "the ordinary Food consumer accepts Eat");
+      assert.ok(f.p.getHitpoints() > hp, "the accepted food heals the same actor");
+      assert.ok(f.messages.includes("You eat the shark."));
+    } else if (route === "Examine") {
+      await browserOp(f, toolSlot, "Examine");
+      assert.ok(f.messages.length > 0, "the ordinary Examine returns its description");
+    } else if (route === "equipment Remove") {
+      assert.equal(f.eq.get(core.Equipment.WEAPON_SLOT).getId(), I.BRONZE_DAGGER);
+      await takeOff(f, core.Equipment.WEAPON_SLOT);
+      assert.equal(f.inv.getAmount(I.BRONZE_DAGGER), 1, "the equipment-tab action succeeds");
+      assert.notEqual(f.eq.get(core.Equipment.WEAPON_SLOT)?.getId(), I.BRONZE_DAGGER);
+    }
+    ticks(10);
+    assert.deepEqual([f.inv.getAmount(I.UNICORN_HORN), f.inv.getAmount(I.UNICORN_HORN_DUST)],
+      interrupted ? [2, 1] : [0, 3], "Eat stops subsequent material commits; the control completes");
+    assert.deepEqual(xp(), originalXp, "grinding and eating grant no skill XP");
+    assert.equal(f.inv.getItems()[toolSlot], tool, "the original pestle is preserved");
+    if (!interrupted) f.inv.add(item(I.UNICORN_HORN), false);
+    const before = [f.inv.getAmount(I.UNICORN_HORN), f.inv.getAmount(I.UNICORN_HORN_DUST)];
+    await startGrind();
+    assert.deepEqual([f.inv.getAmount(I.UNICORN_HORN), f.inv.getAmount(I.UNICORN_HORN_DUST)],
+      [before[0] - 1, before[1] + 1], "the same actor can start a fresh ordinary grind");
+    ticks(10);
+    assert.equal(f.inv.getAmount(I.UNICORN_HORN), 0);
+    assert.equal(f.inv.getAmount(I.PESTLE_AND_MORTAR), 1);
+    assert.deepEqual(xp(), originalXp);
+  });
+}
+
+for (const finished of [false, true]) {
+  for (const interrupted of [false, true]) {
+    test(`ordinary ${finished ? "finished" : "unfinished"} mixing: ${interrupted ? "Eat interruption" : "completion control"}`, async (t) => {
+      const { decodeClientPackets } = require("../dist/net/protocol/ClientProtocol");
+      const { CREATION_MENU_GROUP_ID, CREATION_MENU_FIRST_ITEM_COMPONENT } = require("../dist/net/packet/PacketSender");
+      const f = actor(t);
+      completeQuest(f, "druidic_ritual");
+      f.p.getSkillManager().setCurrentLevels(core.Skill.HITPOINTS, 5, false);
+      const first = finished ? I.GUAM_POTION_UNF_ : I.GUAM_LEAF;
+      const second = finished ? I.EYE_OF_NEWT : I.VIAL_OF_WATER;
+      const product = finished ? I.ATTACK_POTION_3_ : I.GUAM_POTION_UNF_;
+      for (const id of [first, second]) f.inv.add(item(id, 3), false);
+      f.inv.add(item(I.SHARK), false);
+      const xp = () => f.p.getSkillManager().getExperience(core.Skill.HERBLORE);
+      const initialXp = xp();
+      async function begin(amount) {
+        await useOn(f, slotOfId(f, first), slotOfId(f, second));
+        const menu = f.p.getCreationMenu();
+        assert.ok(menu, "the registered ordinary mixer offers Make-X");
+        assert.deepEqual(menu.getItems(), [product]);
+        assert.equal(menu.getOptions().maxAmount, amount, "only the remaining complete sets are offered");
+        const widgetId = (CREATION_MENU_GROUP_ID << 16) | CREATION_MENU_FIRST_ITEM_COMPONENT;
+        const frame = Buffer.alloc(7);
+        frame[0] = 62; // Native RESUME_PAUSEBUTTON: quantity shortAddLE, widget int.
+        frame[1] = (amount + 128) & 255; frame[2] = amount >>> 8;
+        frame.writeInt32BE(widgetId, 3);
+        const packets = decodeClientPackets(frame);
+        assert.deepEqual(packets, [{ type: "dialogue_continue", childIndex: amount, widgetId }]);
+        await f.c.dispatch(packets); f.c.processTurnPackets();
+      }
+      await begin(3);
+      assert.deepEqual([f.inv.getAmount(first), f.inv.getAmount(second), f.inv.getAmount(product)], [3, 3, 0],
+        "confirmation starts the task before the first material commit");
+      ticks(1);
+      assert.deepEqual([f.inv.getAmount(first), f.inv.getAmount(second), f.inv.getAmount(product)], [2, 2, 1]);
+      const committedXp = xp();
+      if (finished) assert.ok(committedXp > initialXp, "a finished potion awards XP");
+      else assert.equal(committedXp, initialXp, "an unfinished potion awards no XP");
+      if (interrupted) {
+        const hp = f.p.getHitpoints();
+        await heldOp(f, slotOfId(f, I.SHARK), "Eat");
+        assert.equal(f.inv.getAmount(I.SHARK), 0);
+        assert.ok(f.p.getHitpoints() > hp, "the same actor's registered food consumer accepts Eat");
+      }
+      ticks(10);
+      assert.deepEqual([f.inv.getAmount(first), f.inv.getAmount(second), f.inv.getAmount(product)],
+        interrupted ? [2, 2, 1] : [0, 0, 3], "only uninterrupted mixing commits further products");
+      if (interrupted) {
+        assert.equal(xp(), committedXp, "interruption awards no XP for the untouched sets");
+        await begin(2);
+        ticks(10);
+        assert.deepEqual([f.inv.getAmount(first), f.inv.getAmount(second), f.inv.getAmount(product)], [0, 0, 3],
+          "the same actor can mix the preserved ingredients in a new ordinary batch");
+      }
+      if (!finished) assert.equal(xp(), initialXp);
+    });
+  }
+}
