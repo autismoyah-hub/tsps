@@ -1,7 +1,7 @@
 {
   "payload": {
     "path": "before/shades-native-payload.cjs",
-    "sha256": "f4b4a471f9dc00be7fc9e31680340fcf4acf677302c8fe82b4c828f5f7f1f538"
+    "sha256": "0d52043babcd4543a3df4a1c29062c77d4d17fbab1db451b8282e13a1e6bde4a"
   },
   "resolver": {
     "path": "input-manifest-resolver.cjs",
@@ -17,15 +17,15 @@
   },
   "caller": {
     "path": "case-caller.py",
-    "sha256": "95c4bc3ac9eef0a475100b45c7885417af22bdd93f6adcb5509e20319d13cdd0"
+    "sha256": "101232e78ab3020b7963bdd26dbeb193adfa2a96a004eb7a51e7ada8845cdac9"
   },
   "originalPlan": {
     "path": "before/pilot.json",
-    "sha256": "e5c7d2794faf1ac821e34540b40a66b44839738be3532c01792ab5d4fe25b516"
+    "sha256": "ea9a8ebbe690eddc9f0b52a44e4a85f73f9bd72b91601f5ac2ab040299f0d449"
   },
   "originalRequest": {
     "path": "before/preview.json",
-    "sha256": "3b816c8f8b702db85ca05f7632add4c8d10653d988cabc41c34c0874401bcdce"
+    "sha256": "dba461f6540178fda8c734d8762b74908d02c48a3abf05c705e7944ade1ab72e"
   },
   "profileBasis": {
     "path": "profile-basis.json",
@@ -37,7 +37,7 @@
   },
   "submitCaller": {
     "path": "before/case-executor.py",
-    "sha256": "decdc2d3257b8fc11eee9ec9989839c5698cc081f52bd583d683043efcd34f51"
+    "sha256": "e5333a9ab777f93f1836aaa393ea71b6b9b2be9791e41c1d9c0c40873d330762"
   },
   "inputCollector": {
     "path": "retain-contiguous-inputs003.py",

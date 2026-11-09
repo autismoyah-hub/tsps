@@ -36,7 +36,7 @@
     "caches/osrs-241_2026-10-20/main_file_cache.idx9": "8e2d9f69353149026c17f5120631f2d22bf27761e471a7724ef0f90b3c515e95"
   },
   "name": "shades-logout-before-held",
-  "source": "8489c88a87c96730aa0f441895c07884bd04c358",
+  "source": "345a2fe6e568111aeb662eccef371f39151a7570",
   "repository": "autismoyah-hub/tsps",
   "payloadFile": "shades-native-payload.cjs",
   "tests": [
@@ -50,11 +50,11 @@
   "expectedInputsRef": {
     "schema": 1,
     "repository": "autismoyah-hub/tsps",
-    "artifactCommit": "57a52f66f1fe2c3d5e1f60e9ac8a5378138ec54b",
+    "artifactCommit": "115002a7f53c877bfa8fc5d67afb9495ba19545b",
     "path": "case-inputs/shades-logout-before.json",
-    "sha256": "3d72850b9a395846a82d0cc1477298e5c2c9948cc6e9a0baedbaf25e36dda73f",
-    "bytes": 1092245,
-    "source": "8489c88a87c96730aa0f441895c07884bd04c358",
-    "count": 5036
+    "sha256": "ee9377437f3cc1f919c8ee1ace58338d1a09ec6e3f69cfc2870b84f58fd8b584",
+    "bytes": 1098685,
+    "source": "345a2fe6e568111aeb662eccef371f39151a7570",
+    "count": 5067
   }
 }

@@ -8,14 +8,14 @@ ACCESS = ROOT / 'hf-project-access-v4.py'
 ENTRY = HERE / 'case-executor.py'
 PYTHON_SHA = 'c2c20b4745d447551221ec3d4e70f92c270c4609fe3df34fc52ea6dd46e92273'
 ACCESS_SHA = 'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326'
-ENTRY_SHA = 'decdc2d3257b8fc11eee9ec9989839c5698cc081f52bd583d683043efcd34f51'
+ENTRY_SHA = 'e5333a9ab777f93f1836aaa393ea71b6b9b2be9791e41c1d9c0c40873d330762'
 RECEIPT_SHA = '7ef21896e53f1e39c16f83b17c07889d4d570ff3415814cdb6aa1ce2901ae39f'
 PROJECTION_SHA = '9cd75e87859ecfa4f0f7ef0fee291e1aaa76fbf4e67a5f68663d56ffc2a92bfd'
 def checked(path, digest):
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != digest: raise RuntimeError('Bound input mismatch')
     return raw
-bundle = json.loads(checked(HERE / 'bindings.json', 'c8ff9392a62d379d03ff37437e299ad6662e396abdd00919a98869ebd06a0a09'))
+bundle = json.loads(checked(HERE / 'bindings.json', '6c13a15d1d8bd72d3c1cb2906b93100b55716919749e31d17fb00ff73dcfc5bb'))
 if set(bundle) != {'payload','resolver','pilot','package','caller','originalPlan','originalRequest','profileBasis','originalD46','submitCaller','inputCollector'}: raise RuntimeError('Binding keys mismatch')
 for row in bundle.values():
     if set(row) != {'path','sha256'}: raise RuntimeError('Binding schema mismatch')
@@ -46,7 +46,7 @@ def preauth_plan_check(args):
     selected_path = Path(arg('--selected-plan')).resolve()
     if selected_path != (HERE / 'selected-plan.json').resolve(): raise RuntimeError('Selected plan path mismatch')
     selected = json.loads(checked(selected_path, arg('--selected-plan-sha256')))
-    preview = json.loads(checked(HERE / 'preview.json', '3b816c8f8b702db85ca05f7632add4c8d10653d988cabc41c34c0874401bcdce'))
+    preview = json.loads(checked(HERE / 'preview.json', 'dba461f6540178fda8c734d8762b74908d02c48a3abf05c705e7944ade1ab72e'))
     expected = dict(preview['plan'], executionHold=False, selection=selected.get('selection'))
     if selected != expected: raise RuntimeError('Selected plan differs from reviewed preview; HOLD')
 preauth_plan_check(args)
