@@ -8,7 +8,7 @@ OWNER='d427048d-86cc-4ad2-b3cc-bebade89e457'
 REVIEWER='ad80bdbf-4243-4fee-9928-88fd6836505c'
 SOURCE='47a1234bd1650b8f7b3697398993bce75c556fe7'
 PLAN_SHA='28c17b69fceaddba1ce7b1617fd926193cc79142238a2f294ced56586d312f09'
-PINS={'plan.json':PLAN_SHA,'payload.cjs':'0212ed48a9da3a1b78bd4a65c3e4b25399e77a4ba0cee089e33847f89a03c126','pilot.py':'2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200','package.json':'ac9cb75167ec66ac1c1f4345d65bda679a20ac1b9a85aba45dd1919dcd18ac78','frame_transport.py':'f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76'}
+PINS={'plan.json':PLAN_SHA,'payload.cjs':'0212ed48a9da3a1b78bd4a65c3e4b25399e77a4ba0cee089e33847f89a03c126','pilot.py':'2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200','package.json':'a3478faa655b2305474e46bb6ba52d2faddb67cce70f98e67592f0346dc88b9e','collector.py':'5747e13c09c9dcaa2aedec0db8151e1b4037b2b55e78872cf7895a20e4f4a397','frame_transport.py':'f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76'}
 sha=lambda raw:hashlib.sha256(raw).hexdigest()
 def bound(path,digest):
  raw=Path(path).read_bytes();assert sha(raw)==digest,f'Identity mismatch: {path}';return raw
@@ -44,15 +44,30 @@ def validate_source(plan):
  return {'url':url,'sha256':sha(raw),'count':len(tree)}
 
 def current_review(plan):
- # This is a readback captured directly from this authenticated session, not a self-authored verdict.
- capture=ROOT/'exact-execution-review.json';data=json.loads(capture.read_bytes())
- assert data['owner']==OWNER and data['reviewer']==REVIEWER and data['verdict']=='EXACT_CASE_GO'
- subject={'planSHA256':PLAN_SHA,'source':SOURCE,'payloadSHA256':PINS['payload.cjs'],'guardSHA256':sha(Path(__file__).read_bytes())}
- assert data['subject']==subject
- receipt=Path(data['directCapture']);raw=bound(receipt,data['directCaptureSHA256']); transcript=json.loads(raw)
- texts=[r.get('text','') for r in transcript['turns'] if r.get('role')=='user']
- assert any(REVIEWER in text and 'EXACT_CASE_GO' in text and all(v in text for v in subject.values()) for text in texts)
- return {'subject':subject,'captureSHA256':sha(raw)}
+ # Fetch both authenticated Cuttle transcripts fresh; correlate sender call and recipient message.
+ def read_session(sid):
+  raw=subprocess.check_output(['/workspace/runtime/bin/cuttle','sessions','read','--turns','300',sid],timeout=30)
+  data=json.loads(raw);assert isinstance(data.get('turns'),list);return data['turns']
+ subject={'planSHA256':PLAN_SHA,'source':SOURCE,'payloadSHA256':PINS['payload.cjs'],'guardSHA256':sha(Path(__file__).read_bytes()),'collectorSHA256':PINS['collector.py']}
+ owner_turns=read_session(OWNER);peer_turns=read_session(REVIEWER)
+ selected=[]
+ for row in owner_turns:
+  text=row.get('text','')
+  if row.get('role')!='user' or not text.startswith('[From Cuttle session ') or REVIEWER not in text.split('\n',1)[0]:continue
+  msg=text.split('\n',1)[1] if '\n' in text else ''
+  if 'EXACT_CASE_GO' in msg and all(value in msg for value in subject.values()):selected.append((row,msg))
+ assert len(selected)==1,'Missing or ambiguous peer verdict'
+ owner_row,msg=selected[0]
+ sent=[]
+ for index,row in enumerate(peer_turns):
+  tool=row.get('tool',{});command=tool.get('name','')
+  if row.get('role')!='assistant' or row.get('kind')!='tool' or msg not in command:continue
+  if f'cuttle sessions send {OWNER}' not in command:continue
+  result=next((x for x in peer_turns[index+1:] if x.get('kind')=='tool_result' and x.get('tool',{}).get('id')==tool.get('id')),None)
+  if result and result.get('tool',{}).get('ok') is True:sent.append({'call':row,'result':result})
+ assert len(sent)==1,'Missing or ambiguous reviewer-side send'
+ proof={'subject':subject,'reviewer':REVIEWER,'recipient':OWNER,'recipientTurn':owner_row,'sender':sent[0]}
+ return {'subject':subject,'correlatedCaptureSHA256':sha(json.dumps(proof,sort_keys=True,separators=(',',':')).encode()),'proof':proof}
 
 def check():
  assert os.environ.get('CCC_SESSION_ID')==OWNER and re.fullmatch('[a-f0-9-]{36}',REVIEWER) and REVIEWER!=OWNER
@@ -83,7 +98,7 @@ def main():
  assert not matches,'Matching prior provider job: reconcile without submission'
  # Recheck all local and remote state immediately after provider reconciliation.
  again,source2,review2=check();assert again==plan and source2==source and review2==review
- preview=json.loads(subprocess.check_output([sys.executable,str(CASE/'pilot.py'),'--plan',str(CASE/'plan.json')]))
+ preview=json.loads(subprocess.check_output([sys.executable,'-E','-S',str(CASE/'pilot.py'),'--plan',str(CASE/'plan.json')],env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8','TZ':'UTC'}))
  request=preview['request'];assert preview['plan']==plan and request['attempts']==1 and request['timeout']==1800
  assert all(len(arg.encode())+1<131072 and '\0' not in arg for arg in request['command'])
  intent={'owner':OWNER,'collector':OWNER,'source':SOURCE,'planSHA256':PLAN_SHA,'payloadSHA256':PINS['payload.cjs'],'requestSHA256':sha(json.dumps(request,sort_keys=True,separators=(',',':')).encode()),'review':review,'sourceReadback':source,'createdUTC':datetime.datetime.now(datetime.timezone.utc).isoformat(),'state':'SUBMISSION_STARTING_RECONCILIATION_REQUIRED','noReplay':True}
