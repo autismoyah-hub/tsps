@@ -66,8 +66,9 @@ def current_review(plan):
  def read_session(sid):
   raw=bounded(['/workspace/runtime/bin/cuttle','--json','sessions','read','--turns','300',sid],timeout=30)
   data=json.loads(raw);assert isinstance(data.get('turns'),list);return data['turns']
+ bound(ROOT/'reviewed-overlaps.json','d573e1c986fa0e92ab08c15a8cb46ac0d60ec43c642c9fd2062072987849c863')
  bound(ROOT/'offline-recovery.py','5aa3161278e0d67881c51bd01205c54c095d5d8eb4fa81500c772ec868dcb73b')
- subject={'offlineRecoverySHA256':'5aa3161278e0d67881c51bd01205c54c095d5d8eb4fa81500c772ec868dcb73b','planSHA256':PLAN_SHA,'source':SOURCE,'payloadSHA256':PINS['payload.cjs'],'guardSHA256':sha(Path(__file__).read_bytes()),'collectorSHA256':PINS['collector.py'],'preflightSHA256':'b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca','selectorSHA256':'c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
+ subject={'overlapEvidenceSHA256':'d573e1c986fa0e92ab08c15a8cb46ac0d60ec43c642c9fd2062072987849c863','offlineRecoverySHA256':'5aa3161278e0d67881c51bd01205c54c095d5d8eb4fa81500c772ec868dcb73b','planSHA256':PLAN_SHA,'source':SOURCE,'payloadSHA256':PINS['payload.cjs'],'guardSHA256':sha(Path(__file__).read_bytes()),'collectorSHA256':PINS['collector.py'],'preflightSHA256':'b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca','selectorSHA256':'a218d6d594c2133cc9411ca653d591566ab3abcf1de7fab68d7ddf71e43e9235','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
  owner_turns=read_session(OWNER);peer_turns=read_session(REVIEWER)
  selected=[]
  for row in owner_turns:
@@ -112,6 +113,15 @@ def unrelated_receipt(old):
  assert SOURCE not in sources and digest!=PLAN_SHA, 'same case receipt'
  return True
 
+def reviewed_overlap(number,detail,rows,touched):
+ pins={3948:('25a959471d0809d355f8a3024d38cc0511592ca4','5bbbd1d57b87956cac1e0ca7785dff3e23c0f4e9','3c1cd967b169fa6ab8a163bcf6c0b324e82b9dab029971796dab3cd0443841ca'),3681:('bddfc726a4567f9317015ff5fe015d21f0cef972','d9d2c95eb39596b32ea465a1808b3962fc2461b8','f9e15f0bf123041c3183498b7644e63ae799395467620e5b207843f562414532')}
+ assert number in pins, 'unreviewed PR overlap'
+ head,base,wanted=pins[number]
+ assert detail.get('state')=='open' and detail.get('head',{}).get('sha')==head and detail.get('base',{}).get('sha')==base, 'reviewed PR changed'
+ files=sorted([{k:f.get(k) for k in ('filename','status','sha','previous_filename','patch')} for page in rows for f in page if f.get('filename') in touched or f.get('previous_filename') in touched],key=lambda f:f['filename'])
+ assert sha(json.dumps(files,sort_keys=True,separators=(',',':')).encode())==wanted, 'reviewed PR diff changed'
+ return True
+
 def current_fit(plan):
  repo=ROOT.parents[1]
  remote=subprocess.check_output(['git','-C',str(repo),'ls-remote','https://github.com/RSPSApp/tsps.git','refs/heads/main'],text=True,timeout=40).split()
@@ -128,20 +138,21 @@ def current_fit(plan):
   number=pr.get('number');assert type(number) is int and number>0
   detail=json.loads(bounded(['gh','api',f'repos/RSPSApp/tsps/pulls/{number}'],timeout=90))
   rows=json.loads(bounded(['gh','api','--paginate','--slurp',f'repos/RSPSApp/tsps/pulls/{number}/files?per_page=100'],timeout=90))
-  if checked_pr_files(detail,rows,touched):overlap.append(number)
- assert not overlap,f'Open PR overlaps: {overlap}'
+  if checked_pr_files(detail,rows,touched):
+   reviewed_overlap(number,detail,rows,touched);overlap.append(number)
+ assert len(set(overlap))==len(overlap),'duplicate PRs'
  return {'main':main,'connectedPaths':connected,'openPRCount':len(prs),'exactOverlap':overlap}
 
 def selected(review):
- st=(ROOT/'selection.json').stat();assert st.st_uid==os.getuid() and st.st_mode & 0o077 == 0
- raw=(ROOT/'selection.json').read_bytes();record=json.loads(raw)
+ st=(ROOT/'selection-v2.json').stat();assert st.st_uid==os.getuid() and st.st_mode & 0o077 == 0
+ raw=(ROOT/'selection-v2.json').read_bytes();record=json.loads(raw)
  assert set(record)=={'action','owner','source','planSHA256','reviewCaptureSHA256','createdUTC'}
  assert record['action']=='SELECT_ONCE' and record['owner']==OWNER and record['source']==SOURCE and record['planSHA256']==PLAN_SHA and record['reviewCaptureSHA256']==review['correlatedCaptureSHA256']
  age=(datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(record['createdUTC'])).total_seconds()
  assert 0<=age<=300,'Selection stale or future'
  # Confirm an actual successful invocation by this owner, not just a JSON file.
  turns=json.loads(bounded(['/workspace/runtime/bin/cuttle','--json','sessions','read','--turns','300',OWNER],timeout=30))['turns']
- wanted='/usr/bin/python3 -E -S -B '+str(ROOT/'select.py')
+ wanted='/usr/bin/python3 -E -S -B '+str(ROOT/'select-v2.py')
  calls=[]
  for i,row in enumerate(turns):
   tool=row.get('tool',{});name=tool.get('name','')
@@ -155,10 +166,11 @@ def selected(review):
  return {'sha256':sha(raw),'createdUTC':record['createdUTC']}
 
 def check():
+ bound(ROOT/'selection.json','c5b838fdb8dd116736063f4307306f677b1e0f44b59e0cb7af883b26261d5165')
  assert sys.flags.optimize==0 and sys.flags.dont_write_bytecode
  assert ROOT.stat().st_uid==os.getuid() and ROOT.stat().st_mode & 0o077 == 0
  assert sha((ROOT/'preflight.py').read_bytes())=='b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca'
- assert sha((ROOT/'select.py').read_bytes())=='c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2'
+ assert sha((ROOT/'select-v2.py').read_bytes())=='a218d6d594c2133cc9411ca653d591566ab3abcf1de7fab68d7ddf71e43e9235'
  assert sha((ROOT/'sdk-manifest.json').read_bytes())=='32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'
  req=urllib.request.Request(os.environ['CCC_BASE_URL']+'/api/acp/sessions/'+OWNER+'/config',headers=({'Authorization':'Bearer '+os.environ['CCC_TOKEN']} if os.environ['CCC_TOKEN'].startswith('ccc_pat_') else {'X-CCC-Control-Token':os.environ['CCC_TOKEN']}))
  with urllib.request.urlopen(req,timeout=20) as r: cfg=json.load(r)

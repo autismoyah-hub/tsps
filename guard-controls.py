@@ -20,14 +20,18 @@ print('real JobInfo datetime summary serialized; duplicate and partial receipt r
 # Synthetic reviewer/selection provenance: recipient text alone is insufficient.
 import datetime
 from unittest.mock import patch
-subject={'offlineRecoverySHA256':'5aa3161278e0d67881c51bd01205c54c095d5d8eb4fa81500c772ec868dcb73b','planSHA256':g.PLAN_SHA,'source':g.SOURCE,'payloadSHA256':g.PINS['payload.cjs'],'guardSHA256':g.sha((root/'guard-v2.py').read_bytes()),'collectorSHA256':g.PINS['collector.py'],'preflightSHA256':'b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca','selectorSHA256':'c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
+subject={'overlapEvidenceSHA256':'d573e1c986fa0e92ab08c15a8cb46ac0d60ec43c642c9fd2062072987849c863','offlineRecoverySHA256':'5aa3161278e0d67881c51bd01205c54c095d5d8eb4fa81500c772ec868dcb73b','planSHA256':g.PLAN_SHA,'source':g.SOURCE,'payloadSHA256':g.PINS['payload.cjs'],'guardSHA256':g.sha((root/'guard-v2.py').read_bytes()),'collectorSHA256':g.PINS['collector.py'],'preflightSHA256':'b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca','selectorSHA256':'a218d6d594c2133cc9411ca653d591566ab3abcf1de7fab68d7ddf71e43e9235','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
 message='EXACT_CASE_GO '+' '.join(subject.values())
 stamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
 owner={'turns':[{'role':'user','ts':stamp,'text':'[From Cuttle session "peer" · '+g.REVIEWER+']\n'+message}]}
 peer={'turns':[{'role':'assistant','kind':'tool','ts':stamp,'tool':{'name':'cuttle sessions send '+g.OWNER+" --stdin <<'EOF'\n"+message+'\nEOF','id':'t1'}},{'role':'user','kind':'tool_result','tool':{'id':'t1','ok':True}}]}
 def stub(args,**kwargs):return json.dumps(owner if args[-1]==g.OWNER else peer).encode()
-with patch.object(g,'bounded',side_effect=stub): review=g.current_review(None)
+with tempfile.TemporaryDirectory() as d:
+ g.ROOT=Path(d);shutil_placeholder=None
+ import shutil as sh;sh.copyfile(root/'offline-recovery.py',g.ROOT/'offline-recovery.py');sh.copyfile(root/'reviewed-overlaps.json',g.ROOT/'reviewed-overlaps.json')
+ with patch.object(g,'bounded',side_effect=stub): review=g.current_review(None)
 assert review['subject']==subject
+g.ROOT=root
 bad={'turns':[]}
 def missing(args,**kwargs):return json.dumps(owner if args[-1]==g.OWNER else bad).encode()
 with patch.object(g,'bounded',side_effect=missing):
@@ -41,8 +45,8 @@ with patch.object(g,'bounded',side_effect=inert):
  except AssertionError:pass
  else:raise AssertionError('inert sender accepted')
 with tempfile.TemporaryDirectory() as d:
- g.ROOT=Path(d); now=datetime.datetime.now(datetime.timezone.utc); r={'action':'SELECT_ONCE','owner':g.OWNER,'source':g.SOURCE,'planSHA256':g.PLAN_SHA,'reviewCaptureSHA256':review['correlatedCaptureSHA256'],'createdUTC':now.isoformat()}; f=g.ROOT/'selection.json';f.write_text(json.dumps(r));f.chmod(0o600)
- cmd='/usr/bin/python3 -E -S -B '+str(g.ROOT/'select.py'); turns={'turns':[{'role':'assistant','kind':'tool','ts':(now-datetime.timedelta(seconds=1)).isoformat(),'tool':{'name':cmd,'id':'s1'}},{'role':'user','kind':'tool_result','tool':{'id':'s1','ok':True},'text':''}]}
+ g.ROOT=Path(d); now=datetime.datetime.now(datetime.timezone.utc); r={'action':'SELECT_ONCE','owner':g.OWNER,'source':g.SOURCE,'planSHA256':g.PLAN_SHA,'reviewCaptureSHA256':review['correlatedCaptureSHA256'],'createdUTC':now.isoformat()}; f=g.ROOT/'selection-v2.json';f.write_text(json.dumps(r));f.chmod(0o600)
+ cmd='/usr/bin/python3 -E -S -B '+str(g.ROOT/'select-v2.py'); turns={'turns':[{'role':'assistant','kind':'tool','ts':(now-datetime.timedelta(seconds=1)).isoformat(),'tool':{'name':cmd,'id':'s1'}},{'role':'user','kind':'tool_result','tool':{'id':'s1','ok':True},'text':''}]}
  with patch.object(g,'bounded',return_value=json.dumps(turns).encode()):assert g.selected(review)['sha256']==g.sha(f.read_bytes())
  with patch.object(g,'bounded',return_value=b'{"turns":[]}'):
   try:g.selected(review)
@@ -140,7 +144,7 @@ for receipt in ({'planSHA256':g.PLAN_SHA},{},{'plan':[]},{'source':'b'*40,'plan'
 print('rename, duplicate, sibling same-plan and malformed receipt controls passed')
 
 with tempfile.TemporaryDirectory() as d:
- g.ROOT=Path(d); (g.ROOT/'offline-recovery.py').write_text('tampered')
+ g.ROOT=Path(d); (g.ROOT/'offline-recovery.py').write_text('tampered'); shutil.copyfile(root/'reviewed-overlaps.json',g.ROOT/'reviewed-overlaps.json')
  try:g.current_review(None)
  except AssertionError:pass
  else:raise AssertionError('altered offline launcher accepted')
@@ -157,3 +161,20 @@ for marker in ('submission.json','submission-intent.json','submitted-job-id.json
   else:raise AssertionError('same or unknown marker accepted: '+marker)
  assert g.unrelated_receipt({'source':'b'*40})
 print('all six marker names apply same-case/unknown refusals and unrelated positive')
+
+reviewed=json.loads((root/'reviewed-overlaps.json').read_bytes())
+for number,head,base in [(3948,'25a959471d0809d355f8a3024d38cc0511592ca4','5bbbd1d57b87956cac1e0ca7785dff3e23c0f4e9'),(3681,'bddfc726a4567f9317015ff5fe015d21f0cef972','d9d2c95eb39596b32ea465a1808b3962fc2461b8')]:
+ rows=[reviewed[str(number)]]; touched={x['filename'] for x in rows[0]}; detail={'state':'open','head':{'sha':head},'base':{'sha':base}}
+ assert g.reviewed_overlap(number,detail,rows,touched)
+ for wrong in ({'state':'open','head':{'sha':'0'*40},'base':{'sha':base}},{'state':'open','head':{'sha':head},'base':{'sha':'0'*40}}):
+  try:g.reviewed_overlap(number,wrong,rows,touched)
+  except AssertionError:pass
+  else:raise AssertionError('changed PR accepted')
+ changed=[rows[0][:-1]]
+ try:g.reviewed_overlap(number,detail,changed,touched)
+ except AssertionError:pass
+ else:raise AssertionError('changed PR paths accepted')
+ try:g.reviewed_overlap(1234,detail,rows,touched)
+ except AssertionError:pass
+ else:raise AssertionError('unreviewed overlap accepted')
+print('exact PR overlap accepted; changed head/base/path and extra PR refused')
