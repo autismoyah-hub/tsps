@@ -10,6 +10,8 @@ const { CachePipeline } = require('../dist/game/cache/CachePipeline');
 const { PluginManager: PM } = require('../dist/plugins/PluginManager');
 const { ShopDefinitionLoader } = require('../dist/game/definition/loader/impl/ShopDefinitionLoader');
 const { NpcDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
+const { NpcInteractionDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcInteractionDefinitionLoader');
+const { NpcInteractionManager } = require('../dist/game/entity/impl/npc/NpcInteractionManager');
 const { Player } = require('../dist/game/entity/impl/player/Player');
 const { PlayerSession } = require('../dist/net/PlayerSession');
 const { PlayerSave } = require('../dist/game/entity/impl/player/persistence/PlayerSave');
@@ -31,6 +33,7 @@ before(async () => {
   PM.emitServerStartup({});
   assert.equal(new ShopDefinitionLoader().load(), true);
   core.ShopManager.initialize();
+  new NpcInteractionDefinitionLoader().load();
 });
 after(() => PM.emitServerShutdown({}));
 
@@ -109,7 +112,7 @@ test('the offered slot is consumed, not a different held dose', t => {
 });
 
 test('cancel, swap, remove, and relog before commit leave the sale recoverable', async t => {
-  for (const change of ['cancel', 'swap', 'remove', 'relog']) await t.test(change, child => {
+  for (const change of ['cancel', 'swap', 'remove', 'same-id-replacement', 'relog']) await t.test(change, child => {
     let { p } = actor(child), inv = p.getInventory();
     const one = core.ItemIdentifiers.RELICYMS_BALM_1_, four = core.ItemIdentifiers.RELICYMS_BALM_4_;
     inv.setItem(0, new core.Item(one, 1)); inv.setItem(1, new core.Item(four, 1));
@@ -117,7 +120,13 @@ test('cancel, swap, remove, and relog before commit leave the sale recoverable',
     if (change === 'cancel') p.getDialogueManager().reset();
     if (change === 'swap') inv.swap(0, 1);
     if (change === 'remove') inv.deleteAtSlot(0, 1, false);
-    if (change === 'relog') { p = restore(child, p).p; inv = p.getInventory(); }
+    if (change === 'same-id-replacement') inv.setItem(0, new core.Item(one, 1));
+    if (change === 'relog') {
+      const old = p;
+      p = restore(child, p).p; inv = p.getInventory();
+      drain(old);
+      assert.equal(old.getInventory().getAmount(core.ItemIdentifiers.COINS), 0, 'retained old dialogue cannot pay after logout');
+    }
     drain(p);
     assert.equal(inv.getAmount(core.ItemIdentifiers.COINS), 0);
     assert.equal(inv.getAmount(four), 1);
@@ -131,6 +140,12 @@ test('a full coin stack does not consume the balm or unlock the shop', t => {
   use(t, p, 0); drain(p);
   assert.equal(inv.getAmount(id), 1); assert.equal(inv.getAmount(core.ItemIdentifiers.COINS), MAX_STACK_AMOUNT);
   assert.equal(open(p), null);
+  p.getDialogueManager().reset();
+  inv.deleteAtSlot(1, MAX_STACK_AMOUNT, false);
+  use(t, p, 0); drain(p);
+  assert.equal(inv.getAmount(id), 0, 'failed sale can be retried');
+  assert.equal(inv.getAmount(core.ItemIdentifiers.COINS), 100);
+  assert.ok(open(p), 'successful retry unlocks trade');
 });
 
 test('a later offered dose replaces the abandoned dialogue without double payment', t => {
@@ -150,4 +165,15 @@ test('an unrelated started-quest shop retains its own refusal', t => {
   assert.ok(shop, 'canonical Oziach shop loaded');
   assert.equal(core.ShopManager.open(p, shop.getId()), true);
   assert.equal(core.ShopManager.getOpenShop(p), null);
+});
+
+test('Uglug Trade click follows the same first-sale shop gate', t => {
+  const { p } = actor(t), npc = target(), inv = p.getInventory();
+  assert.equal(NpcInteractionManager.handle(p, npc, 1, 3), true);
+  assert.equal(core.ShopManager.getOpenShop(p), null);
+  p.getDialogueManager().reset();
+  inv.setItem(0, new core.Item(core.ItemIdentifiers.RELICYMS_BALM_1_, 1));
+  use(t, p, 0); drain(p);
+  assert.equal(NpcInteractionManager.handle(p, npc, 1, 3), true);
+  assert.ok(core.ShopManager.getOpenShop(p));
 });
