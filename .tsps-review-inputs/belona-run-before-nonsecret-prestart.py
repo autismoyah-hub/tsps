@@ -1,0 +1,7 @@
+"""One real nonsecret prestart capture; no selected plan or provider action."""
+import importlib.util,json,pathlib
+r=pathlib.Path('/workspace/belona-tooling/case');sp=importlib.util.spec_from_file_location('pre',r/'belona-prestart.py');m=importlib.util.module_from_spec(sp);sp.loader.exec_module(m)
+s=json.loads((r/'before-subject-v2-draft.json').read_bytes())
+f={'payloadSHA256':r/'native-payload-mapref-candidate.cjs','pilotSHA256':pathlib.Path('/workspace/belona-tooling/cache/hf-accepted-collectors/001/files/pilot.py'),'adapterSHA256':pathlib.Path('/workspace/belona-tooling/cache/hf-author-control/004/files/hf-project-access-v4.py'),'childSHA256':pathlib.Path('/workspace/belona-tooling/cache/hf-author-control/004/files/authenticated-child-snapshot-command.py'),'classifierSHA256':r/'classify-tap.py','liveSHA256':r/'belona-live-boundaries.py','entrySHA256':r/'belona-live-entry.py','launcherSHA256':r/'belona-launcher.py','sourceGateSHA256':r/'belona-source-gate.py','sourceProfileSHA256':r/'belona-source-profile.json','cacheInventorySHA256':r/'belona-cache-inventory.json','sdkPythonSHA256':pathlib.Path('/usr/bin/python3.12'),'nodeSHA256':pathlib.Path('/usr/bin/node'),'cliModuleSHA256':pathlib.Path('/workspace/runtime/cuttle-cli.mjs'),'prestartSHA256':r/'belona-prestart.py'}
+out=m.nonsecret_prestart(s,(r/'before-review-capture.json').read_bytes(),'/workspace/runtime/bin/cuttle',s['cliSHA256'],r/'preflight.py',r/'belona-caller.py',f,r/'sdk-manifest.json',r/'before-held-plan.json',r/'before-manifest.json')
+print(json.dumps(out,sort_keys=True))
