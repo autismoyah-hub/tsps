@@ -1,0 +1,19 @@
+# Subtest: logging out in the Nexus with an inventory escape crystal ejects instead of rejoining the party
+ok 29 - logging out in the Nexus with an inventory escape crystal ejects instead of rejoining the party
+  ---
+  duration_ms: 8.324895
+  type: 'test'
+# Subtest: active encounter logout distinguishes a crystal eject from a death and rejoin
+ok 30 - active encounter logout distinguishes a crystal eject from a death and rejoin
+  ---
+  duration_ms: 6.694311
+  type: 'test'
+# tests 30
+# pass 30
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+{"event":"stage-result","name":"test:tombs-of-amascut.test.cjs","code":0,"signal":null,"timedOut":false,"leftoverGroup":false,"tapValid":true,"closureScope":"process-group only; reparented or setsid descendants not proved absent","tests":30,"passes":30,"durationMs":2900,"resources":{"memory.max":"32000000000","memory.peak":"2163593216","memory.events":"low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0","pids.current":"11"}}
+{"event":"source-closure","afterFailure":false,"available":true,"sourceManifestHash":"8eecf199c69accfc6c3b61ffaea2d35146d8c596756d940749b14365ee652803","postSourceHash":"8eecf199c69accfc6c3b61ffaea2d35146d8c596756d940749b14365ee652803","originalSourceFiles":7981,"distManifestHash":"e5cc77eefd494d6e5590fb697a7b03380cd5c33666052bed4e743ba28122faa1","postDistHash":"e5cc77eefd494d6e5590fb697a7b03380cd5c33666052bed4e743ba28122faa1","postCacheFilesChecked":28,"sourceStatus":"PASS","distStatus":"PASS","cacheStatus":"PASS","complete":true,"cacheMismatches":[],"errors":[],"sealsUnchanged":true,"limitation":"Content identities only; no process or sandbox-wide closure inference"}
+{"event":"native-qualification-result","source":"3a224eee211af4a6701956c161f2602a567d3c5c","status":"TESTS_PASS_AWAIT_SANDBOX_TERMINAL","resources":{"memory.max":"32000000000","memory.peak":"2163593216","memory.events":"low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0","pids.current":"11"},"closureScope":"process groups checked; full descendant closure requires platform containment and terminal receipt","scope":"Linux fresh dependency/build/cache/test route; no Windows equivalence, client rendering or concurrent capacity claim"}
