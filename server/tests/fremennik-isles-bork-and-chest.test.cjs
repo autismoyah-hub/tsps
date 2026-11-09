@@ -406,6 +406,10 @@ test('King accepts each assigned ore as notes and continues to the mission', t =
     assert.equal(core.ItemDefinition.forId(noted).isNoted(), true);
     assert.equal(core.ItemDefinition.forId(noted).getNoteId(), ore, 'note resolves back to assigned ore');
     f.inv.adds(noted, amount + 1);
+    assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(f.p), 3);
+    assert.equal(f.p.getSkillManager().getMaxLevel(core.Skill.MINING), level);
+    assert.equal(f.inv.getAmount(noted), amount + 1);
+    assert.equal(f.inv.getAmount(ore), 0);
     assert.equal(f.talk(), true);
     f.advance(() => f.conditions.length > 0);
     assert.equal(f.conditions[0].result, false, 'King rejects a full assigned noted ore stack');
