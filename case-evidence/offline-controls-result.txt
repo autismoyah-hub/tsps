@@ -5,11 +5,11 @@ post-scan refresh failure before intent/pilot PASS; retained diagnostic
 changed-ref actual prestart refusal before receipt PASS
 changed-diff actual prestart refusal before receipt PASS
 route redirects/denial/size/final URL controls PASS
-job identity wrong command/image/source/owner/id controls PASS
-collector wrong command refused before logs PASS
-collector wrong docker_image refused before logs PASS
-collector wrong labels refused before logs PASS
-collector wrong owner refused before logs PASS
-collector matching terminal reaches logs PASS
-collector wrong request name refused before API PASS
-collector partial raw stream retained on error PASS
+literal reconstructed request wrong image/command/name and job identity controls PASS
+collector command control PASS
+collector docker_image control PASS
+collector labels control PASS
+collector owner control PASS
+collector name control PASS
+collector partial control PASS
+collector positive control PASS

@@ -10,7 +10,7 @@ def main():
  p=argparse.ArgumentParser();p.add_argument('--plan',required=True);p.add_argument('--plan-sha256',required=True);p.add_argument('--status',required=True);p.add_argument('--status-sha256',required=True);p.add_argument('--prestart',required=True);p.add_argument('--prestart-sha256',required=True);a=p.parse_args()
  if os.environ.get('CCC_SESSION_ID')!='a57b09b1-fcf5-4aea-b25e-7f19910af934':raise RuntimeError('Wrong owner')
  prepath=Path(a.prestart).resolve();assert prepath.parent==ROOT and sha(prepath)==a.prestart_sha256;pre=json.loads(prepath.read_bytes())
- for n in ('collect.py','collector_entry.py','job_identity.py','pilot.py','status.py','status_invoke.py'):assert sha(ROOT/n)==pre['files'][n]
+ for n in ('collect.py','collector_entry.py','job_identity.py','pilot.py','status.py','status_invoke.py','payload.cjs'):assert sha(ROOT/n)==pre['files'][n]
  plan=Path(a.plan).resolve(); assert plan.parent==ROOT and sha(plan)==a.plan_sha256
  submission=json.loads((ROOT/'submission.json').read_bytes()); assert submission['plan']==json.loads(plan.read_bytes()) and submission['job']['id'] and submission['namespace']=='Autismo-Yah'
  statuspath=Path(a.status).resolve(); assert statuspath.parent==ROOT and sha(statuspath)==a.status_sha256

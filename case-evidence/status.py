@@ -11,11 +11,12 @@ def main():
  assert intent['owner']==os.environ.get('CCC_SESSION_ID')=='a57b09b1-fcf5-4aea-b25e-7f19910af934' and intent['planSHA256']==a.plan_sha256
  assert submission['plan']==json.loads(raw) and submission['namespace']=='Autismo-Yah' and submission['job']['id']
  api=HfApi();assert api.whoami()['name']=='Autismo-Yah'; job=api.inspect_job(job_id=submission['job']['id'],namespace='Autismo-Yah')
- identityraw=(ROOT/'job_identity.py').read_bytes(); assert hashlib.sha256(identityraw).hexdigest()=='42688ea73b422a14c1bbffb8cb3612fedfac8f8b5b0c982134b98154772d26a7'
+ identityraw=(ROOT/'job_identity.py').read_bytes(); assert hashlib.sha256(identityraw).hexdigest()=='aa6b12b2ac3d8b9a1774223278eb5d8c02edf2ecceb2b8118c120a3037020d13'
  identity=types.ModuleType('job_identity');exec(compile(identityraw,str(ROOT/'job_identity.py'),'exec'),identity.__dict__)
  actual=dataclasses.asdict(job)
  stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'); target=ROOT/f'precollect-status-{stamp}.json'
  with target.open('x') as f:json.dump(actual,f,default=str,indent=2);f.flush();os.fsync(f.fileno())
- identity.verify_job(actual,submission)
+ payload=(ROOT/'payload.cjs').read_bytes(); assert hashlib.sha256(payload).hexdigest()=='220ef3554ec1bf8951c22dc8e50b849feeeaaa5b0b0b06f664ea7b393cb1dde4'
+ identity.verify_job(actual,submission,json.loads(raw),payload)
  print(json.dumps({'path':str(target),'stage':str(getattr(job.status.stage,'value',job.status.stage)),'jobId':job.id}))
 if __name__=='__main__':main()

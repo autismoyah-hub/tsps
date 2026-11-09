@@ -1,5 +1,12 @@
 """Fail-closed comparison of one submitted and inspected provider job."""
-def verify_job(job, submission):
+import hashlib, json
+def verify_job(job, submission, plan, payload):
+    if submission['plan']!=plan:raise ValueError('PLAN')
+    rendered=payload.decode('utf-8').replace('__PLAN__',json.dumps(plan))
+    expected={key:plan[key] for key in ('name','image','flavor','timeout','attempts')}
+    expected.update(command=['node','-e',rendered],labels={'project':'tsps','source':plan['source'],'purpose':'overflow-qualification'})
+    if submission['request']!=expected:raise ValueError('REQUEST')
+    if submission.get('payloadSHA256')!=hashlib.sha256(rendered.encode()).hexdigest():raise ValueError('PAYLOAD')
     request=submission['request']; submitted=submission['job']; expected_id=submitted['id']
     if not expected_id or job.get('id')!=expected_id: raise ValueError('JOB_ID')
     if submission.get('namespace')!='Autismo-Yah':raise ValueError('NAMESPACE')
