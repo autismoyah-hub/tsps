@@ -163,8 +163,8 @@ const TOTAL_LIMIT = 192 * 1024 * 1024;
 // This bounds network/async work; synchronous fsync and bounded readback can exceed it.
 const DEADLINE_MS = 900000;
 const MANIFESTS = {
-  'a75d4ffce720d966dc1e03bd26ad93f02547c146': '6367f2d68b07a07ca3786056ceb0bf472b1daab471016ace6b44317657131bc7',
-  '491ef42aa5332aa8275b9d454626105ac5038fb8': '24a815a05054abae051d2fd5e754c61a928f590dcf2d9516d83c5ab1bb0b155b',
+  'c8e46107c504610a46366bd2ef1315e68c2e2fbd': '2204952cbd4300ec018e1a24564bba502fcb219bec5dca2f6bbd7e8c6f02b1db',
+  '8b018e0871b41e5758ffba49d6763c05fdb6d92c': 'dec09e0788d45a43d4039f8a161eb3329f83b66191d6dbdc77556e2795fb55fb',
 };
 // Caller must bind this job as the exclusive same-UID owner of ROOT until it exits.
 // Directory checks cannot prevent a hostile same-UID process from renaming an ancestor.
@@ -198,7 +198,7 @@ async function materialize(manifest, root, repository) {
       !MANIFESTS[manifest.source] || digest('sha256', Buffer.from(JSON.stringify(manifest) + '\n')) !== MANIFESTS[manifest.source] ||
       repository !== 'autismoyah-hub/tsps') throw Error('profile mismatch');
   const files = Object.keys(manifest.expectedInputs).sort();
-  if (files.length !== 5070 || JSON.stringify(files) !== JSON.stringify(Object.keys(manifest.sourceBlobs).sort())) throw Error('manifest membership');
+  if (files.length !== 5073 || JSON.stringify(files) !== JSON.stringify(Object.keys(manifest.sourceBlobs).sort())) throw Error('manifest membership');
   for (const file of files) {
     if (file.startsWith(PREFIX) || file.startsWith('/') || file.includes('\\') || file.includes(':') ||
         file.split('/').some(p => !p || p === '.' || p === '..') ||
@@ -273,17 +273,17 @@ return module.exports.materialize; })();
   if (process.platform !== 'linux') throw new Error('Linux qualification only');
   if (!/^[a-f0-9]{40}$/.test(PLAN.source)) throw new Error('Full immutable Git SHA required');
   const expected = {
-    'a75d4ffce720d966dc1e03bd26ad93f02547c146': ['shades-logout-before.json','6367f2d68b07a07ca3786056ceb0bf472b1daab471016ace6b44317657131bc7'],
-    '491ef42aa5332aa8275b9d454626105ac5038fb8': ['shades-logout-after.json','24a815a05054abae051d2fd5e754c61a928f590dcf2d9516d83c5ab1bb0b155b']
+    'c8e46107c504610a46366bd2ef1315e68c2e2fbd': ['shades-logout-before.json','2204952cbd4300ec018e1a24564bba502fcb219bec5dca2f6bbd7e8c6f02b1db'],
+    '8b018e0871b41e5758ffba49d6763c05fdb6d92c': ['shades-logout-after.json','dec09e0788d45a43d4039f8a161eb3329f83b66191d6dbdc77556e2795fb55fb']
   }[PLAN.source];
   if (!expected || PLAN.repository !== 'autismoyah-hub/tsps' || JSON.stringify(PLAN.tests) !== JSON.stringify(['shades-sanctity-logout.test.cjs'])) throw Error('case input mismatch');
-  const url = `https://raw.githubusercontent.com/autismoyah-hub/tsps/1b0e9786f404e31e84b62aeae0ac9e1db7e06c18/case-inputs/${expected[0]}`;
+  const url = `https://raw.githubusercontent.com/autismoyah-hub/tsps/0cb1c304c401c0b15e86b9983ec38a989ee394b6/case-inputs/${expected[0]}`;
   const response = await fetch(url,{redirect:'error',signal:AbortSignal.timeout(60000)});
   if (!response.ok || response.url !== url || !response.body) throw Error(`manifest HTTP ${response.status}`);
   let bytes = 0; const parts = [];
-  for await (const chunk of response.body) { bytes += chunk.length; if (bytes > 1099307) throw Error('manifest bound'); parts.push(Buffer.from(chunk)); }
+  for await (const chunk of response.body) { bytes += chunk.length; if (bytes > 1099887) throw Error('manifest bound'); parts.push(Buffer.from(chunk)); }
   const raw = Buffer.concat(parts);
-  if (bytes !== 1099307 || sha(raw) !== expected[1]) throw Error('manifest identity');
+  if (bytes !== 1099887 || sha(raw) !== expected[1]) throw Error('manifest identity');
   const inputManifest = JSON.parse(raw.toString('utf8'));
   const expectedInputs = inputManifest.expectedInputs;
   fs.mkdirSync(env.HOME); fs.mkdirSync(env.TMPDIR);

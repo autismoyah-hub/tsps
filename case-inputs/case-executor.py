@@ -5,13 +5,13 @@ from pathlib import Path
 
 OWNER='260b5681-1632-4418-adb3-1e0ce7a20952'
 REVIEWER='08acbe8b-e148-4484-8af8-3d7f03acd073'
-BASE='345a2fe6e568111aeb662eccef371f39151a7570'
+BASE='c8e46107c504610a46366bd2ef1315e68c2e2fbd'
 HERE=Path(__file__).resolve().parent
-REQUEST_SHA='b51d3c4d3b6a8233455e44422e6a950ce52b3c68ab79d57784b34ecb1f780a30'
-PREVIEW_SHA='dba461f6540178fda8c734d8762b74908d02c48a3abf05c705e7944ade1ab72e'
-PAYLOAD_SHA='0d52043babcd4543a3df4a1c29062c77d4d17fbab1db451b8282e13a1e6bde4a'
-PROGRAM_SHA='98bb0eef48d34aa5fec6c54850923af6a05d9d2b3b4cc8a0c7a4b8bfdd02b544'
-MANIFEST_SHA='ee9377437f3cc1f919c8ee1ace58338d1a09ec6e3f69cfc2870b84f58fd8b584'
+REQUEST_SHA='756ae0ae857dda5f3819814033f3fdfe29078062c3bd9e7793a4c45dbcc4a76e'
+PREVIEW_SHA='452d8a1e990ab6e20c187bf576f328b703fe45a5af5148c720e96bd2fd685778'
+PAYLOAD_SHA='f0bfb6bdfa3420aa05c9a2c1ef88c1aedbd981661b58cc7d5da90f4c604bcb10'
+PROGRAM_SHA='fb40b00af77ca56f43722e80b2c8aae8abc473fd7ee2963885430876102c5b62'
+MANIFEST_SHA='2204952cbd4300ec018e1a24564bba502fcb219bec5dca2f6bbd7e8c6f02b1db'
 FRAME_SHA='f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76'
 RETAIN_SHA='bdcb7f104ebfa8c26d2aa68c1dd31cf7780f12174eb92d3e98ffb928797a9071'
 ENCODING="json.dumps(request,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode('utf-8')"
@@ -162,11 +162,11 @@ def main():
         if retain.returncode!=0: raise RuntimeError('Native input retention failed; raw preserved; HOLD')
         print(json.dumps({'stage':'TERMINAL_RAW_RETAINED','jobId':job_id,'statusFile':f'status-{stamp}.json','logFile':f'logs-{stamp}.txt','closure':'process-group and provider evidence only; raw requires independent classification'})); return
     # Exact case preflight checks remote refs, schema inputs and all local Git rows.
-    preflight=subprocess.run(snapshot_command(HERE.parent/'case-caller.py','101232e78ab3020b7963bdd26dbeb193adfa2a96a004eb7a51e7ada8845cdac9','before','--review-subject'),capture_output=True,check=True,timeout=120)
+    preflight=subprocess.run(snapshot_command(HERE.parent/'case-caller.py','c93726ba520cf232a9f800a1106bb152dae0eeebeeeaf14fd71fa5f55bd369ad','before','--review-subject'),capture_output=True,check=True,timeout=120)
     preflight_json=json.loads(preflight.stdout)
     if preflight_json.get('stage')!='HELD_PREFLIGHT' or preflight_json['subject']['source']!=BASE: raise RuntimeError('Preflight mismatch')
     # Accepted auth004 wrapper provides HfApi; reconcile all project/source/name queries.
-    path=HERE.parent/'reconcile.py'; raw=exact(path,'b2e8d9593222dd823b2f4df3d84e43494fbda0d80b73686015d479825a78df77')
+    path=HERE.parent/'reconcile.py'; raw=exact(path,'3603ad09335e90bc7eb405a529dc236693138d893458588299e6a73eb9b19857')
     namespace={'__name__':'case_reconcile','__file__':str(path)};exec(compile(raw,str(path),'exec'),namespace)
     reconciliation=namespace['reconcile'](api,BASE,request['name'],HERE.parent)
     exclusive(HERE/'reconciliation.json',canon({'utc':utc(),'result':reconciliation}))
@@ -175,7 +175,7 @@ def main():
     exclusive(HERE/'review-receipt.json',review_raw)
     # Repeat the complete exact-input and current-main/PR check immediately before intent.
     last_fit_start=time.monotonic()
-    final_preflight=subprocess.run(snapshot_command(HERE.parent/'case-caller.py','101232e78ab3020b7963bdd26dbeb193adfa2a96a004eb7a51e7ada8845cdac9','before','--review-subject'),capture_output=True,check=True,timeout=120)
+    final_preflight=subprocess.run(snapshot_command(HERE.parent/'case-caller.py','c93726ba520cf232a9f800a1106bb152dae0eeebeeeaf14fd71fa5f55bd369ad','before','--review-subject'),capture_output=True,check=True,timeout=120)
     if json.loads(final_preflight.stdout)!=preflight_json: raise RuntimeError('Final preflight differs; HOLD')
     main=subprocess.check_output(['git','-C','/workspace/repo','rev-parse','origin/main'],text=True).strip()
     remote=subprocess.check_output(['git','-C','/workspace/repo','ls-remote','origin','refs/heads/main'],text=True).strip().split('\t')[0]
@@ -185,7 +185,7 @@ def main():
     if not isinstance(dispositions,list) or len(dispositions)!=len(preflight_json['subject']['openOverlap']): raise RuntimeError('Overlap dispositions missing')
     for item,overlap in zip(dispositions,preflight_json['subject']['openOverlap']):
         if not isinstance(item,dict) or set(item)!={'number','head','reason'} or item['number']!=overlap['number'] or item['head']!=overlap['head'] or not isinstance(item['reason'],str) or len(item['reason'].strip())<20: raise RuntimeError('Overlap disposition invalid')
-    fit_expected={'reviewer':REVIEWER,'verdict':'SCOPED_WRITERS_CLEAR','owner':OWNER,'base':'fb3df2e043b6bc0542af27822486d4d5e4e00455','currentMain':main,
+    fit_expected={'reviewer':REVIEWER,'verdict':'SCOPED_WRITERS_CLEAR','owner':OWNER,'base':'fad19aaea3d66a304618a37606c4affeeffbb57c','currentMain':main,
       'seams':preflight_json['subject']['seams'],'openOverlap':preflight_json['subject']['openOverlap'],'overlapDisposition':dispositions}
     if json.loads(fit_raw)!=fit_expected: raise RuntimeError('Scoped writer disposition mismatch')
     fit_transcript=subprocess.run(['cuttle','--json','sessions','read',REVIEWER,'--turns','200'],capture_output=True,check=True,timeout=45).stdout

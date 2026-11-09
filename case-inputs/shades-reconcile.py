@@ -3,8 +3,8 @@ from pathlib import Path
 import hashlib,json
 TERMINAL={'COMPLETED','ERROR','CANCELED','CANCELLED','DELETED'}
 KNOWN=TERMINAL|{'SCHEDULING','RUNNING','PAUSED','PENDING'}
-BEFORE='345a2fe6e568111aeb662eccef371f39151a7570'
-AFTER='4afdd3b9dcb0187ffc629452929fbcdb918bf4cd'
+BEFORE='c8e46107c504610a46366bd2ef1315e68c2e2fbd'
+AFTER='8b018e0871b41e5758ffba49d6763c05fdb6d92c'
 def rows(api, labels):
     result={}
     for job in api.list_jobs(namespace='Autismo-Yah',labels=labels):

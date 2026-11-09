@@ -3,9 +3,9 @@ import argparse,hashlib,json,subprocess,urllib.request
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent
 REPO=Path('/workspace/repo')
-CASES={'before':('a75d4ffce720d966dc1e03bd26ad93f02547c146','6367f2d68b07a07ca3786056ceb0bf472b1daab471016ace6b44317657131bc7'),'after':('491ef42aa5332aa8275b9d454626105ac5038fb8','24a815a05054abae051d2fd5e754c61a928f590dcf2d9516d83c5ab1bb0b155b')}
+CASES={'before':('c8e46107c504610a46366bd2ef1315e68c2e2fbd','2204952cbd4300ec018e1a24564bba502fcb219bec5dca2f6bbd7e8c6f02b1db'),'after':('8b018e0871b41e5758ffba49d6763c05fdb6d92c','dec09e0788d45a43d4039f8a161eb3329f83b66191d6dbdc77556e2795fb55fb')}
 PREFIX='server/plugins/skills/crafting/'
-BASE='7ee0dcfd457b4731766b6539868646e910e5f2fc'  # Full SHA is bound below.
+BASE='fad19aaea3d66a304618a37606c4affeeffbb57c'  # Full SHA is bound below.
 SEAMS=['server/src/main/typescript/elvarg/','server/plugins/quests/QuestRuntime.js',
  'server/plugins/quests/quests/ShadesOfMortton.Quest.js','server/tests/shades-sanctity-logout.test.cjs',
  'server/target.txt','server/package.json','server/yarn.lock','server/tsconfig.json','server/scripts/ensure-cache.ts']
@@ -51,13 +51,13 @@ def open_overlaps(read=command_json):
  return overlaps
 def preflight(which):
  source,mhash=CASES[which];folder=ROOT/which; raw=(folder/'manifest.json').read_bytes()
- if sha(raw)!=mhash or len(raw)!=1099307:raise RuntimeError('manifest identity')
+ if sha(raw)!=mhash or len(raw)!=1099887:raise RuntimeError('manifest identity')
  manifest=json.loads(raw);plan=json.loads((folder/'pilot.json').read_bytes())
  subprocess.run(['git','-C',str(REPO),'fetch','origin','main'],check=True,stdout=subprocess.DEVNULL)
- if subprocess.run(['git','-C',str(REPO),'diff','--quiet','7ee0dcfd457b4731766b6539868646e910e5f2fc','origin/main','--',*SEAMS],check=False).returncode != 0:raise RuntimeError('connected current source changed; HOLD')
+ if subprocess.run(['git','-C',str(REPO),'diff','--quiet','fad19aaea3d66a304618a37606c4affeeffbb57c','origin/main','--',*SEAMS],check=False).returncode != 0:raise RuntimeError('connected current source changed; HOLD')
  overlaps=open_overlaps()
  if manifest['source']!=source or manifest['excludedPrefix']!=PREFIX or manifest['excludedCount']!=11 or plan['source']!=source or plan['executionHold'] is not True or plan['timeout']!=1800 or plan['attempts']!=1:raise RuntimeError('profile mismatch')
- url=f'https://raw.githubusercontent.com/autismoyah-hub/tsps/1b0e9786f404e31e84b62aeae0ac9e1db7e06c18/case-inputs/shades-logout-{which}.json'
+ url=f'https://raw.githubusercontent.com/autismoyah-hub/tsps/0cb1c304c401c0b15e86b9983ec38a989ee394b6/case-inputs/shades-logout-{which}.json'
  with urllib.request.urlopen(url,timeout=60) as response:
   if response.status!=200 or response.geturl()!=url:raise RuntimeError('manifest HTTP mismatch')
   remote=response.read(len(raw)+1)
@@ -70,7 +70,7 @@ def preflight(which):
   if mode not in ('100644','100755') or kind!='blob' or name in rows:raise RuntimeError('tree row')
   if name.startswith(PREFIX):excluded+=1;continue
   rows[name]=oid
- if excluded!=11 or rows!=manifest['sourceBlobs'] or set(rows)!=set(manifest['expectedInputs']) or len(rows)!=5070:raise RuntimeError('tree membership mismatch')
+ if excluded!=11 or rows!=manifest['sourceBlobs'] or set(rows)!=set(manifest['expectedInputs']) or len(rows)!=5073:raise RuntimeError('tree membership mismatch')
  proc=subprocess.Popen(['git','-C',str(REPO),'cat-file','--batch'],stdin=subprocess.PIPE,stdout=subprocess.PIPE)
  for name,oid in sorted(rows.items()):
   proc.stdin.write((oid+'\n').encode());proc.stdin.flush();header=proc.stdout.readline().decode().split()
@@ -83,7 +83,7 @@ def preflight(which):
   if proc.stdout.read(1)!=b'\n' or h.hexdigest()!=manifest['expectedInputs'][name]:raise RuntimeError('blob hash')
  proc.stdin.close()
  if proc.wait()!=0:raise RuntimeError('cat-file failure')
- ref='refs/heads/cuttle-shades-7ee-'+('test' if which=='before' else 'fix')+'-260b'
+ ref='refs/heads/cuttle-shades-242-'+('test' if which=='before' else 'fix')+'-260b'
  observed=subprocess.check_output(['git','ls-remote','https://github.com/autismoyah-hub/tsps.git',ref],text=True).strip()
  if observed!=source+'\t'+ref:raise RuntimeError('remote ref mismatch')
  return {'source':source,'manifestSHA256':mhash,'excludedPrefix':PREFIX,'excludedCount':excluded,'includedCount':len(rows),'ref':ref,'seams':SEAMS,'openOverlap':overlaps}
