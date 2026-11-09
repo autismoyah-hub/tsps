@@ -9,8 +9,8 @@ const TOTAL_LIMIT = 192 * 1024 * 1024;
 // This bounds network/async work; synchronous fsync and bounded readback can exceed it.
 const DEADLINE_MS = 900000;
 const MANIFESTS = {
-  '345a2fe6e568111aeb662eccef371f39151a7570': 'ee9377437f3cc1f919c8ee1ace58338d1a09ec6e3f69cfc2870b84f58fd8b584',
-  '4afdd3b9dcb0187ffc629452929fbcdb918bf4cd': 'cd544feba243ad66454431fa1fae6d33a7721cd52d5417cbd8fa04d8c51c1212',
+  'a75d4ffce720d966dc1e03bd26ad93f02547c146': '6367f2d68b07a07ca3786056ceb0bf472b1daab471016ace6b44317657131bc7',
+  '491ef42aa5332aa8275b9d454626105ac5038fb8': '24a815a05054abae051d2fd5e754c61a928f590dcf2d9516d83c5ab1bb0b155b',
 };
 // Caller must bind this job as the exclusive same-UID owner of ROOT until it exits.
 // Directory checks cannot prevent a hostile same-UID process from renaming an ancestor.
@@ -44,7 +44,7 @@ async function materialize(manifest, root, repository) {
       !MANIFESTS[manifest.source] || digest('sha256', Buffer.from(JSON.stringify(manifest) + '\n')) !== MANIFESTS[manifest.source] ||
       repository !== 'autismoyah-hub/tsps') throw Error('profile mismatch');
   const files = Object.keys(manifest.expectedInputs).sort();
-  if (files.length !== 5067 || JSON.stringify(files) !== JSON.stringify(Object.keys(manifest.sourceBlobs).sort())) throw Error('manifest membership');
+  if (files.length !== 5070 || JSON.stringify(files) !== JSON.stringify(Object.keys(manifest.sourceBlobs).sort())) throw Error('manifest membership');
   for (const file of files) {
     if (file.startsWith(PREFIX) || file.startsWith('/') || file.includes('\\') || file.includes(':') ||
         file.split('/').some(p => !p || p === '.' || p === '..') ||
