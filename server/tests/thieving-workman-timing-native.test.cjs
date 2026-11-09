@@ -77,7 +77,7 @@ test('workman outcome follows the captured delay, while an ordinary pickpocket r
   const workDisplayXp = workman.getSkillManager().getExperience(core.Skill.THIEVING);
   const manXp = man.getSkillManager().getExperience(core.Skill.THIEVING);
   const work = admitted(t, workman, core.NpcIdentifiers.DIGSITE_WORKMAN_2, 'Digsite workman', 'Steal-from');
-  admitted(t, man, core.NpcIdentifiers.MAN, 'Man', 'Pickpocket');
+  admitted(t, man, core.NpcIdentifiers.MAN_5, 'Man', 'Pickpocket');
   assert.ok(work.messages.includes("You attempt to pick the workman's pocket..."));
   assert.equal(workman.getInventory().getItems().filter(i => i?.getId() > 0).length, 0);
   tick();
@@ -96,7 +96,7 @@ test('workman outcome follows the captured delay, while an ordinary pickpocket r
   assert.equal(rawTenths(workman) - workXp, 104, 'reward only once');
   assert.equal(underlevel.getSkillManager().getExperience(core.Skill.THIEVING), core.SkillManager.getExperienceForLevel(1));
   // Four ticks have passed; this checks a subsequent ordinary action, not a minimum cadence.
-  admitted(t, workman, core.NpcIdentifiers.MAN, 'Man', 'Pickpocket');
+  admitted(t, workman, core.NpcIdentifiers.MAN_5, 'Man', 'Pickpocket');
   tick();
   assert.equal(man.getSkillManager().getExperience(core.Skill.THIEVING) - manXp, 8);
   assert.equal(rawTenths(workman) - workXp, 184);
