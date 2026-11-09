@@ -13,6 +13,26 @@ const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const fileHash = file => sha(fs.readFileSync(file));
 const failureEvent = error => ({event:'native-qualification-result', source:PLAN.source, status:error.outcome ?? 'SETUP_FAILURE', error:'Failure details suppressed; inspect scoped event statuses', resources:resources()});
 const cacheSummary = (target,cacheId,files) => ({event:'actual-cache-manifest',target,cacheId,fileCount:files.length});
+const reportFailure = error => emit(failureEvent(error));
+function validateCacheRows(rows,metadataHash,expected,target) {
+  const actual=Object.fromEntries(rows.map(row=>[`caches/${target}/${row.file}`,row]));
+  actual['caches/caches.json']={sha256:metadataHash};
+  for (const [file,hash] of Object.entries(expected)) if (actual[file]?.sha256!==hash) throw new Error('Cache not equivalent');
+  if (Object.keys(actual).length!==Object.keys(expected).length) throw new Error('Cache file count differs');
+  return actual;
+}
+async function enumerateCache(cacheRoot) {
+  const rows=[];
+  for (const relative of fs.readdirSync(cacheRoot,{recursive:true}).sort()) {
+    const full=path.join(cacheRoot,relative), stat=fs.lstatSync(full);
+    if (stat.isSymbolicLink()) throw new Error('Unexpected cache symlink');
+    if (!stat.isFile()) continue;
+    const digest=crypto.createHash('sha256');
+    for await (const chunk of fs.createReadStream(full)) digest.update(chunk);
+    rows.push({file:relative,bytes:stat.size,sha256:digest.digest('hex')});
+  }
+  return rows;
+}
 function treeManifest(directory) {
   return fs.readdirSync(directory, {recursive: true}).sort().flatMap(relative => {
     const full = path.join(directory, relative);
@@ -369,23 +389,9 @@ async function resolveInputManifest(plan, fetcher = fetch) {
   const cacheInfo = JSON.parse(fs.readFileSync(path.join(server, 'caches', target, 'info.json'), 'utf8'));
   if (cacheInfo.id !== PLAN.cacheId) throw new Error(`Cache ID mismatch: ${cacheInfo.id}`);
   const cacheRoot = path.join(server, 'caches', target);
-  const cacheManifest = [];
-  for (const relative of fs.readdirSync(cacheRoot, {recursive: true}).sort()) {
-    const full = path.join(cacheRoot, relative);
-    const stat = fs.lstatSync(full);
-    if (stat.isSymbolicLink()) throw new Error('Unexpected cache symlink');
-    if (!stat.isFile()) continue;
-    const digest = crypto.createHash('sha256');
-    for await (const chunk of fs.createReadStream(full)) digest.update(chunk);
-    cacheManifest.push({file: relative, bytes: stat.size, sha256: digest.digest('hex')});
-  }
+  const cacheManifest=await enumerateCache(cacheRoot);
   if (PLAN.expectedCacheFiles) {
-    const actual = Object.fromEntries(cacheManifest.map(row => [`caches/${target}/${row.file}`, row]));
-    actual['caches/caches.json'] = {sha256: fileHash(path.join(server, 'caches/caches.json'))};
-    for (const [file, expected] of Object.entries(PLAN.expectedCacheFiles)) {
-      if (actual[file]?.sha256 !== expected) throw new Error(`Cache not equivalent: ${file}`);
-    }
-    if (Object.keys(actual).length !== Object.keys(PLAN.expectedCacheFiles).length) throw new Error('Cache file count differs from retained input');
+    const actual=validateCacheRows(cacheManifest,fileHash(path.join(server,'caches/caches.json')),PLAN.expectedCacheFiles,target);
     emit(cacheSummary(target,cacheInfo.id,cacheManifest));
     emit({event: 'cache-equivalence', matchedFiles: Object.keys(actual).length, status: 'PASS',
       reference: 'author OpenRS2 2757 static archive inventory; no Windows executable equivalence claim'});
@@ -424,6 +430,6 @@ async function resolveInputManifest(plan, fetcher = fetch) {
   // Retain the original nonzero/unknown outcome. Post-failure identity checks
   // neither catch a target assertion as success nor initiate another payload.
   captureSeals(true);
-  emit(failureEvent(error));
+  reportFailure(error);
   process.exitCode = error.exitCode ?? 70;
 });
