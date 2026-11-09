@@ -85,22 +85,28 @@ def require_bindings(ctx, caller, helper, subject):
     expected = {'caller':'callerSHA256','helper':'childSHA256','payload':'payloadSHA256',
                 'pilot':'pilotSHA256','adapter':'adapterSHA256','python':'sdkPythonSHA256'}
     for field,key in expected.items(): snapshot(ctx[field],subject[key])
-    if Path(caller.__file__).resolve() != Path(ctx['caller']).resolve() or Path(helper.__file__).resolve() != Path(ctx['helper']).resolve():
+    if (Path(caller.__file__).resolve() != Path(ctx['caller']).resolve() or Path(helper.__file__).resolve() != Path(ctx['helper']).resolve()
+        or getattr(caller,'__BELONA_SNAPSHOT_SHA__',None) != subject['callerSHA256']
+        or getattr(helper,'__BELONA_SNAPSHOT_SHA__',None) != subject['childSHA256']):
         raise ValueError('loaded helper identity mismatch')
     if Path(ctx['plan']).resolve().parent != Path(ctx['caseDir']).resolve(): raise ValueError('plan/case directory mismatch')
     if sha(Path(ctx['plan']).read_bytes()) != subject['selectedPlanSHA256']: raise ValueError('plan hash mismatch')
 
 
-def guarded_submit(api, caller, prestart_module, helper, ctx):
+def guarded_submit(api, ctx):
     """No retry; prestart, complete duplicate scans, prestart, then durable intent."""
     unlocked(ctx['subject'])
-    require_bindings(ctx,caller,helper,ctx['subject'])
+    subject=ctx['subject']
+    caller=module_snapshot(ctx['caller'],subject['callerSHA256'],'belona_verified_caller')
+    helper=module_snapshot(ctx['helper'],subject['childSHA256'],'belona_verified_helper')
+    prestart_module=module_snapshot(ctx['prestartSource'],subject['prestartSHA256'],'belona_verified_prestart')
+    require_bindings(ctx,caller,helper,subject)
     selected_raw=Path(ctx['plan']).read_bytes();payload_raw=Path(ctx['payload']).read_bytes()
     choice=json.loads(Path(ctx['choice']).read_bytes()); subject=ctx['subject']
     plan,request,program_sha,request_sha=literal_and_choice(caller,selected_raw,payload_raw,choice,subject)
     if api.whoami().get('name') != NAMESPACE: raise ValueError('provider namespace mismatch')
     snapshot(ctx['prestartSource'],subject['prestartSHA256'])
-    if Path(prestart_module.__file__).resolve() != Path(ctx['prestartSource']).resolve(): raise ValueError('prestart module mismatch')
+    if Path(prestart_module.__file__).resolve() != Path(ctx['prestartSource']).resolve() or getattr(prestart_module,'__BELONA_SNAPSHOT_SHA__',None) != subject['prestartSHA256']: raise ValueError('prestart module mismatch')
     prestart_args=ctx['prestartArgs']
     if prestart_args.get('subject') != subject: raise ValueError('prestart subject mismatch')
     first=prestart_module.nonsecret_prestart(**prestart_args)
@@ -125,15 +131,18 @@ def guarded_submit(api, caller, prestart_module, helper, ctx):
     return {'jobId':job['id'],'requestSHA256':request_sha,'programSHA256':program_sha,
             'pilotStdoutSHA256':sha(result.stdout),'stage':'AWAIT_INSPECTION_SAME_COLLECTOR'}
 
-def guarded_status_collect(api,caller,prestart_module,ctx):
+def guarded_status_collect(api,ctx):
     """Inspect first, persist raw identity, require terminal, then preserve partial logs."""
     unlocked(ctx['subject'])
-    snapshot(ctx['caller'],ctx['subject']['callerSHA256']); snapshot(ctx['payload'],ctx['subject']['payloadSHA256'])
+    subject=ctx['subject']
+    caller=module_snapshot(ctx['caller'],subject['callerSHA256'],'belona_verified_caller')
+    prestart_module=module_snapshot(ctx['prestartSource'],subject['prestartSHA256'],'belona_verified_prestart')
+    snapshot(ctx['caller'],subject['callerSHA256']); snapshot(ctx['payload'],subject['payloadSHA256'])
     snapshot(ctx['prestartSource'],ctx['subject']['prestartSHA256'])
-    if Path(prestart_module.__file__).resolve() != Path(ctx['prestartSource']).resolve(): raise ValueError('prestart module mismatch')
+    if Path(prestart_module.__file__).resolve() != Path(ctx['prestartSource']).resolve() or getattr(prestart_module,'__BELONA_SNAPSHOT_SHA__',None) != subject['prestartSHA256']: raise ValueError('prestart module mismatch')
     if ctx['prestartArgs'].get('subject') != ctx['subject']: raise ValueError('prestart subject mismatch')
     prestart_module.nonsecret_prestart(**ctx['prestartArgs'])
-    if Path(caller.__file__).resolve() != Path(ctx['caller']).resolve(): raise ValueError('loaded caller mismatch')
+    if Path(caller.__file__).resolve() != Path(ctx['caller']).resolve() or getattr(caller,'__BELONA_SNAPSHOT_SHA__',None) != subject['callerSHA256']: raise ValueError('loaded caller mismatch')
     if Path(ctx['plan']).resolve().parent != Path(ctx['caseDir']).resolve(): raise ValueError('plan/case directory mismatch')
     selected_raw=Path(ctx['plan']).read_bytes();payload_raw=Path(ctx['payload']).read_bytes()
     choice=json.loads(Path(ctx['choice']).read_bytes())

@@ -1,5 +1,6 @@
 """Synthetic no-provider controls for held live boundary draft."""
 import importlib.util
+import os
 from pathlib import Path
 from unittest.mock import Mock
 root=Path(__file__).resolve().parent
@@ -11,7 +12,7 @@ def rejected(fn,exception=Exception):
  try: fn()
  except exception: return
  raise AssertionError('expected refusal')
-api=Mock();rejected(lambda:m.guarded_submit(api,None,None,None,{'subject':{}}),RuntimeError);rejected(lambda:m.guarded_status_collect(api,None,None,{'subject':{}}),RuntimeError)
+api=Mock();rejected(lambda:m.guarded_submit(api,{'subject':{}}),RuntimeError);rejected(lambda:m.guarded_status_collect(api,{'subject':{}}),RuntimeError)
 api.assert_not_called();api.list_jobs.assert_not_called();api.inspect_job.assert_not_called();api.fetch_job_logs.assert_not_called()
 print('hard hold blocks all live boundaries before provider methods')
 source='247ed387d6a631a00440904a00aa8e1a2e44a962';name='belona-before-held'
@@ -41,3 +42,24 @@ with tempfile.TemporaryDirectory() as temp:
     rejected(lambda:loaded.verify_live_snapshot({'liveSHA256':digest}),ValueError)
     rejected(lambda:m.module_snapshot(file,digest,'changed_live'),ValueError)
 print('verified snapshot accepted; missing subject, wrong provenance and mutable source refused')
+
+# module_snapshot compiles the checked source bytes, not a pre-existing module
+# that happens to claim the same __file__.
+with tempfile.TemporaryDirectory() as temp:
+    file=Path(temp)/'module.py'; file.write_text('VALUE = "reviewed"\n')
+    digest=hashlib.sha256(file.read_bytes()).hexdigest()
+    old=m.module_snapshot(file,digest,'old_module')
+    old.VALUE='stale-or-modified'
+    fresh=m.module_snapshot(file,digest,'fresh_module')
+    assert fresh.VALUE=='reviewed' and fresh is not old
+    file.write_text('VALUE = "changed"\n')
+    rejected(lambda:m.module_snapshot(file,digest,'changed_module'),ValueError)
+print('fresh module comes from pinned bytes; altered in-memory module not reused')
+for name, file in [('caller',root/'belona-caller.py'),('prestart',root/'belona-prestart.py'),
+                   ('helper',Path(os.environ['BELONA_CHILD_HELPER']))]:
+    raw=file.read_bytes();digest=hashlib.sha256(raw).hexdigest()
+    stale=m.module_snapshot(file,digest,'stale_'+name);stale.injected_unreviewed_marker=True
+    fresh=m.module_snapshot(file,digest,'fresh_'+name)
+    assert fresh is not stale and not hasattr(fresh,'injected_unreviewed_marker')
+    assert fresh.__BELONA_SNAPSHOT_SHA__ == digest
+print('caller, prestart and helper are independently reloaded from verified snapshots')
