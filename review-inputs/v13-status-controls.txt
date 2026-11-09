@@ -1,0 +1,9 @@
+reviewer running True
+reviewer waiting_for_input True
+reviewer done False
+reviewer error False
+owner running True
+owner waiting_for_input False
+parent running True
+parent waiting_for_input False
+reviewer None False
