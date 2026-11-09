@@ -5,7 +5,7 @@ import argparse, datetime, hashlib, json, os, re, subprocess, sys, urllib.reques
 ROOT=Path(__file__).resolve().parent
 CASE=ROOT/'candidate'
 OWNER='d427048d-86cc-4ad2-b3cc-bebade89e457'
-REVIEWER='3f20dcbd-b1d9-4e4a-bc47-a3b02d6ee6bc'
+REVIEWER='ad80bdbf-4243-4fee-9928-88fd6836505c'
 SOURCE='47a1234bd1650b8f7b3697398993bce75c556fe7'
 PLAN_SHA='28c17b69fceaddba1ce7b1617fd926193cc79142238a2f294ced56586d312f09'
 PINS={'plan.json':PLAN_SHA,'payload.cjs':'0212ed48a9da3a1b78bd4a65c3e4b25399e77a4ba0cee089e33847f89a03c126','pilot.py':'2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200','package.json':'ac9cb75167ec66ac1c1f4345d65bda679a20ac1b9a85aba45dd1919dcd18ac78','frame_transport.py':'f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76'}
@@ -16,7 +16,7 @@ def bound(path,digest):
 def git(*args):return subprocess.check_output(['git','-C',str(ROOT.parents[1]),*args])
 def open_exclusive(path, data):
  with path.open('x',encoding='utf8') as f:
-  json.dump(data,f,indent=2);f.write('\n');f.flush();os.fsync(f.fileno())
+  json.dump(data,f,indent=2,default=str);f.write('\n');f.flush();os.fsync(f.fileno())
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*args,**kwargs):raise ValueError('redirect refused')
@@ -55,7 +55,7 @@ def current_review(plan):
  return {'subject':subject,'captureSHA256':sha(raw)}
 
 def check():
- assert os.environ.get('CCC_SESSION_ID')==OWNER
+ assert os.environ.get('CCC_SESSION_ID')==OWNER and re.fullmatch('[a-f0-9-]{36}',REVIEWER) and REVIEWER!=OWNER
  for name,digest in PINS.items():bound(CASE/name,digest)
  plan=json.loads((CASE/'plan.json').read_bytes());assert plan['source']==SOURCE and plan['timeout']==1800 and plan['attempts']==1 and not plan.get('executionHold')
  assert plan['image']=='node@sha256:b04ce4ae4e95b522112c2e5c52f781471a5cbc3b594527bcddedee9bc48c03a0' and plan['flavor']=='cpu-upgrade'
@@ -77,9 +77,9 @@ def main():
  api=HfApi();identity=api.whoami()['name'];assert identity=='Autismo-Yah'
  matches=[]
  for job in api.list_jobs(namespace=identity,labels={'project':'tsps'}):
-  name=getattr(job,'name',None);labels=getattr(job,'labels',None)
-  assert isinstance(name,str) and isinstance(labels,dict),'Unclassifiable provider listing'
-  if name==plan['name'] or (labels.get('source')==SOURCE and labels.get('purpose')=='overflow-qualification'):matches.append(str(getattr(job,'id','')))
+  labels=getattr(job,'labels',None);job_id=getattr(job,'id',None)
+  assert isinstance(job_id,str) and job_id and isinstance(labels,dict),'Unclassifiable provider listing'
+  if labels.get('source')==SOURCE:matches.append(job_id)
  assert not matches,'Matching prior provider job: reconcile without submission'
  # Recheck all local and remote state immediately after provider reconciliation.
  again,source2,review2=check();assert again==plan and source2==source and review2==review
@@ -89,10 +89,12 @@ def main():
  intent={'owner':OWNER,'collector':OWNER,'source':SOURCE,'planSHA256':PLAN_SHA,'payloadSHA256':PINS['payload.cjs'],'requestSHA256':sha(json.dumps(request,sort_keys=True,separators=(',',':')).encode()),'review':review,'sourceReadback':source,'createdUTC':datetime.datetime.now(datetime.timezone.utc).isoformat(),'state':'SUBMISSION_STARTING_RECONCILIATION_REQUIRED','noReplay':True}
  open_exclusive(ROOT/'submission-intent.json',intent)
  # Direct call once: intent is durable before the network mutation. Any error is ambiguous.
- import dataclasses
  job=api.run_job(namespace=identity,**request)
- result=dataclasses.asdict(job);assert result.get('id')
+ job_id=getattr(job,'id',None);assert isinstance(job_id,str) and job_id
+ open_exclusive(ROOT/'submitted-job-id.json',{'jobId':job_id,'namespace':identity,'owner':OWNER,'planSHA256':PLAN_SHA,'noReplay':True})
+ returned_command=getattr(job,'command',None)
+ result={'id':job_id,'command':returned_command}
  open_exclusive(CASE/'submission.json',{'stage':'SUBMITTED','namespace':identity,'request':request,'plan':plan,'job':result,'payloadSHA256':sha(request['command'][-1].encode())})
- assert result.get('command')==request['command'],'Returned command mismatch; retain same-job custody'
- print(json.dumps({'stage':'SUBMITTED','jobId':result['id'],'source':SOURCE,'collector':OWNER,'noReplay':True}))
+ assert returned_command==request['command'],'Returned command mismatch; retain same-job custody'
+ print(json.dumps({'stage':'SUBMITTED','jobId':job_id,'source':SOURCE,'collector':OWNER,'noReplay':True}))
 if __name__=='__main__':main()
