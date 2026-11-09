@@ -1,9 +1,0 @@
-{
-  "about": "Wyrmscraig (https://oldschool.runescape.wiki/w/Wyrmscraig), as captured: the open-access quest state, the cave under Ardeaglais, and the Mad Angel. See docs/wyrmscraig.md.",
-  "cave": {
-    "anim": 2796,
-    "sound": { "id": 2454, "loops": 3, "delay": 4 },
-    "entrance": { "object": "Cave", "option": "Enter", "id": 62219, "to": [2564, 8630, 0], "face": [2565, 8630] },
-    "exit": { "object": "Cave", "option": "Exit", "id": 62220, "to": [2530, 2205, 0], "face": [2530, 2204] }
-  }
-}
