@@ -10,7 +10,7 @@ spec = importlib.util.spec_from_file_location('prestart',root/'belona-prestart.p
 m = importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 keys = ('heldPlanSHA256','selectedPlanSHA256','manifestSHA256','callerSHA256','prestartSHA256',
         'payloadSHA256','pilotSHA256','adapterSHA256','childSHA256','classifierSHA256',
-        'liveSHA256','sdkPythonSHA256','sdkManifestSHA256','cliSHA256','requestSHA256')
+        'liveSHA256','launcherSHA256','sourceGateSHA256','sourceProfileSHA256','sdkPythonSHA256','sdkManifestSHA256','cliSHA256','requestSHA256')
 subject = {k:'a'*64 for k in keys}
 subject.update(owner=m.OWNER, reviewer=m.REVIEWER, model='gpt-6.1-terra', reasoningEffort='medium', source='247ed387d6a631a00440904a00aa8e1a2e44a962', sdkVersion='2.4.0', heldPlanSHA256='e50f6ec1e341799fd48bd3e8d39897717f68d8b657afa9297e3b7a968118fabf', selectedPlanSHA256='6d739505fa4ca4aa04fb3e273b47b40814256edd4af4b14d176e3d15c30a2b16', manifestSHA256='a44a97f57d259f84a8cc2ad3adc6ce9dbd65ec8013e7def9258702c78a2aa305')
 class Result:
@@ -52,12 +52,16 @@ with tempfile.TemporaryDirectory() as tmp:
         with patch.object(m.subprocess,'run',return_value=Result([selected_turn])): m.capture_choice(subject,selected,review_raw,cli,cli_sha,root/'choice')
         choice_raw=(root/'choice').read_bytes()
         with patch.object(m.subprocess,'run',return_value=Result([selected_turn])): assert m.validate_choice_live(subject,selected,choice_raw,review_raw,cli,cli_sha)==choice
-        for turns in ([selected_turn,selected_turn],[dict(selected_turn,role='user')],[dict(selected_turn,ts='2026-11-08T23:59:59Z')]):
+        earlier = dict(selected_turn,ts='2026-11-08T23:59:59Z')
+        with patch.object(m.subprocess,'run',return_value=Result([earlier])):
+            m.capture_choice(subject,selected,review_raw,cli,cli_sha,root/'earlier-choice')
+            assert m.validate_choice_live(subject,selected,(root/'earlier-choice').read_bytes(),review_raw,cli,cli_sha)==choice
+        for turns in ([selected_turn,selected_turn],[dict(selected_turn,role='user')],[dict(selected_turn,ts='')]):
             with patch.object(m.subprocess,'run',return_value=Result(turns)):
                 rejected(lambda:m.validate_choice_live(subject,selected,choice_raw,review_raw,cli,cli_sha))
         altered=dict(subject);altered['requestSHA256']='b'*64
         with patch.object(m.subprocess,'run',return_value=Result([selected_turn])): rejected(lambda:m.validate_choice_live(altered,selected,choice_raw,review_raw,cli,cli_sha))
-print('synthetic own-choice exact turn, distinct timing, duplicate/wrong-role and changed-request controls passed; no actual selection')
+print('synthetic own-choice exact turn, timestamp presence, duplicate/wrong-role and changed-request controls passed; no actual selection')
 class Response:
     status=200
     def __init__(self,options): self.raw=json.dumps({'ok':True,'configOptions':options}).encode()

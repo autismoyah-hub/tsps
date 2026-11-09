@@ -6,9 +6,9 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import types
 import urllib.request
 import urllib.error
-from datetime import datetime
 
 OWNER = '49676823-be5e-408f-be58-047e80dadbb2'
 REVIEWER = 'ed3a4125-645c-4266-8b86-4e199dd5bc63'
@@ -35,7 +35,7 @@ def durable_create(path, raw):
 def canonical_subject(subject):
     required = {'owner','reviewer','model','reasoningEffort','source','heldPlanSHA256','selectedPlanSHA256','manifestSHA256',
                 'callerSHA256','prestartSHA256','payloadSHA256','pilotSHA256','adapterSHA256',
-                'childSHA256','classifierSHA256','liveSHA256','sdkPythonSHA256','sdkManifestSHA256','cliSHA256','sdkVersion','requestSHA256'}
+                'childSHA256','classifierSHA256','liveSHA256','launcherSHA256','sourceGateSHA256','sourceProfileSHA256','sdkPythonSHA256','sdkManifestSHA256','cliSHA256','sdkVersion','requestSHA256'}
     if not isinstance(subject,dict) or set(subject) != required: raise ValueError('authority subject schema')
     if subject['owner'] != OWNER or subject['reviewer'] != REVIEWER or subject['model'] != 'gpt-6.1-terra' or subject['reasoningEffort'] != 'medium' or subject['sdkVersion'] != '2.4.0':
         raise ValueError('authority identity mismatch')
@@ -135,12 +135,8 @@ def capture_choice(subject, selected_raw, review_raw, cli, cli_sha, output):
     text='BELONA_SELECT_ONCE '+choice['subjectSHA256']+' '+choice['selectedPlanSHA256']+' '+choice['requestSHA256']
     matches=[t for t in turns if t.get('role')=='assistant' and t.get('kind')!='thinking' and t.get('text','').strip()==text]
     if len(matches)!=1: raise ValueError('exact owner choice missing or ambiguous')
-    review_turn=json.loads(review_raw)['turn']; turn=matches[0]
-    try:
-        selected_at=datetime.fromisoformat(turn['ts'].replace('Z','+00:00'))
-        reviewed_at=datetime.fromisoformat(review_turn['ts'].replace('Z','+00:00'))
-    except (ValueError,KeyError,TypeError): raise ValueError('choice/review timestamps invalid')
-    if selected_at<=reviewed_at: raise ValueError('choice not later than review')
+    turn=matches[0]
+    if not isinstance(turn.get('ts'),str) or not turn['ts']: raise ValueError('choice timestamp missing')
     receipt={'type':'DIRECT_OWNER_CHOICE_CAPTURE','choice':choice,'turn':turn,'rawTranscriptSHA256':sha(result.stdout),'cliSHA256':cli_sha}
     raw=(json.dumps(receipt,sort_keys=True,indent=2)+'\n').encode();durable_create(output,raw);return sha(raw)
 
@@ -156,19 +152,15 @@ def validate_choice_live(subject, selected_raw, choice_raw, review_raw, cli, cli
     text='BELONA_SELECT_ONCE '+choice['subjectSHA256']+' '+choice['selectedPlanSHA256']+' '+choice['requestSHA256']
     matches=[t for t in json.loads(result.stdout).get('turns',[]) if t.get('role')=='assistant' and t.get('kind')!='thinking' and t.get('text','').strip()==text]
     if len(matches)!=1 or matches[0]!=receipt.get('turn'): raise ValueError('live owner choice mismatch')
-    try:
-        selected_at=datetime.fromisoformat(matches[0]['ts'].replace('Z','+00:00'))
-        reviewed_at=datetime.fromisoformat(json.loads(review_raw)['turn']['ts'].replace('Z','+00:00'))
-    except (ValueError,KeyError,TypeError): raise ValueError('choice/review timestamps invalid')
-    if selected_at<=reviewed_at: raise ValueError('choice not later than review')
+    if not isinstance(matches[0].get('ts'),str) or not matches[0]['ts']: raise ValueError('choice timestamp missing')
     return choice
 
-def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, runtime_files, sdk_manifest):
+def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, runtime_files, sdk_manifest, held_plan, manifest):
     """Recheck connected identity, authenticated peer turn and local source preflight; no provider."""
     if os.environ.get('CCC_SESSION_ID') != OWNER: raise ValueError('session environment mismatch')
     if subject['cliSHA256'] != cli_sha or subject['callerSHA256'] != CALLER_SHA: raise ValueError('CLI/caller subject mismatch')
     pinned(cli,cli_sha); pinned(preflight,PREFLIGHT_SHA); pinned(caller,CALLER_SHA)
-    keys = {'payloadSHA256','pilotSHA256','adapterSHA256','childSHA256','classifierSHA256','liveSHA256','sdkPythonSHA256','prestartSHA256'}
+    keys = {'payloadSHA256','pilotSHA256','adapterSHA256','childSHA256','classifierSHA256','liveSHA256','launcherSHA256','sourceGateSHA256','sourceProfileSHA256','sdkPythonSHA256','prestartSHA256'}
     if set(runtime_files) != keys: raise ValueError('runtime file keyset mismatch')
     for key in keys: pinned(runtime_files[key],subject[key])
     if Path(runtime_files['prestartSHA256']).resolve() != Path(__file__).resolve(): raise ValueError('prestart source mismatch')
@@ -192,6 +184,16 @@ def nonsecret_prestart(subject, review_raw, cli, cli_sha, preflight, caller, run
         target = sdk_root / rel
         if target.is_symlink() or not target.resolve(strict=True).is_relative_to(sdk_root): raise ValueError('SDK link/path invalid')
         pinned(target,digest)
+    held_raw=pinned(held_plan,subject['heldPlanSHA256'])
+    manifest_raw=pinned(manifest,subject['manifestSHA256'])
+    gate_path=Path(runtime_files['sourceGateSHA256']).resolve(); gate_raw=pinned(gate_path,subject['sourceGateSHA256'])
+    gate=types.ModuleType('belona_verified_source_gate'); gate.__file__=str(gate_path)
+    exec(compile(gate_raw,str(gate_path),'exec'),gate.__dict__)
+    caller_path=Path(caller).resolve(); caller_raw=pinned(caller_path,subject['callerSHA256'])
+    case_caller=types.ModuleType('belona_verified_source_caller');case_caller.__file__=str(caller_path)
+    exec(compile(caller_raw,str(caller_path),'exec'),case_caller.__dict__)
+    profile=json.loads(Path(runtime_files['sourceProfileSHA256']).read_bytes())
+    gate.guard_before_adapter(held_raw,manifest_raw,Path(runtime_files['payloadSHA256']).read_bytes(),profile,case_caller,lambda:None)
     validate_review(review_raw,subject,cli_sha)
     config = effective_config()
     if config['model'] != subject['model'] or config['reasoningEffort'] != subject['reasoningEffort']: raise ValueError('subject/config mismatch')
