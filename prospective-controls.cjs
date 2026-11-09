@@ -10,6 +10,6 @@ try {
  fs.writeFileSync(path.join(root,'server','tokenLikeSecret_123456789.txt'),'x');
  let failed=false;try{ctx.check(root,{}, {},false)}catch(e){failed=true;assert.equal(e.message,'Scoped source keyset differs')};assert(failed);
  const ev=events.at(-1);assert.equal(ev.addedCount,106);assert.equal(ev.pathsEmitted,false);assert(!JSON.stringify(ev).includes('PrivatePlayer'));assert(!JSON.stringify(ev).includes('tokenLikeSecret'));
- fs.symlinkSync('/tmp',path.join(root,'server','PlayerSecret'));try{ctx.check(root,{}, {},false);assert.fail('symlink accepted')}catch(e){assert.match(e.message,/Scoped symlink pathSHA256=/);assert(!e.message.includes('PlayerSecret'))}
- console.log('source-only keyset counts/digests, 106 private-like names and symlink path redaction passed');
+ fs.symlinkSync('/tmp',path.join(root,'server','PlayerSecret'));try{ctx.check(root,{}, {},false);assert.fail('symlink accepted')}catch(e){assert.equal(e.message,'Scoped symlink');assert(!e.message.includes('PlayerSecret'))}
+ console.log('source-only keyset counts, 106 private-like names and symlink path redaction passed');
 } finally {fs.rmSync(root,{recursive:true,force:true})}

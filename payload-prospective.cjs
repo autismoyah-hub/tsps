@@ -25,12 +25,12 @@ function scopedManifest(directory, excludeOutputs) {
   function walk(relative) {
     if (excludeOutputs && excluded.has(relative)) return;
     const full=path.join(directory,relative), stat=fs.lstatSync(full);
-    if (stat.isSymbolicLink()) throw new Error(`Scoped symlink pathSHA256=${sha(relative)}`);
+    if (stat.isSymbolicLink()) throw new Error('Scoped symlink');
     if (stat.isDirectory()) {
       for (const name of fs.readdirSync(full).sort()) walk(`${relative}/${name}`);
     } else if (stat.isFile()) {
       result[relative]={sha256:fileHash(full),mode:(stat.mode & 0o111) ? '100755' : '100644'};
-    } else throw new Error(`Scoped non-file pathSHA256=${sha(relative)}`);
+    } else throw new Error('Scoped non-file');
   }
   walk('server');
   for (const file of ['.yarnrc.yml','package.json','yarn.lock','scripts/run-with-env.mjs']) {
@@ -44,10 +44,10 @@ function verifyScope(directory, inputs, modes, excludeOutputs) {
   if (JSON.stringify(actualKeys)!==JSON.stringify(keys)) {
     const actualSet=new Set(actualKeys), expectedSet=new Set(keys);
     const added=actualKeys.filter(k=>!expectedSet.has(k)), missing=keys.filter(k=>!actualSet.has(k));
-    emit({event:'source-keyset-mismatch',addedCount:added.length,missingCount:missing.length,addedSetSHA256:sha(JSON.stringify(added)),missingSetSHA256:sha(JSON.stringify(missing)),pathsEmitted:false});
+    emit({event:'source-keyset-mismatch',addedCount:added.length,missingCount:missing.length,pathsEmitted:false});
     throw new Error('Scoped source keyset differs');
   }
-  for (const file of keys) if (actual[file].sha256!==inputs[file] || actual[file].mode!==modes[file]) throw new Error(`Scoped source differs pathSHA256=${sha(file)}`);
+  for (const file of keys) if (actual[file].sha256!==inputs[file] || actual[file].mode!==modes[file]) throw new Error('Scoped source differs');
   return sha(JSON.stringify(Object.keys(actual).sort().map(file => [file,actual[file]])));
 }
 
@@ -75,13 +75,13 @@ function captureSeals(afterFailure) {
     postSourceHash = sha(JSON.stringify(postSource));
     sourceStatus = postSourceHash === sourceManifestHash ? 'PASS' : 'MISMATCH';
     if (sourceStatus !== 'PASS') errors.push('Tracked source content changed');
-  } catch (error) { sourceStatus = 'MISMATCH'; errors.push(`Source seal errorSHA256=${sha(String(error.message))}`); }
+  } catch (error) { sourceStatus = 'MISMATCH'; errors.push('Source seal failed'); }
   if (distManifest) {
     try {
       postDistHash = sha(JSON.stringify(treeManifest(path.join(server, 'dist'))));
       distStatus = postDistHash === sha(JSON.stringify(distManifest)) ? 'PASS' : 'MISMATCH';
       if (distStatus !== 'PASS') errors.push('Compiled output changed');
-    } catch (error) { distStatus = 'MISMATCH'; errors.push(`Dist seal errorSHA256=${sha(String(error.message))}`); }
+    } catch (error) { distStatus = 'MISMATCH'; errors.push('Dist seal failed'); }
   }
   if (cacheFiles) {
     try {
@@ -104,7 +104,7 @@ function captureSeals(afterFailure) {
         if (actual[file] !== cacheFiles[file]) cacheMismatches.push(file);
       }
       cacheStatus = cacheMismatches.length ? 'MISMATCH' : 'PASS';
-    } catch (error) { cacheStatus = 'MISMATCH'; errors.push(`Cache seal errorSHA256=${sha(String(error.message))}`); }
+    } catch (error) { cacheStatus = 'MISMATCH'; errors.push('Cache seal failed'); }
     if (cacheMismatches.length) errors.push('Cache membership or content changed');
   }
   const complete = sourceStatus !== 'UNAVAILABLE' && distStatus !== 'UNAVAILABLE' && cacheStatus !== 'UNAVAILABLE';
@@ -113,7 +113,7 @@ function captureSeals(afterFailure) {
     postSourceHash, originalSourceFiles: originalSource.length,
     distManifestHash: distManifest ? sha(JSON.stringify(distManifest)) : null,
     postDistHash, postCacheFilesChecked: cacheFiles ? Object.keys(cacheFiles).length : 0,
-    sourceStatus, distStatus, cacheStatus, complete, cacheMismatchCount:cacheMismatches.length, cacheMismatchSetSHA256:sha(JSON.stringify(cacheMismatches)), errors, sealsUnchanged,
+    sourceStatus, distStatus, cacheStatus, complete, cacheMismatchCount:cacheMismatches.length, errors, sealsUnchanged,
     limitation: 'Content identities only; no process or sandbox-wide closure inference'});
   return sealsUnchanged;
 }
@@ -377,7 +377,6 @@ async function resolveInputManifest(plan, fetcher = fetch) {
     for await (const chunk of fs.createReadStream(full)) digest.update(chunk);
     cacheManifest.push({file: relative, bytes: stat.size, sha256: digest.digest('hex')});
   }
-  emit({event: 'actual-cache-manifest', target, cacheId: cacheInfo.id, files: cacheManifest});
   if (PLAN.expectedCacheFiles) {
     const actual = Object.fromEntries(cacheManifest.map(row => [`caches/${target}/${row.file}`, row]));
     actual['caches/caches.json'] = {sha256: fileHash(path.join(server, 'caches/caches.json'))};
@@ -385,6 +384,7 @@ async function resolveInputManifest(plan, fetcher = fetch) {
       if (actual[file]?.sha256 !== expected) throw new Error(`Cache not equivalent: ${file}`);
     }
     if (Object.keys(actual).length !== Object.keys(PLAN.expectedCacheFiles).length) throw new Error('Cache file count differs from retained input');
+    emit({event: 'actual-cache-manifest', target, cacheId: cacheInfo.id, files: cacheManifest});
     emit({event: 'cache-equivalence', matchedFiles: Object.keys(actual).length, status: 'PASS',
       reference: 'author OpenRS2 2757 static archive inventory; no Windows executable equivalence claim'});
     sealState.cacheFiles = Object.fromEntries(Object.entries(actual).map(([file, row]) => [file, row.sha256]));
@@ -423,6 +423,6 @@ async function resolveInputManifest(plan, fetcher = fetch) {
   // neither catch a target assertion as success nor initiate another payload.
   captureSeals(true);
   emit({event: 'native-qualification-result', source: PLAN.source,
-    status: error.outcome ?? 'SETUP_FAILURE', error: error.message, resources: resources()});
+    status: error.outcome ?? 'SETUP_FAILURE', error: 'Failure details suppressed; inspect scoped event statuses', resources: resources()});
   process.exitCode = error.exitCode ?? 70;
 });
