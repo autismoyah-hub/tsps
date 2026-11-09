@@ -1,0 +1,151 @@
+diff --git a/server/src/main/typescript/elvarg/game/entity/impl/object/ObjectManager.ts b/server/src/main/typescript/elvarg/game/entity/impl/object/ObjectManager.ts
+index 27b7e20d1..0e2a603d0 100644
+--- a/server/src/main/typescript/elvarg/game/entity/impl/object/ObjectManager.ts
++++ b/server/src/main/typescript/elvarg/game/entity/impl/object/ObjectManager.ts
+@@ -251,6 +251,28 @@ export class ObjectManager {
+             ObjectManager.perform(object, OperationType.SPAWN);
+         }
+     }
++    /**
++     * Swaps one loc for another in the same tile and shape slot (a lever pulled down and back up),
++     * as live sends it: one loc_add_change to the players who see the tile, no removal first. The
++     * outgoing loc leaves MapObjects (its clipping and later lookups) as a despawn would, and a
++     * player it was shown to who is away now gets it put right when they come back.
++     */
++    public static replaceInPlace(outgoing: GameObject, incoming: GameObject): void {
++        ObjectManager.deregister(outgoing, false);
++        MapObjects.remove(outgoing);
++        if (!outgoing.getPrivateArea()) {
++            const location = outgoing.getLocation();
++            World.forEachNetworkPlayer((player) => {
++                if (outgoing.getOwner() && outgoing.getOwner() !== player) return;
++                if (this.viewedArea(player) != null) return;
++                if (!player.getSession().isTileInScene(location.getX(), location.getY(), location.getZ())) {
++                    this.recordMissedRemoval(player, outgoing);
++                }
++            });
++        }
++        ObjectManager.register(incoming, true);
++    }
++
+     /** True for a map object, or a copy of one (Doors rebuild theirs from a snapshot). */
+     private static standsForMapObject(object: GameObject): boolean {
+         if (object.isBaseMap()) {
+diff --git a/server/src/main/typescript/elvarg/game/model/container/shop/ShopManager.ts b/server/src/main/typescript/elvarg/game/model/container/shop/ShopManager.ts
+index 711611741..f9a7b5b63 100644
+--- a/server/src/main/typescript/elvarg/game/model/container/shop/ShopManager.ts
++++ b/server/src/main/typescript/elvarg/game/model/container/shop/ShopManager.ts
+@@ -933,9 +933,9 @@ export class ShopManager {
+ 
+     /**
+      * Shops that sell for a currency other than coins and still buy items for it: the TzHaar shops (tokkul) and
+-     * Tai Bwo Wannai's cooperative (trading sticks). Reward shops (minigame points, tickets, marks) buy nothing back,
+-     * unless their plugin says the shop does ("shop:buys-back" { shopId, shopName, currency, itemId, buys }, Dusuri's
+-     * stardust buyback).
++     * Tai Bwo Wannai's cooperative (trading sticks). Other reward shops (minigame points, tickets) buy nothing back,
++     * unless the Wiki gives the shop a buy percentage (`specialistBuyback`) or their plugin says the shop does
++     * ("shop:buys-back" { shopId, shopName, currency, itemId, buys }).
+      */
+     private static readonly BUYBACK_CURRENCIES = new Set(["COINS", "TOKKUL", "TRADING STICKS", "BLOOD_MONEY"]);
+ 
+@@ -948,7 +948,7 @@ export class ShopManager {
+         if (!this.BUYBACK_CURRENCIES.has(String(shop.definition.getCurrency()).toUpperCase())) {
+             const request = {
+                 shopId: shop.definition.getId(), shopName: shop.definition.getName(),
+-                currency: shop.definition.getCurrency(), itemId, buys: false,
++                currency: shop.definition.getCurrency(), itemId, buys: this.specialistBuyback(shop) > 0,
+             };
+             PluginManager.emitCustomEvent("shop:buys-back", request);
+             if (request.buys !== true) return false;
+@@ -956,6 +956,18 @@ export class ShopManager {
+         return this.isGeneralStore(shop) || shop.originalAmounts.has(itemId);
+     }
+ 
++    /**
++     * The Wiki's "Buys at" (per mille) for a shop paying in its own reward currency, 0 where it has none. Wiki
++     * StoreTableHead: Grace's Graceful Clothing, Prospector Percy's Nugget Shop, the Mining Guild Mineral Exchange
++     * and Dusuri's Star Shop buy their stock back at 80% (a graceful hood bought for 35 marks sells for 28); Petrified
++     * Pete's Ore Shop buys at 0%. The TzHaar and Tai Bwo Wannai shops keep the standard refund.
++     */
++    private static specialistBuyback(shop: RuntimeShop): number {
++        if (this.BUYBACK_CURRENCIES.has(String(shop.definition.getCurrency()).toUpperCase())) return 0;
++        const multiplier = shop.definition.getSalesPolicy().sellMultiplier;
++        return Number.isSafeInteger(multiplier) && Number(multiplier) > 0 ? Number(multiplier) : 0;
++    }
++
+     /**
+      * Why a sale is refused: a shop that buys nothing, "You cannot sell to this shop." (rsprox 227/01840 Temple
+      * Supplies, 234/03299 Mairin's Market, both on Value and Sell); one that buys only some items, "You can't sell this
+@@ -989,9 +1001,13 @@ export class ShopManager {
+     /** `player` (when known) and `currency` let content refuse a sale for one player (a league relic's shops that buy nothing for gold). */
+     private static canSell(shop: RuntimeShop, item: Item, player: any = null): boolean {
+         if (!item || item.isUntradeable()) return false;
++        // Wiki (Amylase pack): untradeable stock "can only be sold back to Grace's Graceful Clothing". A shop that
++        // buys its stock back for its own currency takes the items it lists, though no other shop would.
++        const ownStock = this.specialistBuyback(shop) > 0
++            && shop.originalAmounts.has(ItemDefinition.forId(item.getId()).unNote());
+         const request = {
+             player, shopId: shop.definition.getId(), shopName: shop.definition.getName(), currency: shop.definition.getCurrency(),
+-            itemId: item.getId(), sellable: item.isSellable(),
++            itemId: item.getId(), sellable: ownStock || item.isSellable(),
+         };
+         PluginManager.emitCustomEvent("shop:can-sell", request);
+         return request.sellable === true;
+@@ -1027,7 +1043,10 @@ export class ShopManager {
+ 
+     private static sellPrice(shop: RuntimeShop, definition: ItemDefinition, player: any = null, additionalStock = 0): number {
+         const buyPrice = this.itemPrice(shop, definition);
+-        let price = buyPrice > 1 ? Math.floor(buyPrice * this.SALES_TAX) : buyPrice;
++        const buyback = this.specialistBuyback(shop);
++        let price = buyback > 0
++            ? Math.floor(buyPrice * buyback / 1000)
++            : buyPrice > 1 ? Math.floor(buyPrice * this.SALES_TAX) : buyPrice;
+         const policy = shop.definition.getSalesPolicy();
+         if (this.stockPriced(shop)) {
+             const overstock = Math.max(0, (shop.stock.get(definition.getId()) ?? 0)
+diff --git a/server/src/main/typescript/elvarg/game/task/impl/TimedObjectReplacementTask.ts b/server/src/main/typescript/elvarg/game/task/impl/TimedObjectReplacementTask.ts
+index 57b9732b5..2d8199a20 100644
+--- a/server/src/main/typescript/elvarg/game/task/impl/TimedObjectReplacementTask.ts
++++ b/server/src/main/typescript/elvarg/game/task/impl/TimedObjectReplacementTask.ts
+@@ -9,8 +9,12 @@ export class TimedObjectReplacementTask extends Task {
+     private progressTick = 0;
+     private sameTile = false;
+ 
+-    constructor(original: GameObject, temp: GameObject, ticks: number) {
+-        super();
++    /**
++     * `ticks` after the swap, the original comes back. Not `immediate`, the swap happens on the
++     * tick after the task is submitted; `immediate`, on submission itself.
++     */
++    constructor(original: GameObject, temp: GameObject, ticks: number, immediate = false) {
++        super(1, immediate);
+         this.original = original;
+         this.temp = temp;
+         this.ticks = ticks;
+@@ -19,15 +23,22 @@ export class TimedObjectReplacementTask extends Task {
+ 
+     execute() {
+         if (this.progressTick === 0) {
+-            ObjectManager.deregister(this.original, !this.sameTile);
+-            ObjectManager.register(this.temp, true);
++            this.swap(this.original, this.temp);
+         } else if (this.progressTick >= this.ticks) {
+-            ObjectManager.deregister(this.temp, !this.sameTile);
+-            ObjectManager.register(this.original, true);
++            this.swap(this.temp, this.original);
+             this.stop();
+         }
+         this.progressTick++;
+     }
++    private swap(outgoing: GameObject, incoming: GameObject): void {
++        if (this.sameTile) {
++            ObjectManager.replaceInPlace(outgoing, incoming);
++        } else {
++            ObjectManager.deregister(outgoing, true);
++            ObjectManager.register(incoming, true);
++        }
++    }
++
+     onExecute() {
+ 
+     }

@@ -1,0 +1,16 @@
+owner wrong/duplicate turn controls PASS
+peer wrong/duplicate turn controls PASS
+mc wrong/duplicate turn controls PASS
+post-scan refresh failure before intent/pilot PASS; retained diagnostic
+changed-ref actual prestart refusal before receipt PASS
+changed-diff actual prestart refusal before receipt PASS
+route redirects/denial/size/final URL controls PASS
+literal reconstructed request wrong image/command/name and job identity controls PASS
+collector command control PASS
+collector docker_image control PASS
+collector labels control PASS
+collector owner control PASS
+collector name control PASS
+collector partial control PASS
+collector positive control PASS
+altered status entry with matching caller hash refused before adapter PASS

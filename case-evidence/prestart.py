@@ -59,9 +59,9 @@ def main():
  connected=['server/plugins/skills/Woodcutting.plugin.js','server/plugins/skills/woodcutting/','server/plugins/skills/SkillActions.js','server/plugins/skills/farming/Redwood.Farming.js','server/tests/woodcutting-emote-interruption.test.cjs','server/plugins/items/Food.plugin.js','server/plugins/items/ConsumableEffects.js','server/plugins/items/data/food.json','server/src/main/typescript/elvarg/game/task/','server/src/main/typescript/elvarg/game/entity/impl/object/','server/src/main/typescript/elvarg/game/entity/impl/player/Player.ts','server/src/main/typescript/elvarg/game/model/container/','server/src/main/typescript/elvarg/game/model/movement/MovementQueue.ts','server/src/main/typescript/elvarg/game/content/skill/SkillManager.ts','server/src/main/typescript/elvarg/game/World.ts','server/src/main/typescript/elvarg/plugins/PluginManager.ts','server/src/main/typescript/elvarg/net/packet/impl/ItemActionPacketListener.ts','server/src/main/typescript/elvarg/net/NetworkBuilder.ts']
  # A changed connected path requires a fresh finite review, never silent acceptance.
  differences=subprocess.check_output(['git','diff','--name-only','587d6a8923cf7ce1f329e7e96d754463534498a3',upstream,'--',*connected],cwd=REPO,text=True).splitlines()
- assert set(differences)=={'server/src/main/typescript/elvarg/game/entity/impl/object/ObjectManager.ts','server/src/main/typescript/elvarg/game/task/impl/TimedObjectReplacementTask.ts'}, differences
+ assert set(differences)=={'server/src/main/typescript/elvarg/game/entity/impl/object/ObjectManager.ts','server/src/main/typescript/elvarg/game/model/container/shop/ShopManager.ts','server/src/main/typescript/elvarg/game/task/impl/TimedObjectReplacementTask.ts'}, differences
  connected_diff=subprocess.check_output(['git','diff','587d6a8923cf7ce1f329e7e96d754463534498a3',upstream,'--',*connected],cwd=REPO)
- assert sha(connected_diff)=='ea6952fa8c4ecd465bc04667bd7d9457784fadbebccc47e8afc0b7b1cbd75498'
+ assert sha(connected_diff)=='b5f60a95b4c4d1d066a87dbf255b16ea0fcf49133e1f31127ffc4d5fed8acc4c'
  spec=plan['expectedInputsRef']; url=f"https://raw.githubusercontent.com/{spec['repository']}/{spec['artifactCommit']}/{spec['path']}"
  raw=read_exact_route(urllib.request.Request(url),spec['bytes'])
  assert len(raw)==spec['bytes'] and sha(raw)==spec['sha256']

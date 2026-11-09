@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix='wc-control-') as td:
  plan={'source':guard.SOURCE,'name':guard.NAME,'attempts':1,'timeout':1800,'expectedInputsRef':{'sha256':'a'*64}}
  pp=root/'pilot.json';pp.write_text(json.dumps(plan));sel={'owner':owner,'action':'SELECT_ONCE','attempts':1,'source':guard.SOURCE,'planSHA256':h(pp)};sp=root/'selection.json';sp.write_text(json.dumps(sel))
  files={n:h(root/n) for n in ('authority.py','prestart.py','pilot.py')}
- subject={'owner':owner,'source':guard.SOURCE,'planSHA256':h(pp),'manifestSHA256':'a'*64,'connectedDiffSHA256':'ea6952fa8c4ecd465bc04667bd7d9457784fadbebccc47e8afc0b7b1cbd75498','files':files,'authAdapterSHA256':'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326','authHelperSHA256':'00ff45d75be1eae3bc8f04995cf8b8bcbe2bc5adc28c1162b843cfe88c87024f9'}
+ subject={'owner':owner,'source':guard.SOURCE,'planSHA256':h(pp),'manifestSHA256':'a'*64,'connectedDiffSHA256':'b5f60a95b4c4d1d066a87dbf255b16ea0fcf49133e1f31127ffc4d5fed8acc4c','files':files,'authAdapterSHA256':'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326','authHelperSHA256':'00ff45d75be1eae3bc8f04995cf8b8bcbe2bc5adc28c1162b843cfe88c87024f9'}
  identity=json.loads((HERE.parent/'mc-authority-value.json').read_bytes()); assert hashlib.sha256(auth.canonical(identity)).hexdigest()=='4e3369be85775623307b4d51186e2fb5bfa996899ed2046b3b61aba859574cd2'
  review={'reviewer':reviewer,'verdict':'EXACT_INPUT_PROFILE_GO','subject':subject}; values={'peer':(reviewer,review),'owner':(owner,sel),'mc':(mc,identity)}
  pre={'source':guard.SOURCE,'owner':owner,'planSHA256':h(pp),'selectionSHA256':h(sp),'createdUTC':__import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat(),'files':files,'authoritySubject':subject,'identityValue':identity,'forkRef':'fixture','connectedDifferences':[],'model':'gpt-6.1-terra','effort':'medium','reviewPath':str(root/'review.json'),'reviewSHA256':'b'*64,'identityPath':str(root/'identity.json'),'identitySHA256':'c'*64}
@@ -64,7 +64,7 @@ with tempfile.TemporaryDirectory(prefix='wc-prestart-control-') as td:
    if cmd[:2]==['git','ls-remote']:return ('0'*40+' '+prestart.REF+'\n') if scenario=='changed-ref' else (guard.SOURCE+' '+prestart.REF+'\n')
    if cmd[:3]==['git','cat-file','-t']:return 'commit\n'
    if cmd[:3]==['git','rev-parse','origin/main']:return '1'*40+'\n'
-   if cmd[:3]==['git','diff','--name-only']:return 'server/src/main/typescript/elvarg/game/entity/impl/object/ObjectManager.ts\nserver/src/main/typescript/elvarg/game/task/impl/TimedObjectReplacementTask.ts\n'
+   if cmd[:3]==['git','diff','--name-only']:return 'server/src/main/typescript/elvarg/game/entity/impl/object/ObjectManager.ts\nserver/src/main/typescript/elvarg/game/model/container/shop/ShopManager.ts\nserver/src/main/typescript/elvarg/game/task/impl/TimedObjectReplacementTask.ts\n'
    if cmd[:2]==['git','diff']:return b'unreviewed connected hunk'
    raise AssertionError(cmd)
   argv=['prestart.py','--plan',str(pp),'--selection',str(sp),'--output',str(output),'--review',str(review),'--review-sha256',h(review),'--identity',str(ident),'--identity-sha256',h(ident)]

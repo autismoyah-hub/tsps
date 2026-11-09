@@ -27,7 +27,7 @@ def main():
     for path,sha in pre['files'].items(): assert digest(ROOT/path)==sha
     parserraw=(ROOT/'authority.py').read_bytes(); assert hashlib.sha256(parserraw).hexdigest()=='218404c595589d13c18658b64c13eb924d146544d1ed40fbfc221cae96002e63'
     parser=types.ModuleType('case_authority');exec(compile(parserraw,str(ROOT/'authority.py'),'exec'),parser.__dict__)
-    subject={'owner':OWNER,'source':SOURCE,'planSHA256':a.plan_sha256,'manifestSHA256':plan['expectedInputsRef']['sha256'],'connectedDiffSHA256':'ea6952fa8c4ecd465bc04667bd7d9457784fadbebccc47e8afc0b7b1cbd75498','files':pre['files'],'authAdapterSHA256':'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326','authHelperSHA256':'00ff45d75be1eae3bc8f04995cf8b8bcbe2bc5adc28c1162b843cfe88c87024f9'}
+    subject={'owner':OWNER,'source':SOURCE,'planSHA256':a.plan_sha256,'manifestSHA256':plan['expectedInputsRef']['sha256'],'connectedDiffSHA256':'b5f60a95b4c4d1d066a87dbf255b16ea0fcf49133e1f31127ffc4d5fed8acc4c','files':pre['files'],'authAdapterSHA256':'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326','authHelperSHA256':'00ff45d75be1eae3bc8f04995cf8b8bcbe2bc5adc28c1162b843cfe88c87024f9'}
     assert pre['authoritySubject']==subject and hashlib.sha256(parser.canonical(pre['identityValue'])).hexdigest()=='4e3369be85775623307b4d51186e2fb5bfa996899ed2046b3b61aba859574cd2'
     for label,session,expected in [('peer','ed3a4125-645c-4266-8b86-4e199dd5bc63',{'reviewer':'ed3a4125-645c-4266-8b86-4e199dd5bc63','verdict':'EXACT_INPUT_PROFILE_GO','subject':subject}),('owner',OWNER,sel),('mc','eaae9ca0-2f2b-4c05-85cd-c3e70178aeac',pre['identityValue'])]:
         transcript=subprocess.check_output(['cuttle','--json','sessions','read',session,'--turns','200'])
