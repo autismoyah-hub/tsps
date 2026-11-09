@@ -32,6 +32,14 @@ def classify(label, raw):
     inputs = one('inputs')
     if inputs.get('source') != SOURCES[label]:
         raise ValueError('source mismatch')
+    manifest = one('input-manifest-reference')
+    expected_manifest = ('a44a97f57d259f84a8cc2ad3adc6ce9dbd65ec8013e7def9258702c78a2aa305' if label == 'before'
+                         else 'f2797ca4c62cd14e4c039f766d17163d49f4a28ed1548e3af87616aafa4e7206')
+    if manifest.get('source') != SOURCES[label] or manifest.get('sha256') != expected_manifest or manifest.get('count') != (4912 if label == 'before' else 4913):
+        raise ValueError('input manifest mismatch')
+    fixture = one('test-input')
+    if fixture.get('file') != 'mineral-exchange.test.cjs' or fixture.get('sha256') != '097147415fa106195d213aece3cc00b4d2a76982a13931aaa8c8d42dba4e70ed':
+        raise ValueError('fixture mismatch')
     cache = one('cache-equivalence')
     if cache.get('status') != 'PASS':
         raise ValueError('cache equivalence not established')
