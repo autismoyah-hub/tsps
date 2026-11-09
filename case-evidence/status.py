@@ -11,7 +11,7 @@ def main():
  assert intent['owner']==os.environ.get('CCC_SESSION_ID')=='a57b09b1-fcf5-4aea-b25e-7f19910af934' and intent['planSHA256']==a.plan_sha256
  assert submission['plan']==json.loads(raw) and submission['namespace']=='Autismo-Yah' and submission['job']['id']
  api=HfApi();assert api.whoami()['name']=='Autismo-Yah'; job=api.inspect_job(job_id=submission['job']['id'],namespace='Autismo-Yah')
- identityraw=(ROOT/'job_identity.py').read_bytes(); assert hashlib.sha256(identityraw).hexdigest()=='a782983f86a573f01b2e1a019c2b5ab29b1ad82fa1ff369f342f2571c224482f'
+ identityraw=(ROOT/'job_identity.py').read_bytes(); assert hashlib.sha256(identityraw).hexdigest()=='42688ea73b422a14c1bbffb8cb3612fedfac8f8b5b0c982134b98154772d26a7'
  identity=types.ModuleType('job_identity');exec(compile(identityraw,str(ROOT/'job_identity.py'),'exec'),identity.__dict__)
  actual=dataclasses.asdict(job)
  stamp=datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'); target=ROOT/f'precollect-status-{stamp}.json'

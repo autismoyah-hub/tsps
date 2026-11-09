@@ -10,6 +10,7 @@ def verify_job(job, submission):
         if obj.get('command')!=request['command']:raise ValueError(label+'_COMMAND')
         if obj.get('labels')!=request['labels']:raise ValueError(label+'_LABELS')
         if (obj.get('owner') or {}).get('name')!='Autismo-Yah':raise ValueError(label+'_OWNER')
+    if request.get('name')!=submission['plan']['name']:raise ValueError('REQUEST_NAME')
     if request['labels'].get('source')!=submission['plan']['source']:raise ValueError('SOURCE')
     if not any(submission['plan']['name'] in str(part) for part in request['command']):raise ValueError('NAME')
     return expected_id

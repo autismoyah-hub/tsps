@@ -11,3 +11,5 @@ collector wrong docker_image refused before logs PASS
 collector wrong labels refused before logs PASS
 collector wrong owner refused before logs PASS
 collector matching terminal reaches logs PASS
+collector wrong request name refused before API PASS
+collector partial raw stream retained on error PASS
