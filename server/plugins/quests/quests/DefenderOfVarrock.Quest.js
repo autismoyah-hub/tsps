@@ -45,7 +45,11 @@
  * Gaps / approximations:
  * - Elias does not physically follow the player: varbit 9658 is held at 1 while
  *   the trail is followed, and his "while following" conversation is played from
- *   his Jolly Boar spawn;
+ *   his Jolly Boar spawn. After unlocking the trapdoor, explicit dismissal from
+ *   the key-holder conversation is remembered until he is fetched at the inn;
+ *   the tracking-area boundary and earlier dismissal remain unimplemented.
+ *   Keeping that explicit dismissal across relog is a recovery policy, not a
+ *   captured account of retail relog behaviour;
  * - the red mist is captured object 50690, spawned where an armoured zombie
  *   dies; using an empty bottle on it consumes the object and fills the bottle.
  *   The captured base bottle spawn at 3537,4572 is a normal reusable ground
@@ -133,6 +137,7 @@ module.exports = function registerDefenderOfVarrockQuest(api) {
 
   const BITS_ATTRIBUTE = "quest.defender_of_varrock.bits";
   const KEY_ATTRIBUTE = "quest.defender_of_varrock.key";
+  const ELIAS_DISMISSED_ATTRIBUTE = "defender-of-varrock:elias-dismissed";
   const DESCENDANT_ATTRIBUTE = "quest.defender_of_varrock.descendant";
   const SCHEMA_ATTRIBUTE = "defender-of-varrock:schema";
   const SCHEMA_VERSION = 3;
@@ -339,6 +344,9 @@ module.exports = function registerDefenderOfVarrockQuest(api) {
   const V_STARTED_AGAIN = "organised-zombies-talking-to-elias-white-after-starting-the-quest-talking-to-elias-again";
   const V_FOLLOWING = "organised-zombies-talking-to-elias-white-while-he-is-following-the-player";
   const V_FOLLOWING_KEY = "organised-zombies-talking-to-elias-white-while-he-is-following-the-player-after-finding-the-key";
+  const V_ELIAS_ABSENT = "organised-zombies-attempting-to-enter-the-trapdoor-without-elias";
+  const V_ELIAS_REJOIN = "organised-zombies-talking-to-elias-white-in-the-jolly-boar-inn-after-opening-the-trapdoor";
+  const V_OPEN_TRAPDOOR = "organised-zombies-entering-the-open-trapdoor-while-elias-is-following";
   const V_TRAPDOOR = "organised-zombies-opening-the-trapdoor";
   const V_BASE_ENTER = "the-infamous-necromancer-upon-entering-zemouregal-s-base";
   const V_BASE_ELIAS = "the-infamous-necromancer-talking-to-elias-after-entering-the-dungeon";
@@ -872,6 +880,7 @@ module.exports = function registerDefenderOfVarrockQuest(api) {
     if (stage < STAGE_STARTED) return V_START;
     if (stage < STAGE_FOLLOWING) return V_STARTED_AGAIN;
     if (stage < STAGE_ENTERED_BASE) {
+      if (trapdoorUnlocked(player) && Number(player.getAttribute(ELIAS_DISMISSED_ATTRIBUTE)) === 1) return V_ELIAS_REJOIN;
       return keyHolder(player) === "" ? V_FOLLOWING : V_FOLLOWING_KEY;
     }
     if (stage < STAGE_PALACE) return V_BASE_ELIAS;
@@ -1135,9 +1144,29 @@ module.exports = function registerDefenderOfVarrockQuest(api) {
       player.setAttribute(SCHEMA_ATTRIBUTE, SCHEMA_VERSION);
       quest.setStage(player, STAGE_STARTED);
     }
-    if (context.variant === V_TRAPDOOR) {
+    const ownChoice = event.npcId === ELIAS_CHATHEAD && event.pages?.some(
+      (page) => page.page === PAGE && page.variants?.includes(context.variant)
+    );
+    if (ownChoice && (context.variant === V_FOLLOWING_KEY || context.variant === V_ELIAS_REJOIN) &&
+        option === "I need to do something else." &&
+        questActive(player) && stageOf(player) === STAGE_TRACK_MAX && trapdoorUnlocked(player)) {
+      player.setAttribute(ELIAS_DISMISSED_ATTRIBUTE, 1);
+      return;
+    }
+    if (context.variant === V_TRAPDOOR || context.variant === V_OPEN_TRAPDOOR) {
+      if (!ownChoice) return;
       dialogueContext.delete(player);
       if (!String(option).startsWith("Let's do it")) return;
+      if (!questActive(player) || stageOf(player) !== STAGE_TRACK_MAX || trailCount(player) < CLUE_SEQUENCE.length ||
+          (context.variant === V_OPEN_TRAPDOOR && !trapdoorUnlocked(player))) {
+        event.end = true;
+        return;
+      }
+      if (Number(player.getAttribute(ELIAS_DISMISSED_ATTRIBUTE)) === 1) {
+        event.end = true;
+        play(player, ELIAS_CHATHEAD, V_ELIAS_ABSENT);
+        return;
+      }
       if (!canEnterBase(player)) {
         player.sendMessage("You need the grubby key before you can enter the trapdoor.");
         return;
@@ -1191,6 +1220,7 @@ module.exports = function registerDefenderOfVarrockQuest(api) {
     if (!player || !stepId || !ACTION_IDS.has(stepId)) return;
     switch (stepId) {
       case ACTION_FOLLOW:
+        player.setAttribute(ELIAS_DISMISSED_ATTRIBUTE, 0);
         ensureStage(player, STAGE_FOLLOWING);
         player.getPacketSender().sendVarbit(VARBIT_ELIAS_VIS, 1);
         return;
@@ -1353,7 +1383,8 @@ module.exports = function registerDefenderOfVarrockQuest(api) {
     }
     ensureStage(player, STAGE_TRACK_MAX);
     if (trapdoorUnlocked(player)) {
-      descendToBase(player);
+      if (Number(player.getAttribute(ELIAS_DISMISSED_ATTRIBUTE)) === 1) play(player, ELIAS_CHATHEAD, V_ELIAS_ABSENT);
+      else play(player, ELIAS_CHATHEAD, V_OPEN_TRAPDOOR);
       return;
     }
     if (!hasTrapdoorKey(player)) {
@@ -1690,6 +1721,7 @@ module.exports = function registerDefenderOfVarrockQuest(api) {
 
   api.persistAttribute(BITS_ATTRIBUTE);
   api.persistAttribute(KEY_ATTRIBUTE);
+  api.persistAttribute(ELIAS_DISMISSED_ATTRIBUTE, 0);
   api.persistAttribute(DESCENDANT_ATTRIBUTE);
   api.persistAttribute(SCHEMA_ATTRIBUTE, 0);
   api.persistAttribute(CENSUS_PAGE_ATTRIBUTE, 0);
