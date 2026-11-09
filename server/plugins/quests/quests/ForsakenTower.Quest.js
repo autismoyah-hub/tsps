@@ -43,8 +43,8 @@
  * minecart network, Jewellery of Jubilation page, graceful recolour).
  *
  * Gaps / approximations:
- *  - The display-case "four locks" interface is not reproduced; the Inspect message plays
- *    and the locks are tracked with the machine varbits above.
+ *  - Display-case Inspect shows its transcript text, then the four-lock interface.
+ *    The relative ordering and message-box presentation have not been captured.
  *  - The power-grid slider puzzle is reduced to Inspect -> Align (the wiki solution image
  *    is not reproducible without that interface); the wiki's own align messages play.
  *  - The furnace coolant pouring puzzle is simulated with jug contents (Check -> Empty) and
@@ -63,6 +63,7 @@
 module.exports = function registerForsakenTowerQuest(api) {
   const { giveReward } = require("../QuestRuntime");
   const {
+    ActionDialogue, DialogueChainBuilder, ObjectDefinition, StatementDialogue, World,
     ItemIdentifiers,
     NpcIdentifiers,
     ObjectIdentifiers,
@@ -171,6 +172,8 @@ module.exports = function registerForsakenTowerQuest(api) {
   const STEAM_CRANK_MISSING_ID = "PqSVRg";
   const STEAM_HAS_CRANK_ID = "MwFIA_";
   const STEAM_START_ID = "Xny7cb";
+  const DISPLAY_CASE_MESSAGE_ID = "oXWAHB";
+  const DISPLAY_CASE_INTERFACE = 623;
   const GRID_NOT_ALIGNED_ID = "BVZpTq";
   const GRID_ALIGNED_ID = "ZLKoQ9";
   const CUPBOARD_BASE_ID = "Rk9njm";
@@ -518,9 +521,39 @@ module.exports = function registerForsakenTowerQuest(api) {
     sendVarbit(player, VARBIT_FOUND_JUGS, 1);
   }
 
+  const pendingCaseInspect = new WeakMap();
+
   function handleDialogueAction(event) {
     const { player, stepId } = event;
     switch (stepId) {
+      case DISPLAY_CASE_MESSAGE_ID: {
+        if (event.kind !== "message" || event.npcId !== LADY_VULCANA_NPC_ID ||
+            !event.pages?.some((page) => page.page === PAGE && page.variants?.includes(DISPLAY_CASE_VARIANT))) return;
+        const inspectedAt = pendingCaseInspect.get(player);
+        if (!inspectedAt) return;
+        pendingCaseInspect.delete(player);
+        const manager = player.getDialogueManager();
+        const owner = {};
+        const action = new ActionDialogue(1, { execute: () => {
+          if (manager.getOwner() !== owner || manager.getCurrent() !== action) return;
+          const sender = player.getPacketSender();
+          if (!sender.closeChatboxFor(owner)) return;
+          // Closing can synchronously change the player, case or another feature's UI.
+          if (manager.isActive() || sender.hasInterruptibleInterface() || sender.hasInputPrompt() ||
+              player.isRegistered?.() === false || quest.getStage(player) >= STAGE_CASE) return;
+          const location = player.getLocation();
+          if (location.getX() !== inspectedAt.x || location.getY() !== inspectedAt.y || location.getZ() !== inspectedAt.z) return;
+          const currentObject = World.findCacheObject(player, inspectedAt.objectId, inspectedAt.objectLocation);
+          if (currentObject !== inspectedAt.object ||
+              ObjectDefinition.forPlayer(currentObject.getId(), player)?.id !== ObjectIdentifiers.DISPLAY_CASE_54) return;
+          sender.sendInterface(DISPLAY_CASE_INTERFACE);
+        } });
+        event.handled = true;
+        manager.startDialogues(new DialogueChainBuilder()
+          .add(new StatementDialogue(0, event.text))
+          .add(action), owner);
+        return;
+      }
       case START_MARKER_ID:
         // The wiki "Start The Forsaken Tower quest?" prompt is not an action; let the
         // accept menu after it play.
@@ -631,7 +664,14 @@ module.exports = function registerForsakenTowerQuest(api) {
   function handleDisplayCaseInspect(event) {
     if (resolvedObjectId(event) !== ObjectIdentifiers.DISPLAY_CASE_54) return false;
     cleansingFluidId(event.player);
-    startTranscript(api, event.player, LADY_VULCANA_NPC_ID, PAGE, DISPLAY_CASE_VARIANT);
+    const location = event.player.getLocation();
+    pendingCaseInspect.set(event.player, { x: location.getX(), y: location.getY(), z: location.getZ(),
+      object: event.object, objectId: event.objectId, objectLocation: event.object.getLocation().clone() });
+    try {
+      startTranscript(api, event.player, LADY_VULCANA_NPC_ID, PAGE, DISPLAY_CASE_VARIANT);
+    } finally {
+      pendingCaseInspect.delete(event.player);
+    }
     return true;
   }
 
