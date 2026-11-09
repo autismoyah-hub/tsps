@@ -379,7 +379,7 @@ async function resolveInputManifest(plan, fetcher = fetch) {
     }
     if (Object.keys(actual).length !== Object.keys(PLAN.expectedCacheFiles).length) throw new Error('Cache file count differs from retained input');
     emit({event: 'cache-equivalence', matchedFiles: Object.keys(actual).length, status: 'PASS',
-      reference: 'retained c2451c5f per-file inventory; no Windows executable equivalence claim'});
+      reference: 'author OpenRS2 2757 static archive inventory; no Windows executable equivalence claim'});
     sealState.cacheFiles = Object.fromEntries(Object.entries(actual).map(([file, row]) => [file, row.sha256]));
   }
   // Compare the same fixture against the exact parent plugin, restoring it before AFTER.
