@@ -1,5 +1,0 @@
-{
-  "$comment": "Exceptions to the cache's own answer, applied by AnimationStalls.plugin.js. Core measures only how long a swing animation stays on screen (NpcAnimationScanner.getSequenceStall), and every measured swing starts as a partial stall, so a seq the cache rates as stalling needs no row here. A row is only for a *live-verified full stall* the seq config cannot express, and its source must say where that evidence comes from. Rows override the measured value by animation id or by equipped weapon id: kind none|partial|full, ticks (omit to keep the cache's length), holdsHits. There are no current rows: the Wiki's 'Attack animation stalls' list does not distinguish full from partial stalls, and the leaf-bladed battleaxe's walk delay was fixed on 9 July 2020 (Wiki: Leaf-bladed battleaxe - Changes), so it is a partial stall like the rest.",
-  "animations": {},
-  "weapons": {}
-}
