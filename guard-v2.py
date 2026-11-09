@@ -9,7 +9,7 @@ OWNER='3f20dcbd-b1d9-4e4a-bc47-a3b02d6ee6bc'
 REVIEWER='10e752da-405a-47bd-8d0e-21f4054a25f9'
 SOURCE='57e96673bf57e6dc65de5508d60c383b90064ed2'
 PLAN_SHA='a77dc6fa3f6e3c23b9e17fc6b7f0f2e5ff3726f6caec3205983071f6805c669c'
-PINS={'plan.json':PLAN_SHA,'payload.cjs':'4e2aa37bd921c81b49f3bb9a96546b288628a360dc26760ae65797d4832224a1','pilot.py':'2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200','package.json':'00dc1f0f6032fabd7a953de4eb35f29afdd84ed65266fab2992009a87ce56b6b','collector.py':'fc08b552ba44e8f2085204631b1001d7c1fcf763f3ba1523ea263b3d6ed3d3ac','frame_transport.py':'f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76','retain-contiguous-inputs003.py':'b399ca13e8fbfee6f7633a9d430d85c8204774c2941a2e4d5f74c642820fa690'}
+PINS={'plan.json':PLAN_SHA,'payload.cjs':'4e2aa37bd921c81b49f3bb9a96546b288628a360dc26760ae65797d4832224a1','pilot.py':'2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200','package.json':'00dc1f0f6032fabd7a953de4eb35f29afdd84ed65266fab2992009a87ce56b6b','collector.py':'5b018f3473410644ba296ed9c8919de45f67cc67dc1ceef15683f612f1e7f8ca','frame_transport.py':'f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76','retain-contiguous-inputs003.py':'b399ca13e8fbfee6f7633a9d430d85c8204774c2941a2e4d5f74c642820fa690'}
 sha=lambda raw:hashlib.sha256(raw).hexdigest()
 def bound(path,digest):
  raw=Path(path).read_bytes();assert sha(raw)==digest,f'Identity mismatch: {path}';return raw
@@ -65,7 +65,8 @@ def current_review(plan):
  def read_session(sid):
   raw=bounded(['/workspace/runtime/bin/cuttle','--json','sessions','read','--turns','300',sid],timeout=30)
   data=json.loads(raw);assert isinstance(data.get('turns'),list);return data['turns']
- subject={'planSHA256':PLAN_SHA,'source':SOURCE,'payloadSHA256':PINS['payload.cjs'],'guardSHA256':sha(Path(__file__).read_bytes()),'collectorSHA256':PINS['collector.py'],'preflightSHA256':'b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca','selectorSHA256':'c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
+ bound(ROOT/'offline-recovery.py','5aa3161278e0d67881c51bd01205c54c095d5d8eb4fa81500c772ec868dcb73b')
+ subject={'offlineRecoverySHA256':'5aa3161278e0d67881c51bd01205c54c095d5d8eb4fa81500c772ec868dcb73b','planSHA256':PLAN_SHA,'source':SOURCE,'payloadSHA256':PINS['payload.cjs'],'guardSHA256':sha(Path(__file__).read_bytes()),'collectorSHA256':PINS['collector.py'],'preflightSHA256':'b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca','selectorSHA256':'c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
  owner_turns=read_session(OWNER);peer_turns=read_session(REVIEWER)
  selected=[]
  for row in owner_turns:
@@ -92,8 +93,17 @@ def current_review(plan):
 def checked_pr_files(detail, rows, touched):
  count=detail.get('changed_files'); assert type(count) is int and 0<=count<3000, 'PR file count unknown or endpoint cap'
  assert isinstance(rows,list) and all(isinstance(page,list) for page in rows)
- files=[file for page in rows for file in page]; assert len(files)==count and all(isinstance(file,dict) and isinstance(file.get('filename'),str) for file in files), 'PR files incomplete'
+ files=[file for page in rows for file in page]; assert len(files)==count and all(isinstance(file,dict) and isinstance(file.get('filename'),str) and file['filename'] and file.get('status') in ('added','removed','modified','renamed','copied','changed','unchanged') and (file['status']!='renamed' or isinstance(file.get('previous_filename'),str) and file['previous_filename']) for file in files), 'PR files incomplete'
+ assert len({file['filename'] for file in files})==len(files), 'duplicate PR paths'
  return any(file.get('filename') in touched or file.get('previous_filename') in touched for file in files)
+
+def unrelated_receipt(old):
+ assert isinstance(old,dict), 'malformed receipt'
+ plan=old.get('plan',{}); assert isinstance(plan,dict), 'malformed plan'
+ source=old.get('source',plan.get('source')); digest=old.get('planSHA256')
+ assert (isinstance(source,str) and source) or (isinstance(digest,str) and re.fullmatch('[0-9a-f]{64}',digest)), 'unclassifiable receipt'
+ assert source!=SOURCE and digest!=PLAN_SHA, 'same case receipt'
+ return True
 
 def current_fit(plan):
  repo=ROOT.parents[1]
@@ -101,12 +111,12 @@ def current_fit(plan):
  assert len(remote)==2 and re.fullmatch('[0-9a-f]{40}',remote[0]) and remote[1]=='refs/heads/main'
  main=remote[0]
  subprocess.run(['git','-C',str(repo),'-c','maintenance.auto=false','fetch','--no-tags','--no-write-fetch-head','https://github.com/RSPSApp/tsps.git',main],capture_output=True,check=True,timeout=90)
- connected=['server/plugins/quests/quests/TheFremennikIsles.Quest.js','server/tests/fremennik-isles-bork-and-chest.test.cjs','server/plugins/quests/QuestRuntime.js','server/plugins/quests/Quests.plugin.js','server/src/main/typescript/elvarg/plugins/PluginManager.ts','server/src/main/typescript/elvarg/plugins/PluginTypes.ts','server/src/main/typescript/elvarg/net/packet/impl/UseItemPacketListener.ts','server/src/main/typescript/elvarg/game/model/container/impl/Inventory.ts','server/src/main/typescript/elvarg/game/model/container/ItemContainer.ts','server/src/main/typescript/elvarg/game/definition/ItemDefinition.ts','server/plugins/npcs/NpcDialogues.plugin.js','server/target.txt','server/data/definitions/npc-dialogues.json','server/data/definitions/npc-dialogue-index.json']
+ connected=['server/plugins/quests/quests/TheFremennikIsles.Quest.js','server/tests/fremennik-isles-bork-and-chest.test.cjs','server/plugins/quests/QuestRuntime.js','server/plugins/quests/Quests.plugin.js','server/src/main/typescript/elvarg/plugins/PluginManager.ts','server/src/main/typescript/elvarg/plugins/PluginTypes.ts','server/src/main/typescript/elvarg/net/packet/impl/UseItemPacketListener.ts','server/src/main/typescript/elvarg/game/model/Item.ts','server/src/main/typescript/elvarg/game/content/skill/SkillManager.ts','server/src/main/typescript/elvarg/game/model/container/impl/Inventory.ts','server/src/main/typescript/elvarg/game/model/container/ItemContainer.ts','server/src/main/typescript/elvarg/game/definition/ItemDefinition.ts','server/plugins/npcs/NpcDialogues.plugin.js','server/target.txt','server/data/definitions/npc-dialogues.json','server/data/definitions/npc-dialogue-index.json']
  diff=git('diff','--name-only','fad19aaea3d66a304618a37606c4affeeffbb57c',main,'--',*connected).decode().splitlines()
  assert not diff, f'Connected main paths changed: {diff}'
  pages=json.loads(bounded(['gh','api','--paginate','--slurp','repos/RSPSApp/tsps/pulls?state=open&per_page=100'],timeout=90));assert sum(len(x) for x in pages)<=500
  assert isinstance(pages,list) and all(isinstance(page,list) for page in pages)
- prs=[pr for page in pages for pr in page];touched=set(connected[:2]);overlap=[]
+ prs=[pr for page in pages for pr in page];touched=set(connected);overlap=[]
  for pr in prs:
   number=pr.get('number');assert type(number) is int and number>0
   detail=json.loads(bounded(['gh','api',f'repos/RSPSApp/tsps/pulls/{number}'],timeout=90))
@@ -164,8 +174,7 @@ def check():
   dirs[:]=[d for d in dirs if d not in ('objects','logs','refs','hooks') and not (Path(base)/d).is_symlink()]
   for name in files:
    if name not in ('submission.json','submission-intent.json','submitted-job-id.json'):continue
-   file=Path(base)/name;old=json.loads(file.read_bytes());oldplan=old.get('plan',{})
-   assert old.get('source')!=SOURCE and oldplan.get('source')!=SOURCE, str(file)
+   file=Path(base)/name;old=json.loads(file.read_bytes());unrelated_receipt(old)
  # Exact-case sibling processes are not admitted. Exclude this process and ancestors.
  ancestors=set();pid=os.getpid()
  while pid>1:

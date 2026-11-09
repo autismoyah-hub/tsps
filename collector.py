@@ -28,7 +28,7 @@ def retain(stamp,recovery):
  stdout=ROOT/(tag+'-stdout.txt');stderr=ROOT/(tag+'-stderr.txt')
  def limit():resource.setrlimit(resource.RLIMIT_FSIZE,(4*1024*1024,4*1024*1024))
  with stdout.open('xb') as outlog,stderr.open('xb') as errlog:
-  run=subprocess.run([sys.executable,'-E','-S','-B',str(CASE/'retain-contiguous-inputs003.py'),'--raw',str(log),'--manifest',str(CASE/'input-manifest.json'),'--submission',str(CASE/'submission.json'),'--terminal-status',str(status),'--out',str(out)],stdout=outlog,stderr=errlog,timeout=120,preexec_fn=limit)
+  run=subprocess.run([sys.executable,'-E','-S','-B',str(CASE/'retain-contiguous-inputs003.py'),'--raw',str(log),'--manifest',str(CASE/'input-manifest.json'),'--submission',str(CASE/'submission.json'),'--terminal-status',str(status),'--out',str(out)],stdout=outlog,stderr=errlog,timeout=120,preexec_fn=limit,env={'PATH':'/usr/bin:/bin'})
   outlog.flush();os.fsync(outlog.fileno());errlog.flush();os.fsync(errlog.fileno())
  exclusive(ROOT/(tag+'-result.json'),{'exit':run.returncode,'stdoutSHA256':digest(stdout.read_bytes()),'stderrSHA256':digest(stderr.read_bytes()),'stdoutBytes':stdout.stat().st_size,'stderrBytes':stderr.stat().st_size,'output':out.name,'scope':'offline reconstruction, not provider recollection'})
  if run.returncode:raise ValueError('native retainer failed; retained raw remains authoritative')

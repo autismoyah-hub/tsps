@@ -20,7 +20,7 @@ print('real JobInfo datetime summary serialized; duplicate and partial receipt r
 # Synthetic reviewer/selection provenance: recipient text alone is insufficient.
 import datetime
 from unittest.mock import patch
-subject={'planSHA256':g.PLAN_SHA,'source':g.SOURCE,'payloadSHA256':g.PINS['payload.cjs'],'guardSHA256':g.sha((root/'guard-v2.py').read_bytes()),'collectorSHA256':g.PINS['collector.py'],'preflightSHA256':'b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca','selectorSHA256':'c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
+subject={'offlineRecoverySHA256':'5aa3161278e0d67881c51bd01205c54c095d5d8eb4fa81500c772ec868dcb73b','planSHA256':g.PLAN_SHA,'source':g.SOURCE,'payloadSHA256':g.PINS['payload.cjs'],'guardSHA256':g.sha((root/'guard-v2.py').read_bytes()),'collectorSHA256':g.PINS['collector.py'],'preflightSHA256':'b5f3c9022c47f742055951f795383d002b35cb139b04ac4edaea4cc68b7640ca','selectorSHA256':'c4766605f8fdc83f28f8768c757fd64b1a735b3366abe91d8982e211b2a247d2','sdkManifestSHA256':'32d610a2fba76f609491a4aa2c33cf7431bc6007b96d8f90364e3737ce4797dd'}
 message='EXACT_CASE_GO '+' '.join(subject.values())
 stamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
 owner={'turns':[{'role':'user','ts':stamp,'text':'[From Cuttle session "peer" · '+g.REVIEWER+']\n'+message}]}
@@ -107,13 +107,15 @@ with tempfile.TemporaryDirectory() as d:
  status=c.CASE/f'status-{stamp}.json';status.write_text(json.dumps({'id':'fixture-id','status':{'stage':'COMPLETED'},'command':command}))
  log=c.CASE/f'logs-{stamp}.txt';log.write_text(json.dumps({'event':'inputs','source':plan['source'],'inputs':manifest['expectedInputs']},separators=(',',':'))+'\n')
  (c.ROOT/'iterator-ended.json').write_text(json.dumps({'jobId':'fixture-id','stamp':stamp,'stage':'COMPLETED','statusSHA256':c.digest(status.read_bytes()),'rawSHA256':c.digest(log.read_bytes())}))
- c.retain(stamp,False)
+ with patch.object(c.subprocess,'run',wraps=c.subprocess.run) as invoked:
+  with patch.dict(os.environ,{'CCC_TOKEN':'fixture-secret'}): c.retain(stamp,False)
+  assert invoked.call_args.kwargs['env']=={'PATH':'/usr/bin:/bin'}
  assert json.loads((c.ROOT/'native-retain-result.json').read_bytes())['exit']==0
  assert (c.CASE/f'native-input-{stamp}'/'fragment-receipt.json').is_file()
 print('actual offline native retainer accepted synthetic full input event')
 
-assert g.checked_pr_files({'changed_files':1},[[{'filename':'new','previous_filename':'old'}]],{'old'})
-for detail,rows in [({'changed_files':3000},[[]]),({'changed_files':2},[[{'filename':'x'}]]),({},[[]])]:
+assert g.checked_pr_files({'changed_files':1},[[{'filename':'new','status':'renamed','previous_filename':'old'}]],{'old'})
+for detail,rows in [({'changed_files':3000},[[]]),({'changed_files':2},[[{'filename':'x','status':'modified'}]]),({},[[]])]:
  try:g.checked_pr_files(detail,rows,{'x'})
  except AssertionError:pass
  else:raise AssertionError('incomplete PR list accepted')
@@ -125,3 +127,21 @@ for stage in (None,'DELETED','UNKNOWN','CANCELLED'):
  except ValueError:pass
  else:raise AssertionError('unsupported stage accepted')
 print('recognized active and unsupported stage controls passed')
+
+for detail,rows in [({'changed_files':1},[[{'filename':'x','status':'renamed'}]]),({'changed_files':2},[[{'filename':'x','status':'modified'},{'filename':'x','status':'modified'}]])]:
+ try:g.checked_pr_files(detail,rows,set())
+ except AssertionError:pass
+ else:raise AssertionError('malformed rename or duplicate accepted')
+assert g.unrelated_receipt({'planSHA256':'a'*64})
+for receipt in ({'planSHA256':g.PLAN_SHA},{},{'plan':[]}):
+ try:g.unrelated_receipt(receipt)
+ except AssertionError:pass
+ else:raise AssertionError('same or unclassifiable receipt accepted')
+print('rename, duplicate, sibling same-plan and malformed receipt controls passed')
+
+with tempfile.TemporaryDirectory() as d:
+ g.ROOT=Path(d); (g.ROOT/'offline-recovery.py').write_text('tampered')
+ try:g.current_review(None)
+ except AssertionError:pass
+ else:raise AssertionError('altered offline launcher accepted')
+print('altered launcher refused; native retainer environment excludes credentials')

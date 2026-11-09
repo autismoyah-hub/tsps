@@ -12,6 +12,6 @@ require(digest(Path(sys.executable).resolve())=='c2c20b4745d447551221ec3d4e70f92
 for name in ('/','/usr','/usr/bin','/usr/lib','/usr/lib/python3.12',str(Path(sys.executable).resolve())):
  s=Path(name).stat(); require(s.st_uid==0 and not s.st_mode&0o022,'system chain')
 s=root.stat();require(s.st_uid==os.getuid() and not s.st_mode&0o022,'control root')
-require(digest(collector)=='fc08b552ba44e8f2085204631b1001d7c1fcf763f3ba1523ea263b3d6ed3d3ac','collector pin')
+require(digest(collector)=='5b018f3473410644ba296ed9c8919de45f67cc67dc1ceef15683f612f1e7f8ca','collector pin')
 require(len(sys.argv)==1,'unexpected arguments')
 os.execve(sys.executable,[sys.executable,'-E','-S','-B',str(collector),'--recover-offline'],{'CCC_SESSION_ID':os.environ.get('CCC_SESSION_ID',''),'PATH':'/usr/bin:/bin'})
