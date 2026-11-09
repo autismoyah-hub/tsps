@@ -1,5 +1,5 @@
 """Case candidate: authenticated duplicate check then unchanged pilot submit. Not selected."""
-import argparse, datetime, hashlib, json, os, runpy, sys
+import argparse, datetime, hashlib, json, os, sys, types
 from pathlib import Path
 from huggingface_hub import HfApi
 
@@ -10,6 +10,7 @@ OWNER = 'a57b09b1-fcf5-4aea-b25e-7f19910af934'
 
 def digest(path): return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 def main():
+    if not __debug__: raise RuntimeError('Optimized interpreter forbidden')
     p=argparse.ArgumentParser()
     p.add_argument('--plan', required=True); p.add_argument('--plan-sha256', required=True)
     p.add_argument('--prestart', required=True); p.add_argument('--prestart-sha256', required=True)
@@ -26,17 +27,37 @@ def main():
     for path,sha in pre['files'].items(): assert digest(ROOT/path)==sha
     assert os.environ.get('CCC_SESSION_ID')==OWNER
     assert not (ROOT/'submission.json').exists() and not (ROOT/'exclusive-intent.json').exists()
+    for candidate in ROOT.parent.rglob('submission.json'):
+        prior=json.loads(candidate.read_bytes()); priorplan=prior.get('plan',{})
+        if priorplan.get('source')==SOURCE or priorplan.get('name')==NAME:
+            raise RuntimeError('Matching local source or name: stop and reconcile')
+    for candidate in ROOT.parent.rglob('exclusive-intent.json'):
+        prior=json.loads(candidate.read_bytes())
+        if prior.get('source')==SOURCE or prior.get('name')==NAME:
+            raise RuntimeError('Matching local intent: stop and reconcile')
     api=HfApi(); assert api.whoami()['name']=='Autismo-Yah'
     count=0
     for job in api.list_jobs(namespace='Autismo-Yah'):
         count+=1
-        labels=job.labels or {}; command=job.command or []
+        labels=job.labels or {}; command=job.command
+        if command is None and labels.get('source') != SOURCE:
+            raise RuntimeError('Provider returned incomplete command: duplicate state unknown')
+        command=command or []
         # Name may be encoded in the submitted program; no log/secret is printed.
         if labels.get('source')==SOURCE or any(NAME in str(part) for part in command):
             raise RuntimeError('Matching provider source or name: stop and reconcile')
     record={'owner':OWNER,'source':SOURCE,'name':NAME,'checkedUTC':datetime.datetime.now(datetime.timezone.utc).isoformat(),'jobsChecked':count,'planSHA256':a.plan_sha256,'prestartSHA256':a.prestart_sha256,'selectionSHA256':a.selection_sha256,'action':'SUBMISSION_STARTING_NO_RETRY','collector':OWNER}
-    with (ROOT/'exclusive-intent.json').open('x') as out: json.dump(record,out,indent=2)
-    # pilot owns its own exclusive submission.json before run_job. Any ambiguity is retained.
-    sys.argv=[str(ROOT/'pilot.py'),'--plan',str(planpath),'--submit']
-    runpy.run_path(str(ROOT/'pilot.py'),run_name='__main__')
+    intent=ROOT/'exclusive-intent.json'
+    with intent.open('x') as out:
+        json.dump(record,out,indent=2); out.flush(); os.fsync(out.fileno())
+    directory=os.open(ROOT,os.O_RDONLY | os.O_DIRECTORY)
+    try: os.fsync(directory)
+    finally: os.close(directory)
+    assert json.loads(intent.read_text())==record
+    # The pilot's reviewed bytes are captured once and checked before execution.
+    pilotpath=ROOT/'pilot.py'; pilotbytes=pilotpath.read_bytes()
+    assert hashlib.sha256(pilotbytes).hexdigest()==pre['files']['pilot.py']
+    module=types.ModuleType('__main__'); module.__dict__.update(__file__=str(pilotpath),__name__='__main__',__package__='',__spec__=None,__cached__=None)
+    sys.argv=[str(pilotpath),'--plan',str(planpath),'--submit']; sys.modules['__main__']=module
+    exec(compile(pilotbytes,str(pilotpath),'exec'),module.__dict__)
 if __name__=='__main__': main()
