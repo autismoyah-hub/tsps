@@ -52,7 +52,9 @@ const has = (p, id) => p.getInventory().getAmount(id);
 const bob = (p, doses) => {
   npcs['Bob Barter (herbs)'].Decant({ player: p });
   assert.ok(p.getPacketSender().isChatboxInterface(582), 'the decant interface');
-  click({ player: p, groupId: 582, childId: doses + 2, handled: false });
+  const event = { player: p, groupId: 582, childId: doses + 2, handled: false };
+  click(event);
+  return event;
 };
 
 test('Bob, unnoted (226/01637): 4 x 2-dose and 11 x 1-dose staminas into 4 x 4-dose and a 3-dose, with 10 vials', (t) => {
@@ -241,6 +243,58 @@ test("two families can't both spend the same coins: the second is left whole, no
   assert.equal(doses('2restore'), 4, 'restore doses kept');
   assert.equal(has(p, 995), 0, 'one vial bought, once');
   assert.equal(has(p, obj('2dosestamina')) + has(p, obj('2dose2restore')), 2, 'exactly one family split');
+});
+
+test('Bob reports partial affordability and can finish the remaining family on the next visit', (t) => {
+  const p = player(t);
+  give(p, obj('4dosestamina'));
+  give(p, obj('4dose2restore'));
+  give(p, 995, 5);
+  assert.equal(bob(p, 2).handled, true);
+  assert.equal(has(p, obj('2dosestamina')), 2);
+  assert.equal(has(p, obj('4dosestamina')), 0);
+  assert.equal(has(p, obj('4dose2restore')), 1);
+  assert.equal(has(p, obj('2dose2restore')), 0);
+  assert.equal(has(p, 995), 0);
+  assert.match(p.lines.at(-1), /done what I can.*short of empty vessels or cash/i);
+
+  give(p, 995, 5);
+  bob(p, 2);
+  assert.equal(has(p, obj('2dosestamina')), 2);
+  assert.equal(has(p, obj('2dose2restore')), 2);
+  assert.equal(has(p, obj('4dose2restore')), 0);
+  assert.equal(has(p, 995), 0);
+  assert.equal(p.lines.at(-1), 'There, all done.');
+});
+
+test('Bob distinguishes full affordability, no affordability, and a space shortage', (t) => {
+  const affordable = player(t);
+  give(affordable, obj('4dosestamina'));
+  give(affordable, obj('4dose2restore'));
+  give(affordable, 995, 10);
+  bob(affordable, 2);
+  assert.equal(has(affordable, obj('2dosestamina')), 2);
+  assert.equal(has(affordable, obj('2dose2restore')), 2);
+  assert.equal(has(affordable, 995), 0);
+  assert.equal(affordable.lines.at(-1), 'There, all done.');
+
+  const poor = player(t);
+  give(poor, obj('4dosestamina'));
+  give(poor, 995, 4);
+  bob(poor, 2);
+  assert.equal(has(poor, obj('4dosestamina')), 1);
+  assert.equal(has(poor, 995), 4);
+  assert.match(poor.lines.at(-1), /coins for the vials/i);
+
+  const short = player(t);
+  give(short, note('vial_empty'), 2147483647);
+  give(short, note('1dose2restore'), 4);
+  give(short, obj('4dosestamina'));
+  bob(short, 2);
+  assert.equal(has(short, note('1dose2restore')), 4);
+  assert.equal(has(short, note('vial_empty')), 2147483647);
+  assert.equal(has(short, obj('4dosestamina')), 1);
+  assert.equal(short.lines.at(-1), "You're a bit short of inventory space.");
 });
 
 test('a result that would pass the stack limit is refused whole (noted glories at the limit)', (t) => {
