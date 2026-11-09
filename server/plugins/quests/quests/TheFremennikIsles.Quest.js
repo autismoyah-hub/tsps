@@ -88,6 +88,7 @@ module.exports = function registerTheFremennikIslesQuest(api) {
     Equipment,
     Inventory,
     Item,
+    ItemDefinition,
     ItemIdentifiers,
     Location,
     NpcIdentifiers,
@@ -506,13 +507,22 @@ module.exports = function registerTheFremennikIslesQuest(api) {
     return hasItem(player, tier.itemId, tier.amount);
   }
 
+  // The dialogue runner supplies a fresh pages array for each playback. Keep the
+  // ore exchange tied to that playback so a stale reward message cannot pay twice.
+  const kingOrePlaybacks = new WeakMap();
+
+  function notedTaskOre(tier) {
+    const noted = ItemDefinition.forId(tier.itemId)?.getNoteId();
+    const definition = noted >= 0 ? ItemDefinition.forId(noted) : null;
+    return definition?.isNoted() && definition.getNoteId() === tier.itemId ? noted : -1;
+  }
+
   function takeTaskOres(player) {
     const tier = miningTier(player);
     player.getInventory().deleteNumber(tier.itemId, tier.amount);
   }
 
-  function fillText(player, text) {
-    const tier = miningTier(player);
+  function fillText(player, text, tier = miningTier(player)) {
     return String(text ?? "")
       .replace(/\[six\/seven\/eight\]/g, tier.word)
       .replace(/\[tin\/coal\/mithril\]/g, tier.ore)
@@ -1007,8 +1017,16 @@ module.exports = function registerTheFremennikIslesQuest(api) {
       case "KDJ7LL":
         return !hasItem(player, RAW_TUNA);
       case "Aa7pB6":
-      case "wJcHc0":
         return !hasTaskOres(player);
+      case "wJcHc0": {
+        const tier = miningTier(player);
+        const pages = event.pages;
+        if (!pages || typeof pages !== "object" || event.npcId !== KING_GJUKI_SORVOTT_IV) return true;
+        const noted = notedTaskOre(tier);
+        kingOrePlaybacks.set(pages, { player, tier, state: "offered" });
+        return !hasItem(player, tier.itemId, tier.amount)
+          && !(noted >= 0 && hasItem(player, noted, tier.amount));
+      }
       case "NseFrF":
         return false; // noted ores are counted by the unnoted branch
       case "nKdzca":
@@ -1345,15 +1363,64 @@ module.exports = function registerTheFremennikIslesQuest(api) {
         setStage(player, STAGE_ORE_TASK);
         return;
       // Ores.
-      case "-UQEZy":
-        if (hasTaskOres(player)) takeTaskOres(player);
-        event.step && (event.step.text = fillText(player, event.step.text));
+      case "-UQEZy": {
+        const pages = event.pages;
+        const exchange = pages && typeof pages === "object" ? kingOrePlaybacks.get(pages) : null;
+        const tier = miningTier(player);
+        if (!exchange || exchange.player !== player || exchange.state !== "offered"
+            || event.npcId !== KING_GJUKI_SORVOTT_IV || stageOf(player) !== STAGE_ORE_TASK
+            || exchange.tier.itemId !== tier.itemId) {
+          event.end = true;
+          return;
+        }
+        const inventory = player.getInventory();
+        if (hasItem(player, tier.itemId, tier.amount)) {
+          takeTaskOres(player);
+          exchange.state = "unnoted-pending";
+        } else {
+          const noted = notedTaskOre(tier);
+          if (noted < 0 || !hasItem(player, noted, tier.amount)) {
+            event.end = true;
+            return;
+          }
+          const plan = new Inventory(player).setItems(inventory.getCopiedItems());
+          const before = plan.getAmount(noted);
+          plan.deleted(noted, tier.amount, false);
+          if (plan.getAmount(noted) !== before - tier.amount
+              || plan.getAddableAmount(new Item(COINS, tier.coins)) < tier.coins) {
+            inventory.full();
+            event.end = true;
+            return;
+          }
+          // Credit now so closing the dialogue between its two messages cannot
+          // consume notes without paying. Retail overflow/timing is not sourced.
+          inventory.deleteNumber(noted, tier.amount);
+          addCoins(player, tier.coins);
+          exchange.state = "noted-paid";
+        }
+        // Transcript steps are shared across players; do not replace their
+        // placeholders in place with this player's ore tier.
+        player.sendMessage(fillText(player, event.text, tier));
+        event.handled = true;
         setStage(player, STAGE_ORES_DELIVERED);
         return;
-      case "02jNR_":
-        addCoins(player, miningTier(player).coins);
-        event.step && (event.step.text = fillText(player, event.step.text));
+      }
+      case "02jNR_": {
+        const pages = event.pages;
+        const exchange = pages && typeof pages === "object" ? kingOrePlaybacks.get(pages) : null;
+        if (!exchange || exchange.player !== player || event.npcId !== KING_GJUKI_SORVOTT_IV
+            || stageOf(player) !== STAGE_ORES_DELIVERED
+            || !["unnoted-pending", "noted-paid"].includes(exchange.state)) {
+          event.end = true;
+          return;
+        }
+        const unpaid = exchange.state === "unnoted-pending";
+        exchange.state = "finished";
+        if (unpaid) addCoins(player, exchange.tier.coins);
+        player.sendMessage(fillText(player, event.text, exchange.tier));
+        event.handled = true;
         return;
+      }
       // Jester and spies.
       case "U8RN0U":
         addCoins(player, 2500);

@@ -354,3 +354,140 @@ test("a banked costume is owned: the jester chest gives no second set", (t) => {
   assert.deepEqual(jesterCounts(f), [0, 0, 0, 0], "nothing from the chest");
   assert.equal(f.messages.at(-1), "You have already taken the jester costume.");
 });
+
+// The King's quest transcript accepts the assigned ore as bank notes. Drive the
+// registered Talk-to handler and real dialogue runner with a seeded quest stage;
+// this does not claim natural travel or retail overflow/timing behavior.
+function kingOreFixture(t, level = 55) {
+  const f = actor(t, 3);
+  const { NPC } = require('../dist/game/entity/impl/npc/NPC');
+  const kingId = core.NpcIdentifiers.KING_GJUKI_SORVOTT_IV;
+  const king = NPC.create(kingId, new core.Location(2409, 3804, 0));
+  const definition = king.getCurrentDefinition(f.p);
+  const clickType = definition.getActions().findIndex(s => s?.toLowerCase() === 'talk-to') + 1;
+  assert.ok(clickType > 0, 'cache exposes the King Talk-to option');
+  let mining = level;
+  const skills = f.p.getSkillManager(), originalLevel = skills.getMaxLevel.bind(skills);
+  t.mock.method(skills, 'getMaxLevel', skill => skill === core.Skill.MINING ? mining : originalLevel(skill));
+  const events = [], lines = [], emit = PM.emitCustomEvent;
+  t.mock.method(PM, 'emitCustomEvent', (name, event) => {
+    const result = emit.call(PM, name, event);
+    if (name === 'npc-dialogue:line' && event.player === f.p) lines.push({ ...event });
+    if (name === 'npc-dialogue:action' && ['-UQEZy', '02jNR_'].includes(event.stepId)) {
+      events.push({ ...event });
+    }
+    return result;
+  });
+  const talk = () => PM.emitNpcInteraction({ player: f.p, npc: king, npcId: kingId, npcIndex: king.getIndex(),
+    definition, clickType, location: { x: 2409, y: 3804, z: 0 }, handled: false });
+  const advance = predicate => {
+    const manager = f.p.getDialogueManager();
+    for (let i = 0; i < 100 && !predicate() && manager.isActive(); i++) manager.advance();
+    assert.ok(predicate(), 'dialogue reached the requested observable boundary');
+  };
+  return { ...f, kingId, talk, advance, events, lines, setMining: value => { mining = value; } };
+}
+
+test('King accepts each assigned ore as notes and continues to the mission', t => {
+  for (const [level, ore, amount, reward] of [
+    [1, I.TIN_ORE, 8, 2000], [2, I.COAL, 7, 4000], [55, I.MITHRIL_ORE, 6, 6000],
+  ]) {
+    const f = kingOreFixture(t, level);
+    const noted = core.ItemDefinition.forId(ore).getNoteId();
+    assert.equal(core.ItemDefinition.forId(noted).isNoted(), true);
+    f.inv.adds(noted, amount + 1);
+    assert.equal(f.talk(), true);
+    f.advance(() => f.events.some(e => e.stepId === '02jNR_'));
+    assert.equal(f.inv.getAmount(noted), 1);
+    assert.equal(f.inv.getAmount(I.COINS), reward);
+    assert.ok(f.messages.some(message => message.includes(`hands you ${reward} coins`)), 'reward message uses this tier');
+    assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(f.p), 4);
+    assert.equal(f.events[0].pages, f.events[1].pages, 'both messages belong to one playback');
+    const first = f.events[0].pages;
+    f.p.closeInterruptibleInterfaces();
+    assert.equal(f.talk(), true);
+    assert.notEqual(f.p.getDialogueManager().getCurrent(), undefined, 'the next King conversation is available');
+    assert.notEqual(f.lines.at(-1).pages, first, 'a fresh playback has a different identity');
+    const replay = { ...f.events[1], pages: first, step: { ...f.events[1].step } };
+    PM.emitCustomEvent('npc-dialogue:action', replay);
+    assert.equal(f.inv.getAmount(I.COINS), reward, 'a repeated reward event does not pay twice');
+  }
+});
+
+test('closing the King dialogue before the exchange keeps the notes and stage', t => {
+  const f = kingOreFixture(t);
+  const noted = core.ItemDefinition.forId(I.MITHRIL_ORE).getNoteId();
+  f.inv.adds(noted, 6);
+  assert.equal(f.talk(), true);
+  f.p.closeInterruptibleInterfaces();
+  assert.equal(f.inv.getAmount(noted), 6);
+  assert.equal(f.inv.getAmount(I.COINS), 0);
+  assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(f.p), 3);
+  assert.equal(f.talk(), true);
+  f.advance(() => f.events.some(e => e.stepId === '02jNR_'));
+  assert.equal(f.inv.getAmount(I.COINS), 6000);
+});
+
+test('noted ore exchange conserves inventory when the reward cannot fit', t => {
+  const f = kingOreFixture(t);
+  const noted = core.ItemDefinition.forId(I.MITHRIL_ORE).getNoteId();
+  f.inv.setItem(0, new core.Item(noted, 7));
+  for (let slot = 1; slot < 28; slot++) f.inv.setItem(slot, new core.Item(I.SHARK, 1));
+  assert.equal(f.talk(), true);
+  f.advance(() => f.events.some(e => e.stepId === '-UQEZy'));
+  assert.equal(f.events[0].end, true);
+  assert.equal(f.inv.getAmount(noted), 7);
+  assert.equal(f.inv.getAmount(I.COINS), 0);
+  assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(f.p), 3);
+});
+
+test('King keeps the unnoted route and refuses a stale noted exchange', t => {
+  const unnoted = kingOreFixture(t);
+  unnoted.inv.adds(I.MITHRIL_ORE, 6);
+  assert.equal(unnoted.talk(), true);
+  unnoted.advance(() => unnoted.events.some(e => e.stepId === '02jNR_'));
+  assert.equal(unnoted.inv.getAmount(I.MITHRIL_ORE), 0);
+  assert.equal(unnoted.inv.getAmount(I.COINS), 6000);
+  const stale = kingOreFixture(t);
+  const noted = core.ItemDefinition.forId(I.MITHRIL_ORE).getNoteId();
+  stale.inv.adds(noted, 6);
+  const condition = PM.emitNpcDialogueCondition;
+  t.mock.method(PM, 'emitNpcDialogueCondition', event => {
+    const result = condition.call(PM, event);
+    if (event.player === stale.p && event.stepId === 'wJcHc0') stale.setMining(2);
+    return result;
+  });
+  assert.equal(stale.talk(), true);
+  // Inject a level change after eligibility but before the transfer message.
+  stale.advance(() => stale.events.some(e => e.stepId === '-UQEZy'));
+  assert.equal(stale.events[0].end, true);
+  assert.equal(stale.inv.getAmount(noted), 6);
+  assert.equal(stale.inv.getAmount(I.COINS), 0);
+  assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(stale.p), 3);
+});
+
+test('a freed note slot or existing coin stack can hold the reward, but an overflowing stack cannot', t => {
+  for (const mode of ['exact-notes', 'existing-coins', 'coin-overflow']) {
+    const f = kingOreFixture(t);
+    const noted = core.ItemDefinition.forId(I.MITHRIL_ORE).getNoteId();
+    const notes = mode === 'exact-notes' ? 6 : 7;
+    f.inv.setItem(0, new core.Item(noted, notes));
+    let next = 1;
+    if (mode !== 'exact-notes') {
+      f.inv.setItem(next++, new core.Item(I.COINS, mode === 'coin-overflow' ? 2147480000 : 1));
+    }
+    while (next < 28) f.inv.setItem(next++, new core.Item(I.SHARK, 1));
+    assert.equal(f.talk(), true);
+    f.advance(() => f.events.some(e => e.stepId === '-UQEZy'));
+    if (mode === 'coin-overflow') {
+      assert.equal(f.events[0].end, true);
+      assert.equal(f.inv.getAmount(noted), notes);
+      assert.equal(f.inv.getAmount(I.COINS), 2147480000);
+      assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(f.p), 3);
+    } else {
+      assert.equal(f.inv.getAmount(noted), notes - 6);
+      assert.equal(f.inv.getAmount(I.COINS), 6000 + (mode === 'existing-coins' ? 1 : 0));
+      assert.equal(QuestRuntime.questNamed('The Fremennik Isles').getStage(f.p), 4);
+    }
+  }
+});
