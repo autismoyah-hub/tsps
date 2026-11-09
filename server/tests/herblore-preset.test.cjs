@@ -67,6 +67,7 @@ function actor(t) {
   });
   t.after(() => {
     PM.emitPlayerLogout({ player: p, username: p.getUsername() });
+    core.World.unregisterPlayerPosition(p);
     p.setRegistered(false);
     core.TaskManager.cancelTasks(p.getIndex());
   });
@@ -303,6 +304,7 @@ test("a knife grinds an ordinary chocolate bar into dust", async (t) => {
     t.after(() => {
       PM.emitPlayerDisconnect({ player: p, username: p.getUsername() });
       PM.emitPlayerLogout({ player: p, username: p.getUsername() });
+      core.World.unregisterPlayerPosition(p);
       p.setRegistered(false); core.TaskManager.cancelTasks(p.getIndex());
     });
     return { p, c, inv: p.getInventory(), skills: p.getSkillManager() };
