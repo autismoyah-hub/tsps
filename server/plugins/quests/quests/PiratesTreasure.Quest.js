@@ -34,6 +34,13 @@ module.exports = function registerPiratesTreasureQuest(api) {
   const EMERALD_ITEM_ID = ItemIdentifiers.EMERALD;
 
   const PLANTATION_CRATE_ID = ObjectIdentifiers.CRATE_15;
+  // Cache osrs-241_2026-10-20: placement outside Luthas's plantation hut.
+  const PLANTATION_CRATE_ORIGIN = { x: 2939, y: 3149, z: 0 };
+  function isPlantationCrate(event) {
+    const at = event.location, origin = PLANTATION_CRATE_ORIGIN;
+    return event.objectId === PLANTATION_CRATE_ID && origin !== null && at != null
+      && at.x === origin.x && at.y === origin.y && at.z === origin.z;
+  }
   const STORE_CRATE_ID = ObjectIdentifiers.CRATE_14;
   const STOCK_ROOM_DOOR_ID = ObjectIdentifiers.DOOR_56;
   const CHEST_ID = ObjectIdentifiers.CHEST_4;
@@ -366,12 +373,12 @@ module.exports = function registerPiratesTreasureQuest(api) {
 
   function handleItemOnObject(event) {
     const { objectId, itemId } = event;
-    if (objectId === PLANTATION_CRATE_ID && itemId === BANANA_ITEM_ID) {
+    if (isPlantationCrate(event) && itemId === BANANA_ITEM_ID) {
       packBanana(event.player);
       event.handled = true;
       return;
     }
-    if (objectId === PLANTATION_CRATE_ID && itemId === RUM_ITEM_ID) {
+    if (isPlantationCrate(event) && itemId === RUM_ITEM_ID) {
       stashRum(event.player);
       event.handled = true;
       return;
@@ -386,7 +393,7 @@ module.exports = function registerPiratesTreasureQuest(api) {
     const option = String(event.definition?.getInteractions?.()?.[event.clickType - 1] ?? "").toLowerCase();
     const { player, objectId } = event;
 
-    if (objectId === PLANTATION_CRATE_ID) {
+    if (isPlantationCrate(event)) {
       if (option.includes("search")) {
         searchPlantationCrate(player);
         event.handled = true;
