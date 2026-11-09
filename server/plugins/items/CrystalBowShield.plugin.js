@@ -45,9 +45,10 @@ function decrementAmmo(player, _pos, amount) {
   if (!item || !isBow(item.getId()) || !isManaged(item)) return false;
   let left = remaining(item);
   for (let shot = 0; shot < amount && left > 0; shot++) {
-    const event = { player, itemId: item.getId(), skip: false };
+    const event = { player, itemId: item.getId(), skip: false, extra: 0 };
     api.emitCustomEvent("combat:consume-charge", event);
-    if (!event.skip) left--;
+    if (event.skip) left = Math.min(FULL_CHARGES, left + Math.max(0, event.extra | 0));
+    else left--;
   }
   item.setMetaValue(CHARGES_META, left);
   if (left === 0) spent.set(player, item);

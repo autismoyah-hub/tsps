@@ -224,3 +224,14 @@ test('a final-shot bow moved out before completion stays unusable when returned'
   wield(p, bow);
   assert.equal(CombatFactory.checkAmmo(p, 1), false);
 });
+
+test('saved shots can restore extra managed bow charges without exceeding the maximum', (t) => {
+  const p = archer(t), api = PluginManager.createApi('CrystalBowExtraTest');
+  api.onCustomEvent('combat:consume-charge', event => {
+    if (event.player === p) { event.skip = true; event.extra = 3; }
+  });
+  const bow = new core.Item(I.CRYSTAL_BOW, 1);
+  bow.setMetaValue('crystal-bow-shield:charges', 2498);
+  wield(p, bow); fire(p, 1);
+  assert.equal(bow.getMetaValue('crystal-bow-shield:charges'), 2500);
+});
