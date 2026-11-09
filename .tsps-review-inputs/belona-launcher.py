@@ -31,7 +31,7 @@ exec(compile(bootstrap,'<verified-auth-bootstrap>','exec'))
 def guarded_child_command(command,selected_path,selected_sha):
     if len(command)<3 or command[1]!='-c':raise ValueError('unexpected authenticated child command')
     if not isinstance(selected_sha,str) or len(selected_sha)!=64:raise ValueError('selected hash malformed')
-    guarded=[command[0],'-c',CHILD_PLAN_GUARD,str(selected_path),selected_sha,*command[2:]]
+    guarded=[command[0],'-B','-c',CHILD_PLAN_GUARD,str(selected_path),selected_sha,*command[2:]]
     if any('\0' in arg or len(arg.encode())+1>=131072 for arg in guarded):raise ValueError('child argv bound')
     return guarded
 

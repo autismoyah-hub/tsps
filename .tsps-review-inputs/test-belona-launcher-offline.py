@@ -25,7 +25,7 @@ else:raise AssertionError('hold absent')
 assert calls==[]
 launcher.HARD_RUNTIME_HOLD=False # synthetic module instance; no real adapter
 _,_=launcher.launch(subject,paths,lambda *args,**kwargs:calls.append(args[0]))
-assert len(calls)==1 and calls[0][-2:]==['--plan',str(paths['selected'].resolve())]
+assert len(calls)==1 and calls[0][1:3]==['-B','-c'] and calls[0][-2:]==['--plan',str(paths['selected'].resolve())]
 paths['selected'].write_bytes(selected+b' ');calls.clear()
 try:launcher.launch(subject,paths,lambda *args,**kwargs:calls.append('adapter'))
 except ValueError:pass
@@ -48,6 +48,7 @@ with tempfile.TemporaryDirectory() as tmp:
     plan=Path(tmp)/'selected.json';plan.write_bytes(b'synthetic-plan')
     expected=sha(plan); fake=[sys.executable,'-c','print("FAKE_ADAPTER_REACHED")']
     command=launcher.guarded_child_command(fake,plan,expected)
+    assert command[1:3]==['-B','-c']
     good=subprocess.run(command,capture_output=True,text=True)
     assert good.returncode==0 and good.stdout.strip()=='FAKE_ADAPTER_REACHED'
     plan.write_bytes(b'mutated')
