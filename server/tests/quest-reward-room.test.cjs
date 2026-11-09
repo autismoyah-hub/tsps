@@ -509,6 +509,7 @@ test("Luthas pays for a completed crate without losing earned wages", async (t) 
       }).sort((a, b) => a.getLocation().getDistance(home) - b.getLocation().getDistance(home));
       assert.ok(crates.length > 0, "the loaded plantation map contains the crate");
       const crate = crates[0], crateAt = crate.getLocation();
+      assert.deepEqual([crateAt.getX(), crateAt.getY(), crateAt.getZ()], [2939, 3149, 0], "SETUP: verify Wiki tile is the active cache object origin before selecting an exact-origin predicate");
       if (crates.length > 1) assert.notEqual(crates[1].getLocation().getDistance(home), crateAt.getDistance(home), "the nearest crate is unambiguous");
       assert.equal(core.MapObjects.getPrivateArea(p, CRATE_ID, crateAt), crate);
       const crateDefinition = core.ObjectDefinition.forPlayer(CRATE_ID, p);
@@ -675,6 +676,41 @@ test("Luthas pays for a completed crate without losing earned wages", async (t) 
         assert.deepEqual(snapshot(), after, "talking again cannot pay a second time");
         assert.deepEqual(events, ["employment", "A0JWWz", "76-Dox"]);
       }
+      if (mode === "room") {
+        // A second job uses the real map object and selected inventory slots through
+        // registered dispatch. Stage is seeded solely to exercise quest rum admission.
+        q.setStage(p, 1);
+        inv.add(new core.Item(BANANA, 10), false);
+        inv.add(new core.Item(I.KARAMJAN_RUM, 1), false);
+        const useOnCrate = itemId => {
+          const itemSlot = inv.getSlotForItemId(itemId);
+          assert.ok(itemSlot >= 0, "SETUP: selected item is carried");
+          const item = inv.getItems()[itemSlot];
+          const event = { player: p, object: crate, objectId: CRATE_ID, item, itemId, itemSlot,
+            interfaceType: 0, location: { x: crateAt.getX(), y: crateAt.getY(), z: crateAt.getZ() }, handled: false };
+          PM.emitItemOnObject(event);
+          assert.equal(event.handled, true, "registered plantation handler claims item use");
+        };
+        useOnCrate(BANANA);
+        assert.equal(inv.getAmount(BANANA), 9);
+        assert.equal(p.getAttribute(PACKED), 1);
+        useOnCrate(I.KARAMJAN_RUM);
+        assert.equal(inv.getAmount(I.KARAMJAN_RUM), 0);
+        assert.equal(p.getAttribute(RUM), 1);
+        p.closeInterruptibleInterfaces();
+        await fill(10);
+        assert.equal(inv.getAmount(BANANA), 0);
+        const secondBefore = snapshot();
+        await talk();
+        await speech("I've filled a crate with bananas.", false);
+        await speech("Well done, here's your payment.", true);
+        const secondAfter = snapshot();
+        assert.equal(owned(secondAfter.coins) - owned(secondBefore.coins), 30);
+        assert.equal(secondAfter.packed, 0);
+        assert.equal(secondAfter.rum, 2);
+        assert.equal(secondAfter.employment, secondBefore.employment);
+        assert.equal(secondAfter.stage, secondBefore.stage);
+      }
     });
   }
 });
@@ -750,4 +786,57 @@ test('a members-world player can assemble the first garden-pie part', async (t) 
   assert.deepEqual([inv.getAmount(TOMATO), inv.getAmount(SHELL), inv.getAmount(PART)], [0, 0, 1]);
   assert.equal(skills.getExperience(cooking), xp);
   assert.deepEqual(produced, [[PART, 1, 0, 'make']]);
+});
+
+// Draft: registered dispatch with a deliberately seeded foreign same-ID object.
+// This is not an Ape Atoll map or retail behavior test.
+test('foreign same-ID crate does not access plantation state', async t => {
+  const q = quest('pirates_treasure'), f = actor(t), p = f.p, inv = f.inv;
+  const id = core.ObjectIdentifiers.CRATE_15, at = new core.Location(2746, 2768, 0);
+  const object = new core.GameObject(id, at, 10, 0, null);
+  const definition = core.ObjectDefinition.forPlayer(id, p);
+  assert.equal(id, 2072);
+  assert.equal(object.getId(), id);
+  assert.equal(definition.getName(), 'Crate');
+  const options = definition.getInteractions();
+  const search = options.findIndex(x => String(x ?? '').toLowerCase() === 'search') + 1;
+  const fill = options.findIndex(x => String(x ?? '').toLowerCase() === 'fill') + 1;
+  assert.ok(search > 0 && fill > 0, 'SETUP: cache definition supplies both actions');
+  q.setStage(p, 1);
+  p.setAttribute('pirates-treasure.employment', 1);
+  p.setAttribute('pirates-treasure.bananas', 3);
+  p.setAttribute('pirates-treasure.rum', 0);
+  inv.add(new core.Item(I.BANANA, 2), false);
+  inv.add(new core.Item(I.KARAMJAN_RUM, 1), false);
+  inv.add(new core.Item(I.COINS, 100), false);
+  const snapshot = () => ({ slots: inv.getItems().map(i => i && [i.getId(), i.getAmount(), structuredClone(i.getMeta())]),
+    stage: q.getStage(p), employment: p.getAttribute('pirates-treasure.employment'),
+    packed: p.getAttribute('pirates-treasure.bananas'), rum: p.getAttribute('pirates-treasure.rum') });
+  const location = { x: at.getX(), y: at.getY(), z: at.getZ() };
+  const emitObject = clickType => PM.emitObjectInteraction({ player: p, object, objectId: id,
+    definition, clickType, location, handled: false });
+  const emitItem = itemId => {
+    const itemSlot = inv.getItems().findIndex(i => i?.getId() === itemId);
+    assert.ok(itemSlot >= 0, 'SETUP: selected carried item exists');
+    const item = inv.getItems()[itemSlot];
+    return PM.emitItemOnObject({ player: p, object, objectId: id, item, itemId, itemSlot,
+      interfaceType: 0, location, handled: false });
+  };
+  // Registered after loaded plugins; only observes events that earlier hooks leave available.
+  const observed = [];
+  const observer = PM.createApi('PlantationForeignDraftObserver');
+  observer.onObjectInteraction(event => { if (event.player === p && event.object === object) observed.push('fill'); });
+  observer.onItemOnObject(event => { if (event.player === p && event.object === object) observed.push(event.itemId); });
+  const before = snapshot();
+  emitObject(search);
+  assert.deepEqual(snapshot(), before, 'foreign Search preserves quest state and items');
+  assert.ok(f.messages.includes('You search the crate, but find nothing of interest.'), 'existing later Search fallback claims it');
+  for (let n = 0; n < 2; n++) {
+    emitObject(fill);
+    emitItem(I.BANANA);
+    emitItem(I.KARAMJAN_RUM);
+    assert.deepEqual(snapshot(), before, 'repeated foreign dispatch preserves quest state and inventory');
+  }
+  assert.deepEqual(observed, ['fill', I.BANANA, I.KARAMJAN_RUM, 'fill', I.BANANA, I.KARAMJAN_RUM],
+    'later registered observer receives unclaimed Fill and item-use events');
 });

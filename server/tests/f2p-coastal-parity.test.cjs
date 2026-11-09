@@ -163,18 +163,18 @@ test("Pirate's Treasure crate packing uses the captured message boxes and Luthas
   const interactions = { getInteractions: () => ['Search', 'Fill'] };
 
   // An empty crate: captured game message, not "The crate has 0 bananas inside."
-  q.call('onObjectInteraction', { player: p, objectId: crate, clickType: 1, definition: interactions });
+  q.call('onObjectInteraction', { player: p, objectId: crate, location: { x: 2939, y: 3149, z: 0 }, clickType: 1, definition: interactions });
   assert.deepEqual(p.messages, ['The crate is completely empty.']);
 
   // Without Luthas's employment the crate refuses the banana (rsprox 4287).
   p.items.set(1963, 1);
-  q.call('onItemOnObject', { player: p, objectId: crate, itemId: 1963 });
+  q.call('onItemOnObject', { player: p, objectId: crate, location: { x: 2939, y: 3149, z: 0 }, itemId: 1963 });
   assert.deepEqual(p.messages, ['The crate is completely empty.', 'Why would I want to do that?']);
   assert.equal(p.items.get(1963), 1);
 
   // A single banana is a message box, not game chat.
   p.attributes.set('pirates-treasure.employment', 1);
-  q.call('onItemOnObject', { player: p, objectId: crate, itemId: 1963 });
+  q.call('onItemOnObject', { player: p, objectId: crate, location: { x: 2939, y: 3149, z: 0 }, itemId: 1963 });
   assert.equal(p.attributes.get('pirates-treasure.bananas'), 1);
   const boxes = () => p.packets.filter(([method, , uid]) => method === 'sendString' && uid === ((229 << 16) | 3))
     .map(([, text]) => text);
@@ -182,7 +182,7 @@ test("Pirate's Treasure crate packing uses the captured message boxes and Luthas
 
   // Filling the last nine completes the crate: the captured wording is "fill".
   p.items.set(1963, 9);
-  q.call('onObjectInteraction', { player: p, objectId: crate, clickType: 2, definition: interactions });
+  q.call('onObjectInteraction', { player: p, objectId: crate, location: { x: 2939, y: 3149, z: 0 }, clickType: 2, definition: interactions });
   assert.equal(p.attributes.get('pirates-treasure.bananas'), 10);
   assert.equal(p.items.get(1963), 0);
   assert.deepEqual(boxes(), ['You pack a banana into the crate.', 'You fill the crate with bananas.']);
