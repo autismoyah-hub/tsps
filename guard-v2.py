@@ -10,6 +10,7 @@ REVIEWER='10e752da-405a-47bd-8d0e-21f4054a25f9'
 SOURCE='57e96673bf57e6dc65de5508d60c383b90064ed2'
 PLAN_SHA='a77dc6fa3f6e3c23b9e17fc6b7f0f2e5ff3726f6caec3205983071f6805c669c'
 PINS={'plan.json':PLAN_SHA,'payload.cjs':'4e2aa37bd921c81b49f3bb9a96546b288628a360dc26760ae65797d4832224a1','pilot.py':'2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200','package.json':'00dc1f0f6032fabd7a953de4eb35f29afdd84ed65266fab2992009a87ce56b6b','collector.py':'5b018f3473410644ba296ed9c8919de45f67cc67dc1ceef15683f612f1e7f8ca','frame_transport.py':'f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76','retain-contiguous-inputs003.py':'b399ca13e8fbfee6f7633a9d430d85c8204774c2941a2e4d5f74c642820fa690'}
+RECEIPT_MARKERS=('submission.json','submission-intent.json','submitted-job-id.json','submission.intent','submit.intent','submitted.json')
 sha=lambda raw:hashlib.sha256(raw).hexdigest()
 def bound(path,digest):
  raw=Path(path).read_bytes();assert sha(raw)==digest,f'Identity mismatch: {path}';return raw
@@ -100,9 +101,15 @@ def checked_pr_files(detail, rows, touched):
 def unrelated_receipt(old):
  assert isinstance(old,dict), 'malformed receipt'
  plan=old.get('plan',{}); assert isinstance(plan,dict), 'malformed plan'
- source=old.get('source',plan.get('source')); digest=old.get('planSHA256')
- assert (isinstance(source,str) and source) or (isinstance(digest,str) and re.fullmatch('[0-9a-f]{64}',digest)), 'unclassifiable receipt'
- assert source!=SOURCE and digest!=PLAN_SHA, 'same case receipt'
+ sources=[]
+ for obj in (old,plan):
+  if 'source' in obj:
+   source=obj['source']; assert isinstance(source,str) and re.fullmatch('[0-9a-f]{40}',source), 'malformed source'; sources.append(source)
+ digest=old.get('planSHA256')
+ if 'planSHA256' in old: assert isinstance(digest,str) and re.fullmatch('[0-9a-f]{64}',digest), 'malformed plan digest'
+ assert sources or digest is not None, 'unclassifiable receipt'
+ assert len(set(sources))<=1, 'contradictory sources'
+ assert SOURCE not in sources and digest!=PLAN_SHA, 'same case receipt'
  return True
 
 def current_fit(plan):
@@ -173,7 +180,7 @@ def check():
   scanned+=len(dirs)+len(files);assert scanned<=50000,'control scan bound'
   dirs[:]=[d for d in dirs if d not in ('objects','logs','refs','hooks') and not (Path(base)/d).is_symlink()]
   for name in files:
-   if name not in ('submission.json','submission-intent.json','submitted-job-id.json'):continue
+   if name not in RECEIPT_MARKERS:continue
    file=Path(base)/name;old=json.loads(file.read_bytes());unrelated_receipt(old)
  # Exact-case sibling processes are not admitted. Exclude this process and ancestors.
  ancestors=set();pid=os.getpid()

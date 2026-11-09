@@ -133,7 +133,7 @@ for detail,rows in [({'changed_files':1},[[{'filename':'x','status':'renamed'}]]
  except AssertionError:pass
  else:raise AssertionError('malformed rename or duplicate accepted')
 assert g.unrelated_receipt({'planSHA256':'a'*64})
-for receipt in ({'planSHA256':g.PLAN_SHA},{},{'plan':[]}):
+for receipt in ({'planSHA256':g.PLAN_SHA},{},{'plan':[]},{'source':'b'*40,'plan':{'source':g.SOURCE}},{'plan':{'source':g.SOURCE}},{'source':'invalid'},{'source':'b'*40,'planSHA256':'invalid'}):
  try:g.unrelated_receipt(receipt)
  except AssertionError:pass
  else:raise AssertionError('same or unclassifiable receipt accepted')
@@ -145,3 +145,15 @@ with tempfile.TemporaryDirectory() as d:
  except AssertionError:pass
  else:raise AssertionError('altered offline launcher accepted')
 print('altered launcher refused; native retainer environment excludes credentials')
+
+assert g.unrelated_receipt({'source':'b'*40,'plan':{'source':'b'*40},'planSHA256':'c'*64})
+print('conflicting, nested and malformed identity controls passed')
+
+for marker in ('submission.json','submission-intent.json','submitted-job-id.json','submission.intent','submit.intent','submitted.json'):
+ assert marker in g.RECEIPT_MARKERS
+ for receipt in ({'source':g.SOURCE},{}, {'planSHA256':g.PLAN_SHA}):
+  try:g.unrelated_receipt(receipt)
+  except AssertionError:pass
+  else:raise AssertionError('same or unknown marker accepted: '+marker)
+ assert g.unrelated_receipt({'source':'b'*40})
+print('all six marker names apply same-case/unknown refusals and unrelated positive')
