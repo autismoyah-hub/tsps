@@ -248,6 +248,12 @@ module.exports = function registerWaterfallQuest(api) {
     return false;
   }
 
+  /** Shared tomb eligibility for other quests using the same entrance. */
+  function checkTombEntry(request) {
+    if (!request?.player) return;
+    request.allowed = !hasDisallowedTombItem(request.player);
+  }
+
   function pillarMask(player) {
     return Number(player.getAttribute(PILLARS_ATTRIBUTE)) | 0;
   }
@@ -1281,6 +1287,7 @@ module.exports = function registerWaterfallQuest(api) {
   api.onNpcDialogueCondition(answerCondition);
   api.onCustomEvent("npc-dialogue:hook", handleStartHook);
   api.onCustomEvent("door:toggle", handleQuestDoorToggle);
+  api.onCustomEvent("waterfall-quest:tomb-entry-check", checkTombEntry);
   api.onNpcRoute(widenHudonTalkRange);
   api.onPlayerLogout(handleLogout);
   api.onPlayerDeath(({ player }) => clearCrossingRope(player));

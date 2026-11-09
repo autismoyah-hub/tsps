@@ -26,10 +26,6 @@
  * used crystal bow or crystal shield with 500 charges, chosen in the transcript.
  *
  * Gaps:
- *  - Glarial's Tomb restricted-items rule is not enforced; entry just needs the
- *    pebble (item on the tombstone) and the quest started.
- *  - The Waterfall Dungeon travel (raft/rope/doors) is not modelled, matching the
- *    Waterfall Quest plugin; the seed is planted in place in the throne room.
  *  - Ilfeen's post-quest crystal chant and Islwyn's 750k/900k bow/shield sales
  *    are not implemented; her post-quest first conversation plays from this page,
  *    later ones continue on the "Ilfeen" page.
@@ -347,6 +343,14 @@ module.exports = function registerRovingElvesQuest(api) {
     if (itemId !== GLARIALS_PEBBLE_ITEM_ID || objectId !== GLARIALS_TOMBSTONE_OBJECT_ID) return;
     if (quest.getStage(player) < STAGE_STARTED || quest.isComplete(player)) return;
     event.handled = true;
+    const request = { player, allowed: null };
+    api.emitCustomEvent("waterfall-quest:tomb-entry-check", request);
+    if (request.allowed !== true) {
+      if (request.allowed === false) {
+        player.sendMessage("You place the pebble in the gravestone's small indent but nothing happens.");
+      }
+      return;
+    }
     player.moveTo(new Location(TOMB_ENTRY_TILE.x, TOMB_ENTRY_TILE.y, TOMB_ENTRY_TILE.z));
   }
 
