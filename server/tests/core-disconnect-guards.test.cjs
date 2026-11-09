@@ -673,6 +673,37 @@ test('an accepted logout leaves the world on the same tick with the logout sourc
   });
 });
 
+test('content can hold removal after the logout response, until its registered work settles', () => {
+  const hooks = [...PluginManager.canRemovePlayerHooks];
+  const { player, sent } = stubLoggedInPlayer('edgesettlement');
+  player.setRegistered(true);
+  let settled = false;
+  try {
+    const api = PluginManager.createApi('RemovalSettlementTest');
+    api.onCanRemovePlayer(event => { if (event.player === player) event.allow = true; });
+    api.onCanRemovePlayer(event => { if (event.player === player && !settled) event.allow = false; });
+    api.onCanRemovePlayer(event => { if (event.player === player) event.allow = true; });
+    withDisconnectEvents(events => {
+      World.queueLogoutRequest(player);
+      World.process();
+      assert.deepEqual(sent, [['logout']], 'the client receives its logout response immediately');
+      assert.equal(player.isRegistered(), true);
+      assert.equal(World.getRemovePlayerQueue().includes(player), true, 'a later allow cannot override a hold');
+      assert.deepEqual(events, [], 'disconnect cleanup has not run ahead of the held work');
+      settled = true;
+      World.process();
+      assert.equal(World.getRemovePlayerQueue().includes(player), false);
+      assert.deepEqual(events.map(event => event.source), ['logout']);
+      World.process();
+      assert.equal(events.length, 1, 'cleanup happens once');
+    });
+  } finally {
+    PluginManager.canRemovePlayerHooks = hooks;
+    const index = World.getRemovePlayerQueue().indexOf(player);
+    if (index >= 0) World.getRemovePlayerQueue().splice(index, 1);
+  }
+});
+
 test('a server-side logout (content\'s log out buttons) tells the client as the logout button does', () => {
   const { player, sent } = stubLoggedInPlayer('edgeexit');
   player.setRegistered(true);
