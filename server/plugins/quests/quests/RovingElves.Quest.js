@@ -3,7 +3,7 @@
  *
  * The words come from the "Roving Elves" transcript page; this plugin supplies the
  * variant selector for Islwyn and Eluned, the prose-condition answers, the start
- * hook, the tomb entry, the seed pickup and Eluned's enchant hand-over, and the
+ * hook, the tomb exit, the seed pickup and Eluned's enchant hand-over, and the
  * seed planting by the Chalice of Eternity. The consecration seed drop itself
  * comes from npc-drops.json (4205 with the Roving Elves requirement).
  *
@@ -26,10 +26,6 @@
  * used crystal bow or crystal shield with 500 charges, chosen in the transcript.
  *
  * Gaps:
- *  - Glarial's Tomb restricted-items rule is not enforced; entry just needs the
- *    pebble (item on the tombstone) and the quest started.
- *  - The Waterfall Dungeon travel (raft/rope/doors) is not modelled, matching the
- *    Waterfall Quest plugin; the seed is planted in place in the throne room.
  *  - Ilfeen's post-quest crystal chant and Islwyn's 750k/900k bow/shield sales
  *    are not implemented; her post-quest first conversation plays from this page,
  *    later ones continue on the "Ilfeen" page.
@@ -72,7 +68,6 @@ module.exports = function registerRovingElvesQuest(api) {
   const STAGE_PLANTED = 5;
   const STAGE_COMPLETE = 6;
 
-  const GLARIALS_PEBBLE_ITEM_ID = ItemIdentifiers.GLARIALS_PEBBLE; // 294
   const OLD_SEED_ITEM_ID = ItemIdentifiers.CONSECRATION_SEED; // 4205, no Plant option
   const ENCHANTED_SEED_ITEM_ID = ItemIdentifiers.CONSECRATION_SEED_2; // 4206, Plant option
   const SPADE_ITEM_ID = ItemIdentifiers.SPADE; // 952
@@ -80,10 +75,8 @@ module.exports = function registerRovingElvesQuest(api) {
   const NEW_CRYSTAL_SHIELD_ITEM_ID = ItemIdentifiers.NEW_CRYSTAL_SHIELD; // 4224
   const STRENGTH_XP = 10000; // cache row 122 stat_xp_awarded [2, 100000]
 
-  const GLARIALS_TOMBSTONE_OBJECT_ID = ObjectIdentifiers.GLARIALS_TOMBSTONE; // 1992
   const TOMB_LADDER_OBJECT_ID = ObjectIdentifiers.LADDER_218; // 17387, generic id shared by many ladders
   const TOMB_LADDER_TILE = { x: 2556, y: 9844, z: 0 }; // cache placement inside Glarial's Tomb
-  const TOMB_ENTRY_TILE = { x: 2556, y: 9845, z: 0 };
   const TOMB_EXIT_TILE = { x: 2557, y: 3445, z: 0 };
   // quest-helper's throne room zone around the Chalice (2603,9910).
   const CHALICE_CAVERN_ZONE = { minX: 2599, maxX: 2608, minY: 9901, maxY: 9916, levels: [0] };
@@ -341,15 +334,6 @@ module.exports = function registerRovingElvesQuest(api) {
   // Tomb entry / seed planting / Moss Guardian
   // ==========================================================================
 
-  /** The pebble opens the tomb; the player appears by the ladder inside. */
-  function handlePebbleOnTombstone(event) {
-    const { player, itemId, objectId } = event;
-    if (itemId !== GLARIALS_PEBBLE_ITEM_ID || objectId !== GLARIALS_TOMBSTONE_OBJECT_ID) return;
-    if (quest.getStage(player) < STAGE_STARTED || quest.isComplete(player)) return;
-    event.handled = true;
-    player.moveTo(new Location(TOMB_ENTRY_TILE.x, TOMB_ENTRY_TILE.y, TOMB_ENTRY_TILE.z));
-  }
-
   /** The tomb ladder climbs back up beside the tombstone (no map link exists). */
   function claimTombLadder(request) {
     if (!request || request.objectId !== TOMB_LADDER_OBJECT_ID) return;
@@ -467,7 +451,6 @@ module.exports = function registerRovingElvesQuest(api) {
   api.onCustomEvent("npc-dialogue:action", handleAction);
   api.onCustomEvent("npc-dialogue:choice", handleRewardChoice);
   api.onCustomEvent("ladders:climb", claimTombLadder);
-  api.onItemOnObject(handlePebbleOnTombstone, { noted: false });
   api.onItemAction(handleItemAction);
   api.onGroundItemPickup(handleSeedPickup);
   api.onCustomEvent("quest:completed", handleQuestCompleted);
