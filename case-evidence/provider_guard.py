@@ -1,5 +1,5 @@
 """Case candidate: authenticated duplicate check then unchanged pilot submit. Not selected."""
-import argparse, datetime, hashlib, json, os, sys, types
+import argparse, datetime, hashlib, json, os, subprocess, sys, types
 from pathlib import Path
 from huggingface_hub import HfApi
 
@@ -25,6 +25,14 @@ def main():
     age=(datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(pre['createdUTC'])).total_seconds(); assert 0<=age<=300
     assert sel['source']==SOURCE and sel['planSHA256']==a.plan_sha256 and sel['owner']==OWNER and sel['action']=='SELECT_ONCE' and sel['attempts']==1
     for path,sha in pre['files'].items(): assert digest(ROOT/path)==sha
+    parserraw=(ROOT/'authority.py').read_bytes(); assert hashlib.sha256(parserraw).hexdigest()=='218404c595589d13c18658b64c13eb924d146544d1ed40fbfc221cae96002e63'
+    parser=types.ModuleType('case_authority');exec(compile(parserraw,str(ROOT/'authority.py'),'exec'),parser.__dict__)
+    subject={'owner':OWNER,'source':SOURCE,'planSHA256':a.plan_sha256,'manifestSHA256':plan['expectedInputsRef']['sha256'],'connectedDiffSHA256':'ea6952fa8c4ecd465bc04667bd7d9457784fadbebccc47e8afc0b7b1cbd75498','files':pre['files'],'authAdapterSHA256':'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326','authHelperSHA256':'00ff45d75be1eae3bc8f04995cf8b8bcbe2bc5adc28c1162b843cfe88c87024f9'}
+    assert pre['authoritySubject']==subject and hashlib.sha256(parser.canonical(pre['identityValue'])).hexdigest()=='4e3369be85775623307b4d51186e2fb5bfa996899ed2046b3b61aba859574cd2'
+    for label,session,expected in [('peer','ed3a4125-645c-4266-8b86-4e199dd5bc63',{'reviewer':'ed3a4125-645c-4266-8b86-4e199dd5bc63','verdict':'EXACT_INPUT_PROFILE_GO','subject':subject}),('owner',OWNER,sel),('mc','eaae9ca0-2f2b-4c05-85cd-c3e70178aeac',pre['identityValue'])]:
+        transcript=subprocess.check_output(['cuttle','--json','sessions','read',session,'--turns','200'])
+        proof=parser.exact_turn(transcript,session,expected)
+        assert proof['turnSHA256']==pre[label+'Proof']['turnSHA256']
     assert os.environ.get('CCC_SESSION_ID')==OWNER
     assert not (ROOT/'submission.json').exists() and not (ROOT/'exclusive-intent.json').exists()
     for candidate in ROOT.parent.rglob('submission.json'):
