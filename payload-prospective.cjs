@@ -11,6 +11,8 @@ const server = path.join(root, 'server');
 const emit = value => console.log(JSON.stringify(value));
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const fileHash = file => sha(fs.readFileSync(file));
+const failureEvent = error => ({event:'native-qualification-result', source:PLAN.source, status:error.outcome ?? 'SETUP_FAILURE', error:'Failure details suppressed; inspect scoped event statuses', resources:resources()});
+const cacheSummary = (target,cacheId,files) => ({event:'actual-cache-manifest',target,cacheId,fileCount:files.length});
 function treeManifest(directory) {
   return fs.readdirSync(directory, {recursive: true}).sort().flatMap(relative => {
     const full = path.join(directory, relative);
@@ -384,7 +386,7 @@ async function resolveInputManifest(plan, fetcher = fetch) {
       if (actual[file]?.sha256 !== expected) throw new Error(`Cache not equivalent: ${file}`);
     }
     if (Object.keys(actual).length !== Object.keys(PLAN.expectedCacheFiles).length) throw new Error('Cache file count differs from retained input');
-    emit({event: 'actual-cache-manifest', target, cacheId: cacheInfo.id, files: cacheManifest});
+    emit(cacheSummary(target,cacheInfo.id,cacheManifest));
     emit({event: 'cache-equivalence', matchedFiles: Object.keys(actual).length, status: 'PASS',
       reference: 'author OpenRS2 2757 static archive inventory; no Windows executable equivalence claim'});
     sealState.cacheFiles = Object.fromEntries(Object.entries(actual).map(([file, row]) => [file, row.sha256]));
@@ -422,7 +424,6 @@ async function resolveInputManifest(plan, fetcher = fetch) {
   // Retain the original nonzero/unknown outcome. Post-failure identity checks
   // neither catch a target assertion as success nor initiate another payload.
   captureSeals(true);
-  emit({event: 'native-qualification-result', source: PLAN.source,
-    status: error.outcome ?? 'SETUP_FAILURE', error: 'Failure details suppressed; inspect scoped event statuses', resources: resources()});
+  emit(failureEvent(error));
   process.exitCode = error.exitCode ?? 70;
 });
