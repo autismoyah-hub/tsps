@@ -14,6 +14,52 @@ FIRST = "Belona's actual exchange charges and returns the Wiki mineral prices"
 SECOND = 'Belona refuses other stock and preserves locked items and a full currency stack'
 THIRD = "another reward shop still refuses Belona's stock"
 
+def target_diagnostic(text):
+    lines = text.splitlines()
+    header = 'not ok 1 - ' + FIRST
+    starts = [i for i, line in enumerate(lines) if line == header]
+    if len(starts) != 1:
+        raise ValueError('target TAP header missing or duplicated')
+    i = starts[0] + 1
+    if i >= len(lines) or lines[i] != '  ---':
+        raise ValueError('target diagnostic missing')
+    i += 1
+    fields = {}
+    while i < len(lines) and lines[i] != '  ...':
+        match = re.fullmatch(r'  ([A-Za-z_][A-Za-z_0-9]*):(?: (.*))?', lines[i])
+        if not match:
+            raise ValueError('malformed target diagnostic field')
+        key, value = match.group(1), match.group(2) or ''
+        if key in fields:
+            raise ValueError('duplicate target diagnostic field')
+        i += 1
+        if value == '|-':
+            block = []
+            while i < len(lines) and (lines[i].startswith('    ') or lines[i] == ''):
+                block.append(lines[i][4:] if lines[i].startswith('    ') else '')
+                i += 1
+            fields[key] = '\n'.join(block)
+        else:
+            fields[key] = value
+    if i >= len(lines) or lines[i] != '  ...':
+        raise ValueError('unterminated target diagnostic')
+    i += 1
+    # No second YAML document belongs to this failed test.
+    while i < len(lines) and not re.match(r'^(?:# Subtest:|(?:not )?ok \d+ - |1\.\.)', lines[i]):
+        if lines[i] in ('  ---', '  ...'):
+            raise ValueError('duplicate target diagnostic')
+        i += 1
+    expected = {'failureType': "'testCodeFailure'", 'code': "'ERR_ASSERTION'", 'name': "'AssertionError'", 'expected': 'true', 'actual': 'false', 'operator': "'=='"}
+    if any(fields.get(key) != value for key, value in expected.items()):
+        raise ValueError('target diagnostic is not the expected assertion failure')
+    expression = 'assert.ok(f.messages.at(-1).includes(`shop will buy for ${refund} `))'
+    if fields.get('error', '').strip() != 'The expression evaluated to a falsy value:\n\n  ' + expression:
+        raise ValueError('target diagnostic expression mismatch')
+    stack = fields.get('stack', '').splitlines()
+    if not stack or not re.fullmatch(r'TestContext\.<anonymous> \(.*mineral-exchange\.test\.cjs:107:\d+\)', stack[0]):
+        raise ValueError('target diagnostic stack mismatch')
+
+
 def classify(label, raw):
     text = raw.decode('utf-8', errors='strict')
     events = []
@@ -72,10 +118,7 @@ def classify(label, raw):
     if label == 'before':
         if stage.get('code') != 1 or result.get('status') != 'PAYLOAD_NONZERO_OR_TAP_UNCLASSIFIED':
             raise ValueError('before was not a normal failing test process')
-        if not re.search(r'mineral-exchange\.test\.cjs:107:\d+', text):
-            raise ValueError('expected refund value assertion was not reached')
-        if 'shop will buy for' not in text or 'AssertionError' not in text:
-            raise ValueError('refund value assertion diagnostic missing')
+        target_diagnostic(text)
     elif stage.get('code') != 0 or not stage.get('tapValid') or result.get('status') != 'TESTS_PASS_AWAIT_SANDBOX_TERMINAL':
         raise ValueError('after did not report a valid passing test')
     return {'classification': 'TARGET_ASSERTION_REACHED' if label == 'before' else 'TESTS_PASS',
