@@ -37,7 +37,7 @@
   },
   "submitCaller": {
     "path": "before/case-executor.py",
-    "sha256": "e5333a9ab777f93f1836aaa393ea71b6b9b2be9791e41c1d9c0c40873d330762"
+    "sha256": "d888abfd149e540e794b3d71ea497dc9ea7def321968d9e581426e07391d1061"
   },
   "inputCollector": {
     "path": "retain-contiguous-inputs003.py",

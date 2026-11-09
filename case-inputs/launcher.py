@@ -8,14 +8,14 @@ ACCESS = ROOT / 'hf-project-access-v4.py'
 ENTRY = HERE / 'case-executor.py'
 PYTHON_SHA = 'c2c20b4745d447551221ec3d4e70f92c270c4609fe3df34fc52ea6dd46e92273'
 ACCESS_SHA = 'fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326'
-ENTRY_SHA = 'e5333a9ab777f93f1836aaa393ea71b6b9b2be9791e41c1d9c0c40873d330762'
+ENTRY_SHA = 'd888abfd149e540e794b3d71ea497dc9ea7def321968d9e581426e07391d1061'
 RECEIPT_SHA = '7ef21896e53f1e39c16f83b17c07889d4d570ff3415814cdb6aa1ce2901ae39f'
 PROJECTION_SHA = '9cd75e87859ecfa4f0f7ef0fee291e1aaa76fbf4e67a5f68663d56ffc2a92bfd'
 def checked(path, digest):
     raw = path.read_bytes()
     if hashlib.sha256(raw).hexdigest() != digest: raise RuntimeError('Bound input mismatch')
     return raw
-bundle = json.loads(checked(HERE / 'bindings.json', '6c13a15d1d8bd72d3c1cb2906b93100b55716919749e31d17fb00ff73dcfc5bb'))
+bundle = json.loads(checked(HERE / 'bindings.json', 'cb2d844a5dcd19bb36715d5745019169acec6c8a631a9465dc6dba707c4d1e80'))
 if set(bundle) != {'payload','resolver','pilot','package','caller','originalPlan','originalRequest','profileBasis','originalD46','submitCaller','inputCollector'}: raise RuntimeError('Binding keys mismatch')
 for row in bundle.values():
     if set(row) != {'path','sha256'}: raise RuntimeError('Binding schema mismatch')
