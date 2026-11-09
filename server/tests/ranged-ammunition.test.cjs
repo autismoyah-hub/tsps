@@ -886,6 +886,23 @@ test('Fire Warrior ordinary attack eligibility and queued hits', async t => {
     assert.equal(npc.getCombat().getHitQueue().hasPendingHitFrom(p),true);
     step(p,npc,6); assert.ok(npc.getHitpoints()<hp,'twisted-bow hit lands');
   });
+  await t.test('the last crystal bow charge launches a real shot before the bow becomes inactive',st=>{
+    const implementation = path.resolve(__dirname, '../plugins/items/CrystalBowShield.plugin.js');
+    if (require('node:fs').existsSync(implementation)) require(implementation).register(PluginManager.createApi('CrystalBowShieldNative'));
+    const {p,npc}=actors(st,core.NpcIdentifiers.MAN);
+    const style=core.ItemDefinition.forId(I.CRYSTAL_BOW).getWeaponInterface();
+    const method=equip(p,I.CRYSTAL_BOW,-1,0,style);
+    const bow=p.getEquipment().get(core.Equipment.WEAPON_SLOT);
+    bow.setMetaValue('crystal-bow-shield:charges',1);
+    forceAccuracy(st,p,npc);
+    assert.equal(core.CombatFactory.canAttackPermission(p,npc,false,method),C.CAN_ATTACK);
+    p.getCombat().attack(npc); step(p,npc);
+    assert.equal(npc.getCombat().getHitQueue().hasPendingHitFrom(p),true,'the final shot queued a hit');
+    assert.equal(p.getEquipment().get(core.Equipment.WEAPON_SLOT),bow,'the same item is retained');
+    assert.equal(bow.getId(),I.CRYSTAL_BOW_INACTIVE_);
+    const hp=npc.getHitpoints(); step(p,npc,5);
+    assert.ok(npc.getHitpoints()<hp,'the last shot landed after the transition');
+  });
   await t.test('an ordinary NPC remains attackable with ordinary arrows',st=>{
     const {p,npc}=actors(st,core.NpcIdentifiers.MAN); const method=equip(p,I.YEW_SHORTBOW,I.RUNE_ARROW,5); forceAccuracy(st,p,npc);
     assert.equal(core.CombatFactory.canAttackPermission(p,npc,false,method),C.CAN_ATTACK);
