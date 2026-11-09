@@ -52,6 +52,12 @@ function actor(t) {
   const p = new Player(new PlayerSession(channel));
   p.setIndex(next++);
   p.setUsername("potqa" + p.getIndex());
+  t.after(() => {
+    PM.emitPlayerLogout({ player: p, username: p.getUsername() });
+    core.World.unregisterPlayerPosition(p);
+    p.setRegistered(false);
+    core.TaskManager.cancelTasks(p.getIndex());
+  });
   p.setRegistered(true);
   p.setLocation(new core.Location(HOME[0], HOME[1], 0));
   p.needsPlacement = false;
@@ -64,12 +70,6 @@ function actor(t) {
   t.mock.method(p.getPacketSender(), "sendMessage", (message) => {
     messages.push(message);
     return p.getPacketSender();
-  });
-  t.after(() => {
-    PM.emitPlayerLogout({ player: p, username: p.getUsername() });
-    core.World.unregisterPlayerPosition(p);
-    p.setRegistered(false);
-    core.TaskManager.cancelTasks(p.getIndex());
   });
   return { p, c, inv: p.getInventory(), eq: p.getEquipment(), messages };
 }
@@ -296,17 +296,18 @@ test("a knife grinds an ordinary chocolate bar into dust", async (t) => {
       send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
     const session = new PlayerSession(channel), p = new Player(session);
     session.setPlayer(p);
-    p.setIndex(index); p.setUsername(username); p.setRegistered(true);
-    p.setLocation(new core.Location(HOME[0], HOME[1], 0)); p.needsPlacement = false;
-    assert.ok(p.getHitpoints() > 0, "a living ordinary player");
-    assert.equal(p.getCombat().isAnimationStalled(), false, "no action stall");
-    const c = new ClientConnection(channel); c.player = p;
+    p.setIndex(index); p.setUsername(username);
     t.after(() => {
       PM.emitPlayerDisconnect({ player: p, username: p.getUsername() });
       PM.emitPlayerLogout({ player: p, username: p.getUsername() });
       core.World.unregisterPlayerPosition(p);
       p.setRegistered(false); core.TaskManager.cancelTasks(p.getIndex());
     });
+    p.setRegistered(true);
+    p.setLocation(new core.Location(HOME[0], HOME[1], 0)); p.needsPlacement = false;
+    assert.ok(p.getHitpoints() > 0, "a living ordinary player");
+    assert.equal(p.getCombat().isAnimationStalled(), false, "no action stall");
+    const c = new ClientConnection(channel); c.player = p;
     return { p, c, inv: p.getInventory(), skills: p.getSkillManager() };
   }
   async function useActual(f, usedSlot, targetSlot) {
