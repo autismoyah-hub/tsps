@@ -1,5 +1,6 @@
 /**
- * The current crystal bow and shield use 2,500 charges, then become inactive.
+ * Ilfeen-made crystal bows and shields carry 2,500 charges, then become inactive.
+ * Untracked preexisting items retain their existing behavior.
  * https://oldschool.runescape.wiki/w/Crystal_bow
  * https://oldschool.runescape.wiki/w/Crystal_shield
  * A bow shot spends one charge (inferred from the documented shot count); a
@@ -19,9 +20,10 @@ function isBow(id) {
 function isShield(id) {
   return id === core.ItemIdentifiers.CRYSTAL_SHIELD;
 }
+function isManaged(item) { return item?.getMetaValue?.(CHARGES_META) !== undefined; }
 function remaining(item) {
   const value = item.getMetaValue(CHARGES_META);
-  if (value === undefined) return FULL_CHARGES;
+  if (value === undefined) return 0;
   return Number.isSafeInteger(value) && value >= 0 ? Math.min(FULL_CHARGES, value) : 0;
 }
 function refresh(player) {
@@ -33,14 +35,14 @@ function refresh(player) {
 }
 function checkAmmo(player, _amountRequired, silent) {
   const item = player.getEquipment().get(core.Equipment.WEAPON_SLOT);
-  if (!item || !isBow(item.getId()) || remaining(item) > 0) return null;
+  if (!item || !isBow(item.getId()) || !isManaged(item) || remaining(item) > 0) return null;
   if (!silent) player.sendMessage("Your crystal bow has no charges left.");
   return false;
 }
 
 function decrementAmmo(player, _pos, amount) {
   const item = player.getEquipment().get(core.Equipment.WEAPON_SLOT);
-  if (!item || !isBow(item.getId())) return false;
+  if (!item || !isBow(item.getId()) || !isManaged(item)) return false;
   let left = remaining(item);
   for (let shot = 0; shot < amount && left > 0; shot++) {
     const event = { player, itemId: item.getId(), skip: false };
@@ -62,7 +64,7 @@ function attackFinished({ attacker }) {
   const inventory = player.getInventory().getItems();
   if (!equipment.includes(item) && !inventory.includes(item)) return;
   item.setId(core.ItemIdentifiers.CRYSTAL_BOW_INACTIVE_);
-  item.setMetaValue(CHARGES_META, undefined);
+  item.setMetaValue(CHARGES_META, 0);
   refresh(player);
   player.sendMessage("Your crystal bow has run out of charges.");
 }
@@ -76,12 +78,12 @@ function incomingCombatHit(entity, hit) {
     impactShields.delete(hit);
     if (!(damage > 0)) return;
     const player = entity.getAsPlayer();
-    if (!item || !isShield(item.getId())) return;
+    if (!item || !isShield(item.getId()) || !isManaged(item)) return;
     if (!player.getEquipment().getItems().includes(item) && !player.getInventory().getItems().includes(item)) return;
     const left = Math.max(0, remaining(item) - 1);
     if (left === 0) {
       item.setId(core.ItemIdentifiers.CRYSTAL_SHIELD_INACTIVE_);
-      item.setMetaValue(CHARGES_META, undefined);
+      item.setMetaValue(CHARGES_META, 0);
       refresh(player);
       player.sendMessage("Your crystal shield has run out of charges.");
     } else {
@@ -95,17 +97,17 @@ function incomingCombatHit(entity, hit) {
 function damageApplying({ target, hit }) {
   if (!hit || !observedHits.has(hit) || !target?.isPlayer?.()) return;
   const item = target.getAsPlayer().getEquipment().get(core.Equipment.SHIELD_SLOT);
-  if (item && isShield(item.getId())) impactShields.set(hit, item);
+  if (item && isShield(item.getId()) && isManaged(item)) impactShields.set(hit, item);
 }
 
 function check({ player, item }) {
-  if (!item || (!isBow(item.getId()) && !isShield(item.getId()))) return false;
+  if (!item || !isManaged(item) || (!isBow(item.getId()) && !isShield(item.getId()))) return false;
   player.sendMessage(`Your ${isBow(item.getId()) ? "crystal bow" : "crystal shield"} has ${remaining(item).toLocaleString("en-US")} charges remaining.`);
   return true;
 }
 
 function revert({ player, item, slot }) {
-  if (!item) return false;
+  if (!item || !isManaged(item)) return false;
   const id = item.getId();
   if (!isBow(id) && !isShield(id) && id !== core.ItemIdentifiers.CRYSTAL_BOW_INACTIVE_
     && id !== core.ItemIdentifiers.CRYSTAL_SHIELD_INACTIVE_) return false;
@@ -124,7 +126,7 @@ function revert({ player, item, slot }) {
 function attach(pluginApi) { api = pluginApi; core = api.core; }
 module.exports = {
   name: "CrystalBowShield",
-  description: "Charges and reversion for the current crystal bow and shield.",
+  description: "Charges and reversion for explicitly tracked crystal bows and shields.",
   members: true,
   register(pluginApi) {
     attach(pluginApi);

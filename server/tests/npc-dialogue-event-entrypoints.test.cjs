@@ -4080,6 +4080,7 @@ test('Ilfeen charges shared prices through the first and later conversations', a
   const unrelated = new core.Item(ids.SPADE, 1);
   inventory.add(unrelated, false);
   const heldSpade = inventory.getItems().find(item => item.getId() === ids.SPADE);
+  const heldCoins = inventory.getItems().find(item => item.getId() === ids.COINS);
   const talk = () => PM.emitNpcInteraction({ player, npc, npcId, action: 'Talk-to', clickType: 1, handled: false });
   const reachOffer = async () => {
     assert.equal(talk(), true);
@@ -4095,11 +4096,13 @@ test('Ilfeen charges shared prices through the first and later conversations', a
   assert.equal(inventory.getAmount(ids.COINS), 1100000);
   assert.equal(inventory.getAmount(ids.CRYSTAL_BOW), 1);
   assert.ok(inventory.getItems().includes(heldSpade), 'unrelated live item identity survives');
+  assert.ok(inventory.getItems().includes(heldCoins), 'surviving coin stack identity survives');
   inventory.add(new core.Item(ids.CRYSTAL_WEAPON_SEED, 1), false);
   menu = await reachOffer();
   assert.match(menu.options[1], /600,000/);
   await choose(f, 2);
   assert.equal(inventory.getAmount(ids.CRYSTAL_SHIELD), 1);
+  assert.equal(inventory.getItems().find(item => item.getId() === ids.CRYSTAL_SHIELD).getMetaValue('crystal-bow-shield:charges'), 2500);
   assert.equal(inventory.getAmount(ids.COINS), 500000);
   assert.equal(player.getAttribute('ilfeen:paid-crystal-chants'), 2);
   const { PlayerSave } = require('../dist/game/entity/impl/player/persistence/PlayerSave');
@@ -4259,4 +4262,113 @@ test('Ilfeen keeps the book dialogue when the player has no weapon seed', async 
   const menu = MultiChatboxPrompt.getPending(player);
   assert.notEqual(menu?.title, 'What would you like Ilfeen to make?');
   assert.ok(menu?.options.includes('That sounds great.'), 'the original book branch remains reachable');
+});
+
+for (const form of ['CRYSTAL_BOW', 'CRYSTAL_BOW_INACTIVE_', 'CRYSTAL_SHIELD', 'CRYSTAL_SHIELD_INACTIVE_']) {
+  test(`managed ${form} reverts only after the registered inventory confirmation`, async t => {
+    const f = fixture(t), { player } = f, ids = core.ItemIdentifiers, inventory = player.getInventory();
+    const item = new core.Item(ids[form], 1);
+    item.setMetaValue('crystal-bow-shield:charges', form.includes('INACTIVE') ? 0 : 100);
+    inventory.add(item, false);
+    const slot = inventory.getSlotForItemId(ids[form]);
+    await f.connection.dispatch([{ type: 'inventory_action', widgetId: core.CacheDefinitions.getComponentId('inventory:items'),
+      itemId: ids[form], slot, option: 'Revert', optionIndex: 4 }]);
+    f.connection.processTurnPackets();
+    assert.equal(MultiChatboxPrompt.getPending(player)?.title, 'Revert this crystal equipment to a seed?');
+    assert.equal(inventory.getAmount(ids[form]), 1);
+    await choose(f, 1);
+    assert.equal(inventory.getAmount(ids[form]), 0);
+    assert.equal(inventory.getAmount(ids.CRYSTAL_WEAPON_SEED), 1);
+  });
+}
+
+test('a stale crystal Revert confirmation cannot transform a replacement item', async t => {
+  const f = fixture(t), { player } = f, ids = core.ItemIdentifiers, inventory = player.getInventory();
+  const item = new core.Item(ids.CRYSTAL_BOW, 1);
+  item.setMetaValue('crystal-bow-shield:charges', 100);
+  inventory.add(item, false);
+  const slot = inventory.getSlotForItemId(ids.CRYSTAL_BOW);
+  await f.connection.dispatch([{ type: 'inventory_action', widgetId: core.CacheDefinitions.getComponentId('inventory:items'),
+    itemId: ids.CRYSTAL_BOW, slot, option: 'Revert', optionIndex: 4 }]);
+  f.connection.processTurnPackets();
+  assert.equal(MultiChatboxPrompt.getPending(player)?.title, 'Revert this crystal equipment to a seed?');
+  const replacement = new core.Item(ids.SPADE, 1);
+  inventory.setItem(slot, replacement);
+  await choose(f, 1);
+  assert.equal(inventory.getItems()[slot], replacement);
+  assert.equal(inventory.getAmount(ids.CRYSTAL_WEAPON_SEED), 0);
+});
+
+test('an Ilfeen offer with a stale discount tier cannot charge the old price', async t => {
+  const f = fixture(t), { player } = f, ids = core.ItemIdentifiers;
+  const quest = registeredQuest('roving_elves');
+  quest.setStage(player, quest.completionValue);
+  player.setAttribute('quest.roving_elves.ilfeen-met', 1);
+  const npcId = core.NpcIdentifiers.ILFEEN;
+  const npc = core.NPC.create(npcId, new core.Location(2291, 3148));
+  const inventory = player.getInventory();
+  inventory.add(new core.Item(ids.CRYSTAL_WEAPON_SEED), false);
+  inventory.add(new core.Item(ids.COINS, 900000), false);
+  PM.emitNpcInteraction({ player, npc, npcId, action: 'Talk-to', clickType: 1, handled: false });
+  for (let n = 0; n < 20 && !MultiChatboxPrompt.getPending(player); n++) await nextLine(f);
+  assert.equal(MultiChatboxPrompt.getPending(player)?.title, 'What would you like Ilfeen to make?');
+  player.setAttribute('ilfeen:paid-crystal-chants', 1);
+  await choose(f, 1);
+  assert.equal(inventory.getAmount(ids.COINS), 900000);
+  assert.equal(inventory.getAmount(ids.CRYSTAL_WEAPON_SEED), 1);
+  assert.equal(inventory.getAmount(ids.CRYSTAL_BOW), 0);
+  assert.equal(player.getAttribute('ilfeen:paid-crystal-chants'), 1);
+});
+
+// The normal plugin set is loaded by the suite. This tests registration order
+// at the actual dispatchers; attack setup and damage are fixture-set.
+test('the normal plugin set dispatches a paid crystal bow charge to its owner', t => {
+  const f = fixture(t), { player } = f, ids = core.ItemIdentifiers;
+  const bow = new core.Item(ids.CRYSTAL_BOW, 1);
+  bow.setMetaValue('crystal-bow-shield:charges', 1);
+  player.getEquipment().setItem(core.Equipment.WEAPON_SLOT, bow);
+  t.mock.method(player.getCombat(), 'getRangedWeapon', () => core.RangedWeapon.CRYSTAL_BOW);
+  core.CombatFactory.decrementAmmo(player, player.getLocation(), 1);
+  assert.equal(bow.getId(), ids.CRYSTAL_BOW);
+  PM.emitCustomEvent('combat:attack-finished', { attacker: player });
+  assert.equal(bow.getId(), ids.CRYSTAL_BOW_INACTIVE_);
+});
+
+test('the normal plugin set dispatches a positive combat hit to a paid crystal shield', t => {
+  const f = fixture(t), attacker = fixture(t).player, { player } = f, ids = core.ItemIdentifiers;
+  const { HitDamage } = require('../dist/game/content/combat/hit/HitDamage');
+  const { HitMask } = require('../dist/game/content/combat/hit/HitMask');
+  const shield = new core.Item(ids.CRYSTAL_SHIELD, 1);
+  shield.setMetaValue('crystal-bow-shield:charges', 1);
+  player.getEquipment().setItem(core.Equipment.SHIELD_SLOT, shield);
+  assert.ok(player.getHitpoints() > 1);
+  const hit = new HitDamage(1, HitMask.RED);
+  core.CombatFactory.applyIncomingHitDamage(attacker, player, core.CombatType.MELEE, hit);
+  player.getCombat().getHitQueue().addPendingDamage([hit]);
+  player.getCombat().getHitQueue().process(1);
+  assert.equal(shield.getId(), ids.CRYSTAL_SHIELD_INACTIVE_);
+});
+
+test('Ilfeen shares all five discount tiers between bow and shield choices', async t => {
+  const f = fixture(t), { player } = f, ids = core.ItemIdentifiers;
+  const quest = registeredQuest('roving_elves'); quest.setStage(player, quest.completionValue);
+  player.setAttribute('quest.roving_elves.ilfeen-met', 1);
+  const npcId = core.NpcIdentifiers.ILFEEN;
+  const npc = core.NPC.create(npcId, new core.Location(2291, 3148));
+  const inventory = player.getInventory();
+  inventory.add(new core.Item(ids.COINS, 5000000), false);
+  const expected = [900000, 600000, 540000, 300000, 180000, 150000];
+  for (let n = 0; n < expected.length; n++) {
+    inventory.add(new core.Item(ids.CRYSTAL_WEAPON_SEED), false);
+    const oldCoins = inventory.getAmount(ids.COINS);
+    PM.emitNpcInteraction({ player, npc, npcId, action: 'Talk-to', clickType: 1, handled: false });
+    for (let line = 0; line < 20 && !MultiChatboxPrompt.getPending(player); line++) await nextLine(f);
+    const menu = MultiChatboxPrompt.getPending(player), choice = n % 2;
+    assert.equal(menu?.title, 'What would you like Ilfeen to make?');
+    assert.ok(menu.options[choice].includes(expected[n].toLocaleString('en-US')));
+    await choose(f, choice + 1);
+    assert.equal(inventory.getAmount(ids.COINS), oldCoins - expected[n]);
+    assert.equal(inventory.getAmount(ids.CRYSTAL_WEAPON_SEED), 0);
+  }
+  assert.equal(player.getAttribute('ilfeen:paid-crystal-chants'), 4);
 });

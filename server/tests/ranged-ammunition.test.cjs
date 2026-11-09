@@ -903,6 +903,18 @@ test('Fire Warrior ordinary attack eligibility and queued hits', async t => {
     const hp=npc.getHitpoints(); step(p,npc,5);
     assert.ok(npc.getHitpoints()<hp,'the last shot landed after the transition');
   });
+  await t.test('a managed zero-charge crystal bow cannot launch an ordinary attack',st=>{
+    const {p,npc}=actors(st,core.NpcIdentifiers.MAN);
+    const style=core.ItemDefinition.forId(I.CRYSTAL_BOW).getWeaponInterface();
+    const method=equip(p,I.CRYSTAL_BOW,-1,0,style);
+    const bow=p.getEquipment().get(core.Equipment.WEAPON_SLOT);
+    bow.setMetaValue('crystal-bow-shield:charges',0);
+    assert.equal(method.canAttack(p,npc),false);
+    p.getCombat().attack(npc); step(p,npc);
+    assert.equal(npc.getCombat().getHitQueue().hasPendingHitFrom(p),false);
+    assert.equal(bow.getId(),I.CRYSTAL_BOW);
+    assert.equal(bow.getMetaValue('crystal-bow-shield:charges'),0);
+  });
   await t.test('an ordinary NPC remains attackable with ordinary arrows',st=>{
     const {p,npc}=actors(st,core.NpcIdentifiers.MAN); const method=equip(p,I.YEW_SHORTBOW,I.RUNE_ARROW,5); forceAccuracy(st,p,npc);
     assert.equal(core.CombatFactory.canAttackPermission(p,npc,false,method),C.CAN_ATTACK);

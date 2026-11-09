@@ -66,6 +66,7 @@ test("each crystal bow keeps its own shot count: swapping bows doesn't reset it"
 // attack-finished event are exercised without claiming a full projectile run.
 test('current crystal bow keeps its count on the item and becomes inactive after the last shot', (t) => {
   const p = archer(t), bow = new core.Item(I.CRYSTAL_BOW, 1);
+  bow.setMetaValue('crystal-bow-shield:charges', 2500);
   wield(p, bow);
   fire(p, 2499);
   assert.equal(bow.getId(), I.CRYSTAL_BOW);
@@ -101,6 +102,8 @@ test('crystal bow charge-saving hook and independent item counts are preserved',
   let save = true;
   api.onCustomEvent('combat:consume-charge', event => { if (event.player === p && save) event.skip = true; });
   const first = new core.Item(I.CRYSTAL_BOW, 1), second = new core.Item(I.CRYSTAL_BOW, 1);
+  first.setMetaValue('crystal-bow-shield:charges', 2500);
+  second.setMetaValue('crystal-bow-shield:charges', 2500);
   wield(p, first); fire(p, 1);
   assert.equal(first.getMetaValue('crystal-bow-shield:charges'), 2500);
   save = false; fire(p, 1);
@@ -173,4 +176,39 @@ test('the shield captured at damage application is charged if a later hook moves
   target.getCombat().getHitQueue().process(5);
   assert.equal(first.getMetaValue('crystal-bow-shield:charges'), 3);
   assert.equal(second.getMetaValue('crystal-bow-shield:charges'), 4);
+});
+
+test('older untracked active bows retain the prior consumer behavior', (t) => {
+  const p = archer(t), bow = new core.Item(I.CRYSTAL_BOW, 1);
+  wield(p, bow);
+  fire(p, 1);
+  assert.equal(bow.getId(), I.CRYSTAL_BOW);
+  assert.equal(bow.getMetaValue('crystal-bow-shield:charges'), undefined);
+});
+
+test('managed shield charge metadata survives player save and restore', (t) => {
+  const { PlayerSave } = require('../dist/game/entity/impl/player/persistence/PlayerSave');
+  const p = archer(t), restored = archer(t);
+  const shield = new core.Item(I.CRYSTAL_SHIELD, 1);
+  shield.setMetaValue('crystal-bow-shield:charges', 42);
+  p.getEquipment().setItem(core.Equipment.SHIELD_SLOT, shield);
+  PlayerSave.fromPlayer(p).applyToPlayer(restored);
+  assert.equal(restored.getEquipment().get(core.Equipment.SHIELD_SLOT).getMetaValue('crystal-bow-shield:charges'), 42);
+});
+
+test('two applied combat hits spend two shield charges', (t) => {
+  const { HitDamage } = require('../dist/game/content/combat/hit/HitDamage');
+  const { HitMask } = require('../dist/game/content/combat/hit/HitMask');
+  const { CombatType } = require('../dist/game/content/combat/CombatType');
+  const attacker = archer(t), target = archer(t);
+  target.setRegistered(true);
+  t.after(() => target.setRegistered(false));
+  const shield = new core.Item(I.CRYSTAL_SHIELD, 1);
+  shield.setMetaValue('crystal-bow-shield:charges', 4);
+  target.getEquipment().setItem(core.Equipment.SHIELD_SLOT, shield);
+  const hits = [new HitDamage(1, HitMask.RED), new HitDamage(1, HitMask.RED)];
+  for (const hit of hits) CombatFactory.applyIncomingHitDamage(attacker, target, CombatType.MELEE, hit);
+  target.getCombat().getHitQueue().addPendingDamage(hits);
+  target.getCombat().getHitQueue().process(6);
+  assert.equal(shield.getMetaValue('crystal-bow-shield:charges'), 2);
 });
