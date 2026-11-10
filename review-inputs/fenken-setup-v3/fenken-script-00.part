@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Fenkende setup-only source candidate. No producer/source import or provider calls."""
+import email,hashlib,json,os,pathlib,platform,resource,runpy,stat,subprocess,sys,tarfile,zipfile
+WORK=None; PHASE=None
+PACKET='3149211e73a97854924467f10c60241819d00dd44051b0b8e27eeff21cad92a5'
+def require(ok,msg):
+ if not ok: raise ValueError(msg)
+def digest(p):
+ h=hashlib.sha256()
+ with p.open('rb') as f:
+  for b in iter(lambda:f.read(1048576),b''):h.update(b)
+ return h.hexdigest()
+def safe_name(n):
+ p=pathlib.PurePosixPath(n);return bool(n) and not n.startswith('/') and '\\' not in n and str(p)==n and all(x not in ('.','..') for x in p.parts)
+def check_tar(p):
+ seen=set();types={};root=None;total=0
+ with tarfile.open(p,'r:gz') as t:
+  for m in t:
+   n=m.name.rstrip('/');require(safe_name(n),'tar path');require(n not in seen,'tar duplicate');seen.add(n)
+   top=n.split('/')[0];root=root or top;require(top==root,'tar root');require(m.isfile() or m.isdir(),'tar type'); parts=n.split('/');require(not any(types.get('/'.join(parts[:i]))=='file' for i in range(1,len(parts))),'tar prefix collision');require(not (m.isfile() and any(x.startswith(n+'/') for x in types)),'tar prefix collision');types[n]='dir' if m.isdir() else 'file';total+=m.size
+   require(len(seen)<=20000 and total<=100000000,'tar limits')
+ return root
+def check_zip(z):
+ seen=set();total=0
+ for x in z.infolist():
+  n=x.filename.rstrip('/');require(safe_name(n) and n not in seen,'zip path/duplicate');seen.add(n);require(not stat.S_ISLNK(x.external_attr>>16),'zip symlink');total+=x.file_size
+  require(len(seen)<=50000 and total<=200000000,'zip limits')
+ require(z.testzip() is None,'zip CRC')
+def limited():
+ resource.setrlimit(resource.RLIMIT_FSIZE,(4194304,4194304))
+def call(args,env,label,work):
+ global PHASE
+ PHASE=label
+ o=work/(label+'.out');e=work/(label+'.err')
+ try:
+  with o.open('xb') as out,e.open('xb') as err:
+   r=subprocess.run(args,env=env,cwd=work,stdin=subprocess.DEVNULL,stdout=out,stderr=err,timeout=300,preexec_fn=limited)
+ except subprocess.TimeoutExpired:
+  PHASE={'stage':label,'outcome':'timeout','direct_process':'subprocess.run killed and waited','descendant_closure':'UNKNOWN','stdoutSHA256':digest(o),'stderrSHA256':digest(e)};raise
+ PHASE={'stage':label,'exit':r.returncode,'descendant_closure':'UNKNOWN','stdoutSHA256':digest(o),'stderrSHA256':digest(e)}
+ require(r.returncode==0,label+' failed '+str(r.returncode))
+ return {'stage':label,'code':r.returncode,'stdoutSHA256':digest(o),'stderrSHA256':digest(e)}
+def validate_built(p,by,supported,utils,version):
+ n,v,_,wt=utils.parse_wheel_filename(p.name);n=utils.canonicalize_name(n)
+ require(n in ('cerberus','mwparserfromhell','ordered-set') and version.Version(by[n]['version'])==v and bool(wt & supported),'built filename/version/tag')
+ with zipfile.ZipFile(p) as z:
+  check_zip(z);m=[x for x in z.namelist() if x.count('/')==1 and x.endswith('.dist-info/METADATA')];require(len(m)==1,'built metadata count')
+  obj=email.message_from_bytes(z.read(m[0]));require(utils.canonicalize_name(obj.get('Name',''))==n and obj.get('Version')==str(v),'built metadata identity')
+  if n=='mwparserfromhell':require(not any(x.filename.endswith(('.so','.pyd')) for x in z.infolist()),'mwparser native extension')
+def main():
+ global WORK
+ require(len(sys.argv)==3,'usage: setup_only.py packet.zip new-private-directory');packet=pathlib.Path(sys.argv[1]).resolve();work=pathlib.Path(sys.argv[2]);require(digest(packet)==PACKET,'packet pin')
+ work.mkdir(mode=0o700);require(stat.S_IMODE(work.stat().st_mode)==0o700,'work mode');work=work.resolve();WORK=work;files=work/'inputs';files.mkdir();events=[]
+ with zipfile.ZipFile(packet) as z:
+  check_zip(z);idx=json.loads(z.read('INDEX.json'));require(set(z.namelist())==set(idx)|{'INDEX.json'},'index members')
+  for n,v in idx.items():
+   require('/' not in n and safe_name(n),'flat index');b=z.read(n);require(len(b)==v['bytes'] and hashlib.sha256(b).hexdigest()==v['sha256'],'input hash');(files/n).write_bytes(b)
+ desc=json.loads((files/'candidates.json').read_bytes());rows=desc['packages'];require(len(rows)==32 and len({r['name'] for r in rows})==32,'candidate count');by={r['name']:r for r in rows}
+ for r in rows:
+  p=files/r['filename'];require(p.is_file() and digest(p)==r['sha256'] and p.stat().st_size==r['bytes'],'artifact hash')
+  if r['kind']=='sdist':check_tar(p)
+  else:
+   with zipfile.ZipFile(p) as z:check_zip(z)
+ require(platform.system()=='Linux' and platform.machine()=='x86_64' and sys.version_info[:3]==(3,10,22),'target platform')
+ # Verified pure wheel inserted explicitly, prior to target marker/tag validation.
+ sys.path.insert(0,str(files/by['packaging']['filename']));import packaging
+ from packaging import tags,markers,requirements,specifiers,utils,version
+ require(str(files/by['packaging']['filename']) in packaging.__file__ and packaging.__version__==by['packaging']['version'],'packaging origin')
+ actual=markers.default_environment();actual['extra']='';supported=set(tags.sys_tags());checks=0
+ for row in rows:
+  if row['kind']!='bdist_wheel':continue
+  _,_,_,wt=utils.parse_wheel_filename(row['filename']);require(bool(wt & supported),'wheel tag '+row['name'])
+  if row.get('requires_python'):require(specifiers.SpecifierSet(row['requires_python']).contains(platform.python_version()),'python requirement')
+  for text in row.get('requires_dist') or []:
+   q=requirements.Requirement(text)
+   if q.marker and not q.marker.evaluate(actual):continue
+   require(not q.extras,'unsupported dependency extras');n=utils.canonicalize_name(q.name);require(n in by and q.specifier.contains(version.Version(by[n]['version']),prereleases=True),'dependency '+str(q));checks+=1
+ events.append({'stage':'target-metadata','python':platform.python_version(),'platform':platform.platform(),'soabi':__import__('sysconfig').get_config_var('SOABI'),'activeEdges':checks})
+ tools=work/'tools';tools.mkdir()
+ for name in ('pip','setuptools','wheel'):
+  with zipfile.ZipFile(files/by[name]['filename']) as z:
+   check_zip(z)
+   for x in z.infolist():
+    require('.data/' not in x.filename,'wheel data scheme');p=tools/x.filename
+    if x.is_dir():p.mkdir(parents=True,exist_ok=True);continue
+    p.parent.mkdir(parents=True,exist_ok=True);require(not p.exists(),'tool collision');p.write_bytes(z.read(x))
+ runner=work/'tool_runner.py';runner.write_text("import os,sys,runpy\nsys.path.insert(0,sys.argv.pop(1))\nos.environ['SETUPTOOLS_USE_DISTUTILS']='local'\nimport setuptools,distutils.core,pip,wheel\nif not all(x.__file__.startswith(sys.path[0]+'/') for x in (setuptools,distutils.core,pip,wheel)): raise ValueError('tool origin')\nif (setuptools.__version__,pip.__version__,wheel.__version__)!=('60.0.0','24.0','0.37.1'): raise ValueError('tool version')\nsys.argv[0]='pip'\nrunpy.run_module('pip',run_name='__main__')\n")
+ env={'PATH':'/usr/local/bin:/usr/bin:/bin','LANG':'C.UTF-8','TZ':'UTC','PIP_NO_INDEX':'1','PIP_DISABLE_PIP_VERSION_CHECK':'1','PIP_CONFIG_FILE':'/dev/null','PYTHONNOUSERSITE':'1','SETUPTOOLS_USE_DISTUTILS':'local','WITHOUT_EXTENSION':'1'}
+ py=sys.executable;prefix=[py,'-I','-S','-B',str(runner),str(tools)];built=work/'built';built.mkdir()
+ for name in ('cerberus','mwparserfromhell','ordered-set'):
+  events.append(call(prefix+['wheel','--no-index','--no-deps','--no-build-isolation','--wheel-dir',str(built),str(files/by[name]['filename'])],env,'build-'+name,work))
+ PHASE={'stage':'validate-built-wheel-set','descendant_closure':'UNKNOWN'}
+ wheels=list(built.glob('*.whl'));require(len(wheels)==3,'built wheel count');built_names={utils.canonicalize_name(utils.parse_wheel_filename(p.name)[0]) for p in wheels};require(built_names=={'cerberus','mwparserfromhell','ordered-set'},'built wheel identities')
+ for p in wheels:
+  PHASE={'stage':'validate-built-wheel','wheel':p.name,'descendant_closure':'UNKNOWN'}
+  validate_built(p,by,supported,utils,version)
+  events.append({'stage':'built-wheel','name':p.name,'sha256':digest(p)})
+ # No producer, generated-output import, or source checkout is invoked here.
+ result={'status':'SETUP_BUILDS_ONLY','events':events,'scope':'No producer/export; pip no-index does not prevent arbitrary backend network; target import/closure and source staging remain unverified.'}
+ PHASE={'stage':'publish-result','descendant_closure':'UNKNOWN'}
+ (work/'result.json').write_text(json.dumps(result,indent=2)+'\n');print(json.dumps(result))
+def fail_receipt(e):
+  receipt={'status':'FAILED_OR_UNKNOWN','phase':PHASE,'error':type(e).__name__,'detail':str(e)[:300],'descendant_closure':'UNKNOWN'}
+  if WORK is not None:
+   try:
+    with (WORK/'failure.json').open('x') as f:json.dump(receipt,f);f.flush();os.fsync(f.fileno())
+   except BaseException as write_error:receipt['receipt_write_error']=type(write_error).__name__
+  print(json.dumps(receipt),file=sys.stderr)
+if __name__=='__main__':
+ try:main()
+ except BaseException as e:
+  fail_receipt(e);raise SystemExit(1)
