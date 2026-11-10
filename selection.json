@@ -1,0 +1,13 @@
+{
+  "action": "SELECT_ONCE",
+  "owner": "4a1ee117-be11-4893-8f26-17b86873eec1",
+  "collector": "4a1ee117-be11-4893-8f26-17b86873eec1",
+  "source": "0f017cb140362ee2c46f0a8049a85f2555a30638",
+  "planSHA256": "f494acd6bfc5eacc8187adea4239a621a580dd3c9adcd0f0e84a0a4257bf716f",
+  "manifestSHA256": "e031dbbacad5ac1acc31f41f9ccd8d0138350dad6b890d199b7a06503835c117",
+  "tests": [
+    "world-members.test.cjs"
+  ],
+  "timeout": 1800,
+  "attempts": 1
+}
