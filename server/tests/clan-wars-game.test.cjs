@@ -27,6 +27,103 @@ let serial = 0;
 const errors = [];
 const originalError = console.error;
 
+// K read-only source qualification. These regions are inspection bounds, not an arena extent.
+test('independent: acquire revision-242 Classic terrain and raw loc facts', () => {
+  const { readTemplateRegion } = require('../dist/game/collision/TemplateRegionData');
+  const zlib = require('node:zlib'), crypto = require('node:crypto');
+  const sourceOrigin = [3392, 4672], inspectionChunks = [8, 16];
+  const sources = [13641, 13642].map(id => ({ id,
+    origin: [(id >> 8) * 64, (id & 255) * 64], region: readTemplateRegion(id) }));
+  console.log('CLASSIC_SOURCE_AVAILABILITY ' + JSON.stringify({ schema: 1,
+    sourceOrigin, inspectionChunks, regions: sources.map(source => ({
+      id: source.id, origin: source.origin, available: !!source.region,
+      rawLocCount: source.region ? source.region.chunks.flat().length : null })),
+    limits: 'Initial bounded inspection, not retail arena extent or gameplay absence.' }));
+  assert.ok(sources.every(source => source.region), 'both bounded source regions are available');
+  const names = core.CacheDefinitions.getLocNames();
+  const area = new core.TemplatedInstanceArea(...inspectionChunks);
+  const packed = (raw, encoding) => ({ encoding, rawBytes: raw.length,
+    sha256: crypto.createHash('sha256').update(raw).digest('hex'),
+    data: zlib.deflateSync(raw).toString('base64') });
+  try {
+    assert.ok(sources.every(source => source.region.chunks.flat().length <= 4000),
+      'full all-plane raw facts cap at 4000 per region; fail rather than truncate');
+    const rawLocs = sources.flatMap(source => source.region.chunks.flat().map(loc => {
+      const definition = core.CacheDefinitions.getObject(loc.id);
+      return { sourceRegion: source.id, id: loc.id, gameval: names.get(loc.id) ?? null,
+        name: definition.name, x: source.origin[0] + loc.localX, y: source.origin[1] + loc.localY,
+        rawPlane: loc.plane, type: loc.type, face: loc.face,
+        sizeX: definition.sizeX, sizeY: definition.sizeY, clipType: definition.clipType,
+        blocksProjectile: definition.blocksProjectile, actions: definition.actions ?? null };
+    }));
+    for (let plane = 0; plane <= 1; plane++) {
+      for (let x = 0; x < inspectionChunks[0]; x++) for (let y = 0; y < inspectionChunks[1]; y++) {
+        area.setChunk(plane, x, y, { sourceChunkX: 424 + x,
+          sourceChunkY: 584 + y, sourcePlane: plane, rotation: 0 });
+      }
+    }
+    const planes = [];
+    for (let plane = 0; plane <= 1; plane++) {
+      const settings = Buffer.alloc(64 * 128), clip = Buffer.alloc(64 * 128 * 4);
+      for (let y = 0; y < 128; y++) for (let x = 0; x < 64; x++) {
+        const source = sources[Math.floor(y / 64)];
+        settings[y * 64 + x] = source.region.settings[(plane << 12) | (x << 6) | (y & 63)];
+        clip.writeInt32LE(area.getClip(area.tile(x, y, plane)), (y * 64 + x) * 4);
+      }
+      planes.push({ plane,
+        settings: packed(settings, 'zlib/base64; uint8; row-major y then x; width64 height128'),
+        clip: packed(clip, 'zlib/base64; signed-int32-le; row-major y then x; width64 height128') });
+    }
+    const copied = [];
+    for (let plane = 0; plane <= 1; plane++) {
+      for (let x = 0; x < inspectionChunks[0]; x++) for (let y = 0; y < inspectionChunks[1]; y++) {
+        for (const object of area.getChunkObjects(plane, x, y)) {
+          if (!names.get(object.getId())?.startsWith('clanwars_')) continue;
+          const at = object.getLocation();
+          copied.push({ id: object.getId(), gameval: names.get(object.getId()),
+            sourceX: at.getX() - area.getBaseX() + sourceOrigin[0],
+            sourceY: at.getY() - area.getBaseY() + sourceOrigin[1],
+            effectivePlane: at.getZ(), type: object.getType(), face: object.getFace(),
+            owned: object.getPrivateArea() === area });
+        }
+      }
+    }
+    assert.ok(copied.length <= 8000, 'copied source facts fail rather than truncate');
+    const comparisons = [];
+    // No Classic target coordinates or gamevals are guessed. Compare each observed interactive loc.
+    const observedInteractive = rawLocs.filter(loc => loc.gameval?.startsWith('clanwars_')
+      && loc.actions?.some(action => ['Use', 'Exit', 'Forfeit'].includes(action)));
+    for (const loc of observedInteractive) {
+      const { gameval, id, x, y, rawPlane, type, face } = loc;
+      const source = sources.find(source => source.id === loc.sourceRegion);
+      const localX = x - source.origin[0], localY = y - source.origin[1];
+      const settings = [0, 1].map(plane =>
+        source.region.settings[(plane << 12) | (localX << 6) | localY]);
+      const bridge = (settings[1] & 2) !== 0;
+      const derivedEffectivePlane = rawPlane - (bridge ? 1 : 0);
+      comparisons.push({ sourceRegion: source.id, gameval, id, x, y, settings, bridge,
+        raw: [{ rawPlane, type, face, derivedEffectivePlane }],
+        expectedOwnedCopy: rawPlane <= 1 && derivedEffectivePlane >= 0 && derivedEffectivePlane <= 1,
+        actual: copied.filter(copy => copy.id === id && copy.sourceX === x && copy.sourceY === y) });
+    }
+    console.log('CLASSIC_SOURCE_QUALIFICATION ' + JSON.stringify({ schema: 1,
+      available: true, sourceRegions: sources.map(source => source.id), sourceOrigin, inspectionChunks,
+      mappings: [{ sourcePlane: 0, destinationPlane: 0 }, { sourcePlane: 1, destinationPlane: 1 }],
+      rawLocs: { count: rawLocs.length,
+        ...packed(Buffer.from(JSON.stringify(rawLocs), 'utf8'), 'zlib/base64; UTF-8 JSON array; raw cache locs before bridges') },
+      planes, copied, comparisons,
+      limits: 'Read-only source inspection, not playable Classic or an absence baseline. Bounds are inspection-only; source2/3 unmapped in instance. Raw all-plane locs do not imply effective placement. No arena extent, landing, jail assignment or barrier inferred; no clipping override.' }));
+    assert.ok(copied.every(loc => loc.owned), 'effective copies retain inspection ownership');
+    assert.ok(comparisons.every(row => !row.expectedOwnedCopy || row.actual.filter(copy =>
+      copy.effectivePlane === row.raw[0].derivedEffectivePlane
+      && copy.type === row.raw[0].type && copy.face === row.raw[0].face && copy.owned).length === 1),
+    'observed mapped interactive raw/settings-derived placement agrees with the bounded actual copies');
+  } finally {
+    area.destroy();
+    assert.equal(area.isDestroyed(), true, 'read-only inspection instance always released');
+  }
+});
+
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, '..'));
   core.RegionManager.init();
