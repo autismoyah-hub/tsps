@@ -27,6 +27,97 @@ let serial = 0;
 const errors = [];
 const originalError = console.error;
 
+// J read-only source qualification. This region is an inspection bound, not an arena extent.
+test('independent: acquire revision-242 Clan Cup Arena terrain and raw loc facts', () => {
+  const { readTemplateRegion } = require('../dist/game/collision/TemplateRegionData');
+  const zlib = require('node:zlib'), crypto = require('node:crypto');
+  const sourceOrigin = [3136, 4928], region = readTemplateRegion(12621);
+  if (!region) console.log('CLANCUP_SOURCE_QUALIFICATION ' + JSON.stringify({ schema: 1, available: false, sourceRegion: 12621, sourceOrigin, limits: 'Bounded inspection unavailable, not gameplay absence; no inferred target coordinates.' }));
+  assert.ok(region, 'the bounded source region is available');
+  const names = core.CacheDefinitions.getLocNames();
+  const area = new core.TemplatedInstanceArea(8, 8);
+  const packed = (raw, encoding) => ({ encoding, rawBytes: raw.length,
+    sha256: crypto.createHash('sha256').update(raw).digest('hex'),
+    data: zlib.deflateSync(raw).toString('base64') });
+  try {
+    const locs = region.chunks.flat();
+    assert.ok(locs.length <= 4000, 'raw source facts fail rather than truncate');
+    const rawLocs = locs.map(loc => {
+      const definition = core.CacheDefinitions.getObject(loc.id);
+      return { id: loc.id, gameval: names.get(loc.id) ?? null, name: definition.name,
+        x: sourceOrigin[0] + loc.localX, y: sourceOrigin[1] + loc.localY,
+        rawPlane: loc.plane, type: loc.type, face: loc.face,
+        sizeX: definition.sizeX, sizeY: definition.sizeY, clipType: definition.clipType,
+        blocksProjectile: definition.blocksProjectile, actions: definition.actions ?? null };
+    });
+    for (let plane = 0; plane <= 1; plane++) {
+      for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) {
+        area.setChunk(plane, x, y, { sourceChunkX: 392 + x,
+          sourceChunkY: 616 + y, sourcePlane: plane, rotation: 0 });
+      }
+    }
+    const planes = [];
+    for (let plane = 0; plane <= 1; plane++) {
+      const settings = Buffer.alloc(64 * 64), clip = Buffer.alloc(64 * 64 * 4);
+      for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+        settings[y * 64 + x] = region.settings[(plane << 12) | (x << 6) | y];
+        clip.writeInt32LE(area.getClip(area.tile(x, y, plane)), (y * 64 + x) * 4);
+      }
+      planes.push({ plane,
+        settings: packed(settings, 'zlib/base64; uint8; row-major y then x; 64x64'),
+        clip: packed(clip, 'zlib/base64; signed-int32-le; row-major y then x; 64x64') });
+    }
+    const copied = [];
+    for (let plane = 0; plane <= 1; plane++) {
+      for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) {
+        for (const object of area.getChunkObjects(plane, x, y)) {
+          if (!names.get(object.getId())?.startsWith('clanwars_')) continue;
+          const at = object.getLocation();
+          copied.push({ id: object.getId(), gameval: names.get(object.getId()),
+            sourceX: at.getX() - area.getBaseX() + sourceOrigin[0],
+            sourceY: at.getY() - area.getBaseY() + sourceOrigin[1],
+            effectivePlane: at.getZ(), type: object.getType(), face: object.getFace(),
+            owned: object.getPrivateArea() === area });
+        }
+      }
+    }
+    assert.ok(copied.length <= 4000, 'copied source facts fail rather than truncate');
+    const comparisons = [];
+    // No Clan Cup target coordinates or gamevals are guessed. Compare each observed interactive loc.
+    const observedInteractive = rawLocs.filter(loc => loc.gameval?.startsWith('clanwars_')
+      && loc.actions?.some(action => ['Use', 'Exit', 'Forfeit'].includes(action)));
+    for (const loc of observedInteractive) {
+      const { gameval, id, x, y, rawPlane, type, face } = loc;
+      const localX = x - sourceOrigin[0], localY = y - sourceOrigin[1];
+      const settings = [0, 1].map(plane =>
+        region.settings[(plane << 12) | (localX << 6) | localY]);
+      const bridge = (settings[1] & 2) !== 0;
+      const derivedEffectivePlane = rawPlane - (bridge ? 1 : 0);
+      comparisons.push({ gameval, id, x, y, settings, bridge,
+        raw: [{ rawPlane, type, face, derivedEffectivePlane }],
+        expectedOwnedCopy: rawPlane <= 1 && derivedEffectivePlane >= 0 && derivedEffectivePlane <= 1,
+        actual: copied.filter(copy => copy.id === id && copy.sourceX === x && copy.sourceY === y) });
+    }
+    console.log('CLANCUP_SOURCE_QUALIFICATION ' + JSON.stringify({ schema: 1,
+      available: true, sourceRegion: 12621, sourceOrigin, inspectionChunks: [8, 8],
+      mappings: [{ sourcePlane: 0, destinationPlane: 0 }, { sourcePlane: 1, destinationPlane: 1 }],
+      rawLocs: { count: rawLocs.length,
+        ...packed(Buffer.from(JSON.stringify(rawLocs), 'utf8'), 'zlib/base64; UTF-8 JSON array; raw cache locs before bridges') },
+      planes, copied, comparisons,
+      limits: 'Read-only source inspection, not playable Clan Cup or an absence baseline. Bounds are inspection-only; source2/3 unmapped in instance. Raw all-plane locs do not imply effective placement. No arena extent, landing, jail assignment or barrier inferred; no clipping override.' }));
+    assert.ok(copied.every(loc => loc.owned), 'effective copies retain inspection ownership');
+    assert.ok(comparisons.every(row => row.expectedOwnedCopy
+      ? row.actual.length === 1 && row.actual[0].owned
+        && row.actual[0].effectivePlane === row.raw[0].derivedEffectivePlane
+        && row.actual[0].type === row.raw[0].type && row.actual[0].face === row.raw[0].face
+      : row.actual.length === 0),
+    'observed interactive raw/settings-derived placement agrees with the bounded actual copies');
+  } finally {
+    area.destroy();
+    assert.equal(area.isDestroyed(), true, 'read-only inspection instance always released');
+  }
+});
+
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, '..'));
   core.RegionManager.init();
