@@ -27,6 +27,93 @@ let serial = 0;
 const errors = [];
 const originalError = console.error;
 
+// Read-only source acquisition, not proof of an implemented Sylvan Glade match.
+// The nine 64x64 windows below are inspection bounds, not asserted arena extents.
+test('independent: acquire revision-242 Sylvan Glade template and raw collision facts', () => {
+  const { readTemplateRegion } = require('../dist/game/collision/TemplateRegionData');
+  const zlib = require('node:zlib');
+  const crypto = require('node:crypto');
+  const sourceOrigin = [3328, 4928];
+  const windows = [];
+  const names = core.CacheDefinitions.getLocNames();
+  const area = new core.TemplatedInstanceArea(24, 24);
+  const centralLocs = [];
+  try {
+    for (let dx = 0; dx < 3; dx++) for (let dy = 0; dy < 3; dy++) {
+      const regionX = 52 + dx, regionY = 77 + dy;
+      const regionId = (regionX << 8) | regionY;
+      const region = readTemplateRegion(regionId);
+      const locs = region ? region.chunks.flat() : [];
+      const selected = locs.filter(loc => regionId === 13646
+        || names.get(loc.id)?.startsWith('clanwars_'));
+      assert.ok(selected.length <= 4000, 'bounded output must fail rather than silently truncate');
+      const rows = selected.map(loc => {
+        const definition = core.CacheDefinitions.getObject(loc.id);
+        return { id: loc.id, gameval: names.get(loc.id) ?? null, name: definition.name,
+          x: regionX * 64 + loc.localX, y: regionY * 64 + loc.localY,
+          plane: loc.plane, type: loc.type, face: loc.face,
+          sizeX: definition.sizeX, sizeY: definition.sizeY,
+          clipType: definition.clipType, blocksProjectile: definition.blocksProjectile,
+          actions: definition.actions ?? null };
+      });
+      if (regionId === 13646) {
+        assert.ok(region, 'the Wiki-centred inspection region exists in the active cache');
+        centralLocs.push(...rows);
+      }
+      windows.push({ regionId, regionX, regionY, available: !!region,
+        locCountAllPlanes: locs.length, emittedLocCount: rows.length, locs: rows });
+      for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) {
+        area.setChunk(0, dx * 8 + x, dy * 8 + y, {
+          sourceChunkX: regionX * 8 + x, sourceChunkY: regionY * 8 + y,
+          sourcePlane: 0, rotation: 0,
+        });
+      }
+    }
+    for (const [gameval, coordinates] of [
+      ['clanwars_viewing_start_elfwood', [[3423, 5022], [3424, 5025]]],
+      ['clanwars_prisonportal_elfwood', [[3423, 5029], [3424, 5017]]],
+    ]) {
+      const id = core.CacheDefinitions.getLocId(gameval);
+      assert.ok(Number.isInteger(id), `active cache resolves ${gameval}`);
+      for (const [x, y] of coordinates) {
+        assert.ok(centralLocs.some(loc => loc.id === id && loc.x === x && loc.y === y && loc.plane === 0),
+          `compare the actual mapped ${gameval} at ${x},${y} with its pinned Wiki coordinate`);
+      }
+    }
+    for (const window of windows) {
+      const raw = Buffer.alloc(64 * 64 * 4);
+      for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+        const localX = window.regionX * 64 + x - sourceOrigin[0];
+        const localY = window.regionY * 64 + y - sourceOrigin[1];
+        raw.writeInt32LE(area.getClip(area.tile(localX, localY, 0)), (y * 64 + x) * 4);
+      }
+      window.plane0Clip = { encoding: 'zlib/base64; signed-int32-le; row-major y then x; 64x64',
+        rawBytes: raw.length, sha256: crypto.createHash('sha256').update(raw).digest('hex'),
+        data: zlib.deflateSync(raw).toString('base64') };
+    }
+    const copied = [];
+    for (let x = 0; x < 24; x++) for (let y = 0; y < 24; y++) {
+      for (const object of area.getChunkObjects(0, x, y)) {
+        if (!names.get(object.getId())?.startsWith('clanwars_')) continue;
+        const at = object.getLocation();
+        copied.push({ id: object.getId(), gameval: names.get(object.getId()),
+          sourceX: at.getX() - area.getBaseX() + sourceOrigin[0],
+          sourceY: at.getY() - area.getBaseY() + sourceOrigin[1],
+          plane: at.getZ(), type: object.getType(), face: object.getFace(),
+          owned: object.getPrivateArea() === area });
+      }
+    }
+    assert.ok(copied.length <= 4000, 'bounded copied-object output');
+    assert.ok(copied.every(object => object.owned), 'copied source objects belong to the inspection instance');
+    console.log('SYLVAN_SOURCE_QUALIFICATION ' + JSON.stringify({ schema: 1, sourceOrigin,
+      inspectionChunks: [24, 24], inspectionPlane: 0, windows, copied,
+      limits: 'No arena extent, landing, barrier orientation, spawn, match or gameplay inferred. Raw masks retain projectile bits; no routing-door override.' }));
+  } finally {
+    area.destroy();
+    assert.equal(area.isDestroyed(), true, 'inspection instance is always released');
+  }
+});
+
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, '..'));
   core.RegionManager.init();
