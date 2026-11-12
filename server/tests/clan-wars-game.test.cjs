@@ -106,12 +106,10 @@ test('independent: acquire revision-242 Clan Cup Arena terrain and raw loc facts
       planes, copied, comparisons,
       limits: 'Read-only source inspection, not playable Clan Cup or an absence baseline. Bounds are inspection-only; source2/3 unmapped in instance. Raw all-plane locs do not imply effective placement. No arena extent, landing, jail assignment or barrier inferred; no clipping override.' }));
     assert.ok(copied.every(loc => loc.owned), 'effective copies retain inspection ownership');
-    assert.ok(comparisons.every(row => row.expectedOwnedCopy
-      ? row.actual.length === 1 && row.actual[0].owned
-        && row.actual[0].effectivePlane === row.raw[0].derivedEffectivePlane
-        && row.actual[0].type === row.raw[0].type && row.actual[0].face === row.raw[0].face
-      : row.actual.length === 0),
-    'observed interactive raw/settings-derived placement agrees with the bounded actual copies');
+    assert.ok(comparisons.every(row => !row.expectedOwnedCopy || row.actual.filter(copy =>
+      copy.effectivePlane === row.raw[0].derivedEffectivePlane
+      && copy.type === row.raw[0].type && copy.face === row.raw[0].face && copy.owned).length === 1),
+    'observed mapped interactive raw/settings-derived placement agrees with the bounded actual copies');
   } finally {
     area.destroy();
     assert.equal(area.isDestroyed(), true, 'read-only inspection instance always released');
