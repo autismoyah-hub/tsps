@@ -31,11 +31,15 @@ const originalError = console.error;
 test('independent: acquire revision-242 Falador Park terrain and discovered object facts', () => {
   const { readTemplateRegion } = require('../dist/game/collision/TemplateRegionData');
   const zlib = require('node:zlib'), crypto = require('node:crypto');
-  const sourceRegion = 13898, sourceOrigin = [3456, 4736], region = readTemplateRegion(sourceRegion);
-  console.log('FALADOR_SOURCE_AVAILABILITY ' + JSON.stringify({ schema: 1, sourceRegion, sourceOrigin,
-    inspectionChunks: [8, 8], available: !!region, rawLocCount: region ? region.chunks.flat().length : null,
-    limits: 'Initial bounded inspection only, not arena extent or gameplay absence.' }));
-  assert.ok(region, 'the bounded source region is available');
+  const sourceOrigin = [3456, 4736], width = 128, height = 64;
+  const sources = [{ id: 13898, origin: [3456, 4736] }, { id: 14154, origin: [3520, 4736] }]
+    .map(source => ({ ...source, region: readTemplateRegion(source.id) }));
+  console.log('FALADOR_SOURCE_AVAILABILITY ' + JSON.stringify({ schema: 2, sourceOrigin,
+    inspectionChunks: [16, 8], sources: sources.map(source => ({ sourceRegion: source.id,
+      sourceOrigin: source.origin, available: !!source.region,
+      rawLocCount: source.region ? source.region.chunks.flat().length : null })),
+    limits: 'Bounded east-edge supplement, not arena extent or gameplay absence.' }));
+  assert.ok(sources.every(source => source.region), 'both bounded source regions are available');
   const names = core.CacheDefinitions.getLocNames();
   // Canonical water/cooker/tree names select observed definitions, not guessed ids or coordinates.
   // Item-on-object water use can exist when a definition has no direct object actions.
@@ -47,39 +51,42 @@ test('independent: acquire revision-242 Falador Park terrain and discovered obje
   const discoveredOrdinary = (name, actions) => ordinaryNames.has(String(name ?? '').toLowerCase())
     || actions?.some(action => typeof action === 'string' && action.trim()
       && action.toLowerCase() !== 'examine');
-  const area = new core.TemplatedInstanceArea(8, 8);
+  const area = new core.TemplatedInstanceArea(16, 8);
   const packed = (raw, encoding) => {
     assert.ok(raw.length <= 4 * 1024 * 1024, 'fact block byte cap fails rather than truncates');
     return { encoding, rawBytes: raw.length, sha256: crypto.createHash('sha256').update(raw).digest('hex'),
       data: zlib.deflateSync(raw).toString('base64') };
   };
   try {
-    const locs = region.chunks.flat();
-    assert.ok(locs.length <= 4000, 'all-plane raw loc cap fails rather than truncates');
-    const rawLocs = locs.map(loc => {
+    for (const source of sources) assert.ok(source.region.chunks.flat().length <= 4000,
+      'each complete all-plane region cap fails rather than truncates');
+    const locs = sources.flatMap(source => source.region.chunks.flat().map(loc => ({ source, loc })));
+    assert.ok(locs.length <= 8000, 'combined all-plane raw loc cap fails rather than truncates');
+    const rawLocs = locs.map(({ source, loc }) => {
       const definition = core.CacheDefinitions.getObject(loc.id);
-      return { id: loc.id, gameval: names.get(loc.id) ?? null, name: definition.name,
-        x: sourceOrigin[0] + loc.localX, y: sourceOrigin[1] + loc.localY,
+      return { sourceRegion: source.id, id: loc.id, gameval: names.get(loc.id) ?? null, name: definition.name,
+        x: source.origin[0] + loc.localX, y: source.origin[1] + loc.localY,
         rawPlane: loc.plane, type: loc.type, face: loc.face,
         sizeX: definition.sizeX, sizeY: definition.sizeY, clipType: definition.clipType,
         blocksProjectile: definition.blocksProjectile, actions: definition.actions ?? null };
     });
-    for (let plane = 0; plane <= 1; plane++) for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) {
+    for (let plane = 0; plane <= 1; plane++) for (let x = 0; x < 16; x++) for (let y = 0; y < 8; y++) {
       area.setChunk(plane, x, y, { sourceChunkX: 432 + x, sourceChunkY: 592 + y,
         sourcePlane: plane, rotation: 0 });
     }
     const planes = [];
     for (let plane = 0; plane <= 1; plane++) {
-      const settings = Buffer.alloc(64 * 64), clip = Buffer.alloc(64 * 64 * 4);
-      for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
-        settings[y * 64 + x] = region.settings[(plane << 12) | (x << 6) | y];
-        clip.writeInt32LE(area.getClip(area.tile(x, y, plane)), (y * 64 + x) * 4);
+      const settings = Buffer.alloc(width * height), clip = Buffer.alloc(width * height * 4);
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        const source = sources[Math.floor(x / 64)];
+        settings[y * width + x] = source.region.settings[(plane << 12) | ((x & 63) << 6) | y];
+        clip.writeInt32LE(area.getClip(area.tile(x, y, plane)), (y * width + x) * 4);
       }
-      planes.push({ plane, settings: packed(settings, 'zlib/base64; uint8; row-major y then x; 64x64'),
-        clip: packed(clip, 'zlib/base64; signed-int32-le; row-major y then x; 64x64') });
+      planes.push({ plane, settings: packed(settings, 'zlib/base64; uint8; row-major y then x; 128x64'),
+        clip: packed(clip, 'zlib/base64; signed-int32-le; row-major y then x; 128x64') });
     }
     const copied = [];
-    for (let plane = 0; plane <= 1; plane++) for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) {
+    for (let plane = 0; plane <= 1; plane++) for (let x = 0; x < 16; x++) for (let y = 0; y < 8; y++) {
       for (const object of area.getChunkObjects(plane, x, y)) {
         const gameval = names.get(object.getId()) ?? null, definition = object.getDefinition();
         const name = definition.getName(), actions = definition.getInteractions();
@@ -92,22 +99,23 @@ test('independent: acquire revision-242 Falador Park terrain and discovered obje
       }
     }
     console.log('FALADOR_SOURCE_COUNTS ' + JSON.stringify({ rawLocs: rawLocs.length, copied: copied.length }));
-    assert.ok(copied.length <= 4000, 'selected actual-copy cap fails rather than truncates');
+    assert.ok(copied.length <= 8000, 'selected actual-copy cap fails rather than truncates');
     const comparisons = [];
     // Only discovered actionable/name-selected props require an owned copy; not every inert decoration.
     for (const loc of rawLocs.filter(loc => discoveredOrdinary(loc.name, loc.actions))) {
-      const { gameval, id, name, x, y, rawPlane, type, face } = loc;
-      const localX = x - sourceOrigin[0], localY = y - sourceOrigin[1];
-      const settings = [0, 1].map(plane => region.settings[(plane << 12) | (localX << 6) | localY]);
+      const { sourceRegion, gameval, id, name, x, y, rawPlane, type, face } = loc;
+      const source = sources.find(source => source.id === sourceRegion);
+      const localX = x - source.origin[0], localY = y - source.origin[1];
+      const settings = [0, 1].map(plane => source.region.settings[(plane << 12) | (localX << 6) | localY]);
       const bridge = (settings[1] & 2) !== 0, derivedEffectivePlane = rawPlane - (bridge ? 1 : 0);
-      comparisons.push({ gameval, id, name, x, y, settings, bridge,
+      comparisons.push({ sourceRegion, gameval, id, name, x, y, settings, bridge,
         raw: [{ rawPlane, type, face, derivedEffectivePlane }],
         expectedOwnedCopy: rawPlane <= 1 && derivedEffectivePlane >= 0 && derivedEffectivePlane <= 1,
         actual: copied.filter(copy => copy.id === id && copy.sourceX === x && copy.sourceY === y) });
     }
-    assert.ok(comparisons.length <= 4000, 'discovered comparison cap fails rather than truncates');
-    console.log('FALADOR_SOURCE_QUALIFICATION ' + JSON.stringify({ schema: 1, available: true,
-      sourceRegion, sourceOrigin, inspectionChunks: [8, 8],
+    assert.ok(comparisons.length <= 8000, 'discovered comparison cap fails rather than truncates');
+    console.log('FALADOR_SOURCE_QUALIFICATION ' + JSON.stringify({ schema: 2, available: true,
+      sourceRegions: sources.map(source => source.id), sourceOrigin, inspectionChunks: [16, 8],
       mappings: [{ sourcePlane: 0, destinationPlane: 0 }, { sourcePlane: 1, destinationPlane: 1 }],
       rawLocs: { count: rawLocs.length, ...packed(Buffer.from(JSON.stringify(rawLocs), 'utf8'),
         'zlib/base64; UTF-8 JSON array; all raw cache locs before bridges') }, planes,
@@ -115,7 +123,7 @@ test('independent: acquire revision-242 Falador Park terrain and discovered obje
         'zlib/base64; UTF-8 JSON array; actual owned ClanWars and definition-discovered ordinary copies') },
       comparisons: { count: comparisons.length, ...packed(Buffer.from(JSON.stringify(comparisons), 'utf8'),
         'zlib/base64; UTF-8 JSON array; observed raw/settings-derived/effective actual comparisons') },
-      limits: 'Read-only bounded source facts, not playable Falador Park or feature absence. Source2/3 unmapped; all-plane raw locs not full-world placement. Name/action selection does not prove usable gameplay, park fence/seals, jail assignment, extent, actual allowed planes, ordinary tree reachability or resource ownership. No guessed target ids/coordinates, clip override or inert-decoration completeness assertion.' }));
+      limits: 'Read-only bounded east-edge source supplement, not playable Falador Park or feature absence. Source2/3 unmapped; all-plane raw locs not full-world placement. Name/action selection does not prove usable gameplay, park fence/seals, jail assignment, extent, actual allowed planes, ordinary tree reachability or resource ownership. No guessed target ids/coordinates, clip override or inert-decoration completeness assertion.' }));
     assert.ok(copied.every(copy => copy.owned), 'selected actual copies retain inspection ownership');
     assert.ok(comparisons.every(row => !row.expectedOwnedCopy || row.actual.filter(copy =>
       copy.effectivePlane === row.raw[0].derivedEffectivePlane && copy.type === row.raw[0].type
