@@ -69,15 +69,16 @@ test('independent: acquire revision-242 Sylvan Glade template and raw collision 
         });
       }
     }
+    const coordinateComparisons = [];
     for (const [gameval, coordinates] of [
       ['clanwars_viewing_start_elfwood', [[3423, 5022], [3424, 5025]]],
       ['clanwars_prisonportal_elfwood', [[3423, 5029], [3424, 5017]]],
     ]) {
       const id = core.CacheDefinitions.getLocId(gameval);
-      assert.ok(Number.isInteger(id), `active cache resolves ${gameval}`);
       for (const [x, y] of coordinates) {
-        assert.ok(centralLocs.some(loc => loc.id === id && loc.x === x && loc.y === y && loc.plane === 0),
-          `compare the actual mapped ${gameval} at ${x},${y} with its pinned Wiki coordinate`);
+        coordinateComparisons.push({ gameval, id, x, y,
+          matches: Number.isInteger(id) && centralLocs.some(loc =>
+            loc.id === id && loc.x === x && loc.y === y && loc.plane === 0) });
       }
     }
     for (const window of windows) {
@@ -106,8 +107,11 @@ test('independent: acquire revision-242 Sylvan Glade template and raw collision 
     assert.ok(copied.length <= 4000, 'bounded copied-object output');
     assert.ok(copied.every(object => object.owned), 'copied source objects belong to the inspection instance');
     console.log('SYLVAN_SOURCE_QUALIFICATION ' + JSON.stringify({ schema: 1, sourceOrigin,
-      inspectionChunks: [24, 24], inspectionPlane: 0, windows, copied,
+      inspectionChunks: [24, 24], inspectionPlane: 0, windows, copied, coordinateComparisons,
       limits: 'No arena extent, landing, barrier orientation, spawn, match or gameplay inferred. Raw masks retain projectile bits; no routing-door override.' }));
+    // Retain actual acquisition facts even if the pinned Wiki comparison fails.
+    assert.ok(coordinateComparisons.every(comparison => comparison.matches),
+      'actual mapped orb and jail portals match their pinned Wiki coordinates; inspect retained comparisons on failure');
   } finally {
     area.destroy();
     assert.equal(area.isDestroyed(), true, 'inspection instance is always released');
