@@ -27,91 +27,85 @@ let serial = 0;
 const errors = [];
 const originalError = console.error;
 
-// Read-only source acquisition, not proof of an implemented Sylvan Glade match.
-// The nine 64x64 windows below are inspection bounds, not asserted arena extents.
-test('independent: acquire revision-242 Sylvan Glade template and raw collision facts', () => {
+// Distinct read-only bridge inspection after Gv2 exposed raw plane-1 jail locs.
+// The central 64x64 window is an inspection bound, not an asserted arena extent.
+test('independent: acquire revision-242 Sylvan bridge settings and effective placement', () => {
   const { readTemplateRegion } = require('../dist/game/collision/TemplateRegionData');
   const zlib = require('node:zlib');
   const crypto = require('node:crypto');
-  const sourceOrigin = [3328, 4928];
-  const windows = [];
+  const sourceOrigin = [3392, 4992];
+  const region = readTemplateRegion(13646);
+  assert.ok(region, 'central source region remains available');
+  const area = new core.TemplatedInstanceArea(8, 8);
   const names = core.CacheDefinitions.getLocNames();
-  const area = new core.TemplatedInstanceArea(24, 24);
-  const centralLocs = [];
+  const packed = (raw, encoding) => ({ encoding, rawBytes: raw.length,
+    sha256: crypto.createHash('sha256').update(raw).digest('hex'),
+    data: zlib.deflateSync(raw).toString('base64') });
   try {
-    for (let dx = 0; dx < 3; dx++) for (let dy = 0; dy < 3; dy++) {
-      const regionX = 52 + dx, regionY = 77 + dy;
-      const regionId = (regionX << 8) | regionY;
-      const region = readTemplateRegion(regionId);
-      const locs = region ? region.chunks.flat() : [];
-      const selected = locs.filter(loc => regionId === 13646
-        || names.get(loc.id)?.startsWith('clanwars_'));
-      assert.ok(selected.length <= 4000, 'bounded output must fail rather than silently truncate');
-      const rows = selected.map(loc => {
-        const definition = core.CacheDefinitions.getObject(loc.id);
-        return { id: loc.id, gameval: names.get(loc.id) ?? null, name: definition.name,
-          x: regionX * 64 + loc.localX, y: regionY * 64 + loc.localY,
-          plane: loc.plane, type: loc.type, face: loc.face,
-          sizeX: definition.sizeX, sizeY: definition.sizeY,
-          clipType: definition.clipType, blocksProjectile: definition.blocksProjectile,
-          actions: definition.actions ?? null };
-      });
-      if (regionId === 13646) {
-        assert.ok(region, 'the Wiki-centred inspection region exists in the active cache');
-        centralLocs.push(...rows);
-      }
-      windows.push({ regionId, regionX, regionY, available: !!region,
-        locCountAllPlanes: locs.length, emittedLocCount: rows.length, locs: rows });
+    for (let plane = 0; plane <= 1; plane++) {
       for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) {
-        area.setChunk(0, dx * 8 + x, dy * 8 + y, {
-          sourceChunkX: regionX * 8 + x, sourceChunkY: regionY * 8 + y,
-          sourcePlane: 0, rotation: 0,
-        });
+        area.setChunk(plane, x, y, { sourceChunkX: 424 + x,
+          sourceChunkY: 624 + y, sourcePlane: plane, rotation: 0 });
       }
     }
-    const coordinateComparisons = [];
+    const planes = [];
+    for (let plane = 0; plane <= 1; plane++) {
+      const settings = Buffer.alloc(64 * 64);
+      const clip = Buffer.alloc(64 * 64 * 4);
+      for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
+        settings[y * 64 + x] = region.settings[(plane << 12) | (x << 6) | y];
+        clip.writeInt32LE(area.getClip(area.tile(x, y, plane)), (y * 64 + x) * 4);
+      }
+      planes.push({ plane,
+        settings: packed(settings, 'zlib/base64; uint8; row-major y then x; 64x64'),
+        clip: packed(clip, 'zlib/base64; signed-int32-le; row-major y then x; 64x64') });
+    }
+    const copied = [];
+    for (let plane = 0; plane <= 1; plane++) {
+      for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) {
+        for (const object of area.getChunkObjects(plane, x, y)) {
+          if (!names.get(object.getId())?.startsWith('clanwars_')) continue;
+          const at = object.getLocation();
+          copied.push({ id: object.getId(), gameval: names.get(object.getId()),
+            sourceX: at.getX() - area.getBaseX() + sourceOrigin[0],
+            sourceY: at.getY() - area.getBaseY() + sourceOrigin[1],
+            effectivePlane: at.getZ(), type: object.getType(), face: object.getFace(),
+            owned: object.getPrivateArea() === area });
+        }
+      }
+    }
+    assert.ok(copied.length <= 4000, 'fail instead of truncating copied evidence');
+    const locs = region.chunks.flat();
+    const comparisons = [];
     for (const [gameval, coordinates] of [
       ['clanwars_viewing_start_elfwood', [[3423, 5022], [3424, 5025]]],
       ['clanwars_prisonportal_elfwood', [[3423, 5029], [3424, 5017]]],
     ]) {
       const id = core.CacheDefinitions.getLocId(gameval);
       for (const [x, y] of coordinates) {
-        coordinateComparisons.push({ gameval, id, x, y,
-          matches: Number.isInteger(id) && centralLocs.some(loc =>
-            loc.id === id && loc.x === x && loc.y === y && loc.plane === 0) });
+        const localX = x - sourceOrigin[0], localY = y - sourceOrigin[1];
+        const raw = locs.filter(loc => Number.isInteger(id) && loc.id === id
+          && loc.localX === localX && loc.localY === localY);
+        const settings = [0, 1].map(plane =>
+          region.settings[(plane << 12) | (localX << 6) | localY]);
+        const bridge = (settings[1] & 2) !== 0;
+        comparisons.push({ gameval, id, x, y, settings, bridge,
+          raw: raw.map(loc => ({ rawPlane: loc.plane, type: loc.type, face: loc.face,
+            derivedEffectivePlane: loc.plane - (bridge ? 1 : 0) })),
+          actual: copied.filter(loc => loc.id === id && loc.sourceX === x && loc.sourceY === y) });
       }
     }
-    for (const window of windows) {
-      const raw = Buffer.alloc(64 * 64 * 4);
-      for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) {
-        const localX = window.regionX * 64 + x - sourceOrigin[0];
-        const localY = window.regionY * 64 + y - sourceOrigin[1];
-        raw.writeInt32LE(area.getClip(area.tile(localX, localY, 0)), (y * 64 + x) * 4);
-      }
-      window.plane0Clip = { encoding: 'zlib/base64; signed-int32-le; row-major y then x; 64x64',
-        rawBytes: raw.length, sha256: crypto.createHash('sha256').update(raw).digest('hex'),
-        data: zlib.deflateSync(raw).toString('base64') };
-    }
-    const copied = [];
-    for (let x = 0; x < 24; x++) for (let y = 0; y < 24; y++) {
-      for (const object of area.getChunkObjects(0, x, y)) {
-        if (!names.get(object.getId())?.startsWith('clanwars_')) continue;
-        const at = object.getLocation();
-        copied.push({ id: object.getId(), gameval: names.get(object.getId()),
-          sourceX: at.getX() - area.getBaseX() + sourceOrigin[0],
-          sourceY: at.getY() - area.getBaseY() + sourceOrigin[1],
-          plane: at.getZ(), type: object.getType(), face: object.getFace(),
-          owned: object.getPrivateArea() === area });
-      }
-    }
-    assert.ok(copied.length <= 4000, 'bounded copied-object output');
-    assert.ok(copied.every(object => object.owned), 'copied source objects belong to the inspection instance');
-    console.log('SYLVAN_SOURCE_QUALIFICATION ' + JSON.stringify({ schema: 1, sourceOrigin,
-      inspectionChunks: [24, 24], inspectionPlane: 0, windows, copied, coordinateComparisons,
-      limits: 'No arena extent, landing, barrier orientation, spawn, match or gameplay inferred. Raw masks retain projectile bits; no routing-door override.' }));
-    // Retain actual acquisition facts even if the pinned Wiki comparison fails.
-    assert.ok(coordinateComparisons.every(comparison => comparison.matches),
-      'actual mapped orb and jail portals match their pinned Wiki coordinates; inspect retained comparisons on failure');
+    console.log('SYLVAN_BRIDGE_QUALIFICATION ' + JSON.stringify({ schema: 1,
+      sourceRegion: 13646, sourceOrigin, inspectionChunks: [8, 8],
+      mappings: [{ sourcePlane: 0, destinationPlane: 0 }, { sourcePlane: 1, destinationPlane: 1 }],
+      planes, copied, comparisons,
+      limits: 'Distinct settings/bridge acquisition. No arena extent, spawn, landing, barrier or gameplay inferred; source planes 2/3 unmapped. No clipping overrides.' }));
+    assert.ok(copied.every(loc => loc.owned), 'effective copies retain inspection ownership');
+    assert.ok(comparisons.every(row => row.raw.length === 1 && row.raw[0].rawPlane === 1
+      && row.actual.length === 1 && row.actual[0].owned
+      && row.actual[0].effectivePlane === row.raw[0].derivedEffectivePlane
+      && row.actual[0].type === row.raw[0].type && row.actual[0].face === row.raw[0].face),
+    'retained Gv2 raw plane-1 targets map as their actual bridge settings prescribe');
   } finally {
     area.destroy();
     assert.equal(area.isDestroyed(), true, 'inspection instance is always released');
