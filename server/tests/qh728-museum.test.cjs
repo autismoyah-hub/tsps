@@ -972,3 +972,34 @@ test('Museum: cache hall/stair-wing footprint covers all floors and retains the 
   f.at(1750,4950); assert.equal(f.mounted(),true,'natural-history basement unchanged');
   f.at(3210,3424); assert.equal(f.mounted(),false,'teleport away closes the HUD');
 });
+
+// Temple of Ikov now migrates its branch to the namespaced quest attribute.
+// Exercise the connected transcript consumer, including old completed saves.
+for (const key of ['quest.temple_of_ikov.side', 'temple-of-ikov:side']) {
+  for (const side of [1, 2]) test(`Museum: Ikov report preserves ${key} ending ${side}`, () => {
+    const world = makeApi(new Set(['temple_of_ikov']));
+    const player = makePlayer({ [key]: side });
+    talkToMinas(world, player);
+    const text = player.texts.join(' ');
+    assert.equal(text.includes('I helped the guardians of the staff'), side === 1);
+    assert.equal(text.includes('he grew in power unimaginably'), side === 2);
+    assert.equal(getKudos(world, player), 5);
+    assert.deepEqual(player.getAttribute(STATE).minas, ['temple_of_ikov']);
+    talkToMinas(world, player);
+    assert.equal(getKudos(world, player), 5, 'repeated report pays once');
+  });
+}
+
+for (const [canonical, legacy] of [[0, 1], [0, 2], [1, 2], [2, 1]]) {
+  test(`Museum: canonical Ikov side${canonical} wins over legacy${legacy}`, () => {
+    const world = makeApi(new Set(['temple_of_ikov']));
+    const player = makePlayer({ 'temple-of-ikov:side': canonical, 'quest.temple_of_ikov.side': legacy });
+    talkToMinas(world, player);
+    const text = player.texts.join(' ');
+    assert.equal(text.includes('I helped the guardians of the staff'), canonical === 1);
+    assert.equal(text.includes('he grew in power unimaginably'), canonical === 2);
+    assert.equal(getKudos(world, player), 5);
+    talkToMinas(world, player);
+    assert.equal(getKudos(world, player), 5, 'no duplicate report reward with conflicting save fields');
+  });
+}

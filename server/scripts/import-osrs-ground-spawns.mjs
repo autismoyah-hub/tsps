@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /**
- * Import an audited ordinary subset of the osrsreboxed ItemSpawnLine export.
+ * Import an audited subset of the osrsreboxed ItemSpawnLine export.
  * Legacy definitions keep their fields and order except where the source explicitly identifies
- * a pickup replacement at the same tile. Raw and conditional rows remain in the report.
+ * a pickup replacement or an explicitly audited quest supply at the same tile.
+ * Unaudited raw and conditional rows remain in the report.
  *
  * Infobox Item documents respawn in ticks. For these audited ordinary rows with
  * no tile override, apply the item's explicit infobox value as the spawn's timer.
@@ -78,6 +79,22 @@ function isAuditedMemberOrdinaryRow(row) {
   return location !== undefined && row.members === true && row.quantity === 1 && row.infobox_respawn_ticks === 100
     && location === row.location;
 }
+// Temple of Ikov's physical quest supplies. Runtime quest guards own eligibility;
+// the exporter already records their infobox timers in ticks. These exact audited
+// rows also reconcile obsolete legacy timers/membership instead of preserving a
+// one-shot staff forever. The older redirected staff title is in the pinned input.
+const AUDITED_QUEST_ROWS = new Map([
+  ["Lever (Temple of Ikov):83:2637:9819:0", "[[Temple of Ikov (dungeon)|Temple of Ikov]]"],
+  ["Shiny key:85:2628:9859:0", "[[Temple of Ikov (dungeon)|Temple of Ikov]]"],
+  ["Staff of Armadyl:84:2638:9906:0", "[[Temple of Ikov (dungeon)|Temple of Ikov]]"],
+  ["Staff of armadyl:84:2638:9906:0", "[[Temple of Ikov (dungeon)|Temple of Ikov]]"],
+]);
+function isAuditedQuestRow(row) {
+  const location = AUDITED_QUEST_ROWS.get([row.page,row.id,row.x,row.y,row.plane].join(":"));
+  return row.members === true && row.quantity === 1 && row.infobox_respawn_ticks === 100
+    && row.tile_respawn_raw == null
+    && location !== undefined && location === row.location;
+}
 // Individually audited ordinary Coins rows outside the fully audited Corsair Cove Dungeon row.
 const AUDITED_ORDINARY_EXACT = new Map([
   ["995:3003:9801:0", "[[Dwarven Mine]]"],
@@ -152,7 +169,7 @@ export function importSpawns(source, existing) {
   existing = reconciled.definitions;
   const definitions = structuredClone(existing);
   const exact = new Map();
-  for (const d of existing) {
+  for (const d of definitions) {
     const key = definitionKey(d);
     exact.set(key, [...(exact.get(key) ?? []), d]);
   }
@@ -170,9 +187,9 @@ export function importSpawns(source, existing) {
       entry.status = "unresolved-source";
     } else if (row.members !== false
       && !(row.members === true && AUDITED_MEMBER_ORDINARY_ITEMS.get(row.page) === row.id)
-      && !isAuditedEasternConchShell(row) && !isAuditedMemberOrdinaryRow(row)) {
+      && !isAuditedEasternConchShell(row) && !isAuditedMemberOrdinaryRow(row) && !isAuditedQuestRow(row)) {
       entry.status = "members-world-scope-deferred";
-    } else if (AUDITED_ORDINARY_ITEMS.get(row.page) !== row.id && !isAuditedEasternConchShell(row) && !isAuditedMemberOrdinaryRow(row)
+    } else if (AUDITED_ORDINARY_ITEMS.get(row.page) !== row.id && !isAuditedEasternConchShell(row) && !isAuditedMemberOrdinaryRow(row) && !isAuditedQuestRow(row)
       && !(row.page === "Coins" && row.members === false
         && ((AUDITED_ORDINARY_EXACT.has(rowKey(row)) && AUDITED_ORDINARY_EXACT.get(rowKey(row)) === row.location)
           || (row.id === 995 && row.location === "[[Corsair Cove Dungeon]]" && row.plane === 0
@@ -197,10 +214,13 @@ export function importSpawns(source, existing) {
     const row = entries[0].source;
     const present = exact.get(key);
     if (present?.length) {
+      const matches = present.every(d => (d.amt ?? 1) === row.quantity && d.respawn === row.infobox_respawn_ticks
+        && (d.members === true) === row.members);
+      const reconcile = !matches && present.length === 1 && entries.every(entry => isAuditedQuestRow(entry.source));
+      if (reconcile) Object.assign(present[0], {amt:row.quantity,respawn:row.infobox_respawn_ticks,members:true});
       for (const entry of entries) {
-        entry.status = present.every(d => (d.amt ?? 1) === row.quantity && d.respawn === row.infobox_respawn_ticks
-          && (d.members === true) === row.members)
-          ? "existing-exact" : "existing-exact-state-discrepancy";
+        entry.status = matches ? "existing-exact" : reconcile
+          ? "existing-quest-state-reconciled" : "existing-exact-state-discrepancy";
         entry.existingCount = present.length;
       }
       continue;
@@ -228,7 +248,7 @@ export function importSpawns(source, existing) {
   const counts = {};
   for (const entry of report) counts[entry.status] = (counts[entry.status] ?? 0) + 1;
   return { definitions, report: { schema:1, sourceInputSha256:source.input_sha256,
-    policy:"Audited ordinary F2P rune/tool and explicit member Crossbow/Shears/Earth rune/Mind rune/Fire rune/Nature rune and nine exact eastern Great Conch Sea shell rows and exact member ordinary rows plus five exact Dwarven Mine/Asgarnian Ice Dungeon Coins rows and the ordinary Corsair Cove Dungeon Coins row; explicit infobox ticks applied only without tile override; legacy entries preserved except exact source-proven pickup reward projections.",
+    policy:"Audited ordinary F2P rune/tool and explicit member Crossbow/Shears/Earth rune/Mind rune/Fire rune/Nature rune and nine exact eastern Great Conch Sea shell rows and exact member ordinary rows plus five exact Dwarven Mine/Asgarnian Ice Dungeon Coins rows and the ordinary Corsair Cove Dungeon Coins row; explicit infobox ticks applied only without tile override; exact Temple of Ikov quest supplies reconcile legacy timer/membership with runtime quest eligibility; other legacy entries preserved except exact source-proven pickup reward projections.",
     counts, rows:report } };
 }
 
