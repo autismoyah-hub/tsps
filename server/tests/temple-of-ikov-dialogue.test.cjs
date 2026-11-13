@@ -242,3 +242,17 @@ for(const canonical of [0,'invalid'])test(`migrated canonical side${canonical} d
   stageMessage(f,npc,'VBn1hb',HANDOVER);await f.next();assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.STAFF_OF_ARMADYL),0);
   assert.equal(f.p.getAttribute('temple-of-ikov:staff-delivered'),1);assert.match(f.p.getDialogueManager().getCurrent().getText(),/Muhahahhahahaha/);
 });
+
+for(const side of [1,2])test(`a genuine legacy-only side${side} save receives defaults before preserving its branch on login`,t=>{
+  const seed=actor(t,3122,3482,70,{login:false});seed.p.setAttribute('quest.temple_of_ikov.side',side);
+  const old=snapshotAndLogout(seed);
+  for(const key of Object.keys(old.attributes))if(key.startsWith('temple-of-ikov:'))delete old.attributes[key];
+  assert.equal(Object.hasOwn(old.attributes,'temple-of-ikov:side'),false);assert.equal(Object.hasOwn(old.attributes,'temple-of-ikov:state-version'),false);
+  const loaded=actor(t,3122,3482,0,{save:old,login:false});
+  assert.equal(loaded.p.getAttribute('temple-of-ikov:side'),0,'native applyToPlayer installs the new default before migration');
+  assert.equal(loaded.p.getAttribute('temple-of-ikov:state-version'),0);assert.equal(loaded.p.getAttribute('quest.temple_of_ikov.side'),side);
+  PM.emitPlayerLogin({player:loaded.p});turns(4);
+  assert.equal(loaded.p.getAttribute('temple-of-ikov:side'),side);assert.equal(loaded.p.getAttribute('quest.temple_of_ikov.side'),0);assert.equal(loaded.p.getAttribute('temple-of-ikov:state-version'),1);
+  const saved=PlayerSave.fromPlayer(loaded.p);saved.attributes=JSON.parse(JSON.stringify(saved.attributes));
+  const again=actor(t,3122,3482,0,{save:saved});assert.equal(again.p.getAttribute('temple-of-ikov:side'),side);assert.equal(again.p.getAttribute('quest.temple_of_ikov.side'),0);assert.equal(again.p.getAttribute('temple-of-ikov:state-version'),1);
+});

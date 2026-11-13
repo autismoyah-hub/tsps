@@ -209,3 +209,42 @@ test('Lucien house canonical door permits entry and exit on either branch',async
     await f.input({type:'move',worldX:3122,worldY:3489,modifierFlags:0,run:false},5);assert.ok(f.p.getLocation().getY()>3488);
   }
 });
+
+const STAFF=84;
+function staffSpawn(){
+  const matches=core.World.getItems().filter(item=>item.isStaticSpawn()&&item.getItem().getId()===STAFF&&!item.isPendingRemoval()&&item.getPosition().equals(new core.Location(2638,9906,0)));
+  assert.equal(matches.length,1,'one actual canonical staff spawn');assert.equal(matches[0].getRespawnTimer(),100,'canonical importer timer is in native ticks');return matches[0];
+}
+async function takeStaff(f){assert.equal(f.p.getLastItemPickup().elapsedTime(300),true,'normal pickup delay has elapsed');await f.input({type:'ground_item_action',itemId:STAFF,x:2638,y:9906,option:'Take'},6);}
+test('the real staff pickup requires its actual Guardian death, credits once and respawns through the native timer',async t=>{
+  const f=actor(t,2638,9905,60);health(f);const ground=staffSpawn();
+  const npc=await f.talk(core.NpcIdentifiers.GUARDIAN_OF_ARMADYL,2639,9905);f.p.closeInterruptibleInterfaces();
+  await takeStaff(f);assert.equal(f.p.getInventory().getAmount(STAFF),0);assert.ok(core.World.getItems().includes(ground));
+  assert.equal(npc.getCombat().getTarget(),f.p,'actual source Guardian intervention starts combat');
+  const hp=npc.getHitpoints();npc.getCombat().addDamage(f.p,hp);npc.getCombat().getHitQueue().addPendingDamage([new core.HitDamage(hp,core.HitMask.RED)]);
+  for(let i=0;i<24&&npc.isRegistered();i++)turns();assert.equal(npc.isRegistered(),false,'native NPCDeathTask runs the real Guardian death producer');
+  // Capacity failure does not consume the earned death receipt or despawn stock.
+  for(let i=0;i<f.p.getInventory().capacity();i++)f.p.getInventory().setItem(i,new core.Item(core.ItemIdentifiers.BRONZE_DAGGER,1));
+  await takeStaff(f);assert.equal(f.p.getInventory().getAmount(STAFF),0);assert.ok(core.World.getItems().includes(ground));
+  f.p.getInventory().deleteNumber(core.ItemIdentifiers.BRONZE_DAGGER,1);await takeStaff(f);
+  assert.equal(f.p.getInventory().getAmount(STAFF),1);assert.equal(quest.getStage(f.p),70);assert.equal(core.World.getItems().includes(ground),false);
+  turns(101);const respawn=staffSpawn();assert.notEqual(respawn,ground);
+  await takeStaff(f);assert.equal(f.p.getInventory().getAmount(STAFF),1,'second spawn cannot duplicate the held quest staff');assert.ok(core.World.getItems().includes(respawn));
+});
+test('the real spell-on-ground producer refuses staff Telekinetic Grab before spending runes or granting credit',async t=>{
+  const f=actor(t,2638,9905,60);staffSpawn();f.p.getSkillManager().setMaxLevel(core.Skill.MAGIC,99);f.p.getSkillManager().setCurrentLevel(core.Skill.MAGIC,99);
+  f.add(core.ItemIdentifiers.LAW_RUNE);f.add(core.ItemIdentifiers.AIR_RUNE);
+  const spell=core.CacheDefinitions.getSpellByName('Telekinetic Grab');assert.ok(spell);assert.equal(core.CacheDefinitions.getSpellName(spell.widgetId,spell.itemId),'Telekinetic Grab');
+  const events=[],emit=PM.emitCustomEvent.bind(PM);t.mock.method(PM,'emitCustomEvent',(name,event)=>{const result=emit(name,event);if(name==='magic:can-telekinetic-grab'&&event.player===f.p)events.push(event);return result;});
+  assert.equal(f.p.getClickDelay().elapsedTime(500),true);
+  await f.input({type:'spell_on_ground',groundItemId:STAFF,x:2638,y:9906,spellWidget:spell.widgetId,spellChild:spell.widgetId&0xffff,spellItemId:spell.itemId},6);
+  assert.equal(events.length,1,'the normal spell reached the actual staff permission producer');assert.equal(events[0].allow,false);
+  assert.equal(f.p.getInventory().getAmount(STAFF),0);assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.LAW_RUNE),1);assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.AIR_RUNE),1);
+  assert.ok(f.messages.some(s=>s.includes('cannot use Telekinetic Grab')));staffSpawn();
+});
+test('Guardian allegiance and completed quest each refuse the real static staff transfer',async t=>{
+  const helper=actor(t,2638,9905,60);staffSpawn();helper.p.setAttribute('temple-of-ikov:side',1);
+  await takeStaff(helper);assert.equal(helper.p.getInventory().getAmount(STAFF),0);assert.ok(helper.messages.some(s=>s.includes('decide not to steal the staff')));helper.p.closeInterruptibleInterfaces();
+  const done=actor(t,2638,9905,70);assert.equal(quest.complete(done.p,{experience:false,scroll:false,announce:false}),true);await takeStaff(done);
+  assert.equal(done.p.getInventory().getAmount(STAFF),0);assert.ok(done.messages.some(s=>s.includes('completed the quest of the Temple of Ikov')));staffSpawn();
+});
