@@ -13,10 +13,14 @@ const { PlayerSession } = require('../dist/net/PlayerSession');
 const { ClientConnection } = require('../dist/net/NetworkBuilder');
 const { MultiChatboxPrompt } = require('../dist/game/model/menu/MultiChatboxPrompt');
 const { getRegisteredQuests } = require('../plugins/quests/QuestRuntime');
-let core, quest, serial = 0, originalSubmit, originalWarn, originalError;
+let core, quest, serial = 0, originalSubmit, originalWarn, originalError, originalLog;
 const tasks = new Set(), errors = [];
 before(async () => {
-  originalWarn = console.warn; originalError = console.error;
+  originalWarn = console.warn; originalError = console.error; originalLog = console.log;
+  console.log = (...args) => {
+    if (args.some(value => value instanceof Error)) errors.push(args.map(String).join(' '));
+    originalLog(...args);
+  };
   console.warn = (...args) => {
     if (/\[plugins\].*hook.*(?:threw|failed)/.test(args.map(String).join(' '))) errors.push(args.map(String).join(' '));
     originalWarn(...args);
@@ -38,15 +42,16 @@ after(() => {
     for (const task of tasks) if (task.isRunning()) task.stop();
     assert.deepEqual(errors, [], 'no swallowed plugin/engine failures');
   } finally {
-    console.warn = originalWarn; console.error = originalError;
+    console.warn = originalWarn; console.error = originalError; console.log = originalLog;
     if (core) core.TaskManager.submit = originalSubmit;
   }
 });
 function turns(n=1) { for (let i=0;i<n;i++) core.World.process(); }
 const where = p => [p.getLocation().getX(),p.getLocation().getY(),p.getLocation().getZ()];
-function object(id,x,y) {
+function object(id,x,y,player=null) {
   core.RegionManager.loadMapFiles(x,y);
-  const found = (core.MapObjects.mapObjects.get(core.MapObjects.getHash(x,y,0)) ?? []).find(o => o.getId()===id);
+  const found = player ? core.MapObjects.getPrivateArea(player,id,new core.Location(x,y,0))
+    : (core.MapObjects.mapObjects.get(core.MapObjects.getHash(x,y,0)) ?? []).find(o => o.getId()===id);
   assert.ok(found, `actual map object ${id} at ${x},${y},0`); return found;
 }
 function actor(t,x,y,stage=10) {
@@ -63,16 +68,24 @@ function actor(t,x,y,stage=10) {
   const spawned=[];
   t.after(()=>{
     for (const npc of spawned) PM.removeNpc(npc);
+    for (const item of [...core.World.getItems()]) if (item.getOwner()===p.getUsername()) {
+      core.ItemOnGroundManager.deregister(item);
+      const at=core.World.getItems().indexOf(item); if(at>=0)core.World.getItems().splice(at,1);
+    }
+    assert.equal(core.World.getItems().some(item=>item.getOwner()===p.getUsername()),false);
     const index=p.getIndex(); PM.emitPlayerDisconnect({player:p,username:p.getUsername()}); PM.emitPlayerLogout({player:p,username:p.getUsername()});
     p.closeInterruptibleInterfaces(); p.getMovementQueue().reset(); p.getMovementQueue().walkToReset();
     core.TaskManager.cancelTasks(p); core.TaskManager.cancelTasks(index); core.World.getPlayers().remove(p);
     assert.equal(p.isRegistered(),false); assert.equal(core.TaskManager.hasActiveTask(p),false); assert.equal(core.TaskManager.hasActiveTask(index),false);
   });
   async function input(packet,n=3) { await c.dispatch([packet]); turns(n); }
-  async function click(id,ox,oy,action='Open',clickType=1,n=4) { object(id,ox,oy); await input({type:'object_option',id,x:ox,y:oy,action,clickType},n); }
+  async function click(id,ox,oy,action='Open',clickType=1,n=4) { object(id,ox,oy,p); await input({type:'object_option',id,x:ox,y:oy,action,clickType},n); }
   function add(id,n=1) {const was=p.getInventory().getAmount(id);p.getInventory().adds(id,n);assert.equal(p.getInventory().getAmount(id),was+n);}
   async function talk(id,nx,ny) {
     const npc=PM.spawnNpc({id,x:nx,y:ny,z:0,owner:p,ownerOnly:true,wanderRadius:0}); assert.ok(npc);spawned.push(npc); turns(3);
+    assert.equal(npc.isRegistered(),true);assert.ok(npc.getIndex()>=0);assert.equal(core.World.getNpcs().get(npc.getIndex()),npc);
+    assert.equal(p.isNeedsPlacement(),false);assert.ok(p.getLocation().isWithinDistance(npc.getLocation(),3));
+    assert.ok([...p.getLocalNpcs()].includes(npc),'the actual visible actor is available before Talk-to');
     const actions=core.NpcDefinition.forId(id).getActions(); const clickType=actions.indexOf('Talk-to')+1;assert.ok(clickType>0);
     await input({type:'npc_option',index:npc.getIndex(),clickType},4);return npc;
   }
@@ -126,8 +139,10 @@ test('the ice area can supply arrows from its six actual chest producers',async 
   const f=actor(t,2710,9849); const arrows=core.ItemIdentifiers.ICE_ARROWS;assert.equal(f.p.getInventory().getAmount(arrows),0);
   for(const [x,y] of [[2710,9850],[2719,9838],[2729,9850],[2747,9848],[2738,9835],[2745,9821]]) {
     f.p.moveTo(new core.Location(x,y-1,0));turns(3);
+    assert.equal(f.p.isNeedsPlacement(),false);assert.deepEqual(where(f.p),[x,y-1,0]);
     await f.click(103,x,y,'Open');
-    const found=(core.MapObjects.mapObjects.get(core.MapObjects.getHash(x,y,0))??[]).find(o=>[103,104].includes(o.getId()));assert.ok(found);
+    const location=new core.Location(x,y,0);
+    const found=core.MapObjects.getPrivateArea(f.p,104,location)??core.MapObjects.getPrivateArea(f.p,103,location);assert.ok(found);
     if(found.getId()===104)await f.click(104,x,y,'Search');
     if(f.p.getInventory().getAmount(arrows)>0)break;
   }
@@ -145,12 +160,28 @@ test('wearing Lucien\'s pendant selects the hostile Guardian greeting',async t=>
   await f.talk(core.NpcIdentifiers.GUARDIAN_OF_ARMADYL,2645,9897);
   const line=f.p.getDialogueManager().getCurrent();assert.ok(line);assert.match(line.getText(),/foul agent of Lucien/);
 });
-test('encountering the Warrior keeps the unearned door closed to its owner and a bystander',async t=>{
-  const a=actor(t,2646,9869),b=actor(t,2645,9869);object(93,2646,9870);
+function restoreEncounterDoor(t) {
+  const closed=object(93,2646,9870);
+  t.after(()=>{if(!core.MapObjects.exists(closed))core.ObjectManager.register(closed,true);});
+}
+test('encountering the Warrior cannot knock the owner through the unearned door',async t=>{
+  restoreEncounterDoor(t);const a=actor(t,2646,9869);
   await a.click(93,2646,9870,'Open',1,8);
   assert.ok([...core.World.getNpcs()].some(n=>n.getId()===core.NpcIdentifiers.FIRE_WARRIOR_OF_LESARKUS&&n.getOwner()===a.p),'the ordinary input spawns the quest encounter');
   assert.ok(a.p.getLocation().getY()<9870,'the encounter cannot knock the owner through the locked door');
-  b.p.getMovementQueue().addSteps(new core.Location(2646,9870,0));b.p.getMovementQueue().addSteps(new core.Location(2646,9871,0));turns(3);
+});
+test('a character credited with the Warrior kill can cross the same door from its south approach',async t=>{
+  restoreEncounterDoor(t);const a=actor(t,2646,9869,60);
+  await a.click(93,2646,9870,'Open',1,8);
+  await a.input({type:'move',worldX:2646,worldY:9872,modifierFlags:0,run:false},8);
+  assert.ok(a.p.getLocation().getY()>=9871,'positive route control: the same doorway is traversable when earned');
+});
+test('an independent bystander cannot walk orthogonally through another player\'s encounter gate',async t=>{
+  restoreEncounterDoor(t);const a=actor(t,2646,9869),b=actor(t,2646,9868);
+  await a.click(93,2646,9870,'Open',1,8);
+  b.p.moveTo(new core.Location(2646,9869,0));turns(3);
+  assert.equal(b.p.isNeedsPlacement(),false);assert.deepEqual(where(b.p),[2646,9869,0]);
+  await b.input({type:'move',worldX:2646,worldY:9872,modifierFlags:0,run:false},3);
   assert.ok(b.p.getLocation().getY()<9870,'a separate actor cannot walk through the encounter gate');
 });
 test('the registered completion reward preserves an acquired pair of boots and pays XP once',t=>{
@@ -185,4 +216,27 @@ test('the animation loader preserves explicitly configured creature combat roles
   const core = PM.getCoreApi();
   const mole = core.NpcDefinition.forId(5779);
   assert.deepEqual([mole.getAttackAnim(), mole.getDefenceAnim(), mole.getDeathAnim()], [3312, 3311, 3310]);
+});
+
+test('captured combat roles retain spawn-named attacks and defensive teleports',()=>{
+  const spawn=core.NpcDefinition.forId(10),abyssal=core.NpcDefinition.forId(415);
+  assert.equal(core.CacheDefinitions.getSeqName(1540),'demon_spawn_attack');
+  assert.deepEqual([spawn.getAttackAnim(),spawn.getDefenceAnim(),spawn.getDeathAnim()],[1540,1542,1541],
+    'a spawn word in an actual captured attack/parry/death does not erase its combat role');
+  assert.equal(core.CacheDefinitions.getSeqName(2309),'abyssal_demon_teleport');
+  assert.equal(abyssal.getDefenceAnim(),2309,'the capture-supported defensive blink remains a block');
+});
+test('an unnamed observed candidate still fills a missing role in a mixed list',t=>{
+  // Inject only the legacy untyped observed-list input. The cache, resolver, configured
+  // roles and resulting NpcDefinition are real; this is not a new live-capture claim.
+  const unnamed=7145;
+  assert.equal(core.CacheDefinitions.getSeqName(unnamed),null,'the active cache leaves this observed legacy candidate unnamed');
+  const loader=new NpcDefinitionLoader(),read=loader.read.bind(loader);
+  t.mock.method(loader,'read',(directory,name)=>name==='npc-animations.json'
+    ? {'3448':[unnamed,803,711,836]} : read(directory,name));
+  t.after(()=>{t.mock.restoreAll();new NpcDefinitionLoader().load();});
+  assert.equal(loader.load(),true);
+  const warrior=core.NpcDefinition.forId(3448);
+  assert.equal(warrior.getAttackAnim(),711);assert.equal(warrior.getDeathAnim(),836);
+  assert.equal(warrior.getDefenceAnim(),unnamed,'an unknown name is still eligible; a named entrance does not become a block');
 });
