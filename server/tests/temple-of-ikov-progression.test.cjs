@@ -148,13 +148,63 @@ test('boots stairs refuse darkness through the ordinary descend input',async t=>
   assert.ok(f.p.getLocation().getY()>9800,'no descent without light');
 });
 test('boots stairs descend with a lit source and return to the dungeon',async t=>{
+  // Same canonical startup-data producer used by the existing traversal fixture.
+  const { GroundItemSpawnDefinitionLoader } = require('../dist/game/definition/loader/impl/GroundItemSpawnDefinitionLoader');
+  assert.equal(new GroundItemSpawnDefinitionLoader().load(),true,'canonical ground-spawn loader');
   const f=actor(t,2653,9806,0);f.add(core.ItemIdentifiers.LIT_TORCH);
+  // Supplied cutting tool, not a naturally earned item or injected quest outcome.
+  // The existing Web producer gives this real tool chance1; no RNG stub/retry.
+  const boots=core.ItemIdentifiers.BOOTS_OF_LIGHTNESS,tool=core.ItemIdentifiers.WILDERNESS_SWORD_1;
+  const webId=733,slashedId=734; // exact pinned242 definitions and existing Web producer
+  f.add(tool);assert.equal(f.p.getInventory().getAmount(boots),0);
+  const toolDefinition=core.ItemDefinition.forId(tool);
+  assert.equal(toolDefinition.getName(),'Wilderness sword 1');
+  assert.equal(toolDefinition.getEquipmentType().getSlot(),core.Equipment.WEAPON_SLOT);
   const down=templeStairs(98,f.p);f.approach(down);
   await f.click(98,down.getLocation().getX(),down.getLocation().getY(),'Climb-down',1,8);
   assert.ok(f.p.getLocation().getY()>=9759&&f.p.getLocation().getY()<=9768,'the lit descend reaches the boots room');
-  const up=templeStairs(96,f.p);f.approach(up);
+  // Guide boots-room bounds select actual map data; no web coordinate is invented.
+  const webs=[];
+  for(const list of core.MapObjects.mapObjects.values())for(const web of list){
+    const at=web.getLocation();
+    if(web.getId()===webId&&at.getZ()===0&&at.getX()>=2637&&at.getX()<=2654&&at.getY()>=9759&&at.getY()<=9767)webs.push(web);
+  }
+  assert.equal(webs.length,1,'setup: one actual733 web in the guide boots-room bounds');
+  const web=webs[0],at=web.getLocation().clone(),area=web.getPrivateArea(),shape=web.getType(),face=web.getFace();
+  assert.equal(area,f.p.getPrivateArea());
+  assert.equal(core.MapObjects.getPrivateArea(f.p,webId,at),web,'setup: ordinary object lookup resolves that actual standing web');
+  assert.equal(core.ObjectDefinition.forPlayer(webId,f.p).getInteractions()[0],'Slash');
+  const stock=core.World.getItems().filter(item=>item.isStaticSpawn()&&!item.isPendingRemoval()&&item.getItem().getId()===boots&&item.getPosition().equals(new core.Location(2654,9767,0)));
+  assert.equal(stock.length,1,'setup: actual generated static boots stock, not an injected item');
+  const ground=stock[0];assert.equal(ground.getPrivateArea(),f.p.getPrivateArea());
+  assert.equal(core.ItemOnGroundManager.canOperate(f.p,ground,core.ItemOnGroundManager.takeOperation(boots)),true);
+  const taken=[],emitCustom=PM.emitCustomEvent.bind(PM);
+  t.mock.method(PM,'emitCustomEvent',(name,event)=>{
+    if(name==='ground-items:taken'&&event.player===f.p)taken.push(event);
+    return emitCustom(name,event);
+  });
+  // Exactly one ordinary Slash: the production path walks to the real object,
+  // cuts with its real carried tool and runs its own delayed replacement.
+  await f.click(webId,at.getX(),at.getY(),'Slash',1,32);
+  assert.ok(f.messages.includes('You slash the web apart.'));
+  const slashed=core.MapObjects.getPrivateArea(f.p,slashedId,at);
+  assert.ok(slashed,'ordinary slash replaces the standing web');
+  assert.equal(slashed.getType(),shape);assert.equal(slashed.getFace(),face);assert.equal(slashed.getPrivateArea(),area);
+  assert.equal(core.MapObjects.getPrivateArea(f.p,webId,at),null);
+  // One ordinary ground Take keeps the actual stack identity through arrival.
+  // No moveTo/teleport, inventory add or quest flag supplies the boots.
+  await f.input({type:'ground_item_action',itemId:boots,x:2654,y:9767,option:'Take',stackId:ground.getId()},32);
+  assert.equal(f.p.getInventory().getAmount(boots),1);
+  assert.ok(taken.some(event=>event.groundItem===ground&&event.itemId===boots&&event.amount===1&&event.source==='pickup'));
+  assert.ok(ground.isPendingRemoval()||!core.World.getItems().includes(ground),'the physical stock was removed by pickup');
+  const up=templeStairs(96,f.p);
+  const stand=ClimbLinks.landingTile(up,{x:f.p.getLocation().getX(),y:f.p.getLocation().getY()},f.p.getPrivateArea());
+  assert.ok(stand,'setup: existing geometry helper finds a climbable return stand');
+  await f.input({type:'move',worldX:stand.getX(),worldY:stand.getY(),modifierFlags:0,run:false},32);
+  assert.deepEqual(where(f.p),[stand.getX(),stand.getY(),stand.getZ()],'ordinary walk returns to the stairs without placement bypass');
   await f.click(96,up.getLocation().getX(),up.getLocation().getY(),'Climb-up',1,12);
   assert.ok(f.p.getLocation().getY()>=9803&&f.p.getLocation().getY()<=9810,'the climb returns to the main room');
+  assert.equal(f.p.getInventory().getAmount(boots),1,'the acquired optional boots survive the ordinary return');
 });
 test('using the physical lever on its bracket consumes it once and creates the Pull interaction',async t=>{
   const f=actor(t,2671,9805); f.add(core.ItemIdentifiers.LEVER); object(86,2671,9804);
