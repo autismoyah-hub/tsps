@@ -140,8 +140,8 @@ function scene(game, p, report = false) {
       source: Common.data.instance.source, plane: 1, participants: game.players.size,
       rawObjects: raw.length, rawBoulders: raw.filter(o => ids.has(o.getId())).map(o => row(game, p, o)),
       placedBoulders: [...game.placed.values()].filter(o => ids.has(o.getId())).map(o => row(game, p, o)),
-      effectiveBoulders: [...effective.values()].map(o => row(game, p, o)), lavaRows,
-      limitation: 'Actual template/cache and native scene; not observed retail side routing or timing' }));
+      resolvedCandidates: [...effective.values()].map(o => row(game, p, o)), lavaRows,
+      limitation: 'Cache fallback can expose template candidates without independent runtime chains; not observed retail side routing or timing' }));
   }
   return [...effective.values()].filter(o => o.getId() === Common.data.locs.boulders[0]);
 }
@@ -171,13 +171,26 @@ test('twenty participants can address all three boulders and mine a side without
   const { players, game } = group(t, 20);
   const attached = scene(game, players[0], true).sort((a, b) => a.getLocation().getX() - b.getLocation().getX());
   // Both Wiki15392920 and Boulder15329620 agree on all three channels at20+.
-  assert.equal(attached.length, 3, 'feature-absence target: twenty players expose three active mineable boulders');
+  assert.equal(attached.length, 3, 'feature-absence target: twenty players can address three attached boulders');
   const [west, central] = attached;
   assert.ok(west.getLocation().getX() < central.getLocation().getX());
+  // A template fallback must not resurrect a runtime boulder after its removal.
+  // Remember which candidates were actual placed objects before any mining action.
+  const placedAt = object => [...game.placed.values()].some(o => o.getId() === object.getId()
+    && o.getLocation().equals(object.getLocation()) && o.getType() === object.getType());
+  const originallyPlaced = new Set(attached.filter(placedAt));
+  const stillAttached = object => originallyPlaced.has(object) ? placedAt(object)
+    : Boolean(core.World.findCacheObject(players[0], object.getId(), object.getLocation()));
   for (const p of players) { stand(p, west); click(p, west, 'Mine'); }
-  const stillAttached = object => scene(game, players[0]).some(o => o.getLocation().equals(object.getLocation()));
   let elapsed = 0;
   while (stillAttached(west) && stillAttached(central) && elapsed++ < 400) ticks(1);
+  console.log(JSON.stringify({ event: 'volcanic-mine-group-mining-boundary', elapsed,
+    phase: game.phase, collapsing: game.collapsing, ended: game.ended,
+    participants: game.players.size, westStillAttached: stillAttached(west), centralStillAttached: stillAttached(central) }));
+  assert.equal(game.phase, 'running', 'game must still be running at the mining boundary');
+  assert.equal(game.collapsing, false, 'a collapse is not evidence of independent chain advancement');
+  assert.equal(game.ended, false);
+  assert.equal(game.players.size, 20);
   assert.equal(stillAttached(central), true, 'mining west must not consume the central boulder');
   assert.equal(stillAttached(west), false, 'ordinary group mining advances its selected side');
 });
