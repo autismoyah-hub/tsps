@@ -3545,3 +3545,111 @@ test('native Wasteland food drink prayer special vetoes preserve actual supplies
   const carried=carriedItems(a);await lethalMelee(b,a,game,true,[[3296,5010,0],[3297,5010,0]]);tick(6);assert.equal(game.jailed.has(a),true);assert.deepEqual(carriedItems(a),carried);assert.deepEqual(a.getEquipment().get(core.Equipment.WEAPON_SLOT).getMeta(),{qa:'wasteland-special'});
   game.finish(null);tick(2);a.setHitpoints(50);await nativeItem(a,I.SHRIMPS,'Eat');assert.equal(a.getInventory().contains(I.SHRIMPS),false,'same actual food is usable after match cleanup');await nativeItem(a,I.ATTACK_POTION_4_,'Drink');assert.equal(a.getInventory().contains(I.ATTACK_POTION_3_),true);assert.deepEqual(a.getInventory().getValidItems().find(item=>item.getId()===I.ATTACK_POTION_3_).getMeta(),{qa:'wasteland-potion'});
 });
+
+// P read-only source qualification; the window is not a retail arena extent.
+test('independent: acquire revision-242 Northleach Quell terrain and discovered object facts', () => {
+  const { readTemplateRegion } = require('../dist/game/collision/TemplateRegionData');
+  const zlib = require('node:zlib'), crypto = require('node:crypto');
+  const sourceOrigin = [3392, 4864], width = 64, height = 64;
+  const sources = [{ id: 13644, origin: [3392, 4864] }]
+    .map(source => ({ ...source, region: readTemplateRegion(source.id) }));
+  console.log('NORTHLEACH_SOURCE_AVAILABILITY ' + JSON.stringify({ schema: 3, sourceOrigin,
+    inspectionChunks: [8, 8], sources: sources.map(source => ({ sourceRegion: source.id,
+      sourceOrigin: source.origin, available: !!source.region,
+      rawLocCount: source.region ? source.region.chunks.flat().length : null })),
+    limits: 'Initial boundary-bracketing observation, not arena extent or gameplay absence.' }));
+  assert.ok(sources.every(source => source.region), 'initial bounded source region is available');
+  const names = core.CacheDefinitions.getLocNames();
+  // Canonical water/cooker/tree names select observed definitions, not guessed ids or coordinates.
+  // Item-on-object water use can exist when a definition has no direct object actions.
+  const ordinaryNames = new Set(['fountain', 'sink', 'gold sink', 'well', 'tap', 'water barrel',
+    'water pump', 'waterpump', 'pump and drain', 'pump and tub', 'cooking range', 'range', 'stove',
+    'oven', 'clay oven', 'small oven', 'large oven', 'steel range', 'fancy range', 'fire',
+    "forester's campfire", 'firepit', 'firepit with hook', 'firepit with pot', 'tree',
+    'dead tree', 'evergreen tree', 'dying tree', 'oak tree']);
+  const discoveredOrdinary = (name, actions) => ordinaryNames.has(String(name ?? '').toLowerCase())
+    || actions?.some(action => typeof action === 'string' && action.trim()
+      && action.toLowerCase() !== 'examine');
+  const area = new core.TemplatedInstanceArea(8, 8);
+  const packed = (raw, encoding) => {
+    assert.ok(raw.length <= 4 * 1024 * 1024, 'fact block byte cap fails rather than truncates');
+    return { encoding, rawBytes: raw.length, sha256: crypto.createHash('sha256').update(raw).digest('hex'),
+      data: zlib.deflateSync(raw).toString('base64') };
+  };
+  try {
+    for (const source of sources) assert.ok(source.region.chunks.flat().length <= 4000,
+      'each complete all-plane region cap fails rather than truncates');
+    const locs = sources.flatMap(source => source.region.chunks.flat().map(loc => ({ source, loc })));
+    assert.ok(locs.length <= 8000, 'combined all-plane raw loc cap fails rather than truncates');
+    const rawLocs = locs.map(({ source, loc }) => {
+      const definition = core.CacheDefinitions.getObject(loc.id);
+      return { sourceRegion: source.id, id: loc.id, gameval: names.get(loc.id) ?? null, name: definition.name,
+        x: source.origin[0] + loc.localX, y: source.origin[1] + loc.localY,
+        rawPlane: loc.plane, type: loc.type, face: loc.face,
+        sizeX: definition.sizeX, sizeY: definition.sizeY, clipType: definition.clipType,
+        blocksProjectile: definition.blocksProjectile, clipMask: definition.clipMask ?? null, actions: definition.actions ?? null };
+    });
+    for (let plane = 0; plane <= 3; plane++) for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) {
+      area.setChunk(plane, x, y, { sourceChunkX: 424 + x, sourceChunkY: 608 + y,
+        sourcePlane: plane, rotation: 0 });
+    }
+    const planes = [];
+    for (let plane = 0; plane <= 3; plane++) {
+      const settings = Buffer.alloc(width * height), clip = Buffer.alloc(width * height * 4);
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        const source = sources[Math.floor(y / 64)];
+        settings[y * width + x] = source.region.settings[(plane << 12) | (x << 6) | (y & 63)];
+        clip.writeInt32LE(area.getClip(area.tile(x, y, plane)), (y * width + x) * 4);
+      }
+      planes.push({ plane, settings: packed(settings, 'zlib/base64; uint8; row-major y then x; 64x64'),
+        clip: packed(clip, 'zlib/base64; signed-int32-le; row-major y then x; 64x64') });
+    }
+    const copied = [];
+    for (let plane = 0; plane <= 3; plane++) for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) {
+      for (const object of area.getChunkObjects(plane, x, y)) {
+        const gameval = names.get(object.getId()) ?? null, definition = object.getDefinition();
+        const name = definition.getName(), actions = definition.getInteractions();
+        if (!gameval?.startsWith('clanwars_') && !discoveredOrdinary(name, actions)) continue;
+        const at = object.getLocation();
+        copied.push({ id: object.getId(), gameval, name, actions, blockingMask: definition.getBlockingMask() ?? null,
+          sourceX: at.getX() - area.getBaseX() + sourceOrigin[0],
+          sourceY: at.getY() - area.getBaseY() + sourceOrigin[1], effectivePlane: at.getZ(),
+          type: object.getType(), face: object.getFace(), owned: object.getPrivateArea() === area });
+      }
+    }
+    console.log('NORTHLEACH_SOURCE_COUNTS ' + JSON.stringify({ rawLocs: rawLocs.length, copied: copied.length }));
+    assert.ok(copied.length <= 8000, 'selected actual-copy cap fails rather than truncates');
+    const comparisons = [];
+    // Only discovered actionable/name-selected props require an owned copy; not every inert decoration.
+    for (const loc of rawLocs.filter(loc => discoveredOrdinary(loc.name, loc.actions))) {
+      const { sourceRegion, gameval, id, name, x, y, rawPlane, type, face, clipMask } = loc;
+      const source = sources.find(source => source.id === sourceRegion);
+      const localX = x - source.origin[0], localY = y - source.origin[1];
+      const settings = [0, 1, 2, 3].map(plane => source.region.settings[(plane << 12) | (localX << 6) | localY]);
+      const bridge = (settings[1] & 2) !== 0, derivedEffectivePlane = rawPlane - (bridge ? 1 : 0);
+      comparisons.push({ sourceRegion, gameval, id, name, x, y, clipMask, settings, bridge,
+        raw: [{ rawPlane, type, face, derivedEffectivePlane }],
+        expectedOwnedCopy: rawPlane <= 3 && derivedEffectivePlane >= 0 && derivedEffectivePlane <= 3,
+        actual: copied.filter(copy => copy.id === id && copy.sourceX === x && copy.sourceY === y) });
+    }
+    assert.ok(comparisons.length <= 8000, 'discovered comparison cap fails rather than truncates');
+    console.log('NORTHLEACH_SOURCE_QUALIFICATION ' + JSON.stringify({ schema: 3, available: true,
+      sourceRegions: sources.map(source => source.id), sourceOrigin, inspectionChunks: [8, 8],
+      mappings: [0, 1, 2, 3].map(plane => ({ sourcePlane: plane, destinationPlane: plane })),
+      rawLocs: { count: rawLocs.length, ...packed(Buffer.from(JSON.stringify(rawLocs), 'utf8'),
+        'zlib/base64; UTF-8 JSON array; all raw cache locs before bridges') }, planes,
+      copied: { count: copied.length, ...packed(Buffer.from(JSON.stringify(copied), 'utf8'),
+        'zlib/base64; UTF-8 JSON array; actual owned ClanWars and definition-discovered ordinary copies') },
+      comparisons: { count: comparisons.length, ...packed(Buffer.from(JSON.stringify(comparisons), 'utf8'),
+        'zlib/base64; UTF-8 JSON array; observed raw/settings-derived/effective actual comparisons') },
+      limits: 'Read-only initial boundary-bracketing source facts, not playable Northleach Quell or feature absence. All four source planes mapped as an observation, not an allowed-floor or upper-access policy; all-plane raw locs not full-world placement. Name/action selection does not prove usable gameplay, source boundaries/seals, jail assignment, extent, actual allowed planes, ordinary tree reachability or resource ownership. No guessed target ids/coordinates, clip override or inert-decoration completeness assertion.' }));
+    assert.ok(copied.every(copy => copy.owned), 'selected actual copies retain inspection ownership');
+    assert.ok(comparisons.every(row => !row.expectedOwnedCopy || row.actual.filter(copy =>
+      copy.effectivePlane === row.raw[0].derivedEffectivePlane && copy.type === row.raw[0].type
+      && copy.face === row.raw[0].face && copy.blockingMask === row.clipMask && copy.owned).length === 1),
+    'observed mapped ordinary/ClanWars props match a unique qualifying effective owned copy');
+  } finally {
+    area.destroy();
+    assert.equal(area.isDestroyed(), true, 'read-only inspection instance always released');
+  }
+});
