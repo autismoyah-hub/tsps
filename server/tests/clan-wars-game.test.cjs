@@ -3828,3 +3828,119 @@ test('native Northleach food drink prayer special vetoes preserve actual supplie
   const carried=carriedItems(a);await lethalMelee(b,a,game,true,[[3406,4880,0],[3407,4880,0]]);tick(6);assert.equal(game.jailed.has(a),true);assert.deepEqual(carriedItems(a),carried);assert.deepEqual(a.getEquipment().get(core.Equipment.WEAPON_SLOT).getMeta(),{qa:'northleach-special'});
   game.finish(null);tick(2);a.setHitpoints(50);await nativeItem(a,I.SHRIMPS,'Eat');assert.equal(a.getInventory().contains(I.SHRIMPS),false,'same actual food is usable after match cleanup');await nativeItem(a,I.ATTACK_POTION_4_,'Drink');assert.equal(a.getInventory().contains(I.ATTACK_POTION_3_),true);assert.deepEqual(a.getInventory().getValidItems().find(item=>item.getId()===I.ATTACK_POTION_3_).getMeta(),{qa:'northleach-potion'});
 });
+
+// R read-only qualification: the pin brackets this window, not a retail extent.
+test('independent: acquire revision-242 Gridlock terrain and actual copied object facts', () => {
+  const { readTemplateRegion } = require('../dist/game/collision/TemplateRegionData');
+  const zlib = require('node:zlib'), crypto = require('node:crypto');
+  const sourceOrigin = [3456, 4800], inspectionChunks = [16, 16], width = 128, height = 128;
+  const sources = [13899, 13900, 14155, 14156].map(id => ({ id,
+    origin: [(id >> 8) * 64, (id & 255) * 64], region: readTemplateRegion(id) }));
+  console.log('GRIDLOCK_SOURCE_AVAILABILITY ' + JSON.stringify({ schema: 1, sourceOrigin,
+    inspectionChunks, width, height, sources: sources.map(source => ({ id: source.id,
+      origin: source.origin, available: !!source.region,
+      rawLocCount: source.region ? source.region.chunks.flat().length : null })),
+    limits: 'Initial boundary-bracketing observation only; extent, allowed floors and gameplay unqualified.' }));
+  assert.ok(sources.every(source => source.region), 'all four initial bounded source regions available');
+  const names = core.CacheDefinitions.getLocNames();
+  const packed = (raw, encoding) => {
+    assert.ok(raw.length <= 16 * 1024 * 1024, 'complete fact block cap fails rather than truncates');
+    return { encoding, rawBytes: raw.length,
+      sha256: crypto.createHash('sha256').update(raw).digest('hex'),
+      data: zlib.deflateSync(raw).toString('base64') };
+  };
+  const jsonBlock = rows => ({ count: rows.length,
+    ...packed(Buffer.from(JSON.stringify(rows), 'utf8'), 'zlib/base64; UTF-8 JSON array') });
+  const area = new core.TemplatedInstanceArea(...inspectionChunks);
+  try {
+    const counts = sources.map(source => ({ id: source.id, count: source.region.chunks.flat().length }));
+    console.log('GRIDLOCK_RAW_COUNTS ' + JSON.stringify({ regions: counts,
+      total: counts.reduce((sum, row) => sum + row.count, 0) }));
+    assert.ok(counts.every(row => row.count <= 12000), 'all-plane per-region raw loc cap');
+    assert.ok(counts.reduce((sum, row) => sum + row.count, 0) <= 32000, 'combined raw loc cap');
+    const rawLocs = sources.flatMap(source => source.region.chunks.flat().map(loc => {
+      const definition = core.CacheDefinitions.getObject(loc.id);
+      return { sourceRegion: source.id, id: loc.id, gameval: names.get(loc.id) ?? null,
+        name: definition.name, x: source.origin[0] + loc.localX, y: source.origin[1] + loc.localY,
+        rawPlane: loc.plane, type: loc.type, face: loc.face,
+        sizeX: definition.sizeX, sizeY: definition.sizeY, clipType: definition.clipType,
+        blocksProjectile: definition.blocksProjectile, clipMask: definition.clipMask ?? null,
+        actions: definition.actions ?? null };
+    }));
+    for (let plane = 0; plane < 4; plane++) for (let x = 0; x < 16; x++) for (let y = 0; y < 16; y++) {
+      area.setChunk(plane, x, y, { sourceChunkX: 432 + x, sourceChunkY: 600 + y,
+        sourcePlane: plane, rotation: 0 });
+    }
+    const sourceSettings = sources.map(source => ({ sourceRegion: source.id, origin: source.origin,
+      planes: [0, 1, 2, 3].map(plane => ({ plane, width: 64, height: 64,
+        settings: packed(Buffer.from(source.region.settings.subarray(plane * 4096, (plane + 1) * 4096)),
+          'zlib/base64; uint8; region-local x then y; 64x64') })) }));
+    const planes = [];
+    const sourceById = new Map(sources.map(source => [source.id, source]));
+    for (let plane = 0; plane < 4; plane++) {
+      const settings = Buffer.alloc(width * height), clip = Buffer.alloc(width * height * 4);
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        const sx = sourceOrigin[0] + x, sy = sourceOrigin[1] + y;
+        const source = sourceById.get(((sx >> 6) << 8) | (sy >> 6));
+        settings[y * width + x] = source.region.settings[(plane << 12) | ((sx & 63) << 6) | (sy & 63)];
+        clip.writeInt32LE(area.getClip(area.tile(x, y, plane)), (y * width + x) * 4);
+      }
+      planes.push({ plane, width, height,
+        settings: packed(settings, 'zlib/base64; uint8; combined row-major y then x; 128x128'),
+        clip: packed(clip, 'zlib/base64; signed-int32-le; combined row-major y then x; 128x128') });
+    }
+    const copied = [];
+    for (let plane = 0; plane < 4; plane++) for (let x = 0; x < 16; x++) for (let y = 0; y < 16; y++) {
+      for (const object of area.getChunkObjects(plane, x, y)) {
+        const definition = object.getDefinition(), at = object.getLocation();
+        copied.push({ id: object.getId(), gameval: names.get(object.getId()) ?? null,
+          name: definition.getName(), actions: definition.getInteractions() ?? null,
+          sizeX: definition.getSizeX(), sizeY: definition.getSizeY(), clipType: definition.clipType,
+          blocksProjectile: definition.projectileBlocking, blockingMask: definition.getBlockingMask() ?? null,
+          sourceX: at.getX() - area.getBaseX() + sourceOrigin[0],
+          sourceY: at.getY() - area.getBaseY() + sourceOrigin[1], effectivePlane: at.getZ(),
+          type: object.getType(), face: object.getFace(), owned: object.getPrivateArea() === area });
+      }
+    }
+    console.log('GRIDLOCK_COPY_COUNTS ' + JSON.stringify({ rawLocs: rawLocs.length, copied: copied.length }));
+    assert.ok(copied.length <= 32000, 'complete actual-copy cap fails rather than truncates');
+    const copiesByKey = new Map();
+    copied.forEach((copy, index) => {
+      const key = `${copy.id}:${copy.sourceX}:${copy.sourceY}`;
+      if (!copiesByKey.has(key)) copiesByKey.set(key, []);
+      copiesByKey.get(key).push(index);
+    });
+    // These names select comparisons, never new object actions or gameplay routes.
+    const waterNames = new Set(['fountain', 'sink', 'gold sink', 'well', 'tap', 'water barrel',
+      'water pump', 'waterpump', 'pump and drain', 'pump and tub']);
+    const comparisons = rawLocs.map(loc => {
+      const source = sourceById.get(loc.sourceRegion), x = loc.x - source.origin[0], y = loc.y - source.origin[1];
+      const settings = [0, 1, 2, 3].map(plane => source.region.settings[(plane << 12) | (x << 6) | y]);
+      const bridge = (settings[1] & 2) !== 0, effectivePlane = loc.rawPlane - (bridge ? 1 : 0);
+      const candidateIndices = copiesByKey.get(`${loc.id}:${loc.x}:${loc.y}`) ?? [];
+      const matchingIndices = candidateIndices.filter(index => copied[index].effectivePlane === effectivePlane
+        && copied[index].type === loc.type && copied[index].face === loc.face);
+      const selected = !!loc.gameval?.startsWith('clanwars_')
+        || waterNames.has(String(loc.name ?? '').toLowerCase())
+        || !!loc.actions?.some(action => typeof action === 'string' && action.trim()
+          && action.toLowerCase() !== 'examine');
+      return { sourceRegion: loc.sourceRegion, id: loc.id, x: loc.x, y: loc.y,
+        rawPlane: loc.rawPlane, type: loc.type, face: loc.face, settings, bridge,
+        derivedEffectivePlane: effectivePlane, expectedOwnedCopy: effectivePlane >= 0 && effectivePlane < 4,
+        selectedForCopyGuard: selected, candidateIndices, matchingIndices };
+    });
+    console.log('GRIDLOCK_SOURCE_QUALIFICATION ' + JSON.stringify({ schema: 1, sourceOrigin,
+      inspectionChunks, sourceRegions: sources.map(source => ({ id: source.id, origin: source.origin })),
+      mappings: [0, 1, 2, 3].map(plane => ({ sourcePlane: plane, destinationPlane: plane, rotation: 0 })),
+      rawLocs: jsonBlock(rawLocs), sourceSettings, planes, copied: jsonBlock(copied),
+      comparisons: jsonBlock(comparisons),
+      limits: 'Read-only bounded source facts, not arena extent or feature absence. All four mapped planes are an observation, not allowed-floor/access policy. Full raw and actual copies do not establish ordinary movement, climb/resource use, landings, preparations, holdings, retail placement or rendering. Edge leakage and missing facts require explicit disposition, never automatic expansion. Inert decorations are not asserted usable.' }));
+    assert.ok(copied.every(copy => copy.owned), 'all actual copies retain exact inspection ownership');
+    assert.ok(comparisons.every(row => !row.selectedForCopyGuard || !row.expectedOwnedCopy
+      || (row.matchingIndices.length === 1 && copied[row.matchingIndices[0]].owned)),
+    'observed selected mapped props have a unique actual effective owned copy');
+  } finally {
+    area.destroy();
+    assert.equal(area.isDestroyed(), true, 'bounded read-only inspection always releases its instance');
+  }
+});
