@@ -248,3 +248,51 @@ test('Guardian allegiance and completed quest each refuse the real static staff 
   const done=actor(t,2638,9905,70);assert.equal(quest.complete(done.p,{experience:false,scroll:false,announce:false}),true);await takeStaff(done);
   assert.equal(done.p.getInventory().getAmount(STAFF),0);assert.ok(done.messages.some(s=>s.includes('completed the quest of the Temple of Ikov')));staffSpawn();
 });
+
+// Positive traversal/source binding only. Heavy crossing's lower-route landing
+// remains unresolved; this does not endorse the withdrawn bank-recovery draft.
+function actualBridgeRow(){
+  const candidates=[];
+  for(const regionId of [(41<<8)|152,(41<<8)|153]){
+    const region=core.getTemplateRegion(regionId);assert.ok(region,'already loaded Temple source region');
+    for(const loc of region.chunks.flat()){
+      const x=(regionId>>8)*64+loc.localX,y=(regionId&255)*64+loc.localY;
+      if(x<2630||x>2660||y<9744||y>9835)continue;
+      const gameval=core.CacheDefinitions.getLocNames().get(loc.id),name=core.ObjectDefinition.forId(loc.id)?.getName();
+      if((x>=2643&&x<=2655&&y>=9827&&y<=9831)||/ladder|stair|bridge|lava/i.test(`${gameval} ${name}`))
+        console.log('IKOV_BRIDGE_SOURCE_LOC',JSON.stringify({id:loc.id,x,y,sourcePlane:loc.plane,type:loc.type,face:loc.face,gameval,name}));
+    }
+  }
+  for(let y=9827;y<=9831;y++){
+    const xs=[];
+    for(let x=2643;x<=2655;x++){
+      const region=core.getTemplateRegion(((x>>6)<<8)|(y>>6));assert.ok(region,'actual cache region for primary-map crossing vicinity');
+      const flag=region.settings[(1<<12)|((x&63)<<6)|(y&63)];
+      console.log('IKOV_BRIDGE_TILE',JSON.stringify({x,y,plane:0,upperSettings:flag,clip:core.RegionManager.getClipping(x,y,0,null)}));
+      if(flag&2)xs.push(x);
+    }
+    if(xs.length<2)continue;
+    const min=Math.min(...xs),max=Math.max(...xs);
+    if(max-min+1!==xs.length)continue;
+    const west=new core.Location(min-1,y,0),east=new core.Location(max+1,y,0);
+    if(core.RegionManager.blocked(west,null)||core.RegionManager.blocked(east,null))continue;
+    candidates.push({min,max,y,west,east});
+  }
+  candidates.sort((a,b)=>Math.abs(a.y-9829)-Math.abs(b.y-9829));
+  assert.ok(candidates.length>0,'actual contiguous bridge settings and usable banks in the revision-qualified primary-map vicinity');
+  return candidates[0];
+}
+test('negative worn weight walks the actual cache bridge row both ways without a detour or damage',async t=>{
+  const row=actualBridgeRow(),f=actor(t,row.east.getX(),row.y);health(f);
+  f.p.getEquipment().setItem(core.Equipment.FEET_SLOT,new core.Item(core.ItemIdentifiers.BOOTS_OF_LIGHTNESS,1));
+  assert.ok(f.p.getCarriedWeightGrams()<0,'actual worn-weight producer supplies negative carried grams');
+  for(const [label,to]of [['west',row.west],['east',row.east]]){
+    const trace=[where(f.p)],permissions=[f.p.hasFlag('movement:ignore-clipping')],hitpoints=[f.p.getHitpoints()];
+    await f.input({type:'move',worldX:to.getX(),worldY:to.getY(),modifierFlags:0,run:false},0);
+    for(let i=1;i<=16;i++){turns();trace.push(where(f.p));permissions.push(f.p.hasFlag('movement:ignore-clipping'));hitpoints.push(f.p.getHitpoints());console.log('IKOV_BRIDGE_ROUTE',JSON.stringify({label,turn:i,at:where(f.p),hp:f.p.getHitpoints(),grams:f.p.getCarriedWeightGrams(),ignoreClipping:f.p.hasFlag('movement:ignore-clipping')}));}
+    assert.ok(trace.every(at=>at[1]===row.y&&at[2]===0),'ordinary input stays on this exact bridge row/plane');
+    assert.ok(trace.some(at=>at[0]>=row.min&&at[0]<=row.max),'observed movement actually enters the cache bridge span');
+    assert.deepEqual(where(f.p),[to.getX(),row.y,0],'ordinary input reaches the opposite real bank');
+    assert.ok(hitpoints.every(hp=>hp===99),'99 HP at every observed movement turn');assert.ok(permissions.every(flag=>flag===false),'no clipping privilege at any observed movement turn');
+  }
+});

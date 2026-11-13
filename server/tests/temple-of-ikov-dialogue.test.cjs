@@ -34,6 +34,32 @@ after(()=>{
   finally{console.log=log;console.warn=warn;console.error=error;if(core)core.TaskManager.submit=submit;}
 });
 function turns(n=1){for(let i=0;i<n;i++)core.World.process();}
+function ownedNpcs(p){return [...new Set([...core.World.getNpcs(),...core.World.getAddNPCQueue()])].filter(n=>n.getOwner()===p);}
+function disposeActor(p,spawned=[]){
+  try{
+    p.closeInterruptibleInterfaces();
+    PM.emitPlayerDisconnect({player:p,username:p.getUsername()});PM.emitPlayerLogout({player:p,username:p.getUsername()});
+    for(const npc of spawned)PM.removeNpc(npc);
+    const remaining=ownedNpcs(p),ikovIds=new Set([INN,HOUSE,core.NpcIdentifiers.FIRE_WARRIOR_OF_LESARKUS]);
+    console.log('IKOV_LOGOUT_BOUNDARY',JSON.stringify({username:p.getUsername(),registered:p.isRegistered(),
+      remaining:remaining.map(n=>({id:n.getId(),index:n.getIndex(),registered:n.isRegistered(),lineage:n.getSpawnLineage?.()?.owner??null}))}));
+    // Preserve the production quest cleanup oracle BEFORE removing unrelated
+    // fixture-owned actors created by the full set of real login handlers.
+    assert.equal(remaining.some(n=>ikovIds.has(n.getId())),false,'Ikov quest actors cleaned by production logout');
+  }finally{
+    // A failing oracle must still isolate the fixture for subsequent cases.
+    // These are only this exact test player's actors, including queued adds.
+    for(const npc of ownedNpcs(p))PM.removeNpc(npc);
+    for(const item of [...core.World.getItems()])if(item.getOwner()===p.getUsername()){
+      core.ItemOnGroundManager.deregister(item);const i=core.World.getItems().indexOf(item);if(i>=0)core.World.getItems().splice(i,1);
+    }
+    p.closeInterruptibleInterfaces();p.getMovementQueue().reset();p.getMovementQueue().walkToReset();
+    core.TaskManager.cancelTasks(p);core.TaskManager.cancelTasks(p.getIndex());
+    if(p.isRegistered())core.World.getPlayers().remove(p);
+    assert.equal(p.isRegistered(),false);assert.equal(ownedNpcs(p).length,0,'all exact fixture-owned actors isolated');
+    assert.equal(core.World.getItems().some(item=>item.getOwner()===p.getUsername()),false,'owned floor items isolated');
+  }
+}
 function loginPlayer(p){
   assert.equal(p.isRegistered(),true);assert.equal(p.isPlayerBot(),false);
   const describe=()=>({username:p.getUsername(),registered:p.isRegistered(),placement:p.isNeedsPlacement(),
@@ -59,17 +85,7 @@ function actor(t,x=2573,y=3322,stage=10,{login=true,save=null,username=null}={})
   p.sendMessage=value=>{text.push(String(value));return send(value);};
   sender.sendString=(value,...args)=>{text.push(String(value));return sendString(value,...args);};
   const spawned=[];
-  t.after(()=>{
-    p.closeInterruptibleInterfaces();
-    PM.emitPlayerDisconnect({player:p,username:p.getUsername()});PM.emitPlayerLogout({player:p,username:p.getUsername()});
-    for(const npc of spawned)PM.removeNpc(npc);
-    for(const item of [...core.World.getItems()])if(item.getOwner()===p.getUsername()){
-      core.ItemOnGroundManager.deregister(item);const i=core.World.getItems().indexOf(item);if(i>=0)core.World.getItems().splice(i,1);
-    }
-    assert.equal([...core.World.getNpcs()].some(n=>n.getOwner()===p),false,'private quest actors cleaned');
-    p.getMovementQueue().reset();p.getMovementQueue().walkToReset();core.TaskManager.cancelTasks(p);core.TaskManager.cancelTasks(p.getIndex());
-    if(p.isRegistered())core.World.getPlayers().remove(p);assert.equal(p.isRegistered(),false);
-  });
+  t.after(()=>disposeActor(p,spawned));
   const input=async(packet,n=1)=>{await c.dispatch([packet]);turns(n);};
   function ready(npc){
     assert.ok(npc);turns(3);assert.equal(npc.isRegistered(),true);assert.equal(core.World.getNpcs().get(npc.getIndex()),npc);
@@ -195,8 +211,7 @@ function lethalNativeHit(f,npc){
 }
 function snapshotAndLogout(f){
   const save=PlayerSave.fromPlayer(f.p);save.attributes=JSON.parse(JSON.stringify(save.attributes));
-  PM.emitPlayerDisconnect({player:f.p,username:f.p.getUsername()});PM.emitPlayerLogout({player:f.p,username:f.p.getUsername()});
-  f.p.closeInterruptibleInterfaces();core.TaskManager.cancelTasks(f.p);core.TaskManager.cancelTasks(f.p.getIndex());core.World.getPlayers().remove(f.p);
+  disposeActor(f.p);
   return save;
 }
 test('the real Guardian menu reaches the yearly-bath branch and physical pendant award',async t=>{
