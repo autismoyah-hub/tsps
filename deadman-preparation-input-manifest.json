@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source": "8d66d0de3b516c299ec8b84ecbfc0a4e9dcb3793",
+  "source": "71aaf4653753a59186f734226c4e20f95ffbab0b",
   "tests": [
     "deadman-preparation-main.test.cjs",
     "deadman-preparation-league.test.cjs",
@@ -4340,7 +4340,7 @@
     "server/tests/fixtures/archived-cache-definitions.json": "e92b5dae427e0ed49bb6a7d89288d7f6b49d19f1aa0bdca73c08adfc9811676d",
     "server/tests/fixtures/archived-seasonal-bundle.json": "12579672651e87772bca5b7ae25c40a28bf33ce60b9bc3d206941644758b1a3b",
     "server/tests/fixtures/blighted-spellbook.backend.cjs": "755c0046d0b3c0419bf9bc15a0f3a2da0d52d6491cc157b65e8b8cef758f60a3",
-    "server/tests/fixtures/deadman-preparation-body.cjs": "3185d4257b6dd6ebf8a1686fcf827fc20e57be383555531b44d6b5a07a014719",
+    "server/tests/fixtures/deadman-preparation-body.cjs": "7a955cfcb0b3e606e49d8400c241bcd86226eb1b6360f89543848f843e061d03",
     "server/tests/fixtures/goblin-book-transcript.txt": "45db092eab6d1fd3dd9e8044f442c23d689473d72b3c17a04705e802bf236700",
     "server/tests/fixtures/graveyard-bones-observed.json": "6ad4781ee61dfee22e5cd9bb5e426b2c7b7c71a1a8e5ad9183bf30c38f8c4fef",
     "server/tests/fixtures/music-unmapped-tracks.json": "05df1c386533dbf342f573931e6fcc75b523b1659c1a919b49fbbd75c1b76e5c",
@@ -9925,7 +9925,7 @@
     "server/tests/fixtures/archived-cache-definitions.json": "c551c9ebb6ad8310243981b2708f342167bdcabc",
     "server/tests/fixtures/archived-seasonal-bundle.json": "60bce7858d774ffacbe4bd2b3ab8c234f1e808b2",
     "server/tests/fixtures/blighted-spellbook.backend.cjs": "328e17c5b239c5d0079de44f61e3763bdc9c470d",
-    "server/tests/fixtures/deadman-preparation-body.cjs": "168bee2fd0d4e29f5d33ee70df3dd3bb9d168e19",
+    "server/tests/fixtures/deadman-preparation-body.cjs": "4859b89d67b49c5c3e2dc2759787e8c4b986fd85",
     "server/tests/fixtures/goblin-book-transcript.txt": "6573fd1b749a69fe06660ecad8a91ff0576bb282",
     "server/tests/fixtures/graveyard-bones-observed.json": "81c115bd3aaac933f06ca98df6c0db6dad5ead8c",
     "server/tests/fixtures/music-unmapped-tracks.json": "08259432cce76c1738a228cdd364bb470a67a96a",
