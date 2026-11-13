@@ -4225,3 +4225,152 @@ test('native Ghastly World consumed queued-add refusal cancels the match without
   const inject=t.mock.method(list,'add',function(npc,...args){if(npc.getId()===5626&&refused<3){refused++;return false;}return add(npc,...args);});
   tick(game.starts-C.now());assert.equal(refused,3);const old=game.ghasts.npcs.slice();assert.equal(old.length,2);ghastSameRefs(npcQueueFailures.splice(0),[old[0]],'World shifts a refused addition without requeue; the other registers');assert.equal(core.World.getAddNPCQueue().includes(old[0]),false);assert.equal(Boolean(old[0].isRegistered()),false);assert.equal(core.World.getNpcs().get(old[0].getIndex())===old[0],false,'refused actor never occupies a World slot');assert.equal(old[1].isRegistered(),true);inject.mock.restore();tick();assert.equal(game.phase,'over');assert.match(game.ghasts.failure,/queued registration failed/);assert.equal(game.ghasts.ready,false);assert.equal(game.area.isDestroyed(),true);for(const npc of old)ghastAbsent(npc,game.area,'consumed registration refusal immediate cleanup');assert.ok(old.every(n=>!n.isRegistered()&&!core.World.getAddNPCQueue().includes(n)));for(const p of[a,b]){assert.equal(C.matches.has(p),false);lobby(p);}tick(120);assert.ok(old.every(n=>!n.isRegistered()&&!core.World.getAddNPCQueue().includes(n)));assert.equal(refused,3,'no automatic registration retry');for(const npc of old)ghastAbsent(npc,game.area,'consumed registration refusal delayed cleanup');
 });
+
+// S read-only qualification: this source window is an observation, not an arena extent.
+test('independent: acquire revision-242 Ethereal terrain and actual copied object facts', () => {
+  const { readTemplateRegion } = require('../dist/game/collision/TemplateRegionData');
+  const zlib = require('node:zlib'), crypto = require('node:crypto');
+  const sourceOrigin = [3328, 4992], inspectionChunks = [8, 8], width = 64, height = 64;
+  const sources = [13390].map(id => ({ id,
+    origin: [(id >> 8) * 64, (id & 255) * 64], region: readTemplateRegion(id) }));
+  console.log('ETHEREAL_SOURCE_AVAILABILITY ' + JSON.stringify({ schema: 1, sourceOrigin,
+    inspectionChunks, width, height, sources: sources.map(source => ({ id: source.id,
+      origin: source.origin, available: !!source.region,
+      rawLocCount: source.region ? source.region.chunks.flat().length : null })),
+    limits: 'Initial centered single-region observation only; extent, allowed floors and gameplay unqualified.' }));
+  assert.ok(sources.every(source => source.region), 'the initial bounded source region is available');
+  const names = core.CacheDefinitions.getLocNames();
+  const packed = (raw, encoding) => {
+    assert.ok(raw.length <= 16 * 1024 * 1024, 'complete fact block cap fails rather than truncates');
+    return { encoding, rawBytes: raw.length,
+      sha256: crypto.createHash('sha256').update(raw).digest('hex'),
+      data: zlib.deflateSync(raw).toString('base64') };
+  };
+  const jsonBlock = rows => ({ count: rows.length,
+    ...packed(Buffer.from(JSON.stringify(rows), 'utf8'), 'zlib/base64; UTF-8 JSON array') });
+  const area = new core.TemplatedInstanceArea(...inspectionChunks);
+  try {
+    const counts = sources.map(source => ({ id: source.id, count: source.region.chunks.flat().length }));
+    console.log('ETHEREAL_RAW_COUNTS ' + JSON.stringify({ regions: counts,
+      total: counts.reduce((sum, row) => sum + row.count, 0) }));
+    assert.ok(counts.every(row => row.count <= 12000), 'all-plane per-region raw loc cap');
+    assert.ok(counts.reduce((sum, row) => sum + row.count, 0) <= 12000, 'combined raw loc cap');
+    const rawLocs = sources.flatMap(source => source.region.chunks.flat().map(loc => {
+      const definition = core.CacheDefinitions.getObject(loc.id);
+      return { sourceRegion: source.id, id: loc.id, gameval: names.get(loc.id) ?? null,
+        name: definition.name, x: source.origin[0] + loc.localX, y: source.origin[1] + loc.localY,
+        rawPlane: loc.plane, type: loc.type, face: loc.face,
+        sizeX: definition.sizeX, sizeY: definition.sizeY, clipType: definition.clipType,
+        blocksProjectile: definition.blocksProjectile, clipMask: definition.clipMask ?? null,
+        actions: definition.actions ?? null, category: definition.category,
+        params: Array.from(definition.params ?? []), transforms: definition.transforms ?? null,
+        transformVarbit: definition.transformVarbit, transformVarp: definition.transformVarp };
+    }));
+    for (let plane = 0; plane < 4; plane++) for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) {
+      area.setChunk(plane, x, y, { sourceChunkX: 416 + x, sourceChunkY: 624 + y,
+        sourcePlane: plane, rotation: 0 });
+    }
+    const sourceSettings = sources.map(source => ({ sourceRegion: source.id, origin: source.origin,
+      planes: [0, 1, 2, 3].map(plane => ({ plane, width: 64, height: 64,
+        settings: packed(Buffer.from(source.region.settings.subarray(plane * 4096, (plane + 1) * 4096)),
+          'zlib/base64; uint8; region-local x then y; 64x64') })) }));
+    const planes = [];
+    const sourceById = new Map(sources.map(source => [source.id, source]));
+    for (let plane = 0; plane < 4; plane++) {
+      const settings = Buffer.alloc(width * height), clip = Buffer.alloc(width * height * 4);
+      for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+        const sx = sourceOrigin[0] + x, sy = sourceOrigin[1] + y;
+        const source = sourceById.get(((sx >> 6) << 8) | (sy >> 6));
+        settings[y * width + x] = source.region.settings[(plane << 12) | ((sx & 63) << 6) | (sy & 63)];
+        clip.writeInt32LE(area.getClip(area.tile(x, y, plane)), (y * width + x) * 4);
+      }
+      planes.push({ plane, width, height,
+        settings: packed(settings, 'zlib/base64; uint8; combined row-major y then x; 64x64'),
+        clip: packed(clip, 'zlib/base64; signed-int32-le; combined row-major y then x; 64x64') });
+    }
+    const copied = [];
+    for (let plane = 0; plane < 4; plane++) for (let x = 0; x < 8; x++) for (let y = 0; y < 8; y++) {
+      for (const object of area.getChunkObjects(plane, x, y)) {
+        const definition = object.getDefinition(), at = object.getLocation();
+        copied.push({ id: object.getId(), gameval: names.get(object.getId()) ?? null,
+          name: definition.getName(), actions: definition.getInteractions() ?? null,
+          sizeX: definition.getSizeX(), sizeY: definition.getSizeY(), clipType: definition.clipType,
+          blocksProjectile: definition.projectileBlocking, blockingMask: definition.getBlockingMask() ?? null,
+          sourceX: at.getX() - area.getBaseX() + sourceOrigin[0],
+          sourceY: at.getY() - area.getBaseY() + sourceOrigin[1], effectivePlane: at.getZ(),
+          type: object.getType(), face: object.getFace(), owned: object.getPrivateArea() === area });
+      }
+    }
+    console.log('ETHEREAL_COPY_COUNTS ' + JSON.stringify({ rawLocs: rawLocs.length, copied: copied.length }));
+    assert.ok(copied.length <= 12000, 'complete actual-copy cap fails rather than truncates');
+    const copiesByKey = new Map();
+    copied.forEach((copy, index) => {
+      const key = `${copy.id}:${copy.sourceX}:${copy.sourceY}`;
+      if (!copiesByKey.has(key)) copiesByKey.set(key, []);
+      copiesByKey.get(key).push(index);
+    });
+    // These names select comparisons, never new object actions or gameplay routes.
+    const waterNames = new Set(['fountain', 'sink', 'gold sink', 'well', 'tap', 'water barrel',
+      'water pump', 'waterpump', 'pump and drain', 'pump and tub']);
+    const comparisons = rawLocs.map(loc => {
+      const source = sourceById.get(loc.sourceRegion), x = loc.x - source.origin[0], y = loc.y - source.origin[1];
+      const settings = [0, 1, 2, 3].map(plane => source.region.settings[(plane << 12) | (x << 6) | y]);
+      const bridge = (settings[1] & 2) !== 0, effectivePlane = loc.rawPlane - (bridge ? 1 : 0);
+      const candidateIndices = copiesByKey.get(`${loc.id}:${loc.x}:${loc.y}`) ?? [];
+      const matchingIndices = candidateIndices.filter(index => copied[index].effectivePlane === effectivePlane
+        && copied[index].type === loc.type && copied[index].face === loc.face);
+      const selected = !!loc.gameval?.startsWith('clanwars_')
+        || waterNames.has(String(loc.name ?? '').toLowerCase())
+        || !!loc.actions?.some(action => typeof action === 'string' && action.trim()
+          && action.toLowerCase() !== 'examine');
+      return { sourceRegion: loc.sourceRegion, id: loc.id, x: loc.x, y: loc.y,
+        rawPlane: loc.rawPlane, type: loc.type, face: loc.face, settings, bridge,
+        derivedEffectivePlane: effectivePlane, expectedOwnedCopy: effectivePlane >= 0 && effectivePlane < 4,
+        selectedForCopyGuard: selected, candidateIndices, matchingIndices };
+    });
+    const npcGamevals = core.CacheDefinitions.getNpcNames();
+    const spriteId = core.CacheDefinitions.getNpcId('clanwars_teleport_power');
+    const npcIds = [...new Set([spriteId, ...[...npcGamevals].filter(([, name]) =>
+      name === 'clanwars_teleport_power').map(([id]) => id)])].filter(Number.isInteger);
+    console.log('ETHEREAL_DEFINITION_COUNTS ' + JSON.stringify({ spriteId, npcIds,
+      cacheCounts: core.CacheDefinitions.getCounts() }));
+    assert.ok(npcIds.length <= 16, 'narrow relevant NPC definition cap fails not truncates');
+    const spriteDefinitions = npcIds.map(id => {
+      const cache = core.CacheDefinitions.getNpc(id), definition = core.NpcDefinition.forId(id);
+      return { id, gameval: npcGamevals.get(id) ?? null,
+        cache: { ...cache, params: Array.from(cache.params ?? []) },
+        loaded: { id: definition.getId(), name: definition.getName(), size: definition.getSize(),
+          actions: definition.getActions() ?? null, attackable: definition.isAttackable(),
+          hitpoints: definition.getHitpoints(), maxHit: definition.getMaxHit(),
+          combatLevel: definition.getCombatLevel(), stats: definition.getStats(),
+          aggressive: definition.isAggressive(), fightsBack: definition.doesFightBack(),
+          attackType: definition.getAttackType(), attackStyle: definition.getAttackStyle(),
+          attackSpeed: definition.getAttackSpeed(), attackAnim: definition.getAttackAnim(),
+          defenceAnim: definition.getDefenceAnim(), deathAnim: definition.getDeathAnim(),
+          deathTicks: definition.getDeathTicks(), respawnTicks: definition.getRespawn(),
+          members: definition.isMembers(), walkRadius: definition.getWalkRadius() } };
+    });
+    const symbolDefinitions = ['clanwars_teleporter_active', 'clanwars_teleporter_broken'].map(gameval => {
+      const id = core.CacheDefinitions.getLocId(gameval);
+      const cache = Number.isInteger(id) ? core.CacheDefinitions.getObject(id) : null;
+      return { gameval, id, cache: cache ? { ...cache, params: Array.from(cache.params ?? []) } : null };
+    });
+    console.log('ETHEREAL_SOURCE_QUALIFICATION ' + JSON.stringify({ schema: 1, sourceOrigin,
+      inspectionChunks, sourceRegions: sources.map(source => ({ id: source.id, origin: source.origin })),
+      mappings: [0, 1, 2, 3].map(plane => ({ sourcePlane: plane, destinationPlane: plane, rotation: 0 })),
+      rawLocs: jsonBlock(rawLocs), sourceSettings, planes, copied: jsonBlock(copied),
+      comparisons: jsonBlock(comparisons), spriteDefinitions: jsonBlock(spriteDefinitions),
+      symbolDefinitions: jsonBlock(symbolDefinitions),
+      limits: 'Read-only bounded source and definition facts; no NPC created or injected, no active-symbol implementation. Definitions and proximity do not establish destinations, sprite counts/placements, links, drops or death/respawn clock anchors. Loader defaults are TSPS facts, not retail timing. Not arena extent or feature absence. All four mapped planes are an observation, not allowed-floor/access policy. Full raw and actual copies do not establish ordinary movement, climb/resource use, landings, preparations, holdings, retail placement or rendering. Edge leakage and missing facts require explicit disposition, never automatic expansion. Inert decorations are not asserted usable.' }));
+    assert.equal(spriteId, 6624, 'actual gameval resolves retained Energy sprite identity');
+    assert.ok(symbolDefinitions.every(row => Number.isInteger(row.id) && row.cache),
+      'actual symbol gamevals resolve complete cache definitions after facts are emitted');
+    assert.ok(copied.every(copy => copy.owned), 'all actual copies retain exact inspection ownership');
+    assert.ok(comparisons.every(row => !row.selectedForCopyGuard || !row.expectedOwnedCopy
+      || (row.matchingIndices.length === 1 && copied[row.matchingIndices[0]].owned)),
+    'observed selected mapped props have a unique actual effective owned copy');
+  } finally {
+    area.destroy();
+    assert.equal(area.isDestroyed(), true, 'bounded read-only inspection always releases its instance');
+  }
+});
