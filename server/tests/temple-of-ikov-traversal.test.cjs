@@ -477,3 +477,57 @@ test('superseding ordinary interaction or walk cancels the pending bridge approa
     }else assert.deepEqual(where(f.p),[far.getX(),row.y,0],'ordinary replacement walk wins');
   }
 });
+
+async function ordinaryWalk(f,to,bound,label){
+  await f.input({type:'move',worldX:to.getX(),worldY:to.getY(),modifierFlags:0,run:false},0);
+  for(let turn=1;turn<=bound;turn++){
+    turns();console.log('IKOV_CONNECTED_ROUTE',JSON.stringify({label,turn,at:where(f.p),destination:[to.getX(),to.getY(),to.getZ()],ignore:f.p.hasFlag('movement:ignore-clipping'),queue:f.p.getMovementQueue().size()}));
+    assert.equal(f.p.hasFlag('movement:ignore-clipping'),false);
+    if(f.p.getLocation().equals(to))return;
+  }
+  assert.deepEqual(where(f.p),[to.getX(),to.getY(),to.getZ()],label+' arrives through ordinary movement');
+}
+test('the actual southern lower-route ladder exits south of Hemenster and ordinary east travel returns to the temple entrance',async t=>{
+  // Declared lower-route ladder setup, NOT a bridge-fall landing or trigger.
+  const f=actor(t,2637,9809),ladder=object(17385,2637,9808,f.p);
+  const end=ClimbLinks.otherEnd(ladder,ClimbLinks.UP);console.log('IKOV_LOWER_ROUTE',JSON.stringify({lower:{id:ladder.getId(),at:where(ladder),face:ladder.getFace(),type:ladder.getType()},surface:end?{id:end.getId(),at:where(end),name:core.ObjectDefinition.forId(end.getId()).getName()}:null}));
+  assert.ok(end,'setup: actual lower ladder has a cache-derived surface counterpart');
+  assert.equal(core.ObjectDefinition.forId(end.getId()).getName(),'Ladder');assert.equal(end.getLocation().getZ(),0);
+  assert.ok(end.getLocation().getX()>=2624&&end.getLocation().getX()<=2650&&end.getLocation().getY()>=3390&&end.getLocation().getY()<3420,'surface counterpart lies in the supported south-Hemenster vicinity');
+  f.approach(ladder);const expected=ClimbLinks.destination(ladder,ClimbLinks.UP,f.p.getLocation(),f.p.getPrivateArea());assert.ok(expected);
+  await f.click(ladder.getId(),2637,9808,'Climb-up',1,8);assert.deepEqual(where(f.p),[expected.getX(),expected.getY(),expected.getZ()]);
+  const entrance=surfaceLanding(f);await ordinaryWalk(f,entrance,96,'east from supported southern exit to temple entrance');
+  const raw=core.MapObjects.mapObjects.get(core.MapObjects.getHash(2677,3405,0))??[],down=raw.find(o=>core.ObjectDefinition.forPlayer(o.getId(),f.p)?.getName()==='Ladder');assert.ok(down);
+  const destination=ClimbLinks.destination(down,ClimbLinks.DOWN,f.p.getLocation(),f.p.getPrivateArea());assert.ok(destination,'actual entrance resolves its dungeon counterpart');
+  await f.click(down.getId(),2677,3405,'Climb-down',1,8);assert.deepEqual(where(f.p),[destination.getX(),destination.getY(),destination.getZ()]);
+  assert.ok(f.p.getLocation().getY()>9700&&f.p.getLocation().getY()<9916,'real climb re-enters Temple dungeon');
+});
+test('Winelda paid teleport reaches the optional-key corridor and the Guardian wall opens without owning the shiny key',async t=>{
+  const f=actor(t,2654,9876,40);health(f);
+  for(const[key,value]of[['temple-of-ikov:state-version',1],['temple-of-ikov:warrior-killed',1],['temple-of-ikov:paid-winelda',0],['temple-of-ikov:met-winelda',0]])f.p.setAttribute(key,value);
+  f.add(core.ItemIdentifiers.LIMPWURT_ROOT,20);const key=core.ItemIdentifiers.SHINY_KEY;
+  assert.equal(f.p.getInventory().getAmount(key),0);
+  await f.talk(core.NpcIdentifiers.WINELDA,2655,9876);
+  for(let i=0;i<20&&!f.p.getAttribute('temple-of-ikov:paid-winelda')&&f.p.getDialogueManager().getCurrent();i++)await f.resume();
+  assert.equal(f.p.getAttribute('temple-of-ikov:paid-winelda'),1,'actual source teleport accepts the physical roots');
+  assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.LIMPWURT_ROOT),0);
+  assert.ok(f.events.some(e=>e.name==='npc-dialogue:action'&&e.stepId==='UB9hSI'),'actual native dialogue reaches Winelda payment action');
+  assert.deepEqual(where(f.p),[2644,9890,0],'observed authored teleport destination, not a claimed retail exact-tile capture');
+  f.p.closeInterruptibleInterfaces();
+  const wall=object(1597,2643,9892,f.p),near=new core.Location(2643,9891,0);
+  assert.equal(core.RegionManager.blocked(near,f.p.getPrivateArea()),false,'actual near side of Guardian wall is unblocked');
+  await ordinaryWalk(f,near,16,'paid landing to Guardian wall with no shiny key');
+  assert.equal(f.p.getInventory().getAmount(key),0);await f.click(wall.getId(),2643,9892,'Push',1,8);
+  assert.deepEqual(where(f.p),[2643,9893,0],'Guardian chamber entry is not gated by the optional shortcut key');
+  await f.click(wall.getId(),2643,9892,'Push',1,8);assert.deepEqual(where(f.p),[2643,9891,0]);
+  const stock=core.World.getItems().filter(item=>item.isStaticSpawn()&&!item.isPendingRemoval()&&item.getItem().getId()===key&&item.getPosition().equals(new core.Location(2628,9859,0)));
+  assert.equal(stock.length,1,'actual canonical shiny key supply in the guide corridor');
+  assert.equal(core.RegionManager.blocked(stock[0].getPosition(),f.p.getPrivateArea()),false,'setup: canonical optional key has an unblocked ground approach');
+  await ordinaryWalk(f,stock[0].getPosition(),96,'optional corridor detour to shiny key');
+  assert.ok(core.ItemOnGroundManager.canOperate(f.p,stock[0],core.ItemOnGroundManager.takeOperation(key))&&core.PathFinder.reachedObj(f.p,stock[0].getPosition()),'actual visible reachable key before Take');
+  await f.input({type:'ground_item_action',itemId:key,x:2628,y:9859,option:'Take',stackId:stock[0].getId()},6);
+  assert.equal(f.p.getInventory().getAmount(key),1,'optional key is obtained through real pickup, not injected');
+  assert.ok(f.events.some(e=>e.name==='ground-items:taken'&&e.itemId===key));
+  await ordinaryWalk(f,near,96,'key corridor back to Guardian wall');await f.click(wall.getId(),2643,9892,'Push',1,8);
+  assert.deepEqual(where(f.p),[2643,9893,0]);assert.equal(f.p.getInventory().getAmount(key),1,'optional shortcut key is retained');
+});
