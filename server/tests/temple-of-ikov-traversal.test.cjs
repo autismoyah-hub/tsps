@@ -84,11 +84,44 @@ function actor(t,x,y,stage=10) {
   const objectEvents=[],itemEvents=[],emitObject=PM.emitObjectInteraction.bind(PM),emitItem=PM.emitItemOnObject.bind(PM);
   t.mock.method(PM,'emitObjectInteraction',event=>{if(event.player===p)objectEvents.push(event);return emitObject(event);});
   t.mock.method(PM,'emitItemOnObject',event=>{if(event.player===p)itemEvents.push(event);return emitItem(event);});
+  const npcEvents=[],emitNpc=PM.emitNpcInteraction.bind(PM);
+  t.mock.method(PM,'emitNpcInteraction',event=>{if(event.player===p)npcEvents.push(event);return emitNpc(event);});
+  function speakerState(npc){return npc?{index:npc.getIndex(),id:npc.getContentId(p),at:where(npc),registered:npc.isRegistered(),visible:npc.isVisible(),local:p.getLocalNpcs().includes(npc),
+    ownerMatches:!npc.getOwner()||npc.getOwner()===p,sameArea:npc.getPrivateArea()===p.getPrivateArea(),distance:p.getLocation().getDistance(npc.getLocation()),hp:npc.getHitpoints(),fightBack:npc.getDefinition().doesFightBack(),
+    targetIndex:npc.getCombat().getTarget()?.getIndex()??null,targetIsPlayer:npc.getCombat().getTarget()===p}:null;}
+  const watchedCombat=new Set(),combatEvents=[],actionNpcs=[];
+  function watchCombat(npc){
+    if(!npc||watchedCombat.has(npc))return;watchedCombat.add(npc);
+    const combat=npc.getCombat();
+    for(const method of['attack','reset','setTarget','cancelIfCurrent']){
+      const original=combat[method];assert.equal(typeof original,'function','actual maintained combat method '+method);
+      t.mock.method(combat,method,function(...args){
+        const sample=phase=>{const row={phase,method,cycle:core.World.getProcessCycle(),player:where(p),npc:speakerState(npc),argumentIndex:args[0]?.getIndex?.()??null,
+          argumentIsPlayer:args[0]===p,validTarget:core.CombatFactory.validTarget(npc,p),stack:new Error().stack.split('\n').slice(2,6)};
+          combatEvents.push(row);console.log('IKOV_GUARDIAN_COMBAT',JSON.stringify(row));};
+        sample('before');try{return Reflect.apply(original,this,args);}finally{sample('after');}
+      });
+    }
+  }
+  const permission=core.CombatFactory.canAttackPermission;
+  t.mock.method(core.CombatFactory,'canAttackPermission',function(...args){
+    const result=Reflect.apply(permission,this,args);
+    if(watchedCombat.has(args[0])&&args[1]===p){const row={method:'canAttackPermission',cycle:core.World.getProcessCycle(),npc:speakerState(args[0]),response:result};combatEvents.push(row);console.log('IKOV_GUARDIAN_COMBAT',JSON.stringify(row));}
+    return result;
+  });
+  const reach=CombatRange.canReach;
+  t.mock.method(CombatRange,'canReach',function(...args){
+    const result=Reflect.apply(reach,this,args);
+    if(watchedCombat.has(args[0])&&args[2]===p){const row={method:'canReach',cycle:core.World.getProcessCycle(),npc:speakerState(args[0]),reached:result};combatEvents.push(row);console.log('IKOV_GUARDIAN_COMBAT',JSON.stringify(row));}
+    return result;
+  });
   const events=[],emitCustom=PM.emitCustomEvent.bind(PM);
   t.mock.method(PM,'emitCustomEvent',(name,event)=>{
+    if(event?.player===p&&name==='npc-dialogue:action'){watchCombat(event.npc);actionNpcs.push({stepId:event.stepId,npc:event.npc});}
+    const before=event?.player===p?speakerState(event.npc):null;
     const result=emitCustom(name,event);
     if(event?.player===p&&['ground-items:take','ground-items:taken','magic:can-telekinetic-grab','npc-dialogue:action','npc-dialogue:message'].includes(name)){
-      const row={name,itemId:event.itemId??event.groundItem?.getItem()?.getId(),source:event.source,stepId:event.stepId,npcId:event.npcId,allow:event.allow,handled:event.handled,end:event.end};
+      const row={name,itemId:event.itemId??event.groundItem?.getItem()?.getId(),source:event.source,stepId:event.stepId,npcId:event.npcId,allow:event.allow,handled:event.handled,end:event.end,before,after:speakerState(event.npc)};
       events.push(row);console.log('IKOV_PRODUCER_EVENT',JSON.stringify(row));
     }
     return result;
@@ -127,13 +160,15 @@ function actor(t,x,y,stage=10) {
     assert.equal(p.isNeedsPlacement(),false);assert.ok(p.getLocation().isWithinDistance(npc.getLocation(),3));
     assert.ok([...p.getLocalNpcs()].includes(npc),'the actual visible actor is available before Talk-to');
     const actions=core.NpcDefinition.forId(id).getActions(); const clickType=actions.indexOf('Talk-to')+1;assert.ok(clickType>0);
-    await input({type:'npc_option',index:npc.getIndex(),clickType},4);return npc;
+    const before=npcEvents.length;await input({type:'npc_option',index:npc.getIndex(),clickType},4);
+    console.log('IKOV_GUARDIAN_TALK',JSON.stringify({player:where(p),npc:speakerState(npc),dispatched:npcEvents.slice(before).some(event=>event.npc===npc),mounted:!!p.getDialogueManager().getCurrent(),queue:p.getMovementQueue().size(),messages}));
+    assert.ok(npcEvents.slice(before).some(event=>event.npc===npc),'setup: real supplied Guardian Talk-to reaches its native NPC dispatcher');return npc;
   }
   async function resume() {
     const group=p.getPacketSender().getChatboxGroupId(); assert.ok(group>=0,'real mounted source chatbox');
     await input({type:'dialogue_continue',widgetId:(group<<16)|(group===229?4:5),childIndex:-1},1);
   }
-  return {p,c,messages,input,click,add,talk,resume,approach,itemEvents,events};
+  return {p,c,messages,input,click,add,talk,resume,approach,itemEvents,events,combatEvents,actionNpcs,speakerState};
 }
 function settle(f,x,y,z=0){
   const at=new core.Location(x,y,z);assert.equal(core.RegionManager.blocked(at,f.p.getPrivateArea()),false,'supplied approach is a real unblocked tile');
@@ -254,6 +289,15 @@ function staffApproach(f){
   assert.ok(actual.sameArea&&actual.canSee&&actual.canOperate&&actual.reached&&!actual.busy,'setup: real visible operable ground stack is reached before Take');
   return ground;
 }
+function staffGuardianTile(f){
+  const from=f.p.getLocation(),candidates=[];
+  for(const [dx,dy]of[[0,1],[1,0],[-1,0],[0,-1]]){
+    const at=from.clone().add(dx,dy),blocked=core.RegionManager.blocked(at,f.p.getPrivateArea()),connected=core.RegionManager.canMovestart(from,at,1,1,f.p.getPrivateArea());
+    console.log('IKOV_STAFF_GUARDIAN_SETUP',JSON.stringify({at:[at.getX(),at.getY(),at.getZ()],blocked,connected,clip:core.RegionManager.getClipping(at.getX(),at.getY(),at.getZ(),f.p.getPrivateArea())}));
+    if(!blocked&&connected)candidates.push(at);
+  }
+  assert.ok(candidates.length,'setup: actual unblocked same-bank adjacent Guardian tile is connected to the true pickup approach');return candidates[0];
+}
 async function takeStaff(f){
   const ground=staffSpawn();console.log('IKOV_STAFF_TAKE',JSON.stringify({when:'before',state:staffState(f,ground)}));
   assert.equal(f.p.getLastItemPickup().elapsedTime(300),true,'normal pickup delay has elapsed');
@@ -262,12 +306,19 @@ async function takeStaff(f){
 }
 test('the real staff pickup requires its actual Guardian death, credits once and respawns through the native timer',async t=>{
   const f=actor(t,2638,9905,60);health(f);const ground=staffApproach(f);
-  const npc=await f.talk(core.NpcIdentifiers.GUARDIAN_OF_ARMADYL,2639,9905);f.p.closeInterruptibleInterfaces();staffApproach(f);
+  const guardianTile=staffGuardianTile(f),suppliedNpc=await f.talk(core.NpcIdentifiers.GUARDIAN_OF_ARMADYL,guardianTile.getX(),guardianTile.getY());f.p.closeInterruptibleInterfaces();staffApproach(f);
+  assert.equal(core.RegionManager.canMovestart(f.p.getLocation(),suppliedNpc.getLocation(),1,1,f.p.getPrivateArea()),true,'setup: Guardian and true staff approach share an unblocked melee edge');
+  assert.equal(core.TaskManager.hasActiveTask(f.p.getIndex()),false,'setup: no unfinished Talk-to route survives into the staff input');
+  const candidates=f.p.getLocalNpcs().filter(n=>[core.NpcIdentifiers.GUARDIAN_OF_ARMADYL,core.NpcIdentifiers.GUARDIAN_OF_ARMADYL_2].includes(n.getContentId(f.p))).map(f.speakerState);
+  console.log('IKOV_GUARDIAN_CANDIDATES',JSON.stringify({player:where(f.p),suppliedIndex:suppliedNpc.getIndex(),candidates}));
   await takeStaff(f);assert.equal(f.p.getInventory().getAmount(STAFF),0);assert.ok(core.World.getItems().includes(ground));
+  for(let i=0;i<8&&!f.actionNpcs.some(e=>e.stepId==='zJVI_k')&&f.p.getDialogueManager().getCurrent();i++)await f.resume();
+  const selected=f.actionNpcs.filter(e=>e.stepId==='zJVI_k');assert.equal(selected.length,1,'one actual source staff intervention chooses its speaker');const npc=selected[0].npc;
+  assert.ok(npc&&npc.isRegistered()&&f.p.getLocalNpcs().includes(npc),'actual selected Guardian is registered and local');
   for(let i=0;i<8&&npc.getCombat().getTarget()!==f.p&&f.p.getDialogueManager().getCurrent();i++)await f.resume();
-  console.log('IKOV_GUARDIAN_INTERVENTION',JSON.stringify({player:where(f.p),npc:where(npc),targetIndex:npc.getCombat().getTarget()?.getIndex()??null,events:f.events,messages:f.messages}));
+  console.log('IKOV_GUARDIAN_INTERVENTION',JSON.stringify({player:where(f.p),npc:where(npc),targetIndex:npc.getCombat().getTarget()?.getIndex()??null,events:f.events,combatEvents:f.combatEvents,messages:f.messages}));
   assert.ok(f.events.some(e=>e.name==='ground-items:take'),'ordinary Take reached the production physical permission hook');
-  assert.ok(f.events.some(e=>e.name==='npc-dialogue:action'&&e.stepId==='zJVI_k'),'actual source attack step was reached');
+  assert.ok(f.events.some(e=>e.name==='npc-dialogue:action'&&e.stepId==='zJVI_k'&&e.after?.index===npc.getIndex()),'actual source attack step binds the actual selected Guardian');
   assert.equal(npc.getCombat().getTarget()===f.p,true,'actual source Guardian intervention starts combat');
   const hp=npc.getHitpoints();npc.getCombat().addDamage(f.p,hp);npc.getCombat().getHitQueue().addPendingDamage([new core.HitDamage(hp,core.HitMask.RED)]);
   for(let i=0;i<24&&npc.isRegistered();i++)turns();assert.equal(npc.isRegistered(),false,'native NPCDeathTask runs the real Guardian death producer');
