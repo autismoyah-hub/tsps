@@ -328,7 +328,21 @@ test('the real staff pickup requires its actual Guardian death, credits once and
   f.p.getInventory().deleteNumber(core.ItemIdentifiers.BRONZE_DAGGER,1);await takeStaff(f);
   assert.equal(f.p.getInventory().getAmount(STAFF),1);assert.equal(quest.getStage(f.p),70);assert.equal(core.World.getItems().includes(ground),false);
   turns(101);const respawn=staffSpawn();assert.notEqual(respawn,ground);
-  await takeStaff(f);assert.equal(f.p.getInventory().getAmount(STAFF),1,'second spawn cannot duplicate the held quest staff');assert.ok(core.World.getItems().includes(respawn));
+  // Preserve the prior full-bag/refused-first-credit control, but let this
+  // separate duplicate attempt reach the quest permission hook before credit.
+  assert.equal(f.p.getInventory().getFreeSlots(),0);f.p.getInventory().deleteNumber(core.ItemIdentifiers.BRONZE_DAGGER,1);
+  assert.equal(f.p.getInventory().getAmount(STAFF),1);assert.equal(f.p.getInventory().getFreeSlots(),1);
+  const capacity=core.ItemOnGroundManager.inventoryCapacity(f.p,respawn.getItem()),duplicateSetup=staffState(f,respawn);
+  console.log('IKOV_STAFF_DUPLICATE_SETUP',JSON.stringify({capacity,staffHeld:f.p.getInventory().getAmount(STAFF),freeSlots:f.p.getInventory().getFreeSlots(),state:duplicateSetup}));
+  assert.equal(capacity,1,'setup: second staff could physically fit before quest permission');
+  assert.ok(duplicateSetup.stock&&duplicateSetup.sameArea&&duplicateSetup.canSee&&duplicateSetup.canOperate&&duplicateSetup.reached&&!duplicateSetup.busy,'setup: actual respawn is visible operable and reached');
+  const eventStart=f.events.length,messageStart=f.messages.length;await takeStaff(f);
+  const freshEvents=f.events.slice(eventStart),freshMessages=f.messages.slice(messageStart);
+  console.log('IKOV_STAFF_DUPLICATE_RESULT',JSON.stringify({events:freshEvents,messages:freshMessages,staffHeld:f.p.getInventory().getAmount(STAFF),stock:core.World.getItems().includes(respawn)}));
+  assert.ok(freshEvents.some(e=>e.name==='ground-items:take'&&e.itemId===STAFF&&e.source==='pickup'&&e.allow===false),'held-staff guard actually refuses the new physical permission attempt');
+  assert.ok(freshMessages.includes('You already have the Staff of Armadyl.'),'fresh duplicate guard feedback');
+  assert.equal(freshEvents.some(e=>e.name==='ground-items:taken'&&e.itemId===STAFF),false,'duplicate refusal never reaches a second successful transfer');
+  assert.equal(f.p.getInventory().getAmount(STAFF),1,'second spawn cannot duplicate the held quest staff');assert.ok(core.World.getItems().includes(respawn));
 });
 test('the real spell-on-ground producer refuses staff Telekinetic Grab before spending runes or granting credit',async t=>{
   const f=actor(t,2638,9905,60);const ground=staffApproach(f);f.p.getSkillManager().setMaxLevel(core.Skill.MAGIC,99);f.p.getSkillManager().setCurrentLevel(core.Skill.MAGIC,99);
