@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source": "476282c77d9060017b2d0867a87729c1b466991b",
+  "source": "af74d91ee031881a882ff80ab292d41153b858c5",
   "tests": [
     "deadman-preparation-main.test.cjs",
     "deadman-preparation-league.test.cjs",
