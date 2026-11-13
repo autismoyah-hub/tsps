@@ -1,0 +1,164 @@
+// After yarn build: node --test --test-concurrency=1 tests/temple-of-ikov-progression.test.cjs
+// Real cache, production plugins, World and decoded client inputs. Positions, supplies and
+// quest checkpoints are declared setup: these cases do not claim a natural playthrough or rendering.
+process.env.DISABLE_PLAYER_BOTS = '1';
+const assert = require('node:assert/strict'), path = require('node:path');
+const { before, after, test } = require('node:test');
+require('../dist/Server').Server.installProductionPathResolver();
+const { CachePipeline } = require('../dist/game/cache/CachePipeline');
+const { NpcDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
+const { PluginManager: PM } = require('../dist/plugins/PluginManager');
+const { Player } = require('../dist/game/entity/impl/player/Player');
+const { PlayerSession } = require('../dist/net/PlayerSession');
+const { ClientConnection } = require('../dist/net/NetworkBuilder');
+const { MultiChatboxPrompt } = require('../dist/game/model/menu/MultiChatboxPrompt');
+const { getRegisteredQuests } = require('../plugins/quests/QuestRuntime');
+let core, quest, serial = 0, originalSubmit, originalWarn, originalError;
+const tasks = new Set(), errors = [];
+before(async () => {
+  originalWarn = console.warn; originalError = console.error;
+  console.warn = (...args) => {
+    if (/\[plugins\].*hook.*(?:threw|failed)/.test(args.map(String).join(' '))) errors.push(args.map(String).join(' '));
+    originalWarn(...args);
+  };
+  console.error = (...args) => { errors.push(args.map(String).join(' ')); originalError(...args); };
+  await CachePipeline.initialize(path.resolve(__dirname, '..'));
+  new NpcDefinitionLoader().load();
+  PM.loadFromDirectory(path.resolve(__dirname, '../plugins')); core = PM.getCoreApi();
+  originalSubmit = core.TaskManager.submit;
+  core.TaskManager.submit = function(task, ...args) { tasks.add(task); return originalSubmit.call(this, task, ...args); };
+  core.RegionManager.init();
+  for (const [x,y] of [[2651,9805],[2639,9764],[2665,9855],[2710,9850],[2646,9870],[3122,3483]]) core.RegionManager.loadMapFiles(x,y);
+  PM.emitServerStartup({});
+  quest = getRegisteredQuests().findLast(q => q.key === 'temple_of_ikov'); assert.ok(quest);
+});
+after(() => {
+  try {
+    if (core) PM.emitServerShutdown({});
+    for (const task of tasks) if (task.isRunning()) task.stop();
+    assert.deepEqual(errors, [], 'no swallowed plugin/engine failures');
+  } finally {
+    console.warn = originalWarn; console.error = originalError;
+    if (core) core.TaskManager.submit = originalSubmit;
+  }
+});
+function turns(n=1) { for (let i=0;i<n;i++) core.World.process(); }
+const where = p => [p.getLocation().getX(),p.getLocation().getY(),p.getLocation().getZ()];
+function object(id,x,y) {
+  core.RegionManager.loadMapFiles(x,y);
+  const found = (core.MapObjects.mapObjects.get(core.MapObjects.getHash(x,y,0)) ?? []).find(o => o.getId()===id);
+  assert.ok(found, `actual map object ${id} at ${x},${y},0`); return found;
+}
+function actor(t,x,y,stage=10) {
+  const channel = {kind:'test',remoteAddress:'127.0.0.1',isOpen:()=>true,send:()=>true,close(){},onData(){},onError(){},onClose(){}};
+  const session = new PlayerSession(channel), p = new Player(session), c = new ClientConnection(channel);
+  c.player=p; session.setPlayer(p); session.setTurnPacketProcessor(()=>c.processTurnPackets());
+  p.setUsername(`ikovqa${++serial}`); p.setLongUsername(core.Misc.stringToLongBigInt(p.getUsername()));
+  p.setAttribute('bot-skip-persistence',true); assert.equal(core.World.getPlayers().add(p),true);
+  p.moveTo(new core.Location(x,y,0)); quest.setStage(p,stage);
+  turns(4); assert.equal(p.isNeedsPlacement(),false); assert.equal(p.isRegistered(),true); assert.ok(p.getHitpoints()>0);
+  const messages=[]; const send=p.sendMessage.bind(p); p.sendMessage=text=>{messages.push(text);return send(text);};
+  const sender=p.getPacketSender(), sendString=sender.sendString.bind(sender);
+  sender.sendString=(text,...args)=>{messages.push(String(text));return sendString(text,...args);};
+  const spawned=[];
+  t.after(()=>{
+    for (const npc of spawned) PM.removeNpc(npc);
+    const index=p.getIndex(); PM.emitPlayerDisconnect({player:p,username:p.getUsername()}); PM.emitPlayerLogout({player:p,username:p.getUsername()});
+    p.closeInterruptibleInterfaces(); p.getMovementQueue().reset(); p.getMovementQueue().walkToReset();
+    core.TaskManager.cancelTasks(p); core.TaskManager.cancelTasks(index); core.World.getPlayers().remove(p);
+    assert.equal(p.isRegistered(),false); assert.equal(core.TaskManager.hasActiveTask(p),false); assert.equal(core.TaskManager.hasActiveTask(index),false);
+  });
+  async function input(packet,n=3) { await c.dispatch([packet]); turns(n); }
+  async function click(id,ox,oy,action='Open',clickType=1,n=4) { object(id,ox,oy); await input({type:'object_option',id,x:ox,y:oy,action,clickType},n); }
+  function add(id,n=1) {const was=p.getInventory().getAmount(id);p.getInventory().adds(id,n);assert.equal(p.getInventory().getAmount(id),was+n);}
+  async function talk(id,nx,ny) {
+    const npc=PM.spawnNpc({id,x:nx,y:ny,z:0,owner:p,ownerOnly:true,wanderRadius:0}); assert.ok(npc);spawned.push(npc); turns(3);
+    const actions=core.NpcDefinition.forId(id).getActions(); const clickType=actions.indexOf('Talk-to')+1;assert.ok(clickType>0);
+    await input({type:'npc_option',index:npc.getIndex(),clickType},4);return npc;
+  }
+  async function resume() {
+    const group=p.getPacketSender().getChatboxGroupId(); assert.ok(group>=0,'real mounted source chatbox');
+    await input({type:'dialogue_continue',widgetId:(group<<16)|(group===229?4:5),childIndex:-1},1);
+  }
+  return {p,c,messages,input,click,add,talk,resume};
+}
+test('the active map contains the displaced stairs and six canonical ice chests',()=>{
+  object(98,2651,9805); object(96,2639,9764);
+  for (const [x,y] of [[2710,9850],[2719,9838],[2729,9850],[2747,9848],[2738,9835],[2745,9821]]) object(103,x,y);
+  // Compact source diagnostics bind connected geometry to the cache actually loaded by this run.
+  const rows=[];
+  for(const list of core.MapObjects.mapObjects.values()) for(const o of list) {
+    const [x,y,z]=where({getLocation:()=>o.getLocation()});
+    if(z!==0)continue;
+    if((x>=2634&&x<=2653&&y>=9814&&y<=9823)||(o.getId()>=86&&o.getId()<=104&&x>=2630&&x<=2750&&y>=9758&&y<=9915)||(o.getId()===102&&x>=3110&&x<=3130&&y>=3470&&y<=3495))
+      rows.push([o.getId(),x,y,o.getType(),o.getFace(),core.ObjectDefinition.forId(o.getId()).getName()]);
+  }
+  console.log('IKOV_CACHE_GEOMETRY',JSON.stringify(rows.sort((a,b)=>a[1]-b[1]||a[2]-b[2]||a[0]-b[0])));
+});
+test('boots stairs refuse darkness through the ordinary descend input',async t=>{
+  const f=actor(t,2653,9806,0); await f.click(98,2651,9805,'Climb-down');
+  assert.ok(f.messages.some(s=>s.includes("It's a bit dark down here!")), 'the quest explains why descent is refused');
+  assert.ok(f.p.getLocation().getY()>9800,'no descent without light');
+});
+test('boots stairs descend with a lit source and return to the dungeon',async t=>{
+  const f=actor(t,2653,9806,0);f.add(core.ItemIdentifiers.LIT_TORCH);
+  await f.click(98,2651,9805,'Climb-down',1,8);
+  assert.ok(f.p.getLocation().getY()>=9759&&f.p.getLocation().getY()<=9768,'the lit descend reaches the boots room');
+  await f.click(96,2639,9764,'Climb-up',1,12);
+  assert.ok(f.p.getLocation().getY()>=9803&&f.p.getLocation().getY()<=9810,'the climb returns to the main room');
+});
+test('using the physical lever on its bracket consumes it once and creates the Pull interaction',async t=>{
+  const f=actor(t,2671,9805); f.add(core.ItemIdentifiers.LEVER); object(86,2671,9804);
+  await f.input({type:'item_on_object',widgetId:3214,objectId:86,itemId:core.ItemIdentifiers.LEVER,slot:f.p.getInventory().getSlotForItemId(core.ItemIdentifiers.LEVER),x:2671,y:9804},5);
+  assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.LEVER),0,'fitting consumes the physical lever');
+  assert.ok(f.messages.some(s=>s.includes('fit the lever into the bracket')));
+  const fitted=core.MapObjects.getPrivateArea(f.p,87,new core.Location(2671,9804,0));
+  assert.ok(fitted,'the fitted lever is a real object visible to the player');
+  assert.ok(core.ObjectDefinition.forId(fitted.getId()).getInteractions().some(s=>s==='Pull'),'the fitted lever has a native Pull menu');
+});
+test('searching the trapped lever at 42 Thieving disarms its actual trap',async t=>{
+  const f=actor(t,2665,9854);const sm=f.p.getSkillManager();sm.setMaxLevel(core.Skill.THIEVING,42);sm.setCurrentLevel(core.Skill.THIEVING,42);
+  assert.equal(sm.getCurrentLevel(core.Skill.THIEVING),42);
+  await f.click(91,2665,9855,'Search for traps',2,5);
+  assert.ok(f.messages.some(s=>s.includes('disable the trap')),'successful search has the canonical trap feedback');
+});
+test('the ice area can supply arrows from its six actual chest producers',async t=>{
+  const f=actor(t,2710,9849); const arrows=core.ItemIdentifiers.ICE_ARROWS;assert.equal(f.p.getInventory().getAmount(arrows),0);
+  for(const [x,y] of [[2710,9850],[2719,9838],[2729,9850],[2747,9848],[2738,9835],[2745,9821]]) {
+    f.p.moveTo(new core.Location(x,y-1,0));turns(3);
+    await f.click(103,x,y,'Open');
+    const found=(core.MapObjects.mapObjects.get(core.MapObjects.getHash(x,y,0))??[]).find(o=>[103,104].includes(o.getId()));assert.ok(found);
+    if(found.getId()===104)await f.click(104,x,y,'Search');
+    if(f.p.getInventory().getAmount(arrows)>0)break;
+  }
+  const count=f.p.getInventory().getAmount(arrows);assert.ok(count>=1&&count<=5,`one containing chest supplies1..5 arrows, actual=${count}`);
+});
+test('first Winelda conversation without roots plays the introduction',async t=>{
+  const f=actor(t,2654,9876); assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.LIMPWURT_ROOT),0);
+  await f.talk(core.NpcIdentifiers.WINELDA,2655,9876);
+  const line=f.p.getDialogueManager().getCurrent();assert.ok(line,'ordinary talk opens a real dialogue');
+  assert.match(line.getText(),/Hehe! We see you're in a pickle!/);
+});
+test('wearing Lucien\'s pendant selects the hostile Guardian greeting',async t=>{
+  const f=actor(t,2644,9897);f.p.getEquipment().setItem(core.Equipment.AMULET_SLOT,new core.Item(core.ItemIdentifiers.PENDANT_OF_LUCIEN,1));
+  assert.equal(f.p.getEquipment().get(core.Equipment.AMULET_SLOT).getId(),core.ItemIdentifiers.PENDANT_OF_LUCIEN);
+  await f.talk(core.NpcIdentifiers.GUARDIAN_OF_ARMADYL,2645,9897);
+  const line=f.p.getDialogueManager().getCurrent();assert.ok(line);assert.match(line.getText(),/foul agent of Lucien/);
+});
+test('encountering the Warrior keeps the unearned door closed to its owner and a bystander',async t=>{
+  const a=actor(t,2646,9869),b=actor(t,2645,9869);object(93,2646,9870);
+  await a.click(93,2646,9870,'Open',1,8);
+  assert.ok([...core.World.getNpcs()].some(n=>n.getId()===core.NpcIdentifiers.FIRE_WARRIOR_OF_LESARKUS&&n.getOwner()===a.p),'the ordinary input spawns the quest encounter');
+  assert.ok(a.p.getLocation().getY()<9870,'the encounter cannot knock the owner through the locked door');
+  b.p.getMovementQueue().addSteps(new core.Location(2646,9870,0));b.p.getMovementQueue().addSteps(new core.Location(2646,9871,0));turns(3);
+  assert.ok(b.p.getLocation().getY()<9870,'a separate actor cannot walk through the encounter gate');
+});
+test('the registered completion reward preserves an acquired pair of boots and pays XP once',t=>{
+  const f=actor(t,3122,3483,70),boots=core.ItemIdentifiers.BOOTS_OF_LIGHTNESS;f.add(boots);
+  const sm=f.p.getSkillManager(),ranged=sm.getExperience(core.Skill.RANGED),fletching=sm.getExperience(core.Skill.FLETCHING);
+  assert.equal(quest.complete(f.p,{scroll:false,announce:false}),true);
+  assert.equal(f.p.getInventory().getAmount(boots),1,'completion must not grant another dungeon pickup');
+  assert.equal(sm.getExperience(core.Skill.RANGED)-ranged,10500);assert.equal(sm.getExperience(core.Skill.FLETCHING)-fletching,8000);
+  assert.equal(quest.complete(f.p,{scroll:false,announce:false}),false);assert.equal(f.p.getInventory().getAmount(boots),1);
+  assert.equal(sm.getExperience(core.Skill.RANGED)-ranged,10500);assert.equal(sm.getExperience(core.Skill.FLETCHING)-fletching,8000);
+});
