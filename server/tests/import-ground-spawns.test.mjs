@@ -327,3 +327,36 @@ test("a source-proven reward projection leaves only the display spawn at that ti
  assert.deepEqual(importSpawns(pinned, first.definitions).definitions, first.definitions);
  assert.deepEqual(importSpawns(source([reward, {...display, location:"Different source"}]), legacy).definitions, legacy);
 });
+
+const ikovRow=(page,id,x,y,extra={})=>row({page,id,x,y,plane:0,members:true,quantity:1,
+ infobox_respawn_ticks:100,tile_respawn_raw:null,location:'[[Temple of Ikov (dungeon)|Temple of Ikov]]',...extra});
+test('audited Ikov supply import reconciles obsolete legacy timers and membership without editing its inputs',()=>{
+ const rows=[ikovRow('Lever (Temple of Ikov)',83,2637,9819),ikovRow('Shiny key',85,2628,9859),
+  ikovRow('Staff of Armadyl',84,2638,9906),ikovRow('Staff of armadyl',84,2638,9906)];
+ const existing=[{id:995,location:{x:3000,y:3000,z:0},amt:5,respawn:45,custom:'preserved'},
+  {id:83,location:{x:2637,y:9819,z:0},amt:1,respawn:100,description:'legacy lever'},
+  {id:85,location:{x:2628,y:9859,z:0},amt:1,respawn:100,description:'legacy key'},
+  {id:84,location:{x:2638,y:9906,z:0},amt:1,respawn:0,description:'legacy staff'}];
+ const original=structuredClone(existing),result=importSpawns(source(rows),existing);
+ assert.deepEqual(existing,original,'the importer does not mutate caller-owned legacy input');
+ assert.equal(result.definitions.length,4,'the redirected staff page must not duplicate its spawn');
+ assert.deepEqual(result.definitions[0],existing[0]);
+ assert.deepEqual(result.definitions.slice(1).map(d=>[d.id,d.amt,d.respawn,d.members]),[[83,1,100,true],[85,1,100,true],[84,1,100,true]]);
+ assert.deepEqual(result.definitions.map(d=>d.description),existing.map(d=>d.description));
+ assert.equal(result.report.counts['existing-quest-state-reconciled'],4,'both source staff aliases report the single reconciled definition');
+ assert.deepEqual(importSpawns(source(rows),existing).definitions,result.definitions,'same inputs generate the same content');
+ assert.deepEqual(importSpawns(source(rows),result.definitions).definitions,result.definitions,'the imported output is stable on the next import');
+});
+test('Ikov audit does not turn wrong coordinates, raw overrides or unaudited rows into legacy repairs',()=>{
+ const original={id:84,location:{x:2638,y:9906,z:0},amt:1,respawn:0};
+ for(const extra of [{x:2639},{id:85},{members:false},{plane:1},{quantity:2},{infobox_respawn_ticks:101},
+  {tile_respawn_raw:'100'},{unresolved_reasons:['unresolved-version']},{location:'Some other temple'}]) {
+  const result=importSpawns(source([ikovRow('Staff of Armadyl',84,2638,9906,extra)]),[original]);
+  assert.deepEqual(result.definitions,[original],JSON.stringify(extra));
+ }
+});
+test('a duplicate legacy quest spawn remains a discrepancy requiring review',()=>{
+ const old={id:84,location:{x:2638,y:9906,z:0},amt:1,respawn:0};
+ const result=importSpawns(source([ikovRow('Staff of Armadyl',84,2638,9906)]),[old,structuredClone(old)]);
+ assert.deepEqual(result.definitions,[old,old]);assert.equal(result.report.counts['existing-exact-state-discrepancy'],1);
+});
