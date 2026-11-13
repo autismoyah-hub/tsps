@@ -162,3 +162,27 @@ test('the registered completion reward preserves an acquired pair of boots and p
   assert.equal(quest.complete(f.p,{scroll:false,announce:false}),false);assert.equal(f.p.getInventory().getAmount(boots),1);
   assert.equal(sm.getExperience(core.Skill.RANGED)-ranged,10500);assert.equal(sm.getExperience(core.Skill.FLETCHING)-fletching,8000);
 });
+
+// The observed sequence list contains his entrance teleport as well as combat.
+// This checks the loaded server role, not the rendered size of an animated model.
+test('the Fire Warrior does not use his smoke-puff entrance as a defence animation', () => {
+  const core = PM.getCoreApi();
+  const id = core.CacheDefinitions.getNpcId('ikov_firewarrior');
+  assert.equal(id, 3448, 'the active cache resolves the quest actor');
+  const entrance = core.CacheDefinitions.getSeqId('human_smokepuff_tele_appear');
+  assert.equal(entrance, 803, 'the candidate is an entrance teleport, not a block');
+  const warrior = core.NPC.create(id, new core.Location(2646, 9867, 0));
+  assert.equal(warrior.getAttackAnim(), core.CacheDefinitions.getSeqId('human_caststrike'),
+    'positive control: the observed spell remains his attack');
+  assert.equal(warrior.getCurrentDefinition().getDeathAnim(), 836,
+    'positive control: the observed death retains its role');
+  assert.notEqual(warrior.getBlockAnim(), entrance, 'taking damage must not replay the entrance teleport');
+  assert.equal(warrior.getBlockAnim(), core.CacheDefinitions.getSeqId('human_unarmedblock'),
+    'an unclassified entrance must leave the human rig default intact');
+});
+
+test('the animation loader preserves explicitly configured creature combat roles', () => {
+  const core = PM.getCoreApi();
+  const mole = core.NpcDefinition.forId(5779);
+  assert.deepEqual([mole.getAttackAnim(), mole.getDefenceAnim(), mole.getDeathAnim()], [3312, 3311, 3310]);
+});

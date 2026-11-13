@@ -7,7 +7,6 @@ const path = require('node:path');
 const { Server } = require('../dist/Server');
 Server.installProductionPathResolver();
 const { PluginManager } = require('../dist/plugins/PluginManager');
-const { NpcDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
 const { getRegisteredQuests } = require('../plugins/quests/QuestRuntime');
 const register = require('../plugins/quests/quests/TempleOfIkov.Quest');
 
@@ -22,7 +21,6 @@ const spawns = [];
 
 before(async () => {
   await require('../dist/game/cache/CachePipeline').CachePipeline.initialize(path.resolve(__dirname, '..'));
-  new NpcDefinitionLoader().load();
   const api = new Proxy({
     core: PluginManager.getCoreApi(),
     onPlayerLogin: (fn) => { login = fn; },
@@ -71,28 +69,4 @@ test('once started, the attackable Lucien waits at his house near Edgeville', ()
   assert.equal(house.length, 1);
   assert.deepEqual(at(house[0]), NEAR_EDGEVILLE);
   assert.deepEqual(at(spawns.find((spec) => spec.id === INN_LUCIEN)), FLYING_HORSE_INN);
-});
-
-// The observed sequence list contains his entrance teleport as well as combat.
-// This checks the loaded server role, not the rendered size of an animated model.
-test('the Fire Warrior does not use his smoke-puff entrance as a defence animation', () => {
-  const core = PluginManager.getCoreApi();
-  const id = core.CacheDefinitions.getNpcId('ikov_firewarrior');
-  assert.equal(id, 3448, 'the active cache resolves the quest actor');
-  const entrance = core.CacheDefinitions.getSeqId('human_smokepuff_tele_appear');
-  assert.equal(entrance, 803, 'the candidate is an entrance teleport, not a block');
-  const warrior = core.NPC.create(id, new core.Location(2646, 9867, 0));
-  assert.equal(warrior.getAttackAnim(), core.CacheDefinitions.getSeqId('human_caststrike'),
-    'positive control: the observed spell remains his attack');
-  assert.equal(warrior.getCurrentDefinition().getDeathAnim(), 836,
-    'positive control: the observed death retains its role');
-  assert.notEqual(warrior.getBlockAnim(), entrance, 'taking damage must not replay the entrance teleport');
-  assert.equal(warrior.getBlockAnim(), core.CacheDefinitions.getSeqId('human_unarmedblock'),
-    'an unclassified entrance must leave the human rig default intact');
-});
-
-test('the animation loader preserves explicitly configured creature combat roles', () => {
-  const core = PluginManager.getCoreApi();
-  const mole = core.NpcDefinition.forId(5779);
-  assert.deepEqual([mole.getAttackAnim(), mole.getDefenceAnim(), mole.getDeathAnim()], [3312, 3311, 3310]);
 });
