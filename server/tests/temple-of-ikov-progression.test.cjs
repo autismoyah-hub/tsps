@@ -200,6 +200,24 @@ function restoreEncounterDoor(t) {
   const closed=object(93,2646,9870);
   t.after(()=>{if(!core.MapObjects.exists(closed))core.ObjectManager.register(closed,true);});
 }
+// Criterion correction after NATIVE001/reviewer015: face1 at y9870 blocks
+// 9870->9871. Original immutable16 receipts remain failed and unchanged.
+function gateWitness(label, actor, turn) {
+  const p=actor.p;
+  const leaves=[9870,9871].flatMap(y=>(core.MapObjects.mapObjects.get(core.MapObjects.getHash(2646,y,0))??[])
+    .map(o=>({id:o.getId(),type:o.getType(),face:o.getFace(),at:where(o)})));
+  const row={label,turn,at:where(p),registered:p.isRegistered(),placement:p.isNeedsPlacement(),
+    queue:p.getMovementQueue().size(),ignoreClipping:p.hasFlag('movement:ignore-clipping'),
+    stage:quest.getStage(p),leaves,clips:[9869,9870,9871,9872].map(y=>[2646,y,0,core.RegionManager.getClipping(2646,y,0,p.getPrivateArea())])};
+  console.log('IKOV_GATE_EDGE',JSON.stringify(row));
+  return row;
+}
+async function traceGateMove(label, actor) {
+  const rows=[gateWitness(label,actor,'before-input')];
+  await actor.input({type:'move',worldX:2646,worldY:9872,modifierFlags:0,run:false},0);
+  for(let i=1;i<=8;i++){turns();rows.push(gateWitness(label,actor,i));}
+  return rows;
+}
 test('encountering the Warrior cannot knock the owner through the unearned door',async t=>{
   restoreEncounterDoor(t);const a=actor(t,2646,9869);
   await a.click(93,2646,9870,'Open',1,8);
@@ -209,7 +227,8 @@ test('encountering the Warrior cannot knock the owner through the unearned door'
 test('a character credited with the Warrior kill can cross the same door from its south approach',async t=>{
   restoreEncounterDoor(t);const a=actor(t,2646,9869,60);
   await a.click(93,2646,9870,'Open',1,8);
-  await a.input({type:'move',worldX:2646,worldY:9872,modifierFlags:0,run:false},8);
+  await traceGateMove('authorized-positive',a);
+  assert.equal(a.p.getLocation().getX(),2646);assert.equal(a.p.getLocation().getZ(),0);
   assert.ok(a.p.getLocation().getY()>=9871,'positive route control: the same doorway is traversable when earned');
 });
 test('an independent bystander cannot walk orthogonally through another player\'s encounter gate',async t=>{
@@ -217,8 +236,11 @@ test('an independent bystander cannot walk orthogonally through another player\'
   await a.click(93,2646,9870,'Open',1,8);
   b.p.moveTo(new core.Location(2646,9869,0));turns(3);
   assert.equal(b.p.isNeedsPlacement(),false);assert.deepEqual(where(b.p),[2646,9869,0]);
-  await b.input({type:'move',worldX:2646,worldY:9872,modifierFlags:0,run:false},3);
-  assert.ok(b.p.getLocation().getY()<9870,'a separate actor cannot walk through the encounter gate');
+  const trace=await traceGateMove('independent-bystander-corrected-edge',b);
+  assert.ok(trace.every(row=>row.registered&&!row.placement&&!row.ignoreClipping),'bystander remains a settled ordinary actor without passage authorization');
+  assert.ok(trace.every(row=>row.at[0]===2646&&row.at[2]===0),'bounded ordinary route remains on the tested column and plane');
+  assert.ok(trace.some(row=>row.at[1]===9870),'positive approach witness: the bystander reaches the near-side edge, rather than being held by an unrelated obstruction');
+  assert.ok(trace.every(row=>row.at[1]<9871),'a separate actor cannot cross the actual north edge9870->9871');
 });
 test('the registered completion reward preserves an acquired pair of boots and pays XP once',t=>{
   const f=actor(t,3122,3483,70),boots=core.ItemIdentifiers.BOOTS_OF_LIGHTNESS;f.add(boots);
