@@ -34,6 +34,18 @@ after(()=>{
   finally{console.log=log;console.warn=warn;console.error=error;if(core)core.TaskManager.submit=submit;}
 });
 function turns(n=1){for(let i=0;i<n;i++)core.World.process();}
+function loginPlayer(p){
+  assert.equal(p.isRegistered(),true);assert.equal(p.isPlayerBot(),false);
+  const describe=()=>({username:p.getUsername(),registered:p.isRegistered(),placement:p.isNeedsPlacement(),
+    version:p.getAttribute('temple-of-ikov:state-version'),side:p.getAttribute('temple-of-ikov:side'),
+    legacySide:p.getAttribute('quest.temple_of_ikov.side'),
+    owned:[...core.World.getNpcs()].filter(n=>n.getOwner()===p).map(n=>({id:n.getId(),index:n.getIndex(),registered:n.isRegistered()}))});
+  console.log('IKOV_LOGIN_BOUNDARY',JSON.stringify({when:'before',...describe()}));
+  // PluginManager's real registered wrapper requires BOTH player and username.
+  // The old fixture omitted username, so it never entered quest login at all.
+  PM.emitPlayerLogin({player:p,username:p.getUsername()});turns(4);
+  console.log('IKOV_LOGIN_BOUNDARY',JSON.stringify({when:'after',...describe()}));
+}
 function actor(t,x=2573,y=3322,stage=10,{login=true,save=null,username=null}={}){
   const channel={kind:'test',remoteAddress:'127.0.0.1',isOpen:()=>true,send:()=>true,close(){},onData(){},onError(){},onClose(){}};
   const session=new PlayerSession(channel),p=new Player(session),c=new ClientConnection(channel);
@@ -41,7 +53,7 @@ function actor(t,x=2573,y=3322,stage=10,{login=true,save=null,username=null}={})
   p.setUsername(username??`ikovdialogue${++serial}`);p.setLongUsername(core.Misc.stringToLongBigInt(p.getUsername()));p.setAttribute('bot-skip-persistence',true);
   if(save)save.applyToPlayer(p);
   assert.equal(core.World.getPlayers().add(p),true);p.moveTo(new core.Location(x,y,0));if(!save)quest.setStage(p,stage);
-  if(login)PM.emitPlayerLogin({player:p});turns(4);
+  if(login)loginPlayer(p);else turns(4);
   assert.equal(p.isRegistered(),true);assert.equal(p.isNeedsPlacement(),false);assert.ok(p.getHitpoints()>0);
   const text=[],send=p.sendMessage.bind(p),sender=p.getPacketSender(),sendString=sender.sendString.bind(sender);
   p.sendMessage=value=>{text.push(String(value));return send(value);};
@@ -71,8 +83,10 @@ function actor(t,x=2573,y=3322,stage=10,{login=true,save=null,username=null}={})
   function add(id,n=1){const before=p.getInventory().getAmount(id);p.getInventory().adds(id,n);assert.equal(p.getInventory().getAmount(id),before+n);}
   const choose=async text=>{
     for(let i=0;i<30&&!MultiChatboxPrompt.getPending(p)&&p.getDialogueManager().getCurrent();i++)await next();
-    const menu=MultiChatboxPrompt.getPending(p);assert.ok(menu,`source menu for ${text}`);const index=menu.options.findIndex(option=>option.includes(text));assert.ok(index>=0,`source option ${text}`);
-    await input({type:'dialogue_continue',widgetId:MultiChatboxPrompt.OPTIONS_WIDGET_ID,childIndex:index});
+    const menu=MultiChatboxPrompt.getPending(p);console.log('IKOV_MENU_BOUNDARY',JSON.stringify({wanted:text,menu}));
+    assert.ok(menu,`source menu for ${text}`);const index=menu.options.findIndex(option=>option.includes(text));assert.ok(index>=0,`source option ${text}`);
+    // Native interface action dispatch consumes a one-based option number.
+    await input({type:'dialogue_continue',widgetId:MultiChatboxPrompt.OPTIONS_WIDGET_ID,childIndex:index+1});
   };
   return{p,text,input,own,guardian,talk,next,drain,add,choose};
 }
@@ -161,9 +175,10 @@ for(const stale of ['removed actor','out-of-range actor'])test(`quest-start menu
   const playback={player:f.p,npc,npcId:npc.getId(),variant:{page:'Temple of Ikov',variant:'starting-out-talking-to-lucien'},exact:true,
     select:steps=>{const menu=startMenu(steps);assert.ok(menu);return [menu];}};
   PM.emitCustomEvent('npc-dialogue:start',playback);assert.equal(playback.handled,true);
-  const menu=MultiChatboxPrompt.getPending(f.p);assert.ok(menu);const yes=menu.options.indexOf('Yes.');assert.ok(yes>=0);
+  const menu=MultiChatboxPrompt.getPending(f.p);console.log('IKOV_MENU_BOUNDARY',JSON.stringify({wanted:'Yes.',stale,menu}));
+  assert.ok(menu);const yes=menu.options.indexOf('Yes.');assert.ok(yes>=0);
   if(stale==='removed actor')PM.removeNpc(npc);else{npc.moveTo(new core.Location(2583,3321,0));turns(3);}
-  await f.input({type:'dialogue_continue',widgetId:MultiChatboxPrompt.OPTIONS_WIDGET_ID,childIndex:yes});
+  await f.input({type:'dialogue_continue',widgetId:MultiChatboxPrompt.OPTIONS_WIDGET_ID,childIndex:yes+1});
   assert.equal(quest.getStage(f.p),0);assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.PENDANT_OF_LUCIEN),0);
   assert.ok(f.text.some(s=>s.includes('can no longer accept')));assert.equal(f.p.getDialogueManager().getCurrent(),undefined);
   assert.equal(f.text.some(s=>s.includes('Here is my pendant')),false,'no stale source success speech');
@@ -251,7 +266,7 @@ for(const side of [1,2])test(`a genuine legacy-only side${side} save receives de
   const loaded=actor(t,3122,3482,0,{save:old,login:false});
   assert.equal(loaded.p.getAttribute('temple-of-ikov:side'),0,'native applyToPlayer installs the new default before migration');
   assert.equal(loaded.p.getAttribute('temple-of-ikov:state-version'),0);assert.equal(loaded.p.getAttribute('quest.temple_of_ikov.side'),side);
-  PM.emitPlayerLogin({player:loaded.p});turns(4);
+  loginPlayer(loaded.p);
   assert.equal(loaded.p.getAttribute('temple-of-ikov:side'),side);assert.equal(loaded.p.getAttribute('quest.temple_of_ikov.side'),0);assert.equal(loaded.p.getAttribute('temple-of-ikov:state-version'),1);
   const saved=PlayerSave.fromPlayer(loaded.p);saved.attributes=JSON.parse(JSON.stringify(saved.attributes));
   const again=actor(t,3122,3482,0,{save:saved});assert.equal(again.p.getAttribute('temple-of-ikov:side'),side);assert.equal(again.p.getAttribute('quest.temple_of_ikov.side'),0);assert.equal(again.p.getAttribute('temple-of-ikov:state-version'),1);
