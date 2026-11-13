@@ -2,18 +2,10 @@
   "schema": 1,
   "source": "63233eb2c8d8fad4fd8a979e221a235b9645c9d4",
   "tests": [
-    "deadman-preparation-main.test.cjs",
-    "deadman-preparation-league.test.cjs",
-    "deadman-preparation-hardcore.test.cjs",
-    "deadman-preparation-deadman.test.cjs",
-    "deadman-preparation-conflict.test.cjs"
+    "world-config-docs.test.cjs"
   ],
   "expectedTestCounts": {
-    "deadman-preparation-main.test.cjs": 1,
-    "deadman-preparation-league.test.cjs": 1,
-    "deadman-preparation-hardcore.test.cjs": 1,
-    "deadman-preparation-deadman.test.cjs": 2,
-    "deadman-preparation-conflict.test.cjs": 1
+    "world-config-docs.test.cjs": 4
   },
   "expectedInputs": {
     ".yarnrc.yml": "473e6def86fc03638120e0c01d0c8bbab095677256460fa4ea763e5d4697f270",
@@ -5598,7 +5590,8 @@
     "server/tests/zulrah.test.cjs": "bff5e9153d22c69d648e5183fe44c148e37031cc137703fea0a99a801dab2d61",
     "server/tsconfig.json": "ae1caf6abbc0cf1e849ed5ed046b103bc0b1fe34e39b6ee66bcd86131226e032",
     "server/yarn.lock": "8bf2bfdf3f913eee1a26021277079d5aaf3a102b414cfc06bc301ceff739a103",
-    "yarn.lock": "059000cc76652b9d740b583fc88f11ce9eed0383e4115334d8619776fe5b85f2"
+    "yarn.lock": "059000cc76652b9d740b583fc88f11ce9eed0383e4115334d8619776fe5b85f2",
+    "docs/world-configuration.md": "5dfd59a735d63cbd5844ae748f52ca45e7dabf6ed562516d4a8a5ee6e8a8257a"
   },
   "sourceBlobs": {
     ".yarnrc.yml": "3186f3f0795ab612d5508593672dc9ad94bccca0",
@@ -11183,6 +11176,7 @@
     "server/tests/zulrah.test.cjs": "551a9a496c10be70f98bc05dba172bbed9355979",
     "server/tsconfig.json": "627d991554255239dd15461c4f6bbfadd95a1b03",
     "server/yarn.lock": "bf3b67f41455f43c4cfb501d4a6509735de4145c",
-    "yarn.lock": "cf0fc620cd766f6dede48e859017a4727bfd2d62"
+    "yarn.lock": "cf0fc620cd766f6dede48e859017a4727bfd2d62",
+    "docs/world-configuration.md": "59997a1c6ff1891f5be03f2c8ab573ef985b1c5d"
   }
 }
