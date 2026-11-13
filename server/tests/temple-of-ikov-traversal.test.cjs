@@ -13,6 +13,7 @@ const { Player } = require('../dist/game/entity/impl/player/Player');
 const { PlayerSession } = require('../dist/net/PlayerSession');
 const { ClientConnection } = require('../dist/net/NetworkBuilder');
 const { MultiChatboxPrompt } = require('../dist/game/model/menu/MultiChatboxPrompt');
+const { CombatRange } = require('../dist/game/content/combat/CombatRange');
 const { getRegisteredQuests } = require('../plugins/quests/QuestRuntime');
 const ClimbLinks = require('../plugins/objects/ClimbLinks');
 let core, quest, serial = 0, originalSubmit, originalWarn, originalError, originalLog;
@@ -83,6 +84,15 @@ function actor(t,x,y,stage=10) {
   const objectEvents=[],itemEvents=[],emitObject=PM.emitObjectInteraction.bind(PM),emitItem=PM.emitItemOnObject.bind(PM);
   t.mock.method(PM,'emitObjectInteraction',event=>{if(event.player===p)objectEvents.push(event);return emitObject(event);});
   t.mock.method(PM,'emitItemOnObject',event=>{if(event.player===p)itemEvents.push(event);return emitItem(event);});
+  const events=[],emitCustom=PM.emitCustomEvent.bind(PM);
+  t.mock.method(PM,'emitCustomEvent',(name,event)=>{
+    const result=emitCustom(name,event);
+    if(event?.player===p&&['ground-items:take','ground-items:taken','magic:can-telekinetic-grab','npc-dialogue:action','npc-dialogue:message'].includes(name)){
+      const row={name,itemId:event.itemId??event.groundItem?.getItem()?.getId(),source:event.source,stepId:event.stepId,npcId:event.npcId,allow:event.allow,handled:event.handled,end:event.end};
+      events.push(row);console.log('IKOV_PRODUCER_EVENT',JSON.stringify(row));
+    }
+    return result;
+  });
   t.after(()=>{
     for (const npc of spawned) PM.removeNpc(npc);
     for (const item of [...core.World.getItems()]) if (item.getOwner()===p.getUsername()) {
@@ -123,13 +133,22 @@ function actor(t,x,y,stage=10) {
     const group=p.getPacketSender().getChatboxGroupId(); assert.ok(group>=0,'real mounted source chatbox');
     await input({type:'dialogue_continue',widgetId:(group<<16)|(group===229?4:5),childIndex:-1},1);
   }
-  return {p,c,messages,input,click,add,talk,resume,approach,itemEvents};
+  return {p,c,messages,input,click,add,talk,resume,approach,itemEvents,events};
 }
 function settle(f,x,y,z=0){
   const at=new core.Location(x,y,z);assert.equal(core.RegionManager.blocked(at,f.p.getPrivateArea()),false,'supplied approach is a real unblocked tile');
   f.p.moveTo(at);turns(3);assert.equal(f.p.isNeedsPlacement(),false);assert.deepEqual(where(f.p),[x,y,z]);
 }
 function health(f){f.p.getSkillManager().setMaxLevel(core.Skill.HITPOINTS,99);f.p.getSkillManager().setCurrentLevel(core.Skill.HITPOINTS,99);assert.equal(f.p.getHitpoints(),99);}
+function surfaceLanding(f){
+  core.RegionManager.loadMapFiles(2677,3405);
+  const objects=core.MapObjects.mapObjects.get(core.MapObjects.getHash(2677,3405,0))??[];
+  console.log('IKOV_SURFACE_SETUP',JSON.stringify(objects.map(o=>({id:o.getId(),type:o.getType(),face:o.getFace(),at:where(o),name:core.ObjectDefinition.forPlayer(o.getId(),f.p)?.getName()}))));
+  const ladders=objects.filter(o=>core.ObjectDefinition.forPlayer(o.getId(),f.p)?.getName()==='Ladder');
+  assert.equal(ladders.length,1,'actual surface entrance ladder supplies an existing landing helper target');
+  const tile=ClimbLinks.landingTile(ladders[0],{x:2678,y:3405},null);assert.ok(tile,'existing native helper finds an unblocked surface stand tile');
+  assert.equal(tile.getZ(),0);return tile;
+}
 function useLever(f){return f.input({type:'item_on_object',widgetId:3214,objectId:86,itemId:core.ItemIdentifiers.LEVER,slot:f.p.getInventory().getSlotForItemId(core.ItemIdentifiers.LEVER),x:2671,y:9804},4);}
 test('the lit stairs return after the source is removed; extinguished light still refuses descent',async t=>{
   const f=actor(t,2653,9806),torch=core.ItemIdentifiers.LIT_TORCH;f.add(torch);
@@ -151,10 +170,10 @@ test('fitting alone does not unlock the ice gate; Pull consumes no second lever 
 });
 test('leaving removes an unpulled private lever; a pulled mechanism survives re-entry',async t=>{
   const f=actor(t,2671,9805);f.add(core.ItemIdentifiers.LEVER,2);await useLever(f);assert.ok(object(87,2671,9804,f.p));
-  settle(f,2677,3405);settle(f,2671,9805);
+  const outside=surfaceLanding(f);settle(f,outside.getX(),outside.getY());settle(f,2671,9805);
   assert.equal(core.MapObjects.getPrivateArea(f.p,87,new core.Location(2671,9804,0)),null);
   await useLever(f);const fitted=object(87,2671,9804,f.p);f.approach(fitted);await f.click(87,2671,9804,'Pull');
-  settle(f,2677,3405);settle(f,2671,9805);assert.ok(object(88,2671,9804,f.p));assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.LEVER),0);
+  settle(f,outside.getX(),outside.getY());settle(f,2671,9805);assert.ok(object(88,2671,9804,f.p));assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.LEVER),0);
 });
 test('an unauthorized bystander cannot follow through the ice gate while it is visibly open',async t=>{
   const a=actor(t,2671,9805),b=actor(t,2662,9802);a.add(core.ItemIdentifiers.LEVER);await useLever(a);
@@ -215,12 +234,41 @@ function staffSpawn(){
   const matches=core.World.getItems().filter(item=>item.isStaticSpawn()&&item.getItem().getId()===STAFF&&!item.isPendingRemoval()&&item.getPosition().equals(new core.Location(2638,9906,0)));
   assert.equal(matches.length,1,'one actual canonical staff spawn');assert.equal(matches[0].getRespawnTimer(),100,'canonical importer timer is in native ticks');return matches[0];
 }
-async function takeStaff(f){assert.equal(f.p.getLastItemPickup().elapsedTime(300),true,'normal pickup delay has elapsed');await f.input({type:'ground_item_action',itemId:STAFF,x:2638,y:9906,option:'Take'},6);}
+function staffState(f,ground){
+  const at=ground.getPosition();
+  return{player:where(f.p),registered:f.p.isRegistered(),placement:f.p.isNeedsPlacement(),busy:f.p.busy(),queue:f.p.getMovementQueue().size(),
+    ground:[at.getX(),at.getY(),at.getZ()],stackId:ground.getId(),stock:core.World.getItems().includes(ground),
+    sameArea:ground.getPrivateArea()===f.p.getPrivateArea(),canSee:core.ItemOnGroundManager.canSee(f.p,ground),
+    canOperate:core.ItemOnGroundManager.canOperate(f.p,ground,core.ItemOnGroundManager.takeOperation(STAFF)),
+    reached:core.PathFinder.reachedObj(f.p,at),telegrabRange:CombatRange.withinApproachDistance(f.p,at,10),
+    book:f.p.getSpellbook().getInterfaceId(),pickupReady:f.p.getLastItemPickup().elapsedTime(300),clickReady:f.p.getClickDelay().elapsedTime(500),messages:f.messages.slice(-8)};
+}
+function staffApproach(f){
+  const ground=staffSpawn(),at=ground.getPosition();core.RegionManager.loadMapFiles(at.getX(),at.getY());
+  const objects=core.MapObjects.mapObjects.get(core.MapObjects.getHash(at.getX(),at.getY(),at.getZ()))??[];
+  console.log('IKOV_STAFF_SETUP',JSON.stringify({initial:staffState(f,ground),objects:objects.map(o=>({id:o.getId(),type:o.getType(),face:o.getFace(),at:where(o),solid:o.getDefinition().isSolid()}))}));
+  const obstacle=objects.find(o=>o.getDefinition().isSolid());
+  const tile=obstacle?ClimbLinks.landingTile(obstacle,{x:at.getX(),y:at.getY()-1},f.p.getPrivateArea()):at.clone();
+  assert.ok(tile,'existing landing helper supplies a ground-item approach');settle(f,tile.getX(),tile.getY(),tile.getZ());
+  const actual=staffState(f,ground);console.log('IKOV_STAFF_SETUP',JSON.stringify({settled:actual}));
+  assert.ok(actual.sameArea&&actual.canSee&&actual.canOperate&&actual.reached&&!actual.busy,'setup: real visible operable ground stack is reached before Take');
+  return ground;
+}
+async function takeStaff(f){
+  const ground=staffSpawn();console.log('IKOV_STAFF_TAKE',JSON.stringify({when:'before',state:staffState(f,ground)}));
+  assert.equal(f.p.getLastItemPickup().elapsedTime(300),true,'normal pickup delay has elapsed');
+  await f.input({type:'ground_item_action',itemId:STAFF,x:2638,y:9906,option:'Take',stackId:ground.getId()},0);
+  for(let turn=1;turn<=6;turn++){turns();console.log('IKOV_STAFF_TAKE',JSON.stringify({turn,state:staffState(f,ground)}));}
+}
 test('the real staff pickup requires its actual Guardian death, credits once and respawns through the native timer',async t=>{
-  const f=actor(t,2638,9905,60);health(f);const ground=staffSpawn();
-  const npc=await f.talk(core.NpcIdentifiers.GUARDIAN_OF_ARMADYL,2639,9905);f.p.closeInterruptibleInterfaces();
+  const f=actor(t,2638,9905,60);health(f);const ground=staffApproach(f);
+  const npc=await f.talk(core.NpcIdentifiers.GUARDIAN_OF_ARMADYL,2639,9905);f.p.closeInterruptibleInterfaces();staffApproach(f);
   await takeStaff(f);assert.equal(f.p.getInventory().getAmount(STAFF),0);assert.ok(core.World.getItems().includes(ground));
-  assert.equal(npc.getCombat().getTarget(),f.p,'actual source Guardian intervention starts combat');
+  for(let i=0;i<8&&npc.getCombat().getTarget()!==f.p&&f.p.getDialogueManager().getCurrent();i++)await f.resume();
+  console.log('IKOV_GUARDIAN_INTERVENTION',JSON.stringify({player:where(f.p),npc:where(npc),targetIndex:npc.getCombat().getTarget()?.getIndex()??null,events:f.events,messages:f.messages}));
+  assert.ok(f.events.some(e=>e.name==='ground-items:take'),'ordinary Take reached the production physical permission hook');
+  assert.ok(f.events.some(e=>e.name==='npc-dialogue:action'&&e.stepId==='zJVI_k'),'actual source attack step was reached');
+  assert.equal(npc.getCombat().getTarget()===f.p,true,'actual source Guardian intervention starts combat');
   const hp=npc.getHitpoints();npc.getCombat().addDamage(f.p,hp);npc.getCombat().getHitQueue().addPendingDamage([new core.HitDamage(hp,core.HitMask.RED)]);
   for(let i=0;i<24&&npc.isRegistered();i++)turns();assert.equal(npc.isRegistered(),false,'native NPCDeathTask runs the real Guardian death producer');
   // Capacity failure does not consume the earned death receipt or despawn stock.
@@ -232,20 +280,23 @@ test('the real staff pickup requires its actual Guardian death, credits once and
   await takeStaff(f);assert.equal(f.p.getInventory().getAmount(STAFF),1,'second spawn cannot duplicate the held quest staff');assert.ok(core.World.getItems().includes(respawn));
 });
 test('the real spell-on-ground producer refuses staff Telekinetic Grab before spending runes or granting credit',async t=>{
-  const f=actor(t,2638,9905,60);staffSpawn();f.p.getSkillManager().setMaxLevel(core.Skill.MAGIC,99);f.p.getSkillManager().setCurrentLevel(core.Skill.MAGIC,99);
+  const f=actor(t,2638,9905,60);const ground=staffApproach(f);f.p.getSkillManager().setMaxLevel(core.Skill.MAGIC,99);f.p.getSkillManager().setCurrentLevel(core.Skill.MAGIC,99);
   f.add(core.ItemIdentifiers.LAW_RUNE);f.add(core.ItemIdentifiers.AIR_RUNE);
   const spell=core.CacheDefinitions.getSpellByName('Telekinetic Grab');assert.ok(spell);assert.equal(core.CacheDefinitions.getSpellName(spell.widgetId,spell.itemId),'Telekinetic Grab');
   const events=[],emit=PM.emitCustomEvent.bind(PM);t.mock.method(PM,'emitCustomEvent',(name,event)=>{const result=emit(name,event);if(name==='magic:can-telekinetic-grab'&&event.player===f.p)events.push(event);return result;});
   assert.equal(f.p.getClickDelay().elapsedTime(500),true);
+  console.log('IKOV_TELEGRAB_SETUP',JSON.stringify({state:staffState(f,ground),spell}));
+  assert.equal(f.p.getSpellbook().getInterfaceId(),core.MagicSpellbook.NORMAL.getInterfaceId());
+  assert.equal(CombatRange.withinApproachDistance(f.p,ground.getPosition(),10),true,'setup: actual projectile approach distance and line before spell input');
   await f.input({type:'spell_on_ground',groundItemId:STAFF,x:2638,y:9906,spellWidget:spell.widgetId,spellChild:spell.widgetId&0xffff,spellItemId:spell.itemId},6);
   assert.equal(events.length,1,'the normal spell reached the actual staff permission producer');assert.equal(events[0].allow,false);
   assert.equal(f.p.getInventory().getAmount(STAFF),0);assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.LAW_RUNE),1);assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.AIR_RUNE),1);
   assert.ok(f.messages.some(s=>s.includes('cannot use Telekinetic Grab')));staffSpawn();
 });
 test('Guardian allegiance and completed quest each refuse the real static staff transfer',async t=>{
-  const helper=actor(t,2638,9905,60);staffSpawn();helper.p.setAttribute('temple-of-ikov:side',1);
+  const helper=actor(t,2638,9905,60);staffApproach(helper);helper.p.setAttribute('temple-of-ikov:side',1);
   await takeStaff(helper);assert.equal(helper.p.getInventory().getAmount(STAFF),0);assert.ok(helper.messages.some(s=>s.includes('decide not to steal the staff')));helper.p.closeInterruptibleInterfaces();
-  const done=actor(t,2638,9905,70);assert.equal(quest.complete(done.p,{experience:false,scroll:false,announce:false}),true);await takeStaff(done);
+  const done=actor(t,2638,9905,70);staffApproach(done);assert.equal(quest.complete(done.p,{experience:false,scroll:false,announce:false}),true);await takeStaff(done);
   assert.equal(done.p.getInventory().getAmount(STAFF),0);assert.ok(done.messages.some(s=>s.includes('completed the quest of the Temple of Ikov')));staffSpawn();
 });
 
@@ -293,6 +344,85 @@ test('negative worn weight walks the actual cache bridge row both ways without a
     assert.ok(trace.every(at=>at[1]===row.y&&at[2]===0),'ordinary input stays on this exact bridge row/plane');
     assert.ok(trace.some(at=>at[0]>=row.min&&at[0]<=row.max),'observed movement actually enters the cache bridge span');
     assert.deepEqual(where(f.p),[to.getX(),row.y,0],'ordinary input reaches the opposite real bank');
-    assert.ok(hitpoints.every(hp=>hp===99),'99 HP at every observed movement turn');assert.ok(permissions.every(flag=>flag===false),'no clipping privilege at any observed movement turn');
+    assert.ok(hitpoints.every(hp=>hp===99),'99 HP at every observed movement turn');
+    assert.ok(permissions.every(flag=>flag===false),'no clipping privilege at any observed movement turn');
+  }
+});
+test('negative bridge passage keeps shared walls and does not authorize a concurrent nonnegative bystander',async t=>{
+  const row=actualBridgeRow(),light=actor(t,row.east.getX(),row.y),heavy=actor(t,row.east.getX(),row.y);
+  light.p.getEquipment().setItem(core.Equipment.FEET_SLOT,new core.Item(core.ItemIdentifiers.BOOTS_OF_LIGHTNESS,1));heavy.add(core.ItemIdentifiers.BOOTS_OF_LIGHTNESS);
+  assert.ok(light.p.getCarriedWeightGrams()<0);assert.ok(heavy.p.getCarriedWeightGrams()>=0,'carried boots do not give their worn effect');
+  const clips=()=>[9828,9829].flatMap(y=>[2648,2649,2650].map(x=>[x,y,core.RegionManager.getClipping(x,y,0,null)]));
+  const before=clips(),trace=[];
+  for(const f of[light,heavy])await f.input({type:'move',worldX:row.west.getX(),worldY:row.y,modifierFlags:0,run:false},0);
+  for(let turn=1;turn<=16;turn++){turns();const state={turn,light:where(light.p),heavy:where(heavy.p),heavyPermission:heavy.p.hasFlag('movement:ignore-clipping'),heavyGrams:heavy.p.getCarriedWeightGrams()};trace.push(state);console.log('IKOV_BRIDGE_BYSTANDER',JSON.stringify(state));}
+  assert.deepEqual(where(light.p),[row.west.getX(),row.y,0],'negative actor crosses through the real content producer');
+  assert.ok(trace.every(r=>r.heavy[0]>=2650&&r.heavy[1]===row.y&&r.heavy[2]===0&&!r.heavyPermission&&r.heavyGrams>=0),'nonnegative actor remains on the east side without borrowed permission');
+  assert.deepEqual(clips(),before,'all shared bridge-wall clipping remains intact');
+  assert.equal(light.p.hasFlag('movement:ignore-clipping'),false);
+});
+test('an owned bridge passage releases its movement lock on real logout and area leave',async t=>{
+  const row=actualBridgeRow();
+  for(const ending of['logout','area leave']){
+    const f=actor(t,row.east.getX(),row.y);f.p.getEquipment().setItem(core.Equipment.FEET_SLOT,new core.Item(core.ItemIdentifiers.BOOTS_OF_LIGHTNESS,1));
+    await f.input({type:'move',worldX:row.west.getX(),worldY:row.y,modifierFlags:0,run:false},0);
+    for(let turn=1;turn<=16&&!f.p.getAttribute('agility.obstacle');turn++){turns();console.log('IKOV_BRIDGE_CANCEL_APPROACH',JSON.stringify({ending,turn,at:where(f.p),taskRunning:f.p.getAttribute('agility.obstacle')?.isRunning()??false}));}
+    const task=f.p.getAttribute('agility.obstacle');console.log('IKOV_BRIDGE_CANCEL',JSON.stringify({ending,when:'before',at:where(f.p),taskRunning:task?.isRunning(),blocked:f.p.getMovementQueue().isMovementBlocked()}));
+    assert.ok(task?.isRunning(),'actual maintained scripted-walk task owns the reached bridge passage');assert.equal(task.player,f.p);
+    assert.equal(f.p.getMovementQueue().isMovementBlocked(),true);
+    if(ending==='logout')PM.emitPlayerLogout({player:f.p,username:f.p.getUsername()});
+    else{const outside=surfaceLanding(f);settle(f,outside.getX(),outside.getY());}
+    console.log('IKOV_BRIDGE_CANCEL',JSON.stringify({ending,when:'after',at:where(f.p),taskRunning:task.isRunning(),blocked:f.p.getMovementQueue().isMovementBlocked()}));
+    assert.equal(task.isRunning(),false);assert.equal(f.p.getAttribute('agility.obstacle'),null);
+    assert.equal(f.p.getMovementQueue().isMovementBlocked(),false);assert.equal(f.p.hasFlag('movement:ignore-clipping'),false);
+  }
+});
+
+// The distant approach is selected from actual contiguous unblocked cache tiles,
+// outside source030's old initial x<=2655 bank rectangle. No geometry is changed.
+function fartherBridgeStart(row){
+  let far=row.east.clone();
+  for(let x=row.east.getX()+1;x<=2663;x++){
+    const next=new core.Location(x,row.y,0);core.RegionManager.loadMapFiles(x,row.y);
+    const blocked=core.RegionManager.blocked(next,null),connected=core.RegionManager.canMovestart(far,next,1,1,null);
+    console.log('IKOV_BRIDGE_FAR_SETUP',JSON.stringify({at:[x,row.y,0],blocked,connected,clip:core.RegionManager.getClipping(x,row.y,0,null)}));
+    if(blocked||!connected)break;
+    far=next;
+  }
+  assert.ok(far.getX()>=2656,'setup: actual contiguous east approach starts outside the old bank rectangle');return far;
+}
+test('one ordinary cross-bridge click from a farther cache-verified approach reaches the opposite bank',async t=>{
+  const row=actualBridgeRow(),far=fartherBridgeStart(row),f=actor(t,far.getX(),far.getY());health(f);
+  f.p.getEquipment().setItem(core.Equipment.FEET_SLOT,new core.Item(core.ItemIdentifiers.BOOTS_OF_LIGHTNESS,1));
+  assert.ok(f.p.getCarriedWeightGrams()<0);const trace=[];
+  await f.input({type:'move',worldX:row.west.getX(),worldY:row.y,modifierFlags:0,run:false},0);
+  for(let turn=1;turn<=24;turn++){turns();const sample={turn,at:where(f.p),hp:f.p.getHitpoints(),ignore:f.p.hasFlag('movement:ignore-clipping'),task:!!f.p.getAttribute('agility.obstacle')};trace.push(sample);console.log('IKOV_BRIDGE_FAR_ROUTE',JSON.stringify(sample));}
+  assert.deepEqual(where(f.p),[row.west.getX(),row.y,0],'the first click crosses without a second click at the wall');
+  assert.ok(trace.some(r=>r.task),'actual maintained bridge passage was reached');
+  assert.ok(trace.every(r=>r.at[1]===row.y&&r.at[2]===0&&r.hp===99&&!r.ignore),'the distant ordinary approach retains row, plane, HP and scoped movement');
+});
+test('superseding ordinary interaction or walk cancels the pending bridge approach',async t=>{
+  const row=actualBridgeRow(),far=fartherBridgeStart(row);
+  for(const replacement of['ground Take','walk cancellation']){
+    const f=actor(t,far.getX(),far.getY());health(f);
+    f.p.getEquipment().setItem(core.Equipment.FEET_SLOT,new core.Item(core.ItemIdentifiers.BOOTS_OF_LIGHTNESS,1));
+    const coin=core.ItemIdentifiers.COINS,edge=new core.Location(2650,row.y,0);
+    const ground=new core.ItemOnGround(core.GroundItemState.SEEN_BY_PLAYER,f.p.getUsername(),edge,new core.Item(coin,1),false,-1,f.p.getPrivateArea());
+    core.ItemOnGroundManager.register(ground);
+    assert.equal(core.ItemOnGroundManager.canOperate(f.p,ground,core.ItemOnGroundManager.takeOperation(coin)),true,'actual visible operable fixture coin before ordinary interaction');
+    await f.input({type:'move',worldX:row.west.getX(),worldY:row.y,modifierFlags:0,run:false},1);
+    console.log('IKOV_BRIDGE_REPLACE',JSON.stringify({replacement,when:'before',at:where(f.p),pending:core.TaskManager.hasActiveTask(f.p.getIndex()),passage:!!f.p.getAttribute('agility.obstacle')}));
+    assert.equal(f.p.getAttribute('agility.obstacle'),undefined,'setup: first walk is still approaching the edge');
+    assert.equal(core.TaskManager.hasActiveTask(f.p.getIndex()),true,'actual maintained approach task is pending');
+    if(replacement==='ground Take')await f.input({type:'ground_item_action',itemId:coin,x:edge.getX(),y:edge.getY(),option:'Take',stackId:ground.getId()},0);
+    else await f.input({type:'move',worldX:far.getX(),worldY:far.getY(),modifierFlags:0,run:false},0);
+    const trace=[];
+    for(let turn=1;turn<=24;turn++){turns();const sample={replacement,turn,at:where(f.p),passage:!!f.p.getAttribute('agility.obstacle'),blocked:f.p.getMovementQueue().isMovementBlocked(),ignore:f.p.hasFlag('movement:ignore-clipping')};trace.push(sample);console.log('IKOV_BRIDGE_REPLACE',JSON.stringify(sample));}
+    assert.ok(trace.every(r=>r.at[0]>=2650&&r.at[1]===row.y&&r.at[2]===0&&!r.passage&&!r.blocked&&!r.ignore),'obsolete crossing never borrows the superseding route');
+    if(replacement==='ground Take'){
+      assert.equal(f.p.getInventory().getAmount(coin),1,'ordinary superseding Take actually completes at the real stack');
+      assert.equal(core.World.getItems().includes(ground),false,'successful normal transfer removes fixture stock');
+      assert.ok(f.events.some(e=>e.name==='ground-items:taken'&&e.itemId===coin),'normal taken producer witnessed');
+    }else assert.deepEqual(where(f.p),[far.getX(),row.y,0],'ordinary replacement walk wins');
   }
 });

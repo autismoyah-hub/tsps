@@ -26,6 +26,8 @@
 module.exports = function registerTempleOfIkovQuest(api) {
   const { Item, Skill, ItemIdentifiers, NpcIdentifiers } = api.core;
   const { registerQuest, giveReward, startTranscript } = require("../QuestRuntime");
+  const ObstacleRunner = require("../../skills/agility/ObstacleRunner.Agility");
+  ObstacleRunner.init(api);
 
   const LUCIEN_NPC_IDS = new Set([
     NpcIdentifiers.LUCIEN,
@@ -69,6 +71,15 @@ module.exports = function registerTempleOfIkovQuest(api) {
   const TRAPPED_LEVER_TILE = { x: 2665, y: 9855, z: 0 };
   const BOOTS_STAIRS_DOWN_ID = 98;
   const BOOTS_STAIRS_DOWN_TILE = { x: 2650, y: 9804, z: 0 };
+  // Cache242/2757: projected source-plane1 inviswall_serverside pieces bound
+  // the central gap in the planked bridge (actual native029 diagnostics).
+  const BRIDGE_BLOCKER_ID = 3550;
+  const BRIDGE_WEST_EDGE_X = 2648;
+  const BRIDGE_EAST_EDGE_X = 2650;
+  const BRIDGE_WEST_BANK_X = 2645;
+  const BRIDGE_EAST_BANK_X = 2653;
+  const BRIDGE_ROWS = new Set([9828, 9829]);
+  const BRIDGE_PASSAGE_TICKS = 8;
   const ICE_GATE_IDS = new Set([89, 90]);
   const TRAP_DOOR_ID = 92;
   const PIT_LADDER_ID = 101;
@@ -146,6 +157,8 @@ module.exports = function registerTempleOfIkovQuest(api) {
   const bracketByPlayer = new WeakMap();
   const iceChestsByPlayer = new WeakMap();
   const trapTasksByPlayer = new WeakMap();
+  const bridgeTasksByPlayer = new WeakMap();
+  const bridgeApproachesByPlayer = new WeakMap();
   const STAFF_TILE = { x: 2638, y: 9906, z: 0 };
   const LUCIEN_PRIVATE_NPC_IDS = new Set([INN_LUCIEN_NPC_ID, HOUSE_LUCIEN_NPC_ID]);
   const FIRE_WARRIOR_PRIVATE_NPC_IDS = new Set([FIRE_WARRIOR_NPC_ID]);
@@ -1085,10 +1098,89 @@ module.exports = function registerTempleOfIkovQuest(api) {
       removeBracket(player);
       removeIceChests(player);
       trapTasksByPlayer.get(player)?.stop();
+      cancelBridgeApproach({ player });
+      bridgeTasksByPlayer.get(player)?.stop();
       guardianClearedByPlayer.delete(player);
       staffTakeByPlayer.delete(player);
       defeatedLucienByPlayer.delete(player);
     }
+  }
+
+  function cancelBridgeApproach({ player }) {
+    if (!bridgeApproachesByPlayer.has(player)) return;
+    bridgeApproachesByPlayer.delete(player);
+    player.getMovementQueue().reset();
+    player.getMovementQueue().walkToReset();
+  }
+
+  function routeBridgeWalk(event) {
+    const { player, destination } = event;
+    // requestWalk already cancels the old movement task before this hook.
+    bridgeApproachesByPlayer.delete(player);
+    if (!(player.getArea() instanceof TempleOfIkovDungeon) || !destination
+      || bridgeTasksByPlayer.has(player) || ObstacleRunner.isBusy(player)) return;
+    const from = player.getLocation();
+    if (from.getZ() !== 0 || destination.z !== 0 || destination.x < 2630 || destination.x > 2665
+      || destination.y < 9800 || destination.y > 9840 || player.getCarriedWeightGrams() >= 0) return;
+    const westward = from.getX() >= BRIDGE_EAST_EDGE_X && destination.x <= BRIDGE_WEST_EDGE_X;
+    const eastward = from.getX() <= BRIDGE_WEST_EDGE_X && destination.x >= BRIDGE_EAST_EDGE_X;
+    if (!westward && !eastward) return;
+    const y = BRIDGE_ROWS.has(from.getY()) ? from.getY()
+      : BRIDGE_ROWS.has(destination.y) ? destination.y : 9829;
+    const approach = new api.core.Location(westward ? BRIDGE_EAST_EDGE_X : BRIDGE_WEST_EDGE_X, y, 0);
+    const area = player.getPrivateArea();
+    event.handled = true;
+    // The maintained movement task owns this callback. A new walk/interaction's
+    // walkToReset cancels it, so no detached intent can survive a replaced route.
+    // The original click can start anywhere in this dungeon, not just at a bank.
+    const request = { westward, destination: { ...destination }, area, y };
+    bridgeApproachesByPlayer.set(player, request);
+    player.getMovementQueue().walkToTile(approach, () => {
+      if (bridgeApproachesByPlayer.get(player) !== request) return;
+      bridgeApproachesByPlayer.delete(player);
+      startBridge(player, request);
+    }, undefined, { failWhenUnreachable: true });
+  }
+
+  function startBridge(player, intent) {
+    const at = player.getLocation();
+    if (bridgeTasksByPlayer.has(player) || !(player.getArea() instanceof TempleOfIkovDungeon)
+      || player.getPrivateArea() !== intent.area || !player.isRegistered() || player.busy()
+      || ObstacleRunner.isBusy(player) || player.getHitpoints() <= 0 || at.getZ() !== 0
+      || at.getY() !== intent.y || !BRIDGE_ROWS.has(at.getY()) || player.getCarriedWeightGrams() >= 0
+      || at.getX() !== (intent.westward ? BRIDGE_EAST_EDGE_X : BRIDGE_WEST_EDGE_X)) return;
+    const area = player.getPrivateArea(), y = at.getY();
+    // Authorize only this mapped gap; every shared wall remains untouched.
+    for (const [x, face] of [[BRIDGE_WEST_EDGE_X, 2], [BRIDGE_EAST_EDGE_X, 0]]) {
+      const wall = api.core.MapObjects.get(BRIDGE_BLOCKER_ID, new api.core.Location(x, y, 0), area);
+      if (!wall || wall.getType() !== 0 || wall.getFace() !== face) return false;
+    }
+    const bankX = intent.westward ? BRIDGE_WEST_BANK_X : BRIDGE_EAST_BANK_X;
+    const destination = new api.core.Location(bankX, y, 0), requested = intent.destination;
+    // Reuse the maintained quest/Agility scripted-walk contract. It locks the
+    // player and emits normal walking steps, without a global collision edit or
+    // broad ignore-clipping flag. Endpoints/timing remain cache-derived inference;
+    // this is not a retail heavy-player fall implementation or guessed animation.
+    let task;
+    task = ObstacleRunner.run({ player }, [{ walk: [[bankX, y]], arrive: true }], {
+      onFinish: (completed) => {
+        if (bridgeTasksByPlayer.get(player) === task) bridgeTasksByPlayer.delete(player);
+        if (completed && player.isRegistered() && player.getLocation().equals(destination)
+          && player.getPrivateArea() === area && (requested.x !== bankX || requested.y !== y)) {
+          player.getMovementQueue().requestWalk(new api.core.Location(requested.x, requested.y, 0));
+        }
+      },
+    });
+    bridgeTasksByPlayer.set(player, task);
+    const execute = task.execute.bind(task);
+    let remaining = BRIDGE_PASSAGE_TICKS;
+    task.execute = () => {
+      const here = player.getLocation();
+      if (player.getPrivateArea() !== area || here.getZ() !== 0 || here.getY() !== y
+        || here.getX() < BRIDGE_WEST_BANK_X || here.getX() > BRIDGE_EAST_BANK_X || --remaining < 0) task.stop();
+      else execute();
+    };
+    return true;
   }
 
   class TempleOfIkovDungeon extends api.core.Area {
@@ -1108,6 +1200,8 @@ module.exports = function registerTempleOfIkovQuest(api) {
       removeBracket(player);
       removeIceChests(player);
       trapTasksByPlayer.get(player)?.stop();
+      cancelBridgeApproach({ player });
+      bridgeTasksByPlayer.get(player)?.stop();
       removeFireWarrior(player);
       guardianClearedByPlayer.delete(player);
       staffTakeByPlayer.delete(player);
@@ -1146,6 +1240,10 @@ module.exports = function registerTempleOfIkovQuest(api) {
   api.persistAttribute(ICE_GATE_UNLOCKED_ATTRIBUTE, 0);
   api.persistAttribute(LUCIEN_DEFEATED_ATTRIBUTE, 0);
   api.registerArea(new TempleOfIkovDungeon([new api.core.Boundary(2624, 2753, 9758, 9916, 0)]));
+  api.onWalkRoute(routeBridgeWalk);
+  // Native world input precedes dispatch, including interactions already in reach
+  // whose immediate walkToTile callback would otherwise skip walkToReset.
+  api.onCustomEvent("player:world-input", cancelBridgeApproach);
   api.onNpcDialogueVariant(selectVariant);
   api.onNpcDialogueCondition(answerCondition);
   api.onCustomEvent("npc-dialogue:hook", handleStartHook);
