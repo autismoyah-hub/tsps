@@ -1,14 +1,23 @@
 {
   "schema": 1,
-  "source": "63233eb2c8d8fad4fd8a979e221a235b9645c9d4",
+  "source": "042b05a888742193847d5fccfead60cefb0a1daf",
   "tests": [
-    "world-config-docs.test.cjs"
+    "deadman-preparation-main.test.cjs",
+    "deadman-preparation-league.test.cjs",
+    "deadman-preparation-hardcore.test.cjs",
+    "deadman-preparation-deadman.test.cjs",
+    "deadman-preparation-conflict.test.cjs"
   ],
   "expectedTestCounts": {
-    "world-config-docs.test.cjs": 4
+    "deadman-preparation-main.test.cjs": 2,
+    "deadman-preparation-league.test.cjs": 1,
+    "deadman-preparation-hardcore.test.cjs": 1,
+    "deadman-preparation-deadman.test.cjs": 3,
+    "deadman-preparation-conflict.test.cjs": 1
   },
   "expectedInputs": {
     ".yarnrc.yml": "473e6def86fc03638120e0c01d0c8bbab095677256460fa4ea763e5d4697f270",
+    "docs/world-configuration.md": "29af958bbd308ddc9ec278d57a292a5f24e8799bdca6be7b5ab1f275e8fdfc10",
     "package.json": "235fc031d71b324f5d614b73c6c8d4dd2f521fb44352f954f413d6b77076ad28",
     "scripts/run-with-env.mjs": "dc2c23632bf7eee8f848674b057d58609d8d2de0c6192570e416c3adaa7a8ab9",
     "server/.env.example": "335743d118e9fac627def835e52a5d8248a2b979ae0f4b0e212fb2f51af0be0c",
@@ -1997,7 +2006,7 @@
     "server/plugins/modes/AreaUnlocks.LeagueMode.js": "6bc54121ae2371e890a1caf38c5bff5313f0b96d36203766611383e6da27bde5",
     "server/plugins/modes/Base.LeagueMode.js": "26fe226f0efac4dcbc98666439fe86ee6ee34f75810fae997aef41ec0e70434f",
     "server/plugins/modes/CombatMasteries.LeagueMode.js": "75024d891d6e51044cb5f4ce6d68530331755e2352637e253dbc72fb4d8b3858",
-    "server/plugins/modes/DeadmanMode.plugin.js": "20271004bb16979284cad84bddb92360fcc40a9e796d0b2fd74490397f03cc09",
+    "server/plugins/modes/DeadmanMode.plugin.js": "44e2a854846d39ccee3401ae64a071aa83ba2b9b1914975e07b88afd2e7aaf13",
     "server/plugins/modes/FreeToPlay.plugin.js": "f2fcd50b5df349c8987d071708a6ece66483bcca4810f90dd747d0adbd573857",
     "server/plugins/modes/HardcoreWorld.plugin.js": "6ebe747688130ad5f978a884f3928e0c8b0548942d043b9891a70067f5e93cd5",
     "server/plugins/modes/Ironman.plugin.js": "7cf45aa5c8cf3b36885e73f9dfcec9e27fd8542439c86d608616b06b744fdd6a",
@@ -2027,7 +2036,7 @@
     "server/plugins/modes/data/league-tutorial.json": "e9462ae13ea3be4131296d7e030a21331c434da17c2ef6998698ede5bbb4fc48",
     "server/plugins/modes/data/leagues.json": "bb7ebe6c0b363187882d4dd68ac96580feacb0b2dce3532d017b57615b420e44",
     "server/plugins/modes/data/pvp-presets-players.json": "c465f41775c9534964869ce448e6fc5bf6b09d2df64b966b0dfd975903a37448",
-    "server/plugins/modes/deadman/Preparation.DeadmanMode.js": "faf9321fbb57c7f369b308ec5e92f1716c9d827402e1a20fbaa1a5c549458891",
+    "server/plugins/modes/deadman/Preparation.DeadmanMode.js": "2396fd633690e398218bcba1f9804bd55668424571429e1c1090ba3c869eaf6e",
     "server/plugins/modes/hardcoreworld/Account.HardcoreWorld.js": "596138cbeba53f4fd3b38bd25d4699358041a7690239756d54d9c8c2dd30000b",
     "server/plugins/modes/hardcoreworld/Arrival.HardcoreWorld.js": "0ba305f8b0246b03e0661221e6e7a398ef367008657854d051a98bfdefa9af0e",
     "server/plugins/modes/hardcoreworld/Choice.HardcoreWorld.js": "191d7ce78dee5df9ac055b29efc6db7bbf1575974a0a2ae178e8421f349b6226",
@@ -3521,7 +3530,7 @@
     "server/src/main/typescript/elvarg/game/content/sailing/Sailing.ts": "d5debb795c4e06fe69918de923a418b34350824cf8c846f53668c384e3d8382b",
     "server/src/main/typescript/elvarg/game/content/sailing/SailingState.ts": "88cf3130f2b9b4d9affeb7995943d82c8e64bb2ad76748e6ddf4e1a35e9ad6e6",
     "server/src/main/typescript/elvarg/game/content/sailing/WorldEntitySync.ts": "9babc17f025ee5cc6ca717ceb38937834995150940b6557fbd306eebc48ee49d",
-    "server/src/main/typescript/elvarg/game/content/skill/SkillManager.ts": "204a85c9582750f3a4548b628a3576344c03f5c10e9740ee6db06d94044e8b35",
+    "server/src/main/typescript/elvarg/game/content/skill/SkillManager.ts": "e214dcfba253666991d1e6ca0568a94a83fc3aa314e3b384d51c53c1f255198d",
     "server/src/main/typescript/elvarg/game/content/wilderness/Wilderness.ts": "e891e5462f3316556b7086918a28e825ce1f98ecc84365ccacc285bf1572373f",
     "server/src/main/typescript/elvarg/game/definition/DefaultSpawnDefinition.ts": "f1fac130e09d1ecf61e5b369b5f4a49f177c81d4deb3dfc4ae77b59f56fd1940",
     "server/src/main/typescript/elvarg/game/definition/EquipmentSounds.ts": "9b109cd6badf0482a48871c6f6190200d9650ff88ed2b6dfa65eacca71fe6fd8",
@@ -4332,7 +4341,7 @@
     "server/tests/fixtures/archived-cache-definitions.json": "e92b5dae427e0ed49bb6a7d89288d7f6b49d19f1aa0bdca73c08adfc9811676d",
     "server/tests/fixtures/archived-seasonal-bundle.json": "12579672651e87772bca5b7ae25c40a28bf33ce60b9bc3d206941644758b1a3b",
     "server/tests/fixtures/blighted-spellbook.backend.cjs": "755c0046d0b3c0419bf9bc15a0f3a2da0d52d6491cc157b65e8b8cef758f60a3",
-    "server/tests/fixtures/deadman-preparation-body.cjs": "ce39581f4cd8f3300f14b7ac657fe5996d837af52bd9e8785b9d550188bf1c47",
+    "server/tests/fixtures/deadman-preparation-body.cjs": "02b74af2b538577e43fdbf929d82477bf344de1274006481c0b90664d65f5791",
     "server/tests/fixtures/goblin-book-transcript.txt": "45db092eab6d1fd3dd9e8044f442c23d689473d72b3c17a04705e802bf236700",
     "server/tests/fixtures/graveyard-bones-observed.json": "6ad4781ee61dfee22e5cd9bb5e426b2c7b7c71a1a8e5ad9183bf30c38f8c4fef",
     "server/tests/fixtures/music-unmapped-tracks.json": "05df1c386533dbf342f573931e6fcc75b523b1659c1a919b49fbbd75c1b76e5c",
@@ -5590,11 +5599,11 @@
     "server/tests/zulrah.test.cjs": "bff5e9153d22c69d648e5183fe44c148e37031cc137703fea0a99a801dab2d61",
     "server/tsconfig.json": "ae1caf6abbc0cf1e849ed5ed046b103bc0b1fe34e39b6ee66bcd86131226e032",
     "server/yarn.lock": "8bf2bfdf3f913eee1a26021277079d5aaf3a102b414cfc06bc301ceff739a103",
-    "yarn.lock": "059000cc76652b9d740b583fc88f11ce9eed0383e4115334d8619776fe5b85f2",
-    "docs/world-configuration.md": "5dfd59a735d63cbd5844ae748f52ca45e7dabf6ed562516d4a8a5ee6e8a8257a"
+    "yarn.lock": "059000cc76652b9d740b583fc88f11ce9eed0383e4115334d8619776fe5b85f2"
   },
   "sourceBlobs": {
     ".yarnrc.yml": "3186f3f0795ab612d5508593672dc9ad94bccca0",
+    "docs/world-configuration.md": "21edfe127ee2d708f78a279cae857c50657fb230",
     "package.json": "62a2d14d0fd6258416abf0599552f9088db195d0",
     "scripts/run-with-env.mjs": "5b56bda1e58ba72fec231017ea7a3ec44fd2ccc4",
     "server/.env.example": "7f74e5e5d5f81f7f98280f78a90021ce205474e9",
@@ -7583,7 +7592,7 @@
     "server/plugins/modes/AreaUnlocks.LeagueMode.js": "e015a3fb9ed46ce37a207b47c6e9019ee1f66fbd",
     "server/plugins/modes/Base.LeagueMode.js": "b28b9d7c8c3f91c52f5acf67966017920c45d018",
     "server/plugins/modes/CombatMasteries.LeagueMode.js": "ce4682c0edb8165db4111703de4b40116eb48039",
-    "server/plugins/modes/DeadmanMode.plugin.js": "4c3ab702bc692dc426b719ab20809a8a9bfd00f7",
+    "server/plugins/modes/DeadmanMode.plugin.js": "71e45fbfeb137a1477970de1fa81abc211d72c8b",
     "server/plugins/modes/FreeToPlay.plugin.js": "6f001304661d6b9cac3c11157e38eca73b747b3b",
     "server/plugins/modes/HardcoreWorld.plugin.js": "98262f50aff3812a0939c116d1a47446a5b5fcd4",
     "server/plugins/modes/Ironman.plugin.js": "07a3cddd0814ce07ce650e6b93eb2274914aba94",
@@ -7613,7 +7622,7 @@
     "server/plugins/modes/data/league-tutorial.json": "e3507809a33ab2350dfe1aa2f952510ce1c575fd",
     "server/plugins/modes/data/leagues.json": "8365d4c192e09a443be9cc7d7d71e3044105d616",
     "server/plugins/modes/data/pvp-presets-players.json": "c29332568e516231df7dd10a5366db13b74f9154",
-    "server/plugins/modes/deadman/Preparation.DeadmanMode.js": "8ef78c218dbd21bd383dae5df1021cc44902272f",
+    "server/plugins/modes/deadman/Preparation.DeadmanMode.js": "268bda8df63ee491a99d77da3acbe4e57cbf442d",
     "server/plugins/modes/hardcoreworld/Account.HardcoreWorld.js": "c00a9f1c8fe720c3db1d38ab49f6e46633e30a92",
     "server/plugins/modes/hardcoreworld/Arrival.HardcoreWorld.js": "414f5d3d1cdaf5396c4bf41fc2627929177d2626",
     "server/plugins/modes/hardcoreworld/Choice.HardcoreWorld.js": "73a23b7aa8d91673f0509b1400a8bf628eb7f250",
@@ -9107,7 +9116,7 @@
     "server/src/main/typescript/elvarg/game/content/sailing/Sailing.ts": "f1abd3dc3767e2d4892b56751a4681a2331d1f75",
     "server/src/main/typescript/elvarg/game/content/sailing/SailingState.ts": "5fc7cae080b8bb1856b570c2d5a8a7117d86fcd9",
     "server/src/main/typescript/elvarg/game/content/sailing/WorldEntitySync.ts": "ac98d3aa2d6de598c95d93bb3391850be009cd84",
-    "server/src/main/typescript/elvarg/game/content/skill/SkillManager.ts": "2c903844216d5f4b43570ec6ecf801951563a2b9",
+    "server/src/main/typescript/elvarg/game/content/skill/SkillManager.ts": "3ccff874e7a2c472918194acc3e808ef5f2bd0e3",
     "server/src/main/typescript/elvarg/game/content/wilderness/Wilderness.ts": "6269eca3c99d08289b8f3a8b5816eba3f69b0f2a",
     "server/src/main/typescript/elvarg/game/definition/DefaultSpawnDefinition.ts": "e2ab6c93a413f8419d0b19953ce7bddba8c5b1a8",
     "server/src/main/typescript/elvarg/game/definition/EquipmentSounds.ts": "9c464cb8deec6f6e76abecb28211f6b2c040062d",
@@ -9918,7 +9927,7 @@
     "server/tests/fixtures/archived-cache-definitions.json": "c551c9ebb6ad8310243981b2708f342167bdcabc",
     "server/tests/fixtures/archived-seasonal-bundle.json": "60bce7858d774ffacbe4bd2b3ab8c234f1e808b2",
     "server/tests/fixtures/blighted-spellbook.backend.cjs": "328e17c5b239c5d0079de44f61e3763bdc9c470d",
-    "server/tests/fixtures/deadman-preparation-body.cjs": "c748aa1a6377bca20bc014341678a8b4b5a874c7",
+    "server/tests/fixtures/deadman-preparation-body.cjs": "ce8e50405c59b268bf3a426c06bedf98bb4d1b0e",
     "server/tests/fixtures/goblin-book-transcript.txt": "6573fd1b749a69fe06660ecad8a91ff0576bb282",
     "server/tests/fixtures/graveyard-bones-observed.json": "81c115bd3aaac933f06ca98df6c0db6dad5ead8c",
     "server/tests/fixtures/music-unmapped-tracks.json": "08259432cce76c1738a228cdd364bb470a67a96a",
@@ -11176,7 +11185,6 @@
     "server/tests/zulrah.test.cjs": "551a9a496c10be70f98bc05dba172bbed9355979",
     "server/tsconfig.json": "627d991554255239dd15461c4f6bbfadd95a1b03",
     "server/yarn.lock": "bf3b67f41455f43c4cfb501d4a6509735de4145c",
-    "yarn.lock": "cf0fc620cd766f6dede48e859017a4727bfd2d62",
-    "docs/world-configuration.md": "59997a1c6ff1891f5be03f2c8ab573ef985b1c5d"
+    "yarn.lock": "cf0fc620cd766f6dede48e859017a4727bfd2d62"
   }
 }
