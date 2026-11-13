@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "source": "0074e1579a1d1c48ac1a9d3bebdd91e654ca49b2",
+  "source": "c9f3cb6ee3f56f39912537550fa9aa961163ad31",
   "tests": [
     "volcanic-mine.test.cjs",
     "volcanic-mine-group-chains.test.cjs"
@@ -5458,7 +5458,7 @@
     "server/tests/voice-chat.test.cjs": "64e19552a60404ed5e4bd8aa0a57adccb10d59ba1f05395f91e25ee9d0ac1018",
     "server/tests/volatile-nightmare-autocast.test.cjs": "7ac00828d2bcc3bfb189b7c4b9f217cd1e5d1c9700f5c7483bad4f3d3a948121",
     "server/tests/volcanic-forge.test.cjs": "c8d7dd66e00e177b4d5055b31601e7fc820920d63dad3c34c3547e14de05a6a6",
-    "server/tests/volcanic-mine-group-chains.test.cjs": "76d751efa2a30ba6f45eeb3e710c312a0ad292c8256c6e590d6acb91a6386a09",
+    "server/tests/volcanic-mine-group-chains.test.cjs": "39aa7ac89059539a93054462e9d7030b133db8ec5569296768feda602781244f",
     "server/tests/volcanic-mine.test.cjs": "ecba1537ddf01ed74efe3dc99cc2a771ec110c9d57cb5ffd84dab6f4c59670ea",
     "server/tests/vorkath-combat.test.cjs": "fda86587b4322179d3d297b3e9a6b76fe382c508015bf69bc6d8a01b37fc85fb",
     "server/tests/vorkath-retrieval.test.cjs": "eb1b88dd4f41931cb91053e5a6ec4628a150e56eb1d431ac3fe4e9c8262eb66c",
@@ -11012,7 +11012,7 @@
     "server/tests/voice-chat.test.cjs": "c88def2db60ac44cf02660975799547280c5ff51",
     "server/tests/volatile-nightmare-autocast.test.cjs": "905aaf0d8f3d4cb3b9dacebbeb694f91384e7e31",
     "server/tests/volcanic-forge.test.cjs": "250133ceb3b3aed438da223c3ceed1745466e895",
-    "server/tests/volcanic-mine-group-chains.test.cjs": "a6f96e8f5298be52ccde7467496df967da3d5ae4",
+    "server/tests/volcanic-mine-group-chains.test.cjs": "4b14368aac37ab6172818e8833d57e268e62a6d1",
     "server/tests/volcanic-mine.test.cjs": "7e1e2d9fd7acc99090701422abddc00c05c26d97",
     "server/tests/vorkath-combat.test.cjs": "c01aa5d9805d56a1002d3f943ebfa747a9cf5ad4",
     "server/tests/vorkath-retrieval.test.cjs": "03aed58bc9ee47badf858d1986aab9547f93d126",
