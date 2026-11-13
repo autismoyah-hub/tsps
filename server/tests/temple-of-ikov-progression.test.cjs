@@ -220,8 +220,35 @@ async function traceGateMove(label, actor) {
 }
 test('encountering the Warrior cannot knock the owner through the unearned door',async t=>{
   restoreEncounterDoor(t);const a=actor(t,2646,9869);
+  // Observe the real owner's local-NPC update data during the existing World turns.
+  // This wrapper calls and returns the original producer unchanged; no flags,
+  // text, actor views, emitters or network scheduling are injected.
+  const session=a.p.getSession(),createActorUpdates=session.createActorUpdates,updates=[];
+  assert.equal(typeof createActorUpdates,'function','native session exposes its compiled actor-update producer');
+  t.mock.method(session,'createActorUpdates',function(...args){
+    const view=Reflect.apply(createActorUpdates,this,args),npc=args[0];
+    if(npc!==a.p&&npc.getId?.()===core.NpcIdentifiers.FIRE_WARRIOR_OF_LESARKUS&&npc.getOwner?.()===a.p){
+      updates.push({npc,view:{...view},tick:core.World.getProcessCycle(),
+        registered:npc.isRegistered()&&core.World.getNpcs().get(npc.getIndex())===npc,
+        local:a.p.getLocalNpcs().includes(npc),ownerOnly:npc.isOwnerOnly(),
+        samePlane:npc.getLocation().getZ()===a.p.getLocation().getZ(),
+        sameArea:npc.getPrivateArea()===a.p.getPrivateArea()});
+    }
+    return view;
+  });
   await a.click(93,2646,9870,'Open',1,8);
-  assert.ok([...core.World.getNpcs()].some(n=>n.getId()===core.NpcIdentifiers.FIRE_WARRIOR_OF_LESARKUS&&n.getOwner()===a.p),'the ordinary input spawns the quest encounter');
+  const warriors=[...core.World.getNpcs()].filter(n=>n.getId()===core.NpcIdentifiers.FIRE_WARRIOR_OF_LESARKUS&&n.getOwner()===a.p);
+  assert.equal(warriors.length,1,'the ordinary input spawns exactly one owned quest encounter');
+  const warrior=warriors[0];
+  // Exact overhead lines from the qualified Temple of Ikov opening-door transcript.
+  // Returned pre-encoding NPC update evidence is not rendered-overhead/pixel proof.
+  for(const text of ['You will not pass!','Amitus! Setitii!']){
+    const spoken=updates.filter(row=>row.view.forcedChat===text);
+    assert.ok(spoken.length>0,`ordinary owner NPC updates contain exact overhead: ${text}`);
+    assert.ok(spoken.every(row=>row.npc===warrior&&row.registered&&row.local&&row.ownerOnly&&row.samePlane&&row.sameArea),
+      'overhead updates belong to the registered local owner-only Warrior in the owner plane and area');
+    assert.equal(a.messages.some(message=>message.includes(text)),false,'intended overhead does not fall back to chatbox text');
+  }
   assert.ok(a.p.getLocation().getY()<9870,'the encounter cannot knock the owner through the locked door');
 });
 test('a character credited with the Warrior kill can cross the same door from its south approach',async t=>{
