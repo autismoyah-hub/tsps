@@ -13,6 +13,7 @@ const { PlayerSession } = require('../dist/net/PlayerSession');
 const { ClientConnection } = require('../dist/net/NetworkBuilder');
 const { MultiChatboxPrompt } = require('../dist/game/model/menu/MultiChatboxPrompt');
 const { getRegisteredQuests } = require('../plugins/quests/QuestRuntime');
+const ClimbLinks = require('../plugins/objects/ClimbLinks');
 let core, quest, serial = 0, originalSubmit, originalWarn, originalError, originalLog;
 const tasks = new Set(), errors = [];
 before(async () => {
@@ -54,6 +55,16 @@ function object(id,x,y,player=null) {
     : (core.MapObjects.mapObjects.get(core.MapObjects.getHash(x,y,0)) ?? []).find(o => o.getId()===id);
   assert.ok(found, `actual map object ${id} at ${x},${y},0`); return found;
 }
+function templeStairs(id,player) {
+  const matches=[];
+  for(const list of core.MapObjects.mapObjects.values()) for(const candidate of list) {
+    const at=candidate.getLocation();
+    if(at.getZ()!==0||at.getX()<2630||at.getX()>2670||at.getY()<9758||at.getY()>9814)continue;
+    if(core.ObjectDefinition.forPlayer(candidate.getId(),player)?.id===id)matches.push(candidate);
+  }
+  assert.equal(matches.length,1,`one actual visible stairs producer${id} in the loaded Temple of Ikov region`);
+  return matches[0];
+}
 function actor(t,x,y,stage=10) {
   const channel = {kind:'test',remoteAddress:'127.0.0.1',isOpen:()=>true,send:()=>true,close(){},onData(){},onError(){},onClose(){}};
   const session = new PlayerSession(channel), p = new Player(session), c = new ClientConnection(channel);
@@ -66,6 +77,9 @@ function actor(t,x,y,stage=10) {
   const sender=p.getPacketSender(), sendString=sender.sendString.bind(sender);
   sender.sendString=(text,...args)=>{messages.push(String(text));return sendString(text,...args);};
   const spawned=[];
+  const objectEvents=[],itemEvents=[],emitObject=PM.emitObjectInteraction.bind(PM),emitItem=PM.emitItemOnObject.bind(PM);
+  t.mock.method(PM,'emitObjectInteraction',event=>{if(event.player===p)objectEvents.push(event);return emitObject(event);});
+  t.mock.method(PM,'emitItemOnObject',event=>{if(event.player===p)itemEvents.push(event);return emitItem(event);});
   t.after(()=>{
     for (const npc of spawned) PM.removeNpc(npc);
     for (const item of [...core.World.getItems()]) if (item.getOwner()===p.getUsername()) {
@@ -79,7 +93,20 @@ function actor(t,x,y,stage=10) {
     assert.equal(p.isRegistered(),false); assert.equal(core.TaskManager.hasActiveTask(p),false); assert.equal(core.TaskManager.hasActiveTask(index),false);
   });
   async function input(packet,n=3) { await c.dispatch([packet]); turns(n); }
-  async function click(id,ox,oy,action='Open',clickType=1,n=4) { object(id,ox,oy,p); await input({type:'object_option',id,x:ox,y:oy,action,clickType},n); }
+  async function click(id,ox,oy,action='Open',clickType=1,n=4) {
+    const target=object(id,ox,oy,p),before=objectEvents.length;
+    await input({type:'object_option',id,x:ox,y:oy,action,clickType},n);
+    assert.ok(objectEvents.slice(before).some(event=>event.object===target&&event.definition?.id===id&&event.clickType===clickType),
+      `ordinary input reached the actual registered object dispatcher for ${id}`);
+  }
+  function approach(target) {
+    const at=target.getLocation(),def=core.ObjectDefinition.forPlayer(target.getId(),p);
+    const tile=ClimbLinks.landingTile(target,{x:at.getX(),y:at.getY()-1},p.getPrivateArea());
+    assert.ok(tile,'the existing cache reach helper finds a usable approach');
+    p.moveTo(tile);turns(3);assert.equal(p.isNeedsPlacement(),false);assert.deepEqual(where(p),[tile.getX(),tile.getY(),tile.getZ()]);
+    assert.equal(core.PathFinder.reachedObject(p,at.getX(),at.getY(),def.getSizeX(),def.getSizeY(),target.getFace(),target.getType(),def.getBlockingMask()),true,
+      'the settled actor actually reaches this rotated cache object before input');
+  }
   function add(id,n=1) {const was=p.getInventory().getAmount(id);p.getInventory().adds(id,n);assert.equal(p.getInventory().getAmount(id),was+n);}
   async function talk(id,nx,ny) {
     const npc=PM.spawnNpc({id,x:nx,y:ny,z:0,owner:p,ownerOnly:true,wanderRadius:0}); assert.ok(npc);spawned.push(npc); turns(3);
@@ -93,36 +120,46 @@ function actor(t,x,y,stage=10) {
     const group=p.getPacketSender().getChatboxGroupId(); assert.ok(group>=0,'real mounted source chatbox');
     await input({type:'dialogue_continue',widgetId:(group<<16)|(group===229?4:5),childIndex:-1},1);
   }
-  return {p,c,messages,input,click,add,talk,resume};
+  return {p,c,messages,input,click,add,talk,resume,approach,itemEvents};
 }
-test('the active map contains the displaced stairs and six canonical ice chests',()=>{
-  object(98,2651,9805); object(96,2639,9764);
-  for (const [x,y] of [[2710,9850],[2719,9838],[2729,9850],[2747,9848],[2738,9835],[2745,9821]]) object(103,x,y);
+test('the active map contains the displaced stairs and six canonical ice chests',t=>{
+  const f=actor(t,2653,9806,0);
   // Compact source diagnostics bind connected geometry to the cache actually loaded by this run.
   const rows=[];
   for(const list of core.MapObjects.mapObjects.values()) for(const o of list) {
     const [x,y,z]=where({getLocation:()=>o.getLocation()});
     if(z!==0)continue;
-    if((x>=2634&&x<=2653&&y>=9814&&y<=9823)||(o.getId()>=86&&o.getId()<=104&&x>=2630&&x<=2750&&y>=9758&&y<=9915)||(o.getId()===102&&x>=3110&&x<=3130&&y>=3470&&y<=3495))
-      rows.push([o.getId(),x,y,o.getType(),o.getFace(),core.ObjectDefinition.forId(o.getId()).getName()]);
+    if((x>=2634&&x<=2653&&y>=9814&&y<=9823)||(x>=2647&&x<=2656&&y>=9800&&y<=9810)
+      ||(o.getId()>=86&&o.getId()<=104&&x>=2630&&x<=2750&&y>=9758&&y<=9915)||(o.getId()===102&&x>=3110&&x<=3130&&y>=3470&&y<=3495)) {
+      const visible=core.ObjectDefinition.forPlayer(o.getId(),f.p);
+      rows.push([o.getId(),x,y,o.getType(),o.getFace(),core.ObjectDefinition.forId(o.getId()).getName(),visible.id,visible.getName()]);
+    }
   }
-  console.log('IKOV_CACHE_GEOMETRY',JSON.stringify(rows.sort((a,b)=>a[1]-b[1]||a[2]-b[2]||a[0]-b[0])));
+  // Emit bounded rows before any mapping assertion. Provider raw-line limits cannot clip a giant array.
+  for(const row of rows.sort((a,b)=>a[1]-b[1]||a[2]-b[2]||a[0]-b[0]))console.log('IKOV_CACHE_LOC',JSON.stringify(row));
+  const down=templeStairs(98,f.p),up=templeStairs(96,f.p);
+  assert.ok(down.getLocation().getDistance(up.getLocation())>4,'the real endpoints are displaced beyond generic pairing distance');
+  for (const [x,y] of [[2710,9850],[2719,9838],[2729,9850],[2747,9848],[2738,9835],[2745,9821]]) object(103,x,y);
 });
 test('boots stairs refuse darkness through the ordinary descend input',async t=>{
-  const f=actor(t,2653,9806,0); await f.click(98,2651,9805,'Climb-down');
+  const f=actor(t,2653,9806,0),stairs=templeStairs(98,f.p);f.approach(stairs);
+  await f.click(98,stairs.getLocation().getX(),stairs.getLocation().getY(),'Climb-down');
   assert.ok(f.messages.some(s=>s.includes("It's a bit dark down here!")), 'the quest explains why descent is refused');
   assert.ok(f.p.getLocation().getY()>9800,'no descent without light');
 });
 test('boots stairs descend with a lit source and return to the dungeon',async t=>{
   const f=actor(t,2653,9806,0);f.add(core.ItemIdentifiers.LIT_TORCH);
-  await f.click(98,2651,9805,'Climb-down',1,8);
+  const down=templeStairs(98,f.p);f.approach(down);
+  await f.click(98,down.getLocation().getX(),down.getLocation().getY(),'Climb-down',1,8);
   assert.ok(f.p.getLocation().getY()>=9759&&f.p.getLocation().getY()<=9768,'the lit descend reaches the boots room');
-  await f.click(96,2639,9764,'Climb-up',1,12);
+  const up=templeStairs(96,f.p);f.approach(up);
+  await f.click(96,up.getLocation().getX(),up.getLocation().getY(),'Climb-up',1,12);
   assert.ok(f.p.getLocation().getY()>=9803&&f.p.getLocation().getY()<=9810,'the climb returns to the main room');
 });
 test('using the physical lever on its bracket consumes it once and creates the Pull interaction',async t=>{
   const f=actor(t,2671,9805); f.add(core.ItemIdentifiers.LEVER); object(86,2671,9804);
   await f.input({type:'item_on_object',widgetId:3214,objectId:86,itemId:core.ItemIdentifiers.LEVER,slot:f.p.getInventory().getSlotForItemId(core.ItemIdentifiers.LEVER),x:2671,y:9804},5);
+  assert.ok(f.itemEvents.some(event=>event.objectId===86&&event.itemId===core.ItemIdentifiers.LEVER),'native item-on-object dispatch reached the physical bracket producer');
   assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.LEVER),0,'fitting consumes the physical lever');
   assert.ok(f.messages.some(s=>s.includes('fit the lever into the bracket')));
   const fitted=core.MapObjects.getPrivateArea(f.p,87,new core.Location(2671,9804,0));
@@ -138,8 +175,7 @@ test('searching the trapped lever at 42 Thieving disarms its actual trap',async 
 test('the ice area can supply arrows from its six actual chest producers',async t=>{
   const f=actor(t,2710,9849); const arrows=core.ItemIdentifiers.ICE_ARROWS;assert.equal(f.p.getInventory().getAmount(arrows),0);
   for(const [x,y] of [[2710,9850],[2719,9838],[2729,9850],[2747,9848],[2738,9835],[2745,9821]]) {
-    f.p.moveTo(new core.Location(x,y-1,0));turns(3);
-    assert.equal(f.p.isNeedsPlacement(),false);assert.deepEqual(where(f.p),[x,y-1,0]);
+    f.approach(object(103,x,y,f.p));
     await f.click(103,x,y,'Open');
     const location=new core.Location(x,y,0);
     const found=core.MapObjects.getPrivateArea(f.p,104,location)??core.MapObjects.getPrivateArea(f.p,103,location);assert.ok(found);
