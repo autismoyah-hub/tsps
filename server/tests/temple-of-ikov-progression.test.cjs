@@ -286,6 +286,20 @@ test('encountering the Warrior cannot knock the owner through the unearned door'
     }
     return view;
   });
+  // Observe the original fixture channel boundary, including its normal batched flush.
+  // Preserve every original call, argument and return; no extra tick/flush or packet.
+  assert.deepEqual(session.npcSyncState.indices,[],'setup: owner has no pre-existing encoded local NPC state');
+  assert.equal(a.p.getLocalNpcs().length,0,'setup: owner has no pre-existing local NPCs; never clear or seed them');
+  const channel=session.channel,send=channel.send,sent=[];let sentBytes=0;
+  assert.equal(typeof send,'function','the owner has its original native channel');
+  t.mock.method(channel,'send',function(...args){
+    assert.ok(Buffer.isBuffer(args[0]),'normal channel output is binary');
+    const bytes=Buffer.from(args[0]);
+    assert.ok(sent.length<64&&sentBytes+bytes.length<=1024*1024,'bounded original channel observations');
+    const result=Reflect.apply(send,this,args);
+    sent.push({bytes:bytes.toString('base64'),level:a.p.getLocation().getZ(),result});sentBytes+=bytes.length;
+    return result;
+  });
   await a.click(93,2646,9870,'Open',1,8);
   const warriors=[...core.World.getNpcs()].filter(n=>n.getId()===core.NpcIdentifiers.FIRE_WARRIOR_OF_LESARKUS&&n.getOwner()===a.p);
   assert.equal(warriors.length,1,'the ordinary input spawns exactly one owned quest encounter');
@@ -299,6 +313,66 @@ test('encountering the Warrior cannot knock the owner through the unearned door'
       'overhead updates belong to the registered local owner-only Warrior in the owner plane and area');
     assert.equal(a.messages.some(message=>message.includes(text)),false,'intended overhead does not fall back to chatbox text');
   }
+  // Reuse the existing client batch/NPC consumers without registering a TS loader
+  // in this World process (the existing Mimic test uses the same child boundary).
+  // These are ONLY bytes actually passed to this owner's original channel.send.
+  assert.ok(sent.length>0,'the normal flush called the original owner channel');
+  assert.ok(sent.every(row=>row.result===true),'the original fixture channel accepted each observed send');
+  const childSource=String.raw`
+    const assert=require('node:assert/strict'),fs=require('node:fs');
+    const {decodeBatchedServerPackets}=require('../client/network/packet/ServerBinaryDecoder');
+    const {NpcUpdateDecoder}=require('../client/game/sync/NpcUpdateDecoder');
+    const input=JSON.parse(fs.readFileSync(0,'utf8')),decoder=new NpcUpdateDecoder(),types=new Map(),rows=[],spawns=[];
+    assert.ok(input.sent.length>0&&input.sent.length<=64);
+    let frames=0,total=0;
+    for(const item of input.sent){
+      const bytes=Buffer.from(item.bytes,'base64');total+=bytes.length;assert.ok(total<=1024*1024);
+      const batch=decodeBatchedServerPackets(bytes);assert.equal(batch.stalled,false,'the existing client batch consumer accepts the actual complete send');
+      for(const message of batch.messages){
+        if(message.type!=='npc_info')continue;
+        const payload=message.payload;
+        // P9 is a same-plane main-world fixture; real root tile and flags come from the wire.
+        // clientCycle is an unused-for-say consumer fixture parameter, not retail timing.
+        const frame=decoder.decode(payload.packet,{large:payload.large,crossFloor:payload.crossFloor,
+          loopCycle:payload.loopCycle,clientCycle:0,localTileX:payload.rootTileX,localTileY:payload.rootTileY,
+          rootTileX:payload.rootTileX,rootTileY:payload.rootTileY,level:item.level});frames++;
+        for(const index of frame.removals)types.delete(index);
+        for(const spawn of frame.spawns){types.set(spawn.npcId,spawn.typeId);spawns.push({index:spawn.npcId,typeId:spawn.typeId,tick:payload.loopCycle});}
+        for(const [index,block]of frame.updateBlocks){
+          if(block.say===undefined)continue;
+          assert.ok(frame.localNpcIds.includes(index),'decoded overhead belongs to a retained local NPC');
+          assert.ok(types.has(index),'decoded overhead has a real decoded spawn/type association');
+          rows.push({index,typeId:types.get(index),text:block.say,tick:payload.loopCycle});
+        }
+      }
+    }
+    assert.ok(frames>0,'actual channel output contains decoded NPC_INFO');
+    process.stdout.write(JSON.stringify({frames,rows,spawns}));
+  `;
+  const {spawnSync}=require('node:child_process');
+  const decoded=spawnSync(process.execPath,[require.resolve('ts-node/dist/bin.js'),'--transpile-only',
+    '--compiler-options','{"target":"es2020","module":"commonjs"}','-e',childSource],
+    {cwd:path.resolve(__dirname,'..'),input:JSON.stringify({sent}),encoding:'utf8',timeout:10000,maxBuffer:1024*1024});
+  assert.ifError(decoded.error);assert.equal(decoded.signal,null,'existing protocol consumer child completes');
+  assert.equal(decoded.status,0,`existing protocol consumer failed: ${decoded.stderr}`);
+  assert.equal(decoded.stderr,'','protocol consumer emits no hidden warnings/errors');
+  const wire=JSON.parse(decoded.stdout);
+  assert.ok(wire.spawns.some(row=>row.index===warrior.getIndex()&&row.typeId===warrior.getId()),
+    'the unchanged client decoder received the actual owned Warrior index and type on this channel');
+  for(const text of ['You will not pass!','Amitus! Setitii!']){
+    const encoded=wire.rows.filter(row=>row.text===text);
+    assert.ok(encoded.length>0,`actual owner channel decodes exact NPC overhead: ${text}`);
+    assert.ok(encoded.every(row=>row.index===warrior.getIndex()&&row.typeId===warrior.getId()&&
+      updates.some(update=>update.npc===warrior&&update.view.forcedChat===text&&update.tick===row.tick&&
+        update.registered&&update.local&&update.ownerOnly&&update.samePlane&&update.sameArea)),
+      'encoded say is bound to the same real registered local owned Warrior and producer tick');
+  }
+  console.log('IKOV_WARRIOR_WIRE',JSON.stringify({layer:'owner-fixture-channel-send/existing-client-decoders',
+    npcIndex:warrior.getIndex(),npcId:warrior.getId(),npcInfoFrames:wire.frames,
+    batches:sent.map(row=>{const bytes=Buffer.from(row.bytes,'base64');return {bytes:bytes.length,
+      sha256:require('node:crypto').createHash('sha256').update(bytes).digest('hex'),originalSendResult:row.result};}),
+    overhead:wire.rows.filter(row=>row.index===warrior.getIndex()&&row.typeId===warrior.getId()&&
+      ['You will not pass!','Amitus! Setitii!'].includes(row.text))}));
   assert.ok(a.p.getLocation().getY()<9870,'the encounter cannot knock the owner through the locked door');
 });
 test('a character credited with the Warrior kill can cross the same door from its south approach',async t=>{
