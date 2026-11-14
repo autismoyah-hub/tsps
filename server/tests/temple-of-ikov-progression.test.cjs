@@ -205,6 +205,30 @@ test('boots stairs descend with a lit source and return to the dungeon',async t=
   await f.click(96,up.getLocation().getX(),up.getLocation().getY(),'Climb-up',1,12);
   assert.ok(f.p.getLocation().getY()>=9803&&f.p.getLocation().getY()<=9810,'the climb returns to the main room');
   assert.equal(f.p.getInventory().getAmount(boots),1,'the acquired optional boots survive the ordinary return');
+  // Same actor and actual dungeon pickup; completion below is an explicit reward-API fixture,
+  // not an earned stage70, a native ending or an ordinary account/persistence claim.
+  const items=container=>structuredClone(container.getItems().map(item=>({id:item.getId(),amount:item.getAmount(),meta:item.getMeta()})));
+  const inventory=items(f.p.getInventory()),equipment=items(f.p.getEquipment());
+  const skills=f.p.getSkillManager(),ranged=skills.getExperience(core.Skill.RANGED),fletching=skills.getExperience(core.Skill.FLETCHING);
+  const points=Number(f.p.getAttribute('quest.points'))||0,stageBefore=quest.getStage(f.p);
+  assert.equal(quest.isComplete(f.p),false);assert.equal(f.p.isRegistered(),true);assert.equal(f.p.getAttribute('bot-skip-persistence'),true);
+  const completed=quest.complete(f.p,{scroll:false,announce:false});assert.equal(completed,true);
+  assert.equal(quest.isComplete(f.p),true);assert.equal(quest.getStage(f.p),80);
+  assert.deepEqual(items(f.p.getInventory()),inventory);assert.deepEqual(items(f.p.getEquipment()),equipment);
+  assert.equal(f.p.getInventory().getAmount(boots),1,'registered reward preserves this actual acquired dungeon pair');
+  assert.equal(skills.getExperience(core.Skill.RANGED)-ranged,10500);assert.equal(skills.getExperience(core.Skill.FLETCHING)-fletching,8000);
+  assert.equal((Number(f.p.getAttribute('quest.points'))||0)-points,1);
+  const duplicate=quest.complete(f.p,{scroll:false,announce:false});assert.equal(duplicate,false);
+  assert.deepEqual(items(f.p.getInventory()),inventory);assert.deepEqual(items(f.p.getEquipment()),equipment);
+  assert.equal(skills.getExperience(core.Skill.RANGED)-ranged,10500);assert.equal(skills.getExperience(core.Skill.FLETCHING)-fletching,8000);
+  assert.equal((Number(f.p.getAttribute('quest.points'))||0)-points,1);
+  console.log('IKOV_ACQUIRED_BOOTS_REWARD',JSON.stringify({scope:'same-actor physical pickup/return then explicit registered reward API, not native ending or earned70',
+    username:f.p.getUsername(),pickup:{id:ground.getItem().getId(),stackId:ground.getId(),at:[ground.getPosition().getX(),ground.getPosition().getY(),ground.getPosition().getZ()],
+      actualTaken: taken.some(event=>event.groundItem===ground&&event.itemId===boots&&event.amount===1&&event.source==='pickup')},
+    stageBefore,stageAfter:quest.getStage(f.p),completed,duplicate,inventoryBefore:inventory,inventoryAfter:items(f.p.getInventory()),
+    equipmentBefore:equipment,equipmentAfter:items(f.p.getEquipment()),bootsBefore:1,bootsAfter:f.p.getInventory().getAmount(boots),
+    rangedDelta:skills.getExperience(core.Skill.RANGED)-ranged,fletchingDelta:skills.getExperience(core.Skill.FLETCHING)-fletching,
+    questPointsDelta:(Number(f.p.getAttribute('quest.points'))||0)-points}));
 });
 test('using the physical lever on its bracket consumes it once and creates the Pull interaction',async t=>{
   const f=actor(t,2671,9805); f.add(core.ItemIdentifiers.LEVER); object(86,2671,9804);
