@@ -120,7 +120,7 @@ function actor(t,x,y,stage=10) {
     const group=p.getPacketSender().getChatboxGroupId(); assert.ok(group>=0,'real mounted source chatbox');
     await input({type:'dialogue_continue',widgetId:(group<<16)|(group===229?4:5),childIndex:-1},1);
   }
-  return {p,c,messages,input,click,add,talk,resume,approach,itemEvents};
+  return {p,c,messages,input,click,add,talk,resume,approach,itemEvents,objectEvents};
 }
 test('the active map contains the displaced stairs and six canonical ice chests',t=>{
   const f=actor(t,2653,9806,0);
@@ -223,16 +223,142 @@ test('searching the trapped lever at 42 Thieving disarms its actual trap',async 
   assert.ok(f.messages.some(s=>s.includes('disable the trap')),'successful search has the canonical trap feedback');
 });
 test('the ice area can supply arrows from its six actual chest producers',async t=>{
-  const f=actor(t,2710,9849); const arrows=core.ItemIdentifiers.ICE_ARROWS;assert.equal(f.p.getInventory().getAmount(arrows),0);
-  for(const [x,y] of [[2710,9850],[2719,9838],[2729,9850],[2747,9848],[2738,9835],[2745,9821]]) {
-    f.approach(object(103,x,y,f.p));
-    await f.click(103,x,y,'Open');
-    const location=new core.Location(x,y,0);
-    const found=core.MapObjects.getPrivateArea(f.p,104,location)??core.MapObjects.getPrivateArea(f.p,103,location);assert.ok(found);
-    if(found.getId()===104)await f.click(104,x,y,'Search');
+  const {AreaManager}=require('../dist/game/model/areas/AreaManager');
+  const replays=[],operated=[],sends=[],owners=[];
+  const ownedReplays=()=>replays.filter(row=>owners.includes(row.args[0]));
+  function observe(label,facts){assert.ok(Buffer.byteLength(JSON.stringify(facts))<=1024*1024);console.log(label,JSON.stringify(facts));}
+  const replay=core.ObjectManager.onRegionChange,emit=PM.emitCustomEvent;
+  // Observe initial real PlayerSession tuples before either owned actor is constructed.
+  t.mock.method(core.ObjectManager,'onRegionChange',function(...args){
+    const result=Reflect.apply(replay,this,args);replays.push({args:[...args],result});
+    assert.ok(replays.length<=128,'bounded actual replay observations');return result;
+  });
+  t.mock.method(PM,'emitCustomEvent',function(name,event,...args){
+    const result=Reflect.apply(emit,this,[name,event,...args]);
+    if(name==='object:operated'&&owners.includes(event.player))operated.push(event);
+    assert.ok(operated.length<=128,'bounded actual operated observations');return result;
+  });
+  const f=actor(t,2710,9849),arrows=core.ItemIdentifiers.ICE_ARROWS;owners.push(f.p);
+  const area=f.p.getArea();assert.ok(area&&AreaManager.areas.includes(area),'setup: actual registered chest area');
+  const boundaries=area.getBoundaries();assert.ok(boundaries.length>0);
+  const bases=[...new Set([...core.MapObjects.mapObjects.values()].flat())].filter(o=>
+    o.getId()===103&&o.getOwner()===null&&o.getLocation().getZ()===f.p.getLocation().getZ()
+      &&boundaries.some(boundary=>boundary.inside(o.getLocation())));
+  bases.sort((a,b)=>a.getLocation().getX()-b.getLocation().getX()||a.getLocation().getY()-b.getLocation().getY());
+  assert.equal(bases.length,6,'setup: exactly six actual closed cache producers in this registered area');
+  assert.equal(new Set(bases.map(o=>where({getLocation:()=>o.getLocation()}).join(','))).size,6);
+  for(const base of bases){
+    const definition=core.ObjectDefinition.forPlayer(base.getId(),f.p);
+    assert.equal(definition.id,103);assert.ok(definition.getInteractions().some(option=>option?.toLowerCase()==='open'));
+  }
+  const first=bases[0],at=first.getLocation();
+  const b=actor(t,at.getX(),at.getY());owners.push(b.p);assert.equal(b.p.getArea(),area);
+  const opened=new Map(),bOpened=new Map();
+  const inventory=p=>structuredClone(p.getInventory().getItems().map(item=>({id:item.getId(),amount:item.getAmount(),meta:item.getMeta()})));
+  const inventories=()=>owners.map(inventory);
+  const objectFact=o=>({id:o.getId(),at:where({getLocation:()=>o.getLocation()}),type:o.getType(),face:o.getFace(),
+    owner:o.getOwner()?.getUsername()??null,privateArea:o.getPrivateArea()===f.p.getPrivateArea()?'fixture-area':'other-area'});
+  const facts=map=>[...map.values()].map(objectFact);
+  const lookup=(p,base)=>core.MapObjects.getPrivateArea(p,104,base.getLocation());
+  const shared=()=>{for(const base of bases)assert.equal(core.MapObjects.get(103,base.getLocation(),f.p.getPrivateArea()),base,'original shared base survives');};
+  const standing=(p,map)=>{
+    for(const [base,object]of map){
+      assert.equal(lookup(p,base),object);assert.equal(object.getOwner(),p);
+      assert.equal(object.getType(),base.getType());assert.equal(object.getFace(),base.getFace());assert.equal(object.getPrivateArea(),base.getPrivateArea());
+      assert.equal(core.ObjectManager.objectsAt(base.getLocation()).filter(o=>o.getOwner()===p&&o.getId()===104).length,1);
+      assert.ok(core.ObjectManager.objectsAt(base.getLocation()).includes(object));
+      const tuple=ownedReplays().find(row=>row.args[0]===p);assert.ok(tuple,'setup: actual initial PlayerSession replay tuple');
+      assert.ok(core.MapObjects.ownerObjectsInScene(p,tuple.args[1],tuple.args[2],104).includes(object));
+    }
+    shared();
+  };
+  for(const owner of owners){
+    const sender=owner.getPacketSender(),send=sender.sendObject;
+    t.mock.method(sender,'sendObject',function(...args){
+      const result=Reflect.apply(send,this,args);sends.push({player:owner,object:args[0],result});
+      assert.ok(sends.length<=512,'bounded actual object sender observations');return result;
+    });
+  }
+  assert.equal(f.p.getInventory().getAmount(arrows),0);assert.equal(b.p.getInventory().getAmount(arrows),0);
+  async function action(who,base,id,option,clickType=1){
+    const target=id===103?base:lookup(who.p,base);assert.ok(target);
+    const before=inventories(),events=who.objectEvents.length,ops=operated.length;
+    await who.click(id,base.getLocation().getX(),base.getLocation().getY(),option,clickType);
+    const actual=who.objectEvents.slice(events).filter(e=>e.player===who.p);
+    const deeds=operated.slice(ops).filter(e=>e.player===who.p);
+    assert.equal(actual.length,1);assert.equal(actual[0].object,target);assert.equal(actual[0].option,option.toLowerCase());assert.equal(actual[0].handled,true);
+    assert.equal(deeds.length,1);assert.equal(deeds[0].object,target);assert.equal(deeds[0].option,option.toLowerCase());
+    shared();return {target,before,after:inventories(),event:actual[0],deed:deeds[0]};
+  }
+  function record(label,result){
+    const observation={label,actor:result.event.player.getUsername(),object:objectFact(result.target),option:result.event.option,handled:result.event.handled,
+      operatedSameObject:result.deed.object===result.target,before:result.before,after:result.after,A:facts(opened),B:facts(bOpened)};
+    observe('IKOV_CHEST_STEP',observation);
+  }
+  f.approach(first);
+  let step=await action(f,first,103,'Open');assert.deepEqual(step.after,step.before);
+  opened.set(first,lookup(f.p,first));assert.ok(opened.get(first));standing(f.p,opened);
+  assert.equal(lookup(b.p,first),null,'foreign owner form cannot be resolved by B');record('A Open',step);
+  b.approach(first);
+  const beforeForeign=inventories(),foreignEvents=b.objectEvents.length,foreignOps=operated.length;
+  await b.input({type:'object_option',id:104,x:at.getX(),y:at.getY(),action:'Search',clickType:1},4);
+  assert.equal(b.objectEvents.length,foreignEvents);assert.equal(operated.length,foreignOps);assert.deepEqual(inventories(),beforeForeign);
+  assert.equal(lookup(b.p,first),null);standing(f.p,opened);
+  observe('IKOV_CHEST_FOREIGN_REFUSAL',{actor:b.p.getUsername(),at:objectFact(first).at,before:beforeForeign,after:inventories(),objectEvents:0,operatedEvents:0,A:facts(opened)});
+  step=await action(b,first,103,'Open');assert.deepEqual(step.after,step.before);
+  bOpened.set(first,lookup(b.p,first));assert.ok(bOpened.get(first));assert.notEqual(bOpened.get(first),opened.get(first));standing(f.p,opened);standing(b.p,bOpened);record('B independent Open',step);
+  // ONE bounded ordinary move between actual usable approaches; no hand-mapped route or fallback teleport.
+  const start=f.p.getLocation().clone(),hp=f.p.getHitpoints(),beforeMove=inventories();
+  const candidates=[[at.getX()-2,at.getY()],[at.getX()+2,at.getY()],[at.getX(),at.getY()-2],[at.getX(),at.getY()+2]]
+    .map(([x,y])=>ClimbLinks.landingTile(first,{x,y},f.p.getPrivateArea())).filter(Boolean);
+  const destination=candidates.find(tile=>!tile.equals(start));assert.ok(destination,'setup: two distinct actual usable chest approach tiles');
+  const trace=[where(f.p)];await f.input({type:'move',worldX:destination.getX(),worldY:destination.getY(),modifierFlags:0,run:false},0);
+  for(let turn=1;turn<=16;turn++){
+    turns();trace.push(where(f.p));assert.equal(f.p.hasFlag('movement:ignore-clipping'),false);assert.equal(f.p.getHitpoints(),hp);assert.deepEqual(inventories(),beforeMove);
+    observe('IKOV_CHEST_MOVE',{turn,at:where(f.p),destination:[destination.getX(),destination.getY(),destination.getZ()],ignore:false,hp});
+    if(f.p.getLocation().equals(destination))break;
+  }
+  assert.ok(f.p.getLocation().equals(destination),'ordinary movement arrives within sixteen turns');assert.ok(trace.some(position=>position.join(',')!==trace[0].join(',')));
+  const reachedDefinition=core.ObjectDefinition.forPlayer(first.getId(),f.p);
+  assert.equal(core.PathFinder.reachedObject(f.p,at.getX(),at.getY(),reachedDefinition.getSizeX(),reachedDefinition.getSizeY(),first.getFace(),first.getType(),reachedDefinition.getBlockingMask()),true,'ordinary arrival actually reaches the chest');
+  const tuple=ownedReplays().find(row=>row.args[0]===f.p);assert.ok(tuple,'setup: actual PlayerSession-produced replay arguments');
+  const beforeReplay=inventories(),sendStart=sends.length,opsStart=operated.length,eventsA=f.objectEvents.length,eventsB=b.objectEvents.length;
+  Reflect.apply(core.ObjectManager.onRegionChange,core.ObjectManager,tuple.args);
+  const replaySends=sends.slice(sendStart);assert.ok(replaySends.some(row=>row.player===f.p&&row.object===opened.get(first)),'actual own104 replay send(s), duplicates allowed');
+  assert.equal(replaySends.some(row=>row.player===f.p&&row.object===bOpened.get(first)),false,'no foreign B104 sent to A');
+  assert.deepEqual(inventories(),beforeReplay);assert.equal(operated.length,opsStart);assert.equal(f.objectEvents.length,eventsA);assert.equal(b.objectEvents.length,eventsB);
+  standing(f.p,opened);standing(b.p,bOpened);
+  observe('IKOV_CHEST_REPLAY',{actor:f.p.getUsername(),base:[tuple.args[1],tuple.args[2]],
+    sends:replaySends.map(row=>({actor:row.player.getUsername(),object:objectFact(row.object)})),before:beforeReplay,after:inventories(),A:facts(opened),B:facts(bOpened)});
+  // Preserve the original finite six-producer unforced search and final 1..5 assertion.
+  for(const base of bases){
+    if(base!==first)f.approach(base);
+    if(!opened.has(base)){
+      step=await action(f,base,103,'Open');assert.deepEqual(step.after,step.before);opened.set(base,lookup(f.p,base));assert.ok(opened.get(base));standing(f.p,opened);record('A Open',step);
+    }
+    const beforeCount=f.p.getInventory().getAmount(arrows),messages=f.messages.length;
+    step=await action(f,base,104,'Search');const delta=f.p.getInventory().getAmount(arrows)-beforeCount;
+    assert.deepEqual(step.after[1],step.before[1],'A search cannot change B inventory');
+    if(delta===0){assert.deepEqual(step.after,step.before);assert.ok(f.messages.slice(messages).some(text=>text==='You search the chest, but find nothing.'));}
+    else{assert.ok(delta>=1&&delta<=5);assert.deepEqual(step.after[0].filter(item=>item.id>0&&item.id!==arrows),step.before[0].filter(item=>item.id>0&&item.id!==arrows));assert.ok(f.messages.slice(messages).some(text=>text==='You found some ice arrows!'));}
+    standing(f.p,opened);standing(b.p,bOpened);record('A unforced Search',step);
     if(f.p.getInventory().getAmount(arrows)>0)break;
   }
   const count=f.p.getInventory().getAmount(arrows);assert.ok(count>=1&&count<=5,`one containing chest supplies1..5 arrows, actual=${count}`);
+  const beforeLogout=inventories(),bObjects=[...bOpened.values()];PM.emitPlayerLogout({player:b.p,username:b.p.getUsername()});
+  for(const [base,object]of bOpened){
+    assert.equal(lookup(b.p,base),null);assert.equal(core.ObjectManager.objectsAt(base.getLocation()).includes(object),false);
+    const bt=ownedReplays().find(row=>row.args[0]===b.p);assert.ok(bt);assert.equal(core.MapObjects.ownerObjectsInScene(b.p,bt.args[1],bt.args[2],104).includes(object),false);
+  }
+  assert.deepEqual(inventories(),beforeLogout);standing(f.p,opened);shared();
+  observe('IKOV_CHEST_LOGOUT',{actor:b.p.getUsername(),removed:bObjects.map(objectFact),before:beforeLogout,after:inventories(),A:facts(opened),scope:'fixture production logout hook; not network account logout'});
+  bOpened.clear();
+  for(const [base,object]of opened){
+    f.approach(base);step=await action(f,base,104,'Shut',2);assert.equal(step.target,object);assert.deepEqual(step.after,step.before);
+    assert.equal(lookup(f.p,base),null);assert.equal(core.ObjectManager.objectsAt(base.getLocation()).includes(object),false);
+    const current=ownedReplays().find(row=>row.args[0]===f.p);assert.ok(current);assert.equal(core.MapObjects.ownerObjectsInScene(f.p,current.args[1],current.args[2],104).includes(object),false);
+    assert.equal(core.MapObjects.getPrivateArea(f.p,103,base.getLocation()),base);opened.delete(base);shared();record('A Shut',step);
+  }
 });
 test('first Winelda conversation without roots plays the introduction',async t=>{
   const f=actor(t,2654,9876); assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.LIMPWURT_ROOT),0);
