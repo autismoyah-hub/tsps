@@ -914,7 +914,13 @@ test("Misthalin's northeast Lumbridge path and Chasm do not inherit the Desert s
  * Inventory/profile/location are supplied fixture state, not gameplay acquisition proof.
  */
 let nativeEnforcementAttached = false;
+let nativeRegistrationUnsafe = false;
 function movingCharacter(t, name, x, y, profile = "main") {
+  assert.equal(nativeRegistrationUnsafe, false,
+    "LEAGUE5386_PREREQUISITE: prior registered lifecycle is unsafe");
+  // Synchronous construction/registration must finish before another helper can run.
+  // An exception leaves this poisoned; valid outstanding actors do not.
+  nativeRegistrationUnsafe = true;
   // Attach only when the real-producer section begins: earlier legacy unit fixtures deliberately
   // call captured hooks on unlisted players and must not unexpectedly gain a second dispatcher.
   if (!nativeEnforcementAttached) {
@@ -925,19 +931,76 @@ function movingCharacter(t, name, x, y, profile = "main") {
   core.RegionManager.loadMapFiles(x, y);
   const channel = { kind: "test", remoteAddress: "127.0.0.1", isOpen: () => true,
     send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
-  const p = character(name, profile, { session: new PlayerSession(channel) });
+  const { NullPlayerPersistence } = require("../dist/game/entity/impl/player/persistence/NullPlayerPersistence");
+  assert.ok(GameConstants.PLAYER_PERSISTENCE instanceof NullPlayerPersistence,
+    "LEAGUE5386_PREREQUISITE: native harness must not write account saves");
+  // Unlike the isolated character() fixtures, registration executes real onLogin:
+  // keep PacketSender's numeric varp/config state and the actual session encoder.
+  const p = new Player(new PlayerSession(channel));
+  p.setUsername(name);
+  p.setProfile(profile);
   p.getSession().setPlayer(p);
-  p.setAttribute("bot-skip-persistence", true); // native fixture has no account/save acquisition proof
+  let registrationCompleted = false;
+  t.after(() => {
+    const alreadyUnsafe = nativeRegistrationUnsafe;
+    nativeRegistrationUnsafe = true;
+    const errors = [];
+    // Each cleanup operation is attempted even if another throws. Keep the original
+    // setup exception untouched; this hook reports any additional cleanup failure.
+    for (const key of [p, ...(p.isRegistered() ? [p.getIndex()] : [])]) {
+      try { core.TaskManager.cancelTasks(key); } catch (error) { errors.push(error); }
+    }
+    try {
+      if (p.isRegistered()) core.World.getPlayers().remove(p);
+    } catch (error) { errors.push(error); }
+    try {
+      assert.equal(registrationCompleted, true,
+        "LEAGUE5386_PREREQUISITE: registration completed before cleanup");
+      assert.equal(p.isRegistered(), false,
+        "LEAGUE5386_PREREQUISITE: actor deregistered after cleanup");
+      assert.notEqual(core.World.getPlayers().get(p.getIndex()), p,
+        "LEAGUE5386_PREREQUISITE: actor slot released after cleanup");
+    } catch (error) { errors.push(error); }
+    if (errors.length) {
+      throw new AggregateError(errors, "LEAGUE5386_PREREQUISITE: registered lifecycle cleanup failed");
+    }
+    // Never clear poison left by a different actor's failed lifecycle.
+    nativeRegistrationUnsafe = alreadyUnsafe;
+  });
+  const sent = { messages: [], destinations: [] };
+  const sender = p.getPacketSender();
+  const sendMessage = sender.sendMessage;
+  const sendDestination = sender.sendDestination;
+  t.mock.method(sender, "sendMessage", function (...args) {
+    const result = Reflect.apply(sendMessage, this, args);
+    sent.messages.push(args[0]);
+    return result;
+  });
+  t.mock.method(sender, "sendDestination", function (...args) {
+    const result = Reflect.apply(sendDestination, this, args);
+    sent.destinations.push([args[0], args[1]]);
+    return result;
+  });
+  p.sent = sent;
+  hooks.onPlayerLogin({ player: p, username: name, isNewAccount: true, profile });
   p.setLocation(at(x, y));
+  const audio = Object.entries(p.getAudioSettings()).map(([id, value]) => {
+    const previous = sender.getVarp(Number(id));
+    assert.equal(Number.isInteger(previous), true, "LEAGUE5386_PREREQUISITE: real numeric varp state");
+    return [Number(id), Number(id) === core.Music.SETTINGS_VARP
+      ? (previous & ~core.Music.SETTINGS_MASK) | value : value];
+  });
   assert.equal(core.World.getPlayers().add(p), true);
+  assert.equal(p.getPacketSender(), sender, "registered actor retains the real PacketSender");
+  for (const [id, expected] of audio) {
+    assert.equal(sender.getVarp(id), expected, "LEAGUE5386_PREREQUISITE: real login config state");
+  }
   p.setLastKnownRegion(at(x, y));
   p.setNeedsPlacement(false);
   p.setResetMovementQueue(false);
   p.setRunning(false);
-  t.after(() => {
-    core.TaskManager.cancelTasks(p.getIndex());
-    core.World.getPlayers().remove(p);
-  });
+  registrationCompleted = true;
+  nativeRegistrationUnsafe = false;
   return p;
 }
 
