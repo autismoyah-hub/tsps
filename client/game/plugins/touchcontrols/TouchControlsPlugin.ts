@@ -119,12 +119,16 @@ export type TouchControlsClient = {
 };
 
 function detectTouchDevice(): boolean {
-    if (typeof window === "undefined" || typeof navigator === "undefined") return false;
+    if (typeof window === "undefined") return false;
     const params = new URLSearchParams(window.location.search);
     // ?touch=1 forces the joystick on for desktop testing; ?touch=0 hides it on a phone.
     if (params.get("touch") === "0") return false;
     if (params.get("touch") === "1") return true;
-    return (navigator.maxTouchPoints ?? 0) > 0 || "ontouchstart" in window;
+    // A touchscreen can be secondary to a laptop's mouse/trackpad. Default to
+    // the primary pointing device, not any available touch input. Unknown media
+    // capabilities stay hidden; On and ?touch=1 remain available explicitly.
+    return typeof window.matchMedia === "function"
+        && window.matchMedia("(pointer: coarse) and (hover: none)").matches;
 }
 
 /**
