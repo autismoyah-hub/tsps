@@ -12,6 +12,9 @@
 //   [--check-responsive-gameframe 1] (desktop login, narrow/portrait windows keep the desktop layout)
 //   [--check-responsive-mobile-start 1] (phone-emulated login, disable emulation, then repeat resize switches)
 //   [--check-npc-specific-effects 1] (Vale Totems developer scene; native ::entvisit, records real received effects)
+//   [--check-touch-controls-default <scenario>] (reviewed emulated primary-input/HUD fixture)
+//   [--touch-capture-diagnostic 1] (optional same-page surface/view observations; requires touch scenario)
+//   [--touch-paint-snapshot 1] (positive phone only, after both captures; layout observation, not pixel proof)
 // VISION_CHROME_FLAGS is an optional JSON array for software rendering in CI.
 // --url defaults to this worktree's client (PORT in the root .env, see
 // docs/worktrees.md), then http://localhost:3000; VISION_CLIENT_URL overrides.
@@ -128,14 +131,51 @@ function createCdp(url) {
   const ws = new Ws(url, { maxPayload: 512 * 1024 * 1024 });
   let id = 0;
   const pending = new Map();
+  // Only the optional, one-shot DOM snapshot uses this parse/retention guard.
+  // A timed-out request stays quarantined until its late reply or socket close.
+  let snapshotGuard = null;
+  let snapshotRequested = false;
+  const snapshotLimit = 4 * 1024 * 1024;
+  function snapshotRefusal(code, data) {
+    if (!snapshotGuard) return;
+    const item = pending.get(snapshotGuard.id);
+    if (!item) return;
+    pending.delete(snapshotGuard.id);
+    const error = new Error(code);
+    error.snapshotTransport = {status:code, bytes:Buffer.byteLength(data),
+      sha256:require("node:crypto").createHash("sha256").update(data).digest("hex")};
+    item.reject(error);
+  }
   const graphicsErrors = new Set();
   ws.on("message", (data) => {
+    // Inspect the received message size BEFORE toString/JSON.parse. This bounds
+    // parsing, not WebSocket assembly (the existing maxPayload remains intact).
+    if (snapshotGuard && Buffer.byteLength(data) > snapshotLimit) {
+      snapshotRefusal("SNAPSHOT_MESSAGE_LIMIT", data);
+      return;
+    }
     let msg;
-    try { msg = JSON.parse(data.toString()); } catch { return; }
+    try { msg = JSON.parse(data.toString()); } catch {
+      snapshotRefusal("SNAPSHOT_INVALID_JSON", data);
+      return;
+    }
+    if (snapshotGuard && (!msg || typeof msg !== "object" || Array.isArray(msg))) {
+      snapshotRefusal("SNAPSHOT_UNEXPECTED_MESSAGE", data);
+      return;
+    }
+    if (snapshotGuard && msg.id === snapshotGuard.id) {
+      msg.snapshotTransport = {status:"BOUNDED_REPLY",bytes:Buffer.byteLength(data),
+        sha256:require("node:crypto").createHash("sha256").update(data).digest("hex")};
+      snapshotGuard = null;
+    } else if (snapshotGuard && !pending.has(msg.id)) {
+      // An unsolicited event/reply while the guarded request is outstanding is
+      // an ambiguous observation: refuse it, never label it a snapshot reply.
+      snapshotRefusal("SNAPSHOT_UNEXPECTED_MESSAGE", data);
+    }
     if (msg.id != null && pending.has(msg.id)) {
       const p = pending.get(msg.id);
       pending.delete(msg.id);
-      p(msg);
+      p.resolve(msg);
     } else if (msg.method === "Page.screencastFrame" && ws.onScreencastFrame) {
       ws.onScreencastFrame(msg.params);
     } else if (msg.method === "Runtime.consoleAPICalled" || msg.method === "Log.entryAdded") {
@@ -148,16 +188,21 @@ function createCdp(url) {
     graphicsErrors,
     opened: new Promise((res, rej) => { ws.on("open", res); ws.on("error", rej); }),
     close() { try { ws.close(); } catch {} },
-    send(method, params = {}) {
+    send(method, params = {}, timeoutMs = 60000, onRequest = null, guardSnapshot = false) {
       return new Promise((resolve, reject) => {
+        if (guardSnapshot && (method !== "DOMSnapshot.captureSnapshot" || snapshotRequested)) {
+          reject(new Error("invalid or repeated optional snapshot")); return;
+        }
         const myId = ++id;
-        pending.set(myId, resolve);
+        if (onRequest) onRequest(myId);
+        pending.set(myId, {resolve,reject});
+        if (guardSnapshot) { snapshotRequested = true; snapshotGuard = {id:myId}; }
         ws.send(JSON.stringify({ id: myId, method, params }), (err) => {
           if (err) { pending.delete(myId); reject(err); }
         });
         setTimeout(() => {
           if (pending.has(myId)) { pending.delete(myId); reject(new Error(`cdp timeout: ${method}`)); }
-        }, 60000);
+        }, timeoutMs);
       });
     },
     async evaluate(expression) {
@@ -181,7 +226,7 @@ const SMOOTHING_JS = `((pm) => pm.getPlugins().find((p) => pm.getDescriptor(p).n
 // Returns { ok, proc, cdp, adapter } on success; cleans up and returns
 // { ok: false, reason } otherwise. Adapter label distinguishes hardware from
 // SwiftShader.
-async function tryBrowser(bin, viewport, budgetMs, targetHref) {
+async function tryBrowser(bin, viewport, budgetMs, targetHref, touchScenario = null) {
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), PROFILE_MARKER));
   const proc = spawn(bin, [
@@ -214,6 +259,7 @@ async function tryBrowser(bin, viewport, budgetMs, targetHref) {
       await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: 375, height: 812, deviceScaleFactor: 2, mobile: true });
     }
+    if (touchScenario) await require("./touch-controls-default.browser.cjs").prepare(cdp, touchScenario);
     await cdp.send("Page.navigate", { url: targetHref });
     // Probe on the secure page; poll briefly in case the document is mid-load.
     let webgpu = false;
@@ -262,8 +308,24 @@ async function main() {
   const viewport = (arg("viewport", "1280x800") || "1280x800").split("x").map(Number);
   let proc = null;
   let cdp = null;
+  let touchFailure = null;
+  let captureDiagnosticFailure = null;
+  let paintSnapshotFailure = null;
   try {
+    const touchName = arg("check-touch-controls-default", null);
+    const captureDiagnostic = arg("touch-capture-diagnostic", "0");
+    const paintSnapshot = arg("touch-paint-snapshot", "0");
+    if (!["0","1"].includes(paintSnapshot) || (paintSnapshot === "1" && (touchName !== "phone-default" || captureDiagnostic !== "1"))) throw new Error("paint snapshot requires positive phone and dual capture");
+    if (!["0","1"].includes(captureDiagnostic) || (captureDiagnostic === "1" && touchName === null)) throw new Error("capture diagnostic requires an exact touch scenario");
+    const touchFixture = touchName === null ? null : require("./touch-controls-default.browser.cjs");
+    const touchScenario = touchFixture?.scenarios.find(scenario => scenario.name === touchName);
+    if (touchName !== null && !touchScenario) throw new Error("unknown touch-controls scenario");
     const target = new URL(arg("url", defaultUrl()));
+    if (touchScenario) {
+      if (!out || !arg("user", null)) throw new Error("touch-controls scenario requires screenshot and ordinary login");
+      if (touchScenario.touch === null) target.searchParams.delete("touch");
+      else target.searchParams.set("touch", touchScenario.touch);
+    }
     if (arg("user", null)) {
       target.searchParams.set("username", arg("user"));
       target.searchParams.set("password", arg("pass", ""));
@@ -278,7 +340,7 @@ async function main() {
     const tried = [];
     for (const bin of candidates) {
       if (Date.now() > deadline) throw new Error("deadline passed before a browser was ready");
-      const attempt = await tryBrowser(bin, viewport, Math.min(deadline - Date.now(), 45000), target.href);
+      const attempt = await tryBrowser(bin, viewport, Math.min(deadline - Date.now(), 45000), target.href, touchScenario);
       tried.push(`${bin} (${attempt.ok ? attempt.adapter : attempt.reason})`);
       if (!attempt.ok) {
         // Let the failed candidate's GPU process fully tear down before the
@@ -824,14 +886,41 @@ async function main() {
       await sleep(Math.min(holdSecs, 300) * 1000);
     }
 
+    // Observe the settled HUD immediately before its ordinary page screenshot.
+    if (touchScenario) {
+      try {
+        const actual = await touchFixture.verify(cdp, touchScenario, value => console.log(JSON.stringify(value)),
+          {timeoutMs:Math.max(1,Math.min(10000,deadline-Date.now()))});
+        summary.touchControlsDefault = {scenario:touchScenario.name,status:"PASS",actual};
+      } catch (error) {
+        touchFailure = error;
+        summary.touchControlsDefault = {scenario:touchScenario.name,status:"FAIL",error:String(error?.message ?? error)};
+      }
+    }
     if (out) {
-      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
-      if (shot.error) throw new Error(shot.error.message || JSON.stringify(shot.error));
-      const data = shot.result?.data;
-      if (!data) throw new Error("captureScreenshot returned no pixels");
-      fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
-      fs.writeFileSync(out, Buffer.from(data, "base64"));
-      summary.screenshot = path.resolve(out);
+      const canonical = async (onRequest = null) => {
+        const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, 60000, onRequest);
+        if (shot.error) throw Object.assign(new Error(shot.error.message || JSON.stringify(shot.error)), {protocolError:shot.error,responseId:shot.id});
+        const data = shot.result?.data;
+        if (!data) throw Object.assign(new Error("captureScreenshot returned no pixels"), {responseId:shot.id});
+        fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
+        fs.writeFileSync(out, Buffer.from(data, "base64"));
+        summary.screenshot = path.resolve(out);
+        return shot;
+      };
+      try {
+        if (captureDiagnostic === "1") {
+          summary.touchCaptureDiagnostic = await touchFixture.captureDiagnostic(cdp,out,canonical,value=>console.log(JSON.stringify(value)),
+            {budgetMs:Math.max(1,Math.min(5000,deadline-Date.now()))});
+          if (summary.touchCaptureDiagnostic.status === "REFUSED") captureDiagnosticFailure = new Error("TOUCH5133_CAPTURE_DIAGNOSTIC_REFUSED: " + summary.touchCaptureDiagnostic.error);
+        } else await canonical();
+      } catch (error) { throw touchFailure || error; }
+    }
+
+    if (paintSnapshot === "1") {
+      summary.touchPaintSnapshot = await touchFixture.paintSnapshotDiagnostic(cdp,summary.touchCaptureDiagnostic,value=>console.log(JSON.stringify(value)),
+        {budgetMs:Math.max(1,Math.min(5000,deadline-Date.now()))});
+      if (summary.touchPaintSnapshot.status === "REFUSED") paintSnapshotFailure = new Error("TOUCH5133_PAINT_SNAPSHOT_REFUSED: " + summary.touchPaintSnapshot.error);
     }
 
     if (clipSecs > 0) {
@@ -843,6 +932,11 @@ async function main() {
         viewport,
       });
     }
+    // Retain the ordinary screenshot before propagating the actual HUD assertion.
+    if (touchFailure) throw touchFailure;
+    if (captureDiagnosticFailure) throw captureDiagnosticFailure;
+    if (paintSnapshotFailure) throw paintSnapshotFailure;
+
     // A world-wait timeout with --user means login/loads never finished (server
     // restarting, session torn down, ...): fail loudly instead of handing the
     // caller a loading-screen image as if it were gameplay.
