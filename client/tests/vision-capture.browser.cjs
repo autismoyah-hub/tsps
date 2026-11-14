@@ -124,7 +124,7 @@ function killBrowser(proc) {
   killOurBrowserProcesses();
 }
 
-function createCdp(url) {
+function createCdp(url, observeGraphicsError = null) {
   const ws = new Ws(url, { maxPayload: 512 * 1024 * 1024 });
   let id = 0;
   const pending = new Map();
@@ -140,7 +140,10 @@ function createCdp(url) {
       ws.onScreencastFrame(msg.params);
     } else if (msg.method === "Runtime.consoleAPICalled" || msg.method === "Log.entryAdded") {
       const message = msg.params.entry?.text ?? msg.params.args?.map(a => a.value ?? a.description ?? "").join(" ") ?? "";
-      if (/validation error|invalid.*pipeline|shader.*error|error.*shader|GPUValidationError|Error while parsing WGSL|device lost|context lost/i.test(message)) graphicsErrors.add(message);
+      if (/validation error|invalid.*pipeline|shader.*error|error.*shader|GPUValidationError|Error while parsing WGSL|device lost|context lost/i.test(message)) {
+        graphicsErrors.add(message);
+        if (observeGraphicsError) observeGraphicsError(message,msg.method,msg.params.entry?.timestamp ?? msg.params.timestamp ?? null);
+      }
     }
   });
   return {
@@ -181,6 +184,92 @@ const SMOOTHING_JS = `((pm) => pm.getPlugins().find((p) => pm.getDescriptor(p).n
 // Returns { ok, proc, cdp, adapter } on success; cleans up and returns
 // { ok: false, reason } otherwise. Adapter label distinguishes hardware from
 // SwiftShader.
+function observeBrowserDiagnostics(proc, password, {write = (text,done) => process.stderr.write(text,done), now = () => process.hrtime.bigint().toString()} = {}) {
+  // Review-only proposal: sanitized observations, never raw Chromium byte evidence.
+  const RAW_LIMIT = 262144, OUTPUT_LIMIT = 262144, LINE_LIMIT = 16384, RECORD_LIMIT = 128;
+  let rawBytes = 0, outputBytes = 0, records = 0, pending = Buffer.alloc(0), writes = 0;
+  let eof = false, closed = false, resolved = false, stopRequested = false, failure = null, code = null, signal = null;
+  let resolveDone;
+  const done = new Promise(resolve => { resolveDone = resolve; });
+  const fail = reason => { failure = failure || reason; };
+  let validSecret = typeof password === "string" && Buffer.byteLength(password) <= 1024 && !/[\r\n]/.test(password);
+  let forms = [], encodedPatterns = [];
+  if (validSecret && password) {
+    try {
+      // Encode inside the guarded boundary: malformed surrogate input must still drain/close.
+      const encoded = [encodeURIComponent(password),new URLSearchParams({password}).toString().slice(9)];
+      forms = [...new Set([password,JSON.stringify(password).slice(1,-1)])].sort((a,b)=>b.length-a.length);
+      const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+      encodedPatterns = [...new Set(encoded)].sort((a,b)=>b.length-a.length).map(value => {
+        let pattern = "", offset = 0;
+        for (const match of value.matchAll(/%[0-9A-Fa-f]{2}/g)) {
+          pattern += escape(value.slice(offset,match.index)) + "%";
+          for (const hex of match[0].slice(1)) pattern += /[a-f]/i.test(hex) ? "["+hex.toLowerCase()+hex.toUpperCase()+"]" : hex;
+          offset = match.index+3;
+        }
+        return new RegExp(pattern+escape(value.slice(offset)),"g");
+      });
+    } catch { validSecret = false; forms = []; encodedPatterns = []; }
+  }
+  if (!validSecret) fail("unsupported-sensitive-input");
+  const safe = text => {
+    if (!validSecret || Buffer.byteLength(text) > LINE_LIMIT) { fail("diagnostic-text-limit"); return "[DIAGNOSTIC_OMITTED]"; }
+    for (const value of forms) text = text.split(value).join("[REDACTED]");
+    for (const pattern of encodedPatterns) text = text.replace(pattern,"[REDACTED]");
+    text = text.replace(/https?:\/\/[^\s<>"']+/gi,"[URL_REDACTED]");
+    text = text.replace(/\b(?:authorization|cookie|set-cookie)\s*[:=].*/gi,"[HEADER_REDACTED]");
+    return text.replace(/\b(?:password|pass|token|access_token)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s&]+)/gi,"[FIELD_REDACTED]");
+  };
+  const finish = () => {
+    if (!resolved && eof && closed && writes === 0) {
+      resolved = true;
+      resolveDone({mode:"SANITIZED",complete:failure === null,failure,rawBytesObserved:rawBytes,outputBytes,records,
+        browserPid:proc.pid,browserCloseObserved:true,stderrEOFObserved:eof,code,signal,
+        limits:"Sanitized bounded observations only; host receipt/CDP timestamps do not establish device-loss occurrence or cause"});
+    }
+  };
+  const record = (kind, text, method = null, cdpTimestamp = null) => {
+    if (failure) return;
+    text = safe(text);
+    if (failure) return;
+    const truncated = text.length > 2048;
+    const row = {event:"vision-browser-diagnostic-sanitized",kind,browserPid:proc.pid,index:records,
+      receivedMonotonicNs:now(),method,cdpTimestamp:Number.isFinite(cdpTimestamp) ? cdpTimestamp : null,
+      text:text.slice(0,2048),textTruncated:truncated,limits:"SANITIZED, not raw Chromium bytes; receipt is not occurrence/cause"};
+    const wire = JSON.stringify(row)+"\n", size = Buffer.byteLength(wire);
+    if (records >= RECORD_LIMIT || outputBytes + size > OUTPUT_LIMIT) { fail("diagnostic-output-cap"); return; }
+    records++; outputBytes += size; writes++;
+    let completed = false;
+    const written = error => { if (completed) return; completed=true; if (error) fail("diagnostic-export-error"); writes--; finish(); };
+    try { write(wire,written); } catch { written(true); }
+    if (truncated) fail("diagnostic-text-truncated");
+  };
+  proc.stderr.on("data",chunk => {
+    if (!Buffer.isBuffer(chunk)) { fail("unexpected-stderr-chunk"); return; }
+    rawBytes += chunk.length;
+    if (rawBytes > RAW_LIMIT) { pending = Buffer.alloc(0); fail("diagnostic-raw-cap"); return; }
+    if (failure) return; // Continue draining, never fall back to raw output.
+    pending = Buffer.concat([pending,chunk]);
+    let newline;
+    while ((newline = pending.indexOf(10)) !== -1) {
+      const line = pending.subarray(0,newline); pending = pending.subarray(newline+1);
+      if (line.length > LINE_LIMIT) { pending=Buffer.alloc(0); fail("diagnostic-line-cap"); return; }
+      const text = line.toString("utf8");
+      if (!Buffer.from(text,"utf8").equals(line)) { pending=Buffer.alloc(0); fail("invalid-stderr-utf8"); return; }
+      if (text.length) record("stderr-line",text);
+      if (failure) { pending=Buffer.alloc(0); return; }
+    }
+    if (pending.length > LINE_LIMIT) { pending=Buffer.alloc(0); fail("diagnostic-line-cap"); }
+  });
+  proc.stderr.once("end",() => { eof=true; if (pending.length) { pending=Buffer.alloc(0); fail("unterminated-stderr-line"); } finish(); });
+  proc.stderr.once("error",() => { fail("diagnostic-stderr-error"); });
+  proc.stderr.once("close",() => { if (!eof) fail("diagnostic-stderr-close-without-eof"); finish(); });
+  proc.once("close",(c,s) => { closed=true; code=c; signal=s; if (!stopRequested) fail("browser-close-before-owned-stop"); finish(); });
+  proc.once("error",() => { fail("diagnostic-browser-error"); });
+  return {done,safe,get failure() { return failure; },expectStop:() => { stopRequested=true; },graphicsEvent:(text,method,timestamp) => record("cdp-error",text,method,timestamp)};
+}
+
+
 async function tryBrowser(bin, viewport, budgetMs, targetHref) {
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), PROFILE_MARKER));
@@ -192,16 +281,24 @@ async function tryBrowser(bin, viewport, budgetMs, targetHref) {
     `--remote-debugging-port=${debugPort}`,
     `--user-data-dir=${profile}`,
     "about:blank",
-  ], { stdio: process.env.VISION_DEBUG ? ["ignore", "ignore", "inherit"] : "ignore", detached: true });
+  ], { stdio: process.env.VISION_DEBUG ? ["ignore", "ignore", "pipe"] : "ignore", detached: true });
   proc.unref();
+  let diagnostics = null;
   let cdp = null;
-  const cleanup = () => {
+  // Establish ownership observations before diagnostic setup, including an initialization failure.
+  const browserClosed = new Promise(resolve => proc.once("close",resolve));
+  const stderrEOF = process.env.VISION_DEBUG ? new Promise(resolve => proc.stderr.once("end",resolve)) : null;
+  const cleanup = async () => {
     try { cdp?.close?.(); } catch {}
-    killBrowser(proc);
+    diagnostics?.expectStop(); killBrowser(proc);
+    if (process.env.VISION_DEBUG) await Promise.all([browserClosed,stderrEOF]);
+    return diagnostics ? await diagnostics.done : process.env.VISION_DEBUG ? {mode:"SANITIZED",complete:false,failure:"diagnostic-initialization-failed"} : null;
   };
   try {
+    diagnostics = process.env.VISION_DEBUG ? observeBrowserDiagnostics(proc,arg("pass", "")) : null;
+    if (diagnostics?.failure) throw new Error("sanitized diagnostics initialization refused");
     const tab = await waitForTab(debugPort, Math.min(Math.max(15000, budgetMs), 30000));
-    cdp = createCdp(tab.webSocketDebuggerUrl);
+    cdp = createCdp(tab.webSocketDebuggerUrl,diagnostics?.graphicsEvent);
     await cdp.opened;
     await cdp.send("Page.enable");
     await cdp.send("Runtime.enable");
@@ -225,15 +322,15 @@ async function tryBrowser(bin, viewport, budgetMs, targetHref) {
         webgpu = await cdp.evaluate(`!!navigator.gpu`);
       } catch (e) {
         webgpu = false;
-        if (process.env.VISION_DEBUG) console.log(`[vision] gpu poll #${attempts} threw: ${String(e?.message ?? e).slice(0, 120)}`);
+        if (process.env.VISION_DEBUG) console.log(`[vision] gpu poll #${attempts} threw: [SANITIZED] ${diagnostics.safe(String(e?.message ?? e)).slice(0, 120)}`);
       }
       if (process.env.VISION_DEBUG) console.log(`[vision] gpu poll #${attempts}: ${webgpu}`);
       if (!webgpu) await sleep(1000);
     }
     if (!webgpu) {
-      cleanup();
+      const diagnosticResult = await cleanup();
       cdp = null;
-      return { ok: false, reason: "no WebGPU adapter on the game page" };
+      return { ok: false, reason: "no WebGPU adapter on the game page", diagnosticResult };
     }
     let adapter = "adapter";
     try {
@@ -244,11 +341,13 @@ async function tryBrowser(bin, viewport, budgetMs, targetHref) {
         return ("adapter " + (i.vendor || "") + " " + (i.device || a.backend || "")).trim();
       } catch (e) { return "error"; } })()`);
     } catch {}
-    return { ok: true, proc, cdp, adapter };
+    return { ok: true, proc, cdp, adapter, diagnostics };
   } catch (error) {
-    cleanup();
+    const reason = (diagnostics ? diagnostics.safe(String(error?.message ?? error)) : process.env.VISION_DEBUG ? "sanitized diagnostics initialization failed" : String(error?.message ?? error)).slice(0, 120);
+    if (!diagnostics && process.env.VISION_DEBUG) proc.stderr.resume(); // Initialization failure: drain/omit, never raw fallback.
+    const diagnosticResult = await cleanup();
     cdp = null;
-    return { ok: false, reason: String(error?.message ?? error).slice(0, 120) };
+    return { ok: false, reason, diagnosticResult };
   }
 }
 
@@ -261,6 +360,8 @@ async function main() {
   const deadline = Date.now() + timeoutMs;
   const viewport = (arg("viewport", "1280x800") || "1280x800").split("x").map(Number);
   let proc = null;
+  let browserDiagnostics = null;
+  const browserDiagnosticRefusals = [];
   let cdp = null;
   try {
     const target = new URL(arg("url", defaultUrl()));
@@ -281,12 +382,14 @@ async function main() {
       const attempt = await tryBrowser(bin, viewport, Math.min(deadline - Date.now(), 45000), target.href);
       tried.push(`${bin} (${attempt.ok ? attempt.adapter : attempt.reason})`);
       if (!attempt.ok) {
+        if (attempt.diagnosticResult && !attempt.diagnosticResult.complete) browserDiagnosticRefusals.push(attempt.diagnosticResult);
         // Let the failed candidate's GPU process fully tear down before the
         // next launch contends for the adapter.
         await sleep(2500);
         continue;
       }
       proc = attempt.proc;
+      browserDiagnostics = attempt.diagnostics;
       cdp = attempt.cdp;
       summary.browser = bin;
       summary.webgpu = attempt.adapter;
@@ -815,16 +918,30 @@ async function main() {
         const bytes = Buffer.from(scene.png, "base64"), dimensions = pngDimensions(bytes);
         outcome = {status:"PASS",phase,source,startedUTC,requestMonotonicNs,finishedMonotonicNs:process.hrtime.bigint().toString(),
           finishedUTC:new Date().toISOString(),requestedViewport:viewport,dimensions,surface:scene.surface,colours:scene.colours,
-          readbackDiagnostics:scene.readbackDiagnostics ?? null,graphicsErrors:[...cdp.graphicsErrors].slice(0,10).map(message=>String(message).slice(0,1024)),limits:scene.limits};
+          readbackDiagnostics:scene.readbackDiagnostics ?? null,graphicsErrors:[...cdp.graphicsErrors].slice(0,10).map(message=>(browserDiagnostics ? browserDiagnostics.safe(String(message)) : String(message)).slice(0,1024)),limits:scene.limits};
         if (dimensions.width !== scene.surface.canvas.width || dimensions.height !== scene.surface.canvas.height) throw new Error("paired scene dimensions disagree");
         fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file,bytes);
       } catch (error) {
         outcome = {status:"FAILED",phase,source,startedUTC,requestMonotonicNs,finishedMonotonicNs:process.hrtime.bigint().toString(),
           finishedUTC:new Date().toISOString(),requestedViewport:viewport,
-          error:{name:String(error?.name ?? "Error").slice(0,128),message:String(error?.message ?? error).slice(0,1024)},
+          error:{name:(browserDiagnostics ? browserDiagnostics.safe(String(error?.name ?? "Error")) : String(error?.name ?? "Error")).slice(0,128),message:(browserDiagnostics ? browserDiagnostics.safe(String(error?.message ?? error)) : String(error?.message ?? error)).slice(0,1024)},
           pageException:error?.pageException ?? null,readbackDiagnostics:error?.readbackDiagnostics ?? null,
-          graphicsErrors:[...cdp.graphicsErrors].slice(0,10).map(message=>String(message).slice(0,1024)),
+          graphicsErrors:[...cdp.graphicsErrors].slice(0,10).map(message=>(browserDiagnostics ? browserDiagnostics.safe(String(message)) : String(message)).slice(0,1024)),
           limits:"Failed GPU diagnostic; preserve independent page evidence then refuse overall acceptance"};
+      }
+      if (browserDiagnostics) {
+        // Scrub plain diagnostic values before their FIRST sidecar/event/summary export; preserve the Set itself.
+        const pageTextBounds = {name:128,message:1024,stack:2048,constructorName:64,reason:128,mapState:32};
+        const sanitize = (value,key = "") => {
+          if (typeof value === "string") {
+            // Page errors/loss metadata may arrive already bounded. Omit at-bound fields rather than expose a clipped token.
+            if (pageTextBounds[key] && value.length >= pageTextBounds[key]) return "[SOURCE_LIMITED_TEXT_OMITTED]";
+            return browserDiagnostics.safe(value);
+          }
+          return Array.isArray(value) ? value.map(item=>sanitize(item))
+            : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key,item])=>[key,sanitize(item,key)])) : value;
+        };
+        outcome = {...sanitize(outcome),textMode:"SANITIZED",textScope:"Known full patterns scrubbed from received text; page fields at known source text bounds omitted, original upstream text unrecoverable; not raw bytes or an arbitrary-secret guarantee"};
       }
       summary.pairedSceneDiagnostic = {file,metadata:file + ".json",...outcome};
       try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file + ".json",JSON.stringify(outcome)); }
@@ -889,7 +1006,18 @@ async function main() {
         if (failures && Object.keys(failures).length) summary.typeDecodeFailures = failures;
       } catch {}
     }
-    if (proc) killBrowser(proc);
+    if (browserDiagnostics && typeof summary.error === "string") summary.error = browserDiagnostics.safe(summary.error).slice(0,1024);
+    if (proc) { browserDiagnostics?.expectStop(); killBrowser(proc); }
+    if (browserDiagnosticRefusals.length) {
+      summary.browserDiagnosticRefusals = browserDiagnosticRefusals;
+      summary.ok = false; summary.error = summary.error || "earlier sanitized browser diagnostics incomplete";
+    }
+    if (browserDiagnostics) {
+      summary.browserDiagnostics = await browserDiagnostics.done;
+      if (!summary.browserDiagnostics.complete) {
+        summary.ok = false; summary.error = summary.error || "sanitized browser diagnostics incomplete";
+      }
+    }
   }
   summary.ms = Date.now() - started;
   console.log(JSON.stringify(summary));
