@@ -1,0 +1,598 @@
+{
+  "schema": 1,
+  "result": "PASS_SCOPED_EXACT_TESTED_INPUT",
+  "source": "60d94f613e88983bcb0d028ff2f350fc4f6241ef",
+  "dateUTC": "2026-11-14",
+  "independentAgentReview": "Exact source/input/raw/terminal/content-closure qualified separately; no maintainer approval or whole-boss claim",
+  "manifest": {
+    "artifactCommit": "aad3b23da79f0258b64fb464db77b140d9c4d70d",
+    "path": "docs/evidence/maggot-king-after-v029-input-manifest.json",
+    "bytes": 1290049,
+    "sha256": "4b167972419f0f34ff28079d7e6a2bbdef63147b21ef18465dc3c28baa19fa2c",
+    "count": 5650
+  },
+  "raw": {
+    "path": "docs/evidence/maggot-king-after-v030.log",
+    "bytes": 772185,
+    "sha256": "445126104a7b31ee8366e28d6d40b3ffe2e92dc577d7d0de37c4520ef9c2e340"
+  },
+  "platformTerminal": {
+    "stage": "COMPLETED",
+    "retry": 0
+  },
+  "suites": [
+    {
+      "path": "maggot-king.test.cjs",
+      "tests": 3,
+      "passed": 3
+    },
+    {
+      "path": "shared-poison-counter.test.cjs",
+      "tests": 32,
+      "passed": 32
+    },
+    {
+      "path": "serpentine-helm.test.cjs",
+      "tests": 21,
+      "passed": 21
+    },
+    {
+      "path": "poison-orb.test.cjs",
+      "tests": 10,
+      "passed": 10
+    },
+    {
+      "path": "maggot-king-combat.test.cjs",
+      "tests": 61,
+      "passed": 61
+    }
+  ],
+  "totals": {
+    "tests": 127,
+    "passed": 127,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "stages": [
+    {
+      "event": "stage-result",
+      "name": "extract",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": null,
+      "passes": null,
+      "durationMs": 1358,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "453873664",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "install-server",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": null,
+      "passes": null,
+      "durationMs": 4017,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "1702535168",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "ldd",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": null,
+      "passes": null,
+      "durationMs": 22,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "1702535168",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "native-load",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": null,
+      "passes": null,
+      "durationMs": 36,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "1702535168",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "build",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": null,
+      "passes": null,
+      "durationMs": 9542,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "1702535168",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "cache",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": null,
+      "passes": null,
+      "durationMs": 28879,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "2160857088",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "test:maggot-king.test.cjs",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": 3,
+      "passes": 3,
+      "durationMs": 2284,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "2160857088",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "test:shared-poison-counter.test.cjs",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": 32,
+      "passes": 32,
+      "durationMs": 2348,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "2160857088",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "test:serpentine-helm.test.cjs",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": 21,
+      "passes": 21,
+      "durationMs": 686,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "2160857088",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "test:poison-orb.test.cjs",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": 10,
+      "passes": 10,
+      "durationMs": 854,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "2160857088",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "test:maggot-king-combat.test.cjs",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": 61,
+      "passes": 61,
+      "durationMs": 26671,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "2550874112",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    }
+  ],
+  "actualInputRowsEqualManifest": true,
+  "inputRowCount": 5650,
+  "gitBlobGuard": "Pinned payload checks every manifest Git blob before emitting input event; SHA telemetry is distinct",
+  "sourceClosure": {
+    "event": "source-closure",
+    "afterFailure": false,
+    "available": true,
+    "sourceManifestHash": "604efa9f01b66996789abc498ce38a6a9bb989eeedf632b13a78eabe251e2f90",
+    "postSourceHash": "604efa9f01b66996789abc498ce38a6a9bb989eeedf632b13a78eabe251e2f90",
+    "originalSourceFiles": 8737,
+    "distManifestHash": "5b8aec68d1fbc84235c64e8fd9568c02830c9d8f7e2aa8bbf9942e3ca4af59d7",
+    "postDistHash": "5b8aec68d1fbc84235c64e8fd9568c02830c9d8f7e2aa8bbf9942e3ca4af59d7",
+    "postCacheFilesChecked": 28,
+    "sourceStatus": "PASS",
+    "distStatus": "PASS",
+    "cacheStatus": "PASS",
+    "complete": true,
+    "cacheMismatches": [],
+    "errors": [],
+    "sealsUnchanged": true,
+    "limitation": "Content identities only; no process or sandbox-wide closure inference"
+  },
+  "cacheEquivalence": {
+    "event": "cache-equivalence",
+    "matchedFiles": 28,
+    "status": "PASS",
+    "reference": "cache242-static-evidence001 inventory 053b5b0f3e449b0554934107185520d8d48782c3d811a62c00a0ab62d3a36aa0; no static/runtime equivalence claim"
+  },
+  "fireControlDiagnostics": [
+    {
+      "event": "maggot-native-fire-control-boundary",
+      "label": "before-fixture",
+      "cycle": 1985,
+      "actor": null,
+      "resolved": 0,
+      "heapUsed": 775618736,
+      "randomCalls": 0,
+      "lastSpellIsFireStrike": false,
+      "lastSpellIsWindStrike": false,
+      "activeSpellCleared": null
+    },
+    {
+      "event": "maggot-native-fire-control-boundary",
+      "label": "after-fixture",
+      "cycle": 1986,
+      "actor": "mgnative48",
+      "resolved": 0,
+      "heapUsed": 768750704,
+      "randomCalls": 0,
+      "lastSpellIsFireStrike": false,
+      "lastSpellIsWindStrike": false,
+      "activeSpellCleared": true
+    },
+    {
+      "event": "maggot-native-fire-control-boundary",
+      "label": "before-splash",
+      "cycle": 1986,
+      "actor": "mgnative48",
+      "resolved": 0,
+      "heapUsed": 768753880,
+      "randomCalls": 0,
+      "lastSpellIsFireStrike": false,
+      "lastSpellIsWindStrike": false,
+      "activeSpellCleared": true
+    },
+    {
+      "event": "maggot-native-fire-control-boundary",
+      "label": "after-splash",
+      "cycle": 1990,
+      "actor": "mgnative48",
+      "resolved": 1,
+      "heapUsed": 783875856,
+      "randomCalls": 34,
+      "lastSpellIsFireStrike": true,
+      "lastSpellIsWindStrike": false,
+      "activeSpellCleared": true
+    },
+    {
+      "event": "maggot-native-fire-control-boundary",
+      "label": "splash-controls-complete",
+      "cycle": 1990,
+      "actor": "mgnative48",
+      "resolved": 1,
+      "heapUsed": 783877776,
+      "randomCalls": 34,
+      "lastSpellIsFireStrike": true,
+      "lastSpellIsWindStrike": false,
+      "activeSpellCleared": true
+    },
+    {
+      "event": "maggot-native-fire-control-boundary",
+      "label": "after-nonfire",
+      "cycle": 1994,
+      "actor": "mgnative48",
+      "resolved": 2,
+      "heapUsed": 769018400,
+      "randomCalls": 103,
+      "lastSpellIsFireStrike": false,
+      "lastSpellIsWindStrike": true,
+      "activeSpellCleared": true
+    },
+    {
+      "event": "maggot-native-fire-control-boundary",
+      "label": "nonfire-controls-complete",
+      "cycle": 1994,
+      "actor": "mgnative48",
+      "resolved": 2,
+      "heapUsed": 769020328,
+      "randomCalls": 103,
+      "lastSpellIsFireStrike": false,
+      "lastSpellIsWindStrike": true,
+      "activeSpellCleared": true
+    },
+    {
+      "event": "maggot-native-fire-control-boundary",
+      "label": "after-expiry-turns",
+      "cycle": 2018,
+      "actor": "mgnative48",
+      "resolved": 2,
+      "heapUsed": 780700384,
+      "randomCalls": 380,
+      "lastSpellIsFireStrike": false,
+      "lastSpellIsWindStrike": true,
+      "activeSpellCleared": true
+    },
+    {
+      "event": "maggot-native-fire-control-boundary",
+      "label": "assertions-complete",
+      "cycle": 2018,
+      "actor": "mgnative48",
+      "resolved": 2,
+      "heapUsed": 780702248,
+      "randomCalls": 380,
+      "lastSpellIsFireStrike": false,
+      "lastSpellIsWindStrike": true,
+      "activeSpellCleared": true
+    },
+    {
+      "event": "maggot-native-fire-control-boundary",
+      "label": "finally",
+      "cycle": 2018,
+      "actor": "mgnative48",
+      "resolved": 2,
+      "heapUsed": 780711728,
+      "randomCalls": 380,
+      "lastSpellIsFireStrike": false,
+      "lastSpellIsWindStrike": true,
+      "activeSpellCleared": true
+    }
+  ],
+  "fullHealthTelemetry": [
+    {
+      "event": "maggot-native-full-damage-boundary",
+      "lowest": 4,
+      "bossHitpoints": 0,
+      "phases": [
+        "ranged",
+        "screech",
+        "magic",
+        "melee"
+      ],
+      "ammoBefore": 5000,
+      "ammoAfter": 4819,
+      "rolls": 181,
+      "positiveRolls": 113,
+      "rolled": 1745,
+      "applied": 1742,
+      "appliedRows": 181,
+      "targetHeld": false,
+      "ownerTile": [
+        2904,
+        8033
+      ],
+      "bossTile": [
+        2904,
+        8038
+      ],
+      "bossReplyTarget": false,
+      "bossSize": 5,
+      "allHealing": 242,
+      "controllerHealing": 242,
+      "walkInputs": 134,
+      "retargetInputs": 96
+    }
+  ],
+  "larvaContactTelemetry": [
+    {
+      "event": "maggot-native-larva-contact-boundary",
+      "cycle": 119,
+      "afterKnownFood": 1201,
+      "beforeContact": 1201,
+      "afterFirstContact": 1204,
+      "playerAfterFirstContact": 96,
+      "contact": 1
+    }
+  ],
+  "punishDeadlineTelemetry": [
+    {
+      "event": "maggot-native-punish-deadline-boundary",
+      "edge": 2904,
+      "cycle": 184,
+      "removedFloor": [
+        {
+          "id": 33423,
+          "tile": [
+            2911,
+            8035
+          ]
+        },
+        {
+          "id": 33423,
+          "tile": [
+            2910,
+            8036
+          ]
+        },
+        {
+          "id": 33423,
+          "tile": [
+            2912,
+            8036
+          ]
+        },
+        {
+          "id": 33425,
+          "tile": [
+            2913,
+            8034
+          ]
+        },
+        {
+          "id": 33425,
+          "tile": [
+            2908,
+            8033
+          ]
+        },
+        {
+          "id": 33425,
+          "tile": [
+            2906,
+            8033
+          ]
+        },
+        {
+          "id": 33425,
+          "tile": [
+            2913,
+            8033
+          ]
+        },
+        {
+          "id": 33425,
+          "tile": [
+            2907,
+            8033
+          ]
+        },
+        {
+          "id": 33425,
+          "tile": [
+            2909,
+            8033
+          ]
+        },
+        {
+          "id": 33424,
+          "tile": [
+            2904,
+            8036
+          ]
+        },
+        {
+          "id": 33424,
+          "tile": [
+            2904,
+            8035
+          ]
+        },
+        {
+          "id": 33424,
+          "tile": [
+            2905,
+            8036
+          ]
+        }
+      ],
+      "before": 22,
+      "after": 22
+    },
+    {
+      "event": "maggot-native-punish-deadline-boundary",
+      "edge": 2918,
+      "cycle": 197,
+      "removedFloor": [
+        {
+          "id": 33424,
+          "tile": [
+            2917,
+            8036
+          ]
+        },
+        {
+          "id": 33424,
+          "tile": [
+            2916,
+            8036
+          ]
+        },
+        {
+          "id": 33424,
+          "tile": [
+            2918,
+            8036
+          ]
+        }
+      ],
+      "before": 18,
+      "after": 18
+    }
+  ],
+  "limits": [
+    "Supplied quest/material/equipment/standing/hazard/no-floor/contact-window/RNG/accuracy/invulnerability/positive150-bonus checkpoints are disclosed in fixture and PR.",
+    "Ordinary Anti-venom+ only; native dose venom portion only; unknown legacy remains ineligible; Extended family separate.",
+    "Native registered charge listener is not decoded item-on-item acquisition proof; JSON codec is not disk relog.",
+    "Owned process groups/content/platform terminal only, not global escaped-descendant/reaping/capacity proof.",
+    "No socket/rendered/natural acquisition/unaided survival/retail timing/frequency/full reward-chain or all-upstream-feature proof.",
+    "Earlier native heap aborts and original019 deadline/original025 healing failure causes remain unknown/unproven; later pass is not causal repair."
+  ]
+}
