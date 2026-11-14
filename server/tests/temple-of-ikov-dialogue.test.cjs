@@ -252,8 +252,147 @@ function snapshotAndLogout(f,expected){
   assert.deepEqual(JSON.parse(JSON.stringify(restored.inventory,codec.replacer.bind(codec))),inventory);
   assert.deepEqual(JSON.parse(JSON.stringify(restored.equipment,codec.replacer.bind(codec))),equipment);
   assert.equal(core.GameConstants.PLAYER_PERSISTENCE,backend,'codec leaves the shared backend unchanged');
+  // Keep the shared parent backend/path/host untouched: only this bounded child owns a file store.
+  const fs=require('node:fs'),os=require('node:os'),crypto=require('node:crypto');
+  const {spawnSync}=require('node:child_process');
+  const parentDirectory=Json.JsonPlayerPersistence.SAVE_DIRECTORY;
+  assert.ok(f.p.getEquipment().get(core.Equipment.WEAPON_SLOT).getId()<=0,'actual original checkpoint is unarmed');
+  assert.equal(f.p.getProfile(),Json.JsonPlayerPersistence.PROFILES.MAIN_PROFILE);
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'ikov-json-store-'));
+  let ownedRoot,reopened,observation,failure,childResult;
+  try{
+    ownedRoot=fs.realpathSync(root);
+    const childSource=String.raw`
+    const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+    require('./dist/Server').Server.installProductionPathResolver();
+    const Json=require('./plugins/persistence/JsonPlayerPersistence.plugin');
+    const {SkillManager}=require('./dist/game/content/skill/SkillManager');
+    const {PlayerSave}=require('./dist/game/entity/impl/player/persistence/PlayerSave');
+    const {Item}=require('./dist/game/model/Item');
+    const {Equipment}=require('./dist/game/model/container/impl/Equipment');
+    const {GameConstants}=require('./dist/game/GameConstants');
+    (async()=>{
+      const request=fs.readFileSync(0,'utf8');assert.ok(Buffer.byteLength(request,'utf8')<=1024*1024);
+      const input=JSON.parse(request);
+      assert.equal(typeof input.username,'string');assert.ok(input.username.length>0);
+      assert.equal(input.profile,Json.JsonPlayerPersistence.PROFILES.MAIN_PROFILE,'original main-profile fixture');
+      assert.ok(path.isAbsolute(input.root));
+      const root=fs.realpathSync(input.root),rootStat=fs.lstatSync(input.root);
+      assert.equal(root,input.root);assert.ok(rootStat.isDirectory()&&!rootStat.isSymbolicLink());
+      // Process-local configuration before any owned backend exists, as in player-saves.test.cjs.
+      Json.JsonPlayerPersistence.SAVE_DIRECTORY=root;
+      const backend=GameConstants.PLAYER_PERSISTENCE;
+      let writer,reader,registrations=0,proof,failure;
+      try{
+        Json.register({getSkillManager:()=>SkillManager,setPlayerPersistence(value){writer=value;registrations++;},log(){}});
+        assert.equal(registrations,1,'actual JSON registration without host override');
+        assert.ok(writer instanceof Json.JsonPlayerPersistence);
+        assert.equal(GameConstants.PLAYER_PERSISTENCE,backend,'captured child registration never installs a backend');
+        const original=JSON.parse(input.serialized,writer.reviver.bind(writer));
+        assert.ok(original.equipment[Equipment.WEAPON_SLOT].id<=0,'actual original checkpoint is unarmed; no second cache');
+        const snapshot=writer.hydratePlayerSave(original);
+        assert.ok(snapshot instanceof PlayerSave);
+        assert.ok(snapshot.inventory.every(item=>item instanceof Item));
+        assert.ok(snapshot.equipment.every(item=>item instanceof Item));
+        assert.equal(writer.pendingSerializedSaves.size,0);assert.equal(writer.failedWrites.size,0);
+        const filePath=writer.resolveFilePath(input.username,input.profile);
+        assert.equal(path.dirname(filePath),root,'production main-profile path remains in owned root');
+        assert.equal(fs.existsSync(filePath),false,'fresh private store has no previous account file');
+        writer.saveOffline(input.username,snapshot,'ikov-fixture',input.profile);
+        await writer.flush();
+        assert.equal(writer.pendingSerializedSaves.size,0,'flush committed rather than retaining pending JSON');
+        assert.equal(writer.failedWrites.size,0);
+        const stat=fs.lstatSync(filePath);
+        assert.ok(stat.isFile()&&!stat.isSymbolicLink());assert.ok(stat.size>0&&stat.size<=1024*1024);
+        const file=fs.readFileSync(filePath);assert.equal(file.length,stat.size);
+        const disk=JSON.parse(file.toString('utf8'),writer.reviver.bind(writer));
+        for(const key of ['attributes','position','inventory','equipment','skills'])assert.deepEqual(disk[key],original[key],key+' committed from original snapshot');
+        reader=new Json.JsonPlayerPersistence();
+        assert.notEqual(reader,writer);assert.ok(reader instanceof Json.JsonPlayerPersistence);
+        assert.equal(reader.pendingSerializedSaves.size,0);assert.equal(reader.failedWrites.size,0);assert.equal(reader.nextWriteSequence,0);
+        assert.equal(reader.load,Json.JsonPlayerPersistence.prototype.load,'original production filesystem loader');
+        assert.equal(reader.resolveFilePath(input.username,input.profile),filePath);
+        const loaded=reader.load(input.username,input.profile);
+        assert.ok(loaded instanceof PlayerSave);assert.notEqual(loaded,snapshot);
+        assert.equal(reader.pendingSerializedSaves.size,0);assert.equal(reader.nextWriteSequence,0,'fresh loader never queued a write');
+        const loadedJSON=JSON.stringify(loaded,reader.replacer.bind(reader));
+        const loadedData=JSON.parse(loadedJSON,reader.reviver.bind(reader));
+        for(const key of ['attributes','position','inventory','equipment','skills'])assert.deepEqual(loadedData[key],disk[key],key+' cold-loaded from committed file');
+        assert.equal(GameConstants.PLAYER_PERSISTENCE,backend);
+        proof={profile:input.profile,normalizedUsername:writer.normalizeUsername(input.username),filePath,
+          fileBytes:file.length,fileSHA256:crypto.createHash('sha256').update(file).digest('hex'),fileBase64:file.toString('base64'),
+          loadedJSON,writerPending:writer.pendingSerializedSaves.size,writerFailed:writer.failedWrites.size,
+          readerPending:reader.pendingSerializedSaves.size,readerFailed:reader.failedWrites.size,readerWrites:reader.nextWriteSequence};
+      }catch(error){failure=error;}
+      finally{
+        for(const store of [writer,reader])if(store){
+          try{await store.flush();}catch(error){failure=failure?new AggregateError([failure,error],'store proof and final flush failed'):error;}
+        }
+      }
+      if(failure)throw failure;
+      const output=JSON.stringify(proof);assert.ok(Buffer.byteLength(output,'utf8')<=1024*1024);
+      process.stdout.write(output);
+    })().catch(error=>{console.error(error);process.exitCode=1;});
+`;
+    const request=JSON.stringify({root:ownedRoot,username:f.p.getUsername(),profile:f.p.getProfile(),serialized});
+    assert.ok(Buffer.byteLength(request,'utf8')<=1024*1024);
+    const result=childResult=spawnSync(process.execPath,['-e',childSource],{cwd:path.resolve(__dirname,'..'),
+      input:request,timeout:10000,maxBuffer:1024*1024});
+    assert.ifError(result.error);assert.equal(result.signal,null,'store child exits before owned-root cleanup');
+    assert.equal(result.status,0,`production store child failed: ${result.stderr}`);
+    assert.ok(Buffer.isBuffer(result.stdout)&&Buffer.isBuffer(result.stderr));
+    assert.equal(result.stderr.length,0,'store child has no hidden import/write/flush errors');
+    const text=result.stdout.toString('utf8');assert.deepEqual(Buffer.from(text,'utf8'),result.stdout,'exact UTF-8 child output');
+    const proof=JSON.parse(text);
+    assert.equal(proof.profile,f.p.getProfile());assert.equal(proof.normalizedUsername,codec.normalizeUsername(f.p.getUsername()));
+    assert.equal(path.dirname(proof.filePath),ownedRoot);
+    for(const key of ['writerPending','writerFailed','readerPending','readerFailed','readerWrites'])assert.equal(proof[key],0,key);
+    const stat=fs.lstatSync(proof.filePath);assert.ok(stat.isFile()&&!stat.isSymbolicLink());
+    assert.ok(stat.size>0&&stat.size<=1024*1024);
+    const file=fs.readFileSync(proof.filePath),returned=Buffer.from(proof.fileBase64,'base64');
+    assert.equal(returned.toString('base64'),proof.fileBase64);assert.deepEqual(file,returned,'actual parent file read equals child bytes');
+    assert.equal(file.length,proof.fileBytes);assert.equal(file.length,stat.size);
+    assert.equal(crypto.createHash('sha256').update(file).digest('hex'),proof.fileSHA256);
+    const stored=JSON.parse(file.toString('utf8'),codec.reviver.bind(codec));
+    for(const key of ['attributes','position','inventory','equipment','skills'])assert.deepEqual(stored[key],parsed[key],key+' stored original checkpoint');
+    const loaded=JSON.parse(proof.loadedJSON,codec.reviver.bind(codec));
+    for(const key of ['attributes','position','inventory','equipment','skills'])assert.deepEqual(loaded[key],stored[key],key+' returned by fresh filesystem load');
+    reopened=codec.hydratePlayerSave(loaded);
+    assert.ok(reopened instanceof PlayerSave);assert.notEqual(reopened,save);assert.notEqual(reopened,restored);
+    assert.deepEqual(reopened.attributes,restored.attributes);
+    assert.ok(reopened.inventory.every(item=>item instanceof core.Item));assert.ok(reopened.equipment.every(item=>item instanceof core.Item));
+    assert.deepEqual(JSON.parse(JSON.stringify(reopened.inventory,codec.replacer.bind(codec))),inventory);
+    assert.deepEqual(JSON.parse(JSON.stringify(reopened.equipment,codec.replacer.bind(codec))),equipment);
+    assert.deepEqual(JSON.parse(JSON.stringify(reopened.position)),parsed.position,'verify loaded position BEFORE fixture movement');
+    observation={layer:'isolated-json-flush/new-instance-filesystem-load',profile:proof.profile,
+      normalizedUsername:proof.normalizedUsername,filePath:proof.filePath,privateRoot:ownedRoot,regularFile:stat.isFile()&&!stat.isSymbolicLink(),
+      fileBytes:proof.fileBytes,fileSHA256:proof.fileSHA256,fileBase64:file.toString('base64'),loadedJSON:proof.loadedJSON,
+      loadedPosition:JSON.parse(JSON.stringify(reopened.position)),writerPending:proof.writerPending,writerFailed:proof.writerFailed,
+      readerPending:proof.readerPending,readerFailed:proof.readerFailed,readerWrites:proof.readerWrites};
+    // Existing root stdout transport frames this bounded logical JSON into <=3072-byte payloads.
+    assert.ok(Buffer.byteLength(JSON.stringify(observation),'utf8')<=1024*1024);
+  }catch(error){failure=error;}
+  finally{
+    for(const cleanup of [
+      ()=>{assert.equal(core.GameConstants.PLAYER_PERSISTENCE,backend);assert.equal(Json.JsonPlayerPersistence.SAVE_DIRECTORY,parentDirectory);},
+      ()=>{const stat=fs.lstatSync(root);assert.ok(stat.isDirectory()&&!stat.isSymbolicLink());
+        const actual=fs.realpathSync(root);if(ownedRoot!==undefined)assert.equal(actual,ownedRoot);
+        // Before a child starts, mkdtemp alone owns this still-private root too.
+        assert.ok(ownedRoot!==undefined||childResult===undefined);
+        fs.rmSync(root,{recursive:true});assert.equal(fs.existsSync(root),false,'only owned private store root cleaned after child exit');}
+    ])try{cleanup();}catch(error){failure=failure?new AggregateError([failure,error],'store proof and owned cleanup failed'):error;}
+  }
+  if(failure){
+    if(childResult)console.log('IKOV_JSON_STORE_CHILD_FAILURE',JSON.stringify({
+      error:childResult.error?{name:childResult.error.name,code:childResult.error.code,message:childResult.error.message}:null,
+      status:childResult.status,signal:childResult.signal,
+      stdoutBase64:Buffer.isBuffer(childResult.stdout)?childResult.stdout.toString('base64'):null,
+      stderrBase64:Buffer.isBuffer(childResult.stderr)?childResult.stderr.toString('base64'):null}));
+    throw failure;
+  }
   disposeActor(f.p);
-  return restored;
+  console.log('IKOV_JSON_STORE',JSON.stringify({...observation,ownedRootCleaned:true}));
+  return reopened;
 }
 test('the real Guardian menu reaches the yearly-bath branch and physical pendant award',async t=>{
   const f=actor(t,2644,9897,60),npc=f.guardian();await f.talk(npc);
