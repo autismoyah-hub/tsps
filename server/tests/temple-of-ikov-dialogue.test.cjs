@@ -266,9 +266,9 @@ function snapshotAndLogout(f,expected){
   function chargeProof(value,label){const n=Buffer.isBuffer(value)?value.length:Buffer.byteLength(String(value),'utf8');assert.ok(proofBudgetUsed+n<=proofLimit-proofReserve,'aggregate FILE helper 1MiB: '+label);proofBudgetUsed+=n;}
   function remainingChildTime(){assert.ok(proofDeadline!==undefined);const ms=Number((proofDeadline-process.hrtime.bigint())/1000000n);assert.ok(ms>0,'original shared10000ms helper deadline');return ms;}
   function remainingChildBuffer(){const n=Math.floor((proofLimit-proofReserve-proofBudgetUsed)/4);assert.ok(n>1024,'aggregate child raw/encoded capacity');return n;}
-  function retainChildResult(role,result){
+  function retainChildResult(role,result,timing){
     const bytes=b=>Buffer.isBuffer(b)?b:Buffer.alloc(0),stdout=bytes(result.stdout),stderr=bytes(result.stderr);
-    const record={role,pid:result.pid??null,status:result.status,signal:result.signal,
+    const record={role,timing,pid:result.pid??null,status:result.status,signal:result.signal,
       error:result.error?{name:result.error.name,code:result.error.code,message:result.error.message}:null,
       stdoutBytes:stdout.length,stderrBytes:stderr.length,stdoutSHA256:crypto.createHash('sha256').update(stdout).digest('hex'),
       stderrSHA256:crypto.createHash('sha256').update(stderr).digest('hex'),stdoutBase64:stdout.toString('base64'),stderrBase64:stderr.toString('base64'),rawComplete:true};
@@ -368,9 +368,11 @@ function snapshotAndLogout(f,expected){
     const request=JSON.stringify({root:ownedRoot,username:f.p.getUsername(),profile:f.p.getProfile(),serialized});
     assert.ok(Buffer.byteLength(request,'utf8')<=1024*1024);
     chargeProof(childSource,'original static child argv');chargeProof(request,'original input');
+    const originalTimeout=remainingChildTime(),originalBegin=process.hrtime.bigint();
     const result=childResult=spawnSync(process.execPath,['-e',childSource],{cwd:path.resolve(__dirname,'..'),
-      input:request,timeout:remainingChildTime(),maxBuffer:remainingChildBuffer()});
-    const originalRaw=retainChildResult('original-json70',result);producerRaw.push(originalRaw);chargeProof(JSON.stringify(originalRaw),'original failure-record reservation');
+      input:request,timeout:originalTimeout,maxBuffer:remainingChildBuffer()});
+    const originalReturn=process.hrtime.bigint();
+    const originalRaw=retainChildResult('original-json70',result,{timeoutMs:originalTimeout,beginNs:originalBegin.toString(),returnNs:originalReturn.toString(),elapsedNs:(originalReturn-originalBegin).toString()});producerRaw.push(originalRaw);chargeProof(JSON.stringify(originalRaw),'original failure-record reservation');
     assert.ifError(result.error);assert.equal(result.signal,null,'store child exits before owned-root cleanup');
     assert.equal(result.status,0,`production store child failed: ${result.stderr}`);
     assert.ok(Buffer.isBuffer(result.stdout)&&Buffer.isBuffer(result.stderr));
@@ -455,17 +457,20 @@ const resolutions=[];for(const pin of input.pins){
 }
 require('./dist/Server').Server.installProductionPathResolver();
 const Json=require('./plugins/persistence/JsonPlayerPersistence.plugin');
-Json.JsonPlayerPersistence.SAVE_DIRECTORY=input.store;
+let activeStore=input.store;Json.JsonPlayerPersistence.SAVE_DIRECTORY=activeStore;
+directory(input.requestStore);assert.equal(path.dirname(input.requestStore),input.root);assert.notEqual(input.requestStore,input.store);
+assert.equal(path.basename(input.store),'producer-file80');assert.equal(path.basename(input.requestStore),'producer-request80');
+function phase(epoch,name){fs.writeSync(1,'IKOV_FILE80_PHASE '+JSON.stringify({role:ROLE,epoch,name,nonce:input.nonce,source:input.source,pid:process.pid,monotonicNs:process.hrtime.bigint().toString()})+'\n');}
 const {PluginManager:PM}=require('./dist/plugins/PluginManager');
 const {GameConstants}=require('./dist/game/GameConstants');
 const {PlayerSave}=require('./dist/game/entity/impl/player/persistence/PlayerSave');
 function data(save){return JSON.parse(JSON.stringify(save,backend.replacer.bind(backend)),backend.reviver.bind(backend));}
 function selected(save){const o=data(save);return{attributes:o.attributes,inventory:o.inventory,equipment:o.equipment,skills:o.skills,position:o.position};}
-function idle(){assert.equal(backend.pendingSerializedSaves.size,0);assert.equal(backend.failedWrites.size,0);assert.equal(GameConstants.PLAYER_PERSISTENCE,backend);assert.equal(Json.JsonPlayerPersistence.SAVE_DIRECTORY,input.store);}
+function idle(){assert.equal(backend.pendingSerializedSaves.size,0);assert.equal(backend.failedWrites.size,0);assert.equal(GameConstants.PLAYER_PERSISTENCE,backend);assert.equal(Json.JsonPlayerPersistence.SAVE_DIRECTORY,activeStore);}
 function fileProof(){
-  const name=backend.resolveFilePath(input.username,input.profile);assert.equal(path.dirname(name),input.store);
+  const name=backend.resolveFilePath(input.username,input.profile);assert.equal(path.dirname(name),activeStore);
   const st=regular(name),bytes=fs.readFileSync(name);assert.equal(bytes.length,st.size);assert.ok(bytes.length>0&&bytes.length<=1024*1024);
-  assert.deepEqual(fs.readdirSync(input.store).sort(),[path.basename(name)]);
+  assert.deepEqual(fs.readdirSync(activeStore).sort(),[path.basename(name)]);
   return{path:name,mode:st.mode&0o777,bytes:bytes.length,sha256:sha(bytes),base64:bytes.toString('base64'),json:bytes.toString('utf8')};
 }
 async function emit(proof){
@@ -474,31 +479,19 @@ async function emit(proof){
   const output='IKOV_FILE80_PROOF '+JSON.stringify(record,backend.replacer.bind(backend))+'\n';assert.ok(Buffer.byteLength(output)<=1024*1024);
   await new Promise((resolve,reject)=>process.stdout.write(output,e=>e?reject(e):resolve()));
 }
-let backend;
-(async()=>{
-  let actor,core,manager,submit,cache,primary,proof,startup=false;const tasks=new Set();
-  const requestVariant=input.variant==='quest-event';
-  assert.ok(input.variant===undefined||requestVariant,'known fixture variant only');
-  let startupWrites=0,startupFile=null,routeBefore,routeEvidence,expectedFinalWrites=1;
-  function requestIdle(){assert.equal(backend.requestedSaves.size,0);assert.equal(backend.requestErrors.size,0);}
+let backend,actor,core,quest,manager,submit,cache,startup=false;const tasks=new Set();
+function requestIdle(){assert.equal(backend.requestedSaves.size,0);assert.equal(backend.requestErrors.size,0);}
+async function snapshotActor(requestVariant,store){
+  // The installed backend owns resolved write paths; switch ONLY after its real
+  // request/write/error queues drained. Stores are distinct verified own roots.
+  await backend.flush();idle();requestIdle();
+  assert.ok(!actor||!actor.isRegistered());
+  activeStore=store;Json.JsonPlayerPersistence.SAVE_DIRECTORY=activeStore;idle();requestIdle();
+  const writesBeforeAdd=backend.nextWriteSequence;
+  if(!requestVariant)assert.equal(writesBeforeAdd,0);
+  let primary,proof,startupWrites=0,startupFile=null,routeBefore,routeEvidence,expectedFinalWrites=1;
+  phase(requestVariant?'request':'direct','actor-enter');
   try{
-    assert.equal(input.profile,'main');assert.deepEqual(fs.readdirSync(input.store),[]);
-    assert.equal(fs.readFileSync('target.txt','utf8').trim(),'osrs-242_2026-11-03');
-    const cacheDir=path.resolve('caches/osrs-242_2026-11-03');directory(cacheDir);
-    for(const name of ['main_file_cache.dat2','main_file_cache.idx255','info.json','keys.json'])regular(path.join(cacheDir,name));
-    assert.ok(fs.statSync(path.join(cacheDir,'main_file_cache.idx255')).size>24*6,'prepared gameval cache, no download fallback');
-    assert.equal(sha(fs.readFileSync(path.join(cacheDir,'info.json'))),'40dfaae45cea053345ee44375ce6d8e778df47a58bc666f4e97ad3db37bae36e');
-    assert.equal(sha(fs.readFileSync(path.join(cacheDir,'keys.json'))),'44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a');
-    const {CachePipeline}=require('./dist/game/cache/CachePipeline');cache=CachePipeline;
-    await CachePipeline.initialize(input.serverRoot);
-    new (require('./dist/game/definition/loader/impl/NpcDefinitionLoader').NpcDefinitionLoader)().load();
-    manager=require('./dist/game/task/TaskManager').TaskManager;submit=manager.submit;
-    manager.submit=function(task,...args){tasks.add(task);return submit.call(this,task,...args);};
-    PM.loadFromDirectory(input.stage);core=PM.getCoreApi();assert.equal(core.TaskManager,manager);backend=core.GameConstants.PLAYER_PERSISTENCE;
-    assert.ok(backend instanceof Json.JsonPlayerPersistence);assert.equal(backend.save,Json.JsonPlayerPersistence.prototype.save);
-    assert.equal(backend.load,Json.JsonPlayerPersistence.prototype.load);idle();assert.equal(backend.nextWriteSequence,0);
-    core.RegionManager.init();startup=true;PM.emitServerStartup({});
-    const quests=require('./plugins/quests/QuestRuntime').getRegisteredQuests(),quest=quests.findLast(q=>q.key==='temple_of_ikov');assert.ok(quest);
     const {Player}=require('./dist/game/entity/impl/player/Player');
     const {PlayerSession}=require('./dist/net/PlayerSession');
     const channel={kind:'test',remoteAddress:'127.0.0.1',isOpen:()=>true,send:()=>true,close(){},onData(){},onError(){},onClose(){}};
@@ -513,8 +506,10 @@ let backend;
       startupWrites=backend.nextWriteSequence;
       assert.ok(Number.isSafeInteger(startupWrites)&&startupWrites>=0);
       const startupPath=backend.resolveFilePath(input.username,input.profile);
-      assert.equal(fs.existsSync(startupPath),startupWrites>0);
-      if(startupWrites>0)startupFile=fileProof();
+      const startupWriteDelta=startupWrites-writesBeforeAdd;
+      assert.ok(Number.isSafeInteger(startupWriteDelta)&&startupWriteDelta>=0);
+      assert.equal(fs.existsSync(startupPath),startupWriteDelta>0);
+      if(startupWriteDelta>0)startupFile=fileProof();
       expectedFinalWrites=startupWrites+2; // event snapshot, then real onRemove/logout snapshot
     }
     const baseline=selected(PlayerSave.fromPlayer(actor));
@@ -570,7 +565,7 @@ let backend;
       requestIdle();assert.equal(backend.nextWriteSequence,startupWrites+1,'both requests coalesced into one snapshot');
       assert.deepEqual(selected(PlayerSave.fromPlayer(actor)),completed,'microtask leaves completed rewards/state intact');
       await backend.flush();idle();requestIdle();assert.equal(backend.nextWriteSequence,startupWrites+1,'flush does not create a second snapshot');
-      routeEvidence={policy:false,startupWrites,startupFile,routeBefore,reasons,completionWriteDelta:backend.nextWriteSequence-startupWrites,
+      routeEvidence={policy:false,writesBeforeAdd,startupWriteDelta:startupWrites-writesBeforeAdd,startupWrites,startupFile,routeBefore,reasons,completionWriteDelta:backend.nextWriteSequence-startupWrites,
         microtaskBeforeFlush:true,requestedAfter:backend.requestedSaves.size,requestErrorsAfter:backend.requestErrors.size,
         overlapScope:'explicit fixture persistence:save event, not a second natural quest trigger'};
     }
@@ -583,6 +578,7 @@ let backend;
       ...(requestVariant?{requestEvent:routeEvidence,scope:'hydrated70/registered-complete80/quest-event-request-microtask-JSON-save-only'}:{}),
       reward:{rangedDelta,fletchingDelta,questPointsDelta:actor.getAttribute('quest.points')-qp,bootsId:boots,bootsBefore:bootCount,bootsAfter:countBoots(),duplicateRefused:repeated===false},
       writes:backend.nextWriteSequence,pending:backend.pendingSerializedSaves.size,failed:backend.failedWrites.size};
+
   }catch(e){primary=e;}
   finally{
     for(const cleanup of [
@@ -599,14 +595,10 @@ let backend;
         }
         assert.equal([...core.World.getNpcs(),...core.World.getAddNPCQueue()].some(n=>n&&n.getOwner()===actor),false,'no child actor-owned NPC');
         assert.equal(core.World.getItems().some(i=>i.getOwner()===input.username),false,'no owned floor item');}},
-      ()=>{if(startup)PM.emitServerShutdown({});},
-      ()=>{for(const task of tasks){if(task.isRunning())task.stop();assert.equal(task.isRunning(),false);}if(manager&&submit)manager.submit=submit;},
-      async()=>{if(backend){await backend.flush();idle();if(requestVariant){requestIdle();assert.equal(backend.nextWriteSequence,expectedFinalWrites);}else{assert.equal(backend.nextWriteSequence,1);}}},
-      ()=>{if(cache&&cache.isInitialized())cache.getStore().close();}
-    ])try{await cleanup();}catch(e){primary=primary?new AggregateError([primary,e],'producer and owned cleanup failed'):e;}
+      async()=>{await backend.flush();idle();requestIdle();if(requestVariant)assert.equal(backend.nextWriteSequence,expectedFinalWrites);else assert.equal(backend.nextWriteSequence,1);}
+    ])try{await cleanup();}catch(e){primary=primary?new AggregateError([primary,e],'actor proof and real cleanup failed'):e;}
   }
-  if(primary)throw primary;
-  assert.ok(proof);proof.cleanup={actorAbsent:!actor.isRegistered(),tasksStopped:[...tasks].every(t=>!t.isRunning()),shutdownDispatched:startup,cacheCloseReturned:true,scene:{registeredNpcs:[...core.World.getNpcs()].filter(Boolean).length,queuedNpcs:core.World.getAddNPCQueue().length,floorItems:core.World.getItems().length}};
+  if(primary)throw primary;assert.ok(proof);
   if(!requestVariant){
   assert.deepEqual(fileProof(),proof.file,'cleanup does not silently replace direct snapshot');
   }else{
@@ -622,7 +614,60 @@ let backend;
     proof.requestEvent.logoutWriteDelta=proof.logoutWrites-proof.writes;
     proof.requestEvent.freshReaderTarget='post-onRemove-logout-file';
   }
-  await emit(proof);
+
+  phase(requestVariant?'request':'direct','actor-return');return proof;
+}
+(async()=>{
+  let primary,direct,requested,directActor,requestActor,cacheClosed=false,shutdownReturned=false;
+  try{
+    assert.equal(input.profile,'main');assert.deepEqual(fs.readdirSync(input.store),[]);assert.deepEqual(fs.readdirSync(input.requestStore),[]);
+    assert.equal(fs.readFileSync('target.txt','utf8').trim(),'osrs-242_2026-11-03');
+    const cacheDir=path.resolve('caches/osrs-242_2026-11-03');directory(cacheDir);
+    for(const name of ['main_file_cache.dat2','main_file_cache.idx255','info.json','keys.json'])regular(path.join(cacheDir,name));
+    assert.ok(fs.statSync(path.join(cacheDir,'main_file_cache.idx255')).size>24*6,'prepared gameval cache, no download fallback');
+    assert.equal(sha(fs.readFileSync(path.join(cacheDir,'info.json'))),'40dfaae45cea053345ee44375ce6d8e778df47a58bc666f4e97ad3db37bae36e');
+    assert.equal(sha(fs.readFileSync(path.join(cacheDir,'keys.json'))),'44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a');
+    const {CachePipeline}=require('./dist/game/cache/CachePipeline');cache=CachePipeline;
+    phase('bootstrap','cache-enter');await CachePipeline.initialize(input.serverRoot);phase('bootstrap','cache-return');
+    new (require('./dist/game/definition/loader/impl/NpcDefinitionLoader').NpcDefinitionLoader)().load();phase('bootstrap','definitions-return');
+    manager=require('./dist/game/task/TaskManager').TaskManager;submit=manager.submit;
+    manager.submit=function(task,...args){tasks.add(task);return submit.call(this,task,...args);};
+    PM.loadFromDirectory(input.stage);phase('bootstrap','plugins-return');core=PM.getCoreApi();assert.equal(core.TaskManager,manager);backend=core.GameConstants.PLAYER_PERSISTENCE;
+    assert.ok(backend instanceof Json.JsonPlayerPersistence);assert.equal(backend.save,Json.JsonPlayerPersistence.prototype.save);
+    assert.equal(backend.load,Json.JsonPlayerPersistence.prototype.load);idle();assert.equal(backend.nextWriteSequence,0);
+    phase('bootstrap','region-enter');core.RegionManager.init();phase('bootstrap','region-return');startup=true;phase('bootstrap','startup-enter');PM.emitServerStartup({});phase('bootstrap','startup-return');
+    const quests=require('./plugins/quests/QuestRuntime').getRegisteredQuests();quest=quests.findLast(q=>q.key==='temple_of_ikov');assert.ok(quest);
+
+    direct=await snapshotActor(false,input.store);directActor=actor;
+    assert.equal(direct.writes,1);assert.equal(directActor.isRegistered(),false);idle();requestIdle();
+    requested=await snapshotActor(true,input.requestStore);requestActor=actor;
+    assert.notEqual(requestActor,directActor,'distinct genuine actor/session epoch');
+    assert.equal(requested.requestEvent.writesBeforeAdd,1,'cumulative real backend sequence is not reset');
+  }catch(e){primary=e;}
+  finally{
+    for(const cleanup of [
+      ()=>{if(actor&&core&&actor.isRegistered())core.World.getPlayers().remove(actor);},
+      ()=>{if(startup){phase('closure','shutdown-enter');PM.emitServerShutdown({});shutdownReturned=true;phase('closure','shutdown-return');}},
+      ()=>{for(const task of tasks){if(task.isRunning())task.stop();assert.equal(task.isRunning(),false);}if(manager&&submit)manager.submit=submit;},
+      async()=>{if(backend){await backend.flush();idle();requestIdle();if(requested)assert.equal(backend.nextWriteSequence,requested.logoutWrites);}},
+      ()=>{if(cache&&cache.isInitialized()){cache.getStore().close();cacheClosed=true;phase('closure','cache-close-return');}},
+      ()=>{if(backend){idle();requestIdle();activeStore=input.store;Json.JsonPlayerPersistence.SAVE_DIRECTORY=activeStore;idle();}}
+    ])try{await cleanup();}catch(e){primary=primary?new AggregateError([primary,e],'shared writer and owned cleanup failed'):e;}
+  }
+  if(primary)throw primary;assert.ok(direct&&requested&&directActor&&requestActor);
+  const finalSequence=backend.nextWriteSequence;
+  const scene={registeredNpcs:[...core.World.getNpcs()].filter(Boolean).length,queuedNpcs:core.World.getAddNPCQueue().length,floorItems:core.World.getItems().length};
+  for(const [proof,p]of [[direct,directActor],[requested,requestActor]]){
+    assert.equal(p.isRegistered(),false);
+    proof.cleanup={actorAbsent:!p.isRegistered(),tasksStopped:[...tasks].every(t=>!t.isRunning()),shutdownDispatched:shutdownReturned,cacheCloseReturned:cacheClosed,scene};
+  }
+  assert.deepEqual(fileProof(),direct.file,'shared writer preserves exact original direct file');
+  idle();requestIdle();activeStore=input.requestStore;Json.JsonPlayerPersistence.SAVE_DIRECTORY=activeStore;idle();
+  assert.deepEqual(fileProof(),requested.logoutFile,'global closure preserves exact logout epoch');
+  idle();requestIdle();activeStore=input.store;Json.JsonPlayerPersistence.SAVE_DIRECTORY=activeStore;idle();
+  assert.equal(finalSequence,requested.requestEvent.startupWrites+2);
+  const nested={role:ROLE,nonce:input.nonce,source:input.source,owner:identity(),resolutions,...requested};
+  await emit({...direct,requestVariant:nested,sharedBackend:{bootstrapCount:1,directWritesAtEpoch:direct.writes,finalSequence,distinctActors:true,directStore:input.store,requestStore:input.requestStore,restoredDirectory:activeStore}});
 })().catch(e=>{console.error(e);process.exitCode=1;});
 `;
     const readerSource=String.raw`'use strict';
@@ -727,6 +772,7 @@ let backend;
     const source={reviewedBase:sourceBase,testSHA256:crypto.createHash('sha256').update(fs.readFileSync(__filename)).digest('hex')};
     const nonce=crypto.randomBytes(16).toString('hex');
     let store=path.join(ownedRoot,'producer-file80');fs.mkdirSync(store,{mode:0o700});
+    const requestStore=path.join(ownedRoot,'producer-request80');fs.mkdirSync(requestStore,{mode:0o700});
     const sourceWorld=path.join(serverRoot,'data/definitions/world.json');
     const parentWorldSHA=crypto.createHash('sha256').update(fs.readFileSync(sourceWorld)).digest('hex');
     assert.equal(parentWorldSHA,'0a9e7c31b5fd56a9d6fadb1fdcdfa5e13a0e1abcf1d6b98d7a7d931e3c230012','unchanged bound shipped world source');
@@ -783,7 +829,8 @@ let backend;
     }
     function parsePhase(result,request){
       const text=result.stdout.toString('utf8');assert.deepEqual(Buffer.from(text),result.stdout);
-      assert.ok(text.endsWith('\n'));const lines=text.slice(0,-1).split('\n'),owners=[],proofs=[],logs=[];
+      assert.ok(text.endsWith('\n'));const lines=text.slice(0,-1).split('\n'),owners=[],proofs=[],logs=[],phases=[],actorLogEpochs=[];
+      let activeActorEpoch=null,activeActorLogs=[];
       const fixed=new Set(["[plugin:JsonPlayerPersistence] registered { saveDirectory: 'data/saves/characters' }",
         '[plugins] player persistence set by JsonPlayerPersistence: NullPlayerPersistence -> JsonPlayerPersistence',
         '[plugins] active='+(request.role==='writer'?17:1)+' disabled=1']);
@@ -792,6 +839,23 @@ let backend;
         const line=lines[i];
         if(line.startsWith('IKOV_FILE80_OWNER ')){owners.push(JSON.parse(line.slice(18)));continue;}
         if(line.startsWith('IKOV_FILE80_PROOF ')){proofs.push(JSON.parse(line.slice(18),codec.reviver.bind(codec)));continue;}
+        if(line.startsWith('IKOV_FILE80_PHASE ')){
+          assert.equal(request.role,'writer');const mark=JSON.parse(line.slice(18));
+          assert.equal(mark.role,'writer');assert.equal(mark.nonce,nonce);assert.deepEqual(mark.source,source);assert.equal(mark.pid,result.pid);assert.match(mark.monotonicNs,/^[0-9]+$/);
+          if(phases.length)assert.ok(BigInt(mark.monotonicNs)>=BigInt(phases.at(-1).monotonicNs));
+          if(mark.name==='actor-enter'){
+            assert.ok(mark.epoch==='direct'||mark.epoch==='request');assert.equal(activeActorEpoch,null);
+            activeActorEpoch=mark.epoch;activeActorLogs=[];
+          }else if(mark.name==='actor-return'){
+            assert.equal(activeActorEpoch,mark.epoch);
+            assert.deepEqual(activeActorLogs,[
+              '[World] Registering player - [username, host] : ['+inputName()+', undefined]',
+              '[World] Deregistering player - [username, host] : ['+inputName()+', undefined]'
+            ],'each actor epoch retains exactly one ordered real registration/removal pair');
+            actorLogEpochs.push({epoch:mark.epoch,logs:activeActorLogs.slice()});activeActorEpoch=null;activeActorLogs=[];
+          }else{assert.equal(activeActorEpoch,null,'setup/closure marker cannot interrupt an actor epoch');}
+          phases.push(mark);continue;
+        }
         logs.push(line);
         if(fixed.has(line)){addLog(line);continue;}
         if(line==='[plugin:JsonPlayerPersistence] registered {'){
@@ -807,7 +871,14 @@ let backend;
         if(/^\[cache\] definitions npc=\d+ item=\d+ object=\d+$/.test(line)){addLog('CacheDefinitions.loaded');continue;}
         if(/^\[npc-definitions\] cache-backed; configured stats applied=\d+, mismatched=\d+, service animations captured=\d+, inferred=\d+ \(by name=\d+\), guessed=\d+, by family=\d+$/.test(line)){addLog('NpcDefinitionLoader.loaded');continue;}
         if(/^\[collision\] indexed \d+ cache regions$/.test(line)){addLog('RegionManager.indexed');continue;}
-        if(line==='[World] Registering player - [username, host] : ['+inputName()+', undefined]'||line==='[World] Deregistering player - [username, host] : ['+inputName()+', undefined]'){addLog(line);continue;}
+        if(line==='[World] Registering player - [username, host] : ['+inputName()+', undefined]'||line==='[World] Deregistering player - [username, host] : ['+inputName()+', undefined]'){
+          assert.ok(activeActorEpoch==='direct'||activeActorEpoch==='request','real player log belongs to an active source-bound actor epoch');
+          assert.equal(line,activeActorLogs.length===0
+            ?'[World] Registering player - [username, host] : ['+inputName()+', undefined]'
+            :'[World] Deregistering player - [username, host] : ['+inputName()+', undefined]');
+          assert.ok(activeActorLogs.length<2,'no extra registration/removal within epoch');
+          activeActorLogs.push(line);addLog(activeActorEpoch+':'+line);continue;
+        }
         throw new Error('unexpected FILE80 child stdout: '+line.slice(0,256));
       }
       for(const line of fixed)assert.equal(seen.get(line),1,'actual production registration log');
@@ -815,7 +886,10 @@ let backend;
       for(const r of [owners[0],proofs[0]]){assert.equal(r.role,request.role);assert.equal(r.nonce,nonce);assert.deepEqual(r.source,source);assert.equal(r.owner.pid,result.pid);assert.deepEqual(r.owner.children,[]);}
       assert.equal(owners[0].owner.startTicks,proofs[0].owner.startTicks);
       assert.deepEqual(proofs[0].resolutions,request.pins.map(pin=>({rel:pin.rel,target:path.join(serverRoot,'plugins',pin.rel),bytes:pin.bytes,sha256:pin.sha256,resolved:path.join(serverRoot,'plugins',pin.rel)})));
-      return{proof:proofs[0],owner:owners[0],logs};
+      const expected=request.role==='writer'?['bootstrap/cache-enter','bootstrap/cache-return','bootstrap/definitions-return','bootstrap/plugins-return','bootstrap/region-enter','bootstrap/region-return','bootstrap/startup-enter','bootstrap/startup-return','direct/actor-enter','direct/actor-return','request/actor-enter','request/actor-return','closure/shutdown-enter','closure/shutdown-return','closure/cache-close-return']:[];
+      assert.deepEqual(phases.map(p=>p.epoch+'/'+p.name),expected,'complete ordered source phases, no inferred missing markers');
+      assert.equal(activeActorEpoch,null);assert.deepEqual(actorLogEpochs.map(x=>x.epoch),request.role==='writer'?['direct','request']:[]);
+      return{proof:proofs[0],owner:owners[0],logs,phases,actorLogEpochs};
     }
     function inputName(){return f.p.getUsername();}
     function runPhase(role,program,pins,extra){
@@ -823,9 +897,11 @@ let backend;
       const request={role,nonce,source,root:ownedRoot,store,stage:stageDir,serverRoot,pins,username:inputName(),profile:f.p.getProfile(),
         programSHA256:digest(Buffer.from(program)),...extra};
       const requestText=JSON.stringify(request);chargeProof(program,'static child argv');chargeProof(requestText,'child input');
-      producerChildrenTerminal=false;const result=spawnSync(process.execPath,['-e',program],{cwd:serverRoot,input:requestText,timeout:remainingChildTime(),maxBuffer:remainingChildBuffer()});
+      const timeoutMs=remainingChildTime(),begin=process.hrtime.bigint();
+      producerChildrenTerminal=false;const result=spawnSync(process.execPath,['-e',program],{cwd:serverRoot,input:requestText,timeout:timeoutMs,maxBuffer:remainingChildBuffer()});
+      const returned=process.hrtime.bigint();
       let ownerError;try{assert.deepEqual(ownedGroup(),baselineGroup,'original owned group after child terminal');producerChildrenTerminal=true;}catch(e){ownerError=e;}
-      const record=retainChildResult(role,result);producerRaw.push(record);if(ownerError)throw ownerError;
+      const record=retainChildResult(role,result,{timeoutMs,beginNs:begin.toString(),returnNs:returned.toString(),elapsedNs:(returned-begin).toString()});producerRaw.push(record);if(ownerError)throw ownerError;
       assert.ifError(result.error);assert.equal(result.status,0,'FILE80 '+role+' status');assert.equal(result.signal,null,'natural FILE80 '+role+' terminal');
       assert.ok(Buffer.isBuffer(result.stdout)&&Buffer.isBuffer(result.stderr));assert.equal(result.stderr.length,0,'no child stderr/warnings');remainingChildTime();
       const parsedPhase=parsePhase(result,request);assert.equal(parsedPhase.proof.profile,f.p.getProfile());
@@ -836,7 +912,7 @@ let backend;
     }
     let supplementFailure;
     try{
-      const writer=runPhase('writer',writerSource,candidatePins,{serialized});assert.equal(writer.proof.writes,1);
+      const writer=runPhase('writer',writerSource,candidatePins,{serialized,requestStore});assert.equal(writer.proof.writes,1);
       const actual=fileBytes(writer.proof.file),decoded=JSON.parse(actual.toString('utf8'),codec.reviver.bind(codec));
       for(const key of ['attributes','inventory','equipment','skills','position']){
         assert.deepEqual(writer.proof.before[key],parsed[key],'whole original input '+key);
@@ -852,15 +928,23 @@ let backend;
       for(const key of ['attributes','inventory','equipment','skills','position'])assert.deepEqual(loaded[key],decoded[key],'fresh process original loader '+key);
       unstage();const directLinks=linkRecords.map(row=>({...row})),requestLinkStart=linkRecords.length;
       producerObservation={layer:'hydrated-fixture/direct-registered-complete80/installed-JSON-save/fresh-process-FILE-load',source,nonce,
-        writer:writer.proof,reader:reader.proof,rawChildren:producerRaw.slice(),sourceLogs:{writer:writer.logs,reader:reader.logs},
+        writer:writer.proof,reader:reader.proof,rawChildren:producerRaw.slice(),phaseMarkers:writer.phases,actorLogEpochs:writer.actorLogEpochs,sourceLogs:{writer:writer.logs,reader:reader.logs},
         ownedGroupBefore:baselineGroup,ownedGroupAfter:ownedGroup(),stagingLinks:directLinks,
         deadlineMs:10000,budgetUsedBytes:proofBudgetUsed,scope:'no ordinary account/auth/stock save/world restart/crashdurability/SQLite/full15 proof'};
       chargeProof(JSON.stringify(producerObservation,codec.replacer.bind(codec)),'complete encoded producer proof');producerObservation.budgetUsedBytes=proofBudgetUsed;remainingChildTime();
-      // Preserve the entire original FILE80 writer/reader proof above. A fresh
-      // child actor/store runs the additional policy variant under SAME caps.
-      store=path.join(ownedRoot,'producer-request80');fs.mkdirSync(store,{mode:0o700});
+      // The single terminated writer already produced BOTH actor/store epochs.
+      // Only the separate fresh reader for its logout epoch remains.
+      store=requestStore;
       const rawStart=producerRaw.length;
-      const requestWriter=runPhase('writer',writerSource,candidatePins,{serialized,variant:'quest-event'});
+      const requestWriter={proof:writer.proof.requestVariant,logs:writer.logs};
+      assert.ok(requestWriter.proof);assert.equal(requestWriter.proof.owner.pid,writer.proof.owner.pid);
+      assert.deepEqual(requestWriter.proof.source,source);assert.equal(requestWriter.proof.nonce,nonce);
+      assert.equal(requestWriter.proof.role,'writer');assert.deepEqual(requestWriter.proof.resolutions,writer.proof.resolutions);
+      assert.equal(requestWriter.proof.owner.startTicks,writer.proof.owner.startTicks);assert.deepEqual(requestWriter.proof.owner.children,[]);
+      assert.equal(writer.proof.sharedBackend.bootstrapCount,1);assert.equal(writer.proof.sharedBackend.distinctActors,true);
+      assert.equal(writer.proof.sharedBackend.directWritesAtEpoch,1);assert.equal(writer.proof.sharedBackend.restoredDirectory,writer.proof.privateDirectory);
+      assert.equal(writer.proof.sharedBackend.finalSequence,requestWriter.proof.logoutWrites);
+      assert.equal(writer.proof.sharedBackend.directStore,writer.proof.privateDirectory);assert.equal(writer.proof.sharedBackend.requestStore,requestWriter.proof.privateDirectory);
       const event=requestWriter.proof.requestEvent;assert.ok(event);assert.equal(event.policy,false);
       assert.equal(event.completionWriteDelta,1);assert.equal(event.microtaskBeforeFlush,true);
       assert.equal(event.requestedAfter,0);assert.equal(event.requestErrorsAfter,0);
@@ -886,7 +970,7 @@ let backend;
       for(const key of ['attributes','inventory','equipment','skills','position'])assert.deepEqual(requestLoaded[key],logoutDecoded[key],'post-logout fresh-process original loader '+key);
       unstage();const requestLinks=linkRecords.slice(requestLinkStart).map(row=>({...row}));
       const requestObservation={layer:'fixture-policy-enabled/quest-completed-SaveEvents/requestSave-microtask/event-file80/real-onRemove-logout-file80/fresh-process-load-logout-epoch',
-        writer:requestWriter.proof,reader:requestReader.proof,rawChildren:producerRaw.slice(rawStart),stagingLinks:requestLinks,sourceLogs:{writer:requestWriter.logs,reader:requestReader.logs},
+        writerProofPath:'writer.requestVariant',reader:requestReader.proof,rawChildren:producerRaw.slice(rawStart),stagingLinks:requestLinks,sourceLogs:{reader:requestReader.logs},
         scope:'fixture-hydrated70/direct registered complete80/real fixture onRemove-logout save; no authentication/account logout/reconnect/Worldrestart/crash/SQLite/earned70/nativeending/full15'};
       chargeProof(JSON.stringify({requestVariant:requestObservation},codec.replacer.bind(codec)),'complete encoded request variant wrapper and proof');
       producerObservation.requestVariant=requestObservation;producerObservation.budgetUsedBytes=proofBudgetUsed;remainingChildTime();
