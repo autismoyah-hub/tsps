@@ -29,6 +29,7 @@ const { World } = require("../dist/game/World");
 const { TaskManager } = require("../dist/game/task/TaskManager");
 const { ItemOnGroundManager } = require("../dist/game/entity/impl/grounditem/ItemOnGroundManager");
 const { MagicOnItemPacketListener } = require("../dist/net/packet/impl/MagicOnItemPacketListener");
+const { CombatRange } = require("../dist/game/content/combat/CombatRange");
 const runtime = require("../plugins/quests/QuestRuntime");
 
 runtime.startTranscript = () => true;
@@ -70,11 +71,31 @@ function chebyshev(a, b) { return Math.max(Math.abs(a.getX() - b.getX()), Math.a
 const tileKey = (t) => `${t.getX()},${t.getY()}`;
 
 /** One real world tick, in the order the other native tests use: tasks, ground items, timers, movement. */
-function tick() {
+/**
+ * One world cycle in World.process order: tasks (WALK_TO tasks are skipped here), ground items, each
+ * player's owner turn (Player.process: timers, movement, then walk-to), then the walk-to sweep.
+ * Combat, hit queue, aggression and areas are not run: none of these starts is in combat.
+ * Evidence: TaskManager.ts:37-43 skips WALK_TO in process(); Player.ts:536 runs processWalkTo;
+ * World.ts:1389 runs processRemainingWalkTo. The walk task only runs through these.
+ */
+function tick(player) {
   cycle++;
   World.processCycle = cycle;
   TaskManager.process();
   ItemOnGroundManager.process();
+  if (player) ownerTurn(player);
+  TaskManager.processRemainingWalkTo();
+}
+
+function ownerTurn(player) {
+  player.getTimers().process();
+  const mq = player.getMovementQueue();
+  mq.beginCycle();
+  mq.processEntityPursuit();
+  if (mq.hasPendingWork()) mq.process();
+  TaskManager.processWalkTo(player.getIndex());
+  mq.dropPendingClickRunOverride();
+  mq.endClickRunOverrideWhenIdle();
 }
 
 /** A real player: real PlayerSession on a stub channel; sendMessage recorded through the real PacketSender. */
@@ -155,10 +176,7 @@ function castAndDrive(player, messages, username, start) {
   const messagesAtCast = messages.length;
   for (let n = 0; n < TICK_LIMIT; n++) {
     if (player.getInventory().getAmount(KEY) > 0) break;
-    tick();
-    const mq = player.getMovementQueue();
-    mq.beginCycle();
-    if (mq.hasPendingWork()) mq.process();
+    tick(player);
     if (ticksToArrival === null && chebyshev(player.getLocation(), KEY_TILE) <= GRAB_RANGE) ticksToArrival = n + 1;
   }
   return {
@@ -227,20 +245,43 @@ test("REACH: frontier precondition and Ghaslor conversation-tile range (real Reg
   console.log(`# REACH Ghaslor conversation-tile Chebyshev range ${Math.min(...distances)}..${Math.max(...distances)}`);
 });
 
-test("harness proof: a start 11 tiles away with an open step into range walks and lands", () => {
+/** The approach predicate itself, evaluated for a player standing on `tile` (not Chebyshev). */
+function approachAt(probe, tile) {
+  probe.setLocation(new Location(tile.getX(), tile.getY(), 0));
+  return CombatRange.withinApproachDistance(probe, KEY_TILE, GRAB_RANGE);
+}
+
+test("harness proof: a start outside the predicate walks to the predicate and lands; the walk task must run", () => {
   const { seen, ring } = explore();
-  // The out-of-range-by-one tile: distance 11 with a real open step to a distance-10 tile.
-  const oneStep = ring.find((t) => chebyshev(t, KEY_TILE) === RING_MIN && [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) =>
-    chebyshev(new Location(t.getX() + dx, t.getY() + dy, 0), KEY_TILE) === GRAB_RANGE && stepOk(t, dx, dy)));
-  assert.ok(oneStep, "precondition: a distance-11 tile with a real open step to distance 10 exists");
-  assert.ok(seen.has(tileKey(oneStep)), "the proof tile is connected to the seed");
-  const { player, messages, username } = actor(oneStep, "walk-proof");
+  const { player: probe } = actor(IN_RANGE_SEED, "probe");
+  // Route end: where a walk that is never ticked would stop. The proof only discriminates if this tile fails the predicate.
+  const routeEnd = new Location(3433, 2928, 0);
+  assert.equal(approachAt(probe, routeEnd), false,
+    "precondition: the route end fails withinApproachDistance, so a walk that is never ticked fails this proof");
+  const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  // Start: outside the predicate, with a real open step to a tile the predicate accepts (chosen by the predicate).
+  let pick = null;
+  for (const start of ring.filter((t) => chebyshev(t, KEY_TILE) <= 12)) {
+    if (approachAt(probe, start)) continue;
+    for (const [dx, dy] of dirs) {
+      if (!stepOk(start, dx, dy)) continue;
+      const mid = new Location(start.getX() + dx, start.getY() + dy, 0);
+      if (approachAt(probe, mid)) { pick = { start, mid }; break; }
+    }
+    if (pick) break;
+  }
+  assert.ok(pick, "precondition: a start outside withinApproachDistance with an open step into it exists");
+  assert.ok(seen.has(tileKey(pick.start)), "the proof start is connected to the seed");
+  cleanup();
+  const { player, messages, username } = actor(pick.start, "walk-proof");
   assert.ok(loginWithKey(player, username), "precondition: the real login hook registered the key for this player");
-  const out = castAndDrive(player, messages, username, oneStep);
-  console.log(`# REACH walk-proof ${JSON.stringify(out)}`);
+  const out = castAndDrive(player, messages, username, pick.start);
+  const satisfiedAtEnd = approachAt(player, player.getLocation());
+  console.log(`# REACH walk-proof mid=${tileKey(pick.mid)} ${JSON.stringify(out)} predicateAtFinal=${satisfiedAtEnd}`);
   assertPrecondition(out);
   assert.equal(out.keyInInventory, true, `walk proof must land: ${JSON.stringify(out)}`);
   assert.equal(out.stage, STAGE_KEY, "stage 20 -> 25");
+  assert.equal(satisfiedAtEnd, true, "the walk stopped on a tile that satisfies the predicate, not the route end");
   cleanup();
 });
 
