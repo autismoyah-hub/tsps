@@ -325,4 +325,88 @@ async function paintSnapshotDiagnostic(cdp, capture, emit, {budgetMs=5000}={}) {
   emit({event:'touch5133-paint-snapshot',...report});return report;
 }
 
-module.exports={scenarios,prepare,verify,captureDiagnostic,paintSnapshotDiagnostic};
+// CPU replay of ONE uniquely backend-linked content picture, not page pixels.
+async function layerPictureDiagnostic(cdp,capture,paint,out,emit,{budgetMs=5000}={}) {
+  const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+  const report={status:'PENDING',budgetMs,requests:[],
+    scope:'Later full lifecycle flush; layer-local CPU paint replay may omit external opacity/transform effects; not composited page pixels or an explanation of earlier captures'};
+  const now=()=>Number(process.hrtime.bigint())/1e6;
+  const fail=code=>{throw Object.assign(new Error('TOUCH5133_LAYER_'+code),{layerReason:code});};
+  const need=(ok,code)=>{if(!ok)fail(code);};
+  const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
+  const safeUrl=value=>{const u=new URL(value);u.username='';u.password='';u.hash='';for(const k of [...u.searchParams.keys()])if(!['touch','renderer','username'].includes(k))u.searchParams.set(k,'***');return u.href;};
+  let usedMs=0,begun=false,enableAttempted=false,snapshotId=null;
+  const reserve=Math.min(1000,budgetMs);
+  async function request(method,params={},cleanupSlots=0) {
+    if(!cleanupSlots)cdp.checkLayerPictureObservation();
+    const remaining=Math.floor((budgetMs-usedMs-(cleanupSlots?0:reserve))/(cleanupSlots||1));
+    need(remaining>0&&report.requests.length<9,'REQUEST_BUDGET');
+    const record={method,params,requestId:null,responseId:null};report.requests.push(record);const started=now();
+    try{
+      const reply=await cdp.send(method,params,remaining,id=>{record.requestId=id;},false,true);
+      record.responseId=reply.id??null;need(Number.isSafeInteger(record.requestId)&&record.requestId>0&&reply.id===record.requestId,'RESPONSE_ID');
+      const t=reply.layerPictureTransport;need(t?.status==='BOUNDED_REPLY'&&Number.isSafeInteger(t.bytes)&&t.bytes>0&&t.bytes<=4194304&&/^[a-f0-9]{64}$/.test(t.sha256),'REPLY_GUARD');record.transport={status:t.status,bytes:t.bytes,sha256:t.sha256};
+      if(reply.error){record.protocolError={code:Number.isInteger(reply.error.code)?reply.error.code:null,messageSHA256:hash(String(reply.error.message??''))};fail('PROTOCOL_ERROR');}
+      return reply.result;
+    }catch(error){if(error.layerPictureTransport)record.transport=error.layerPictureTransport;record.error=error.layerReason??'TRANSPORT_REFUSAL';throw error;}
+    finally{record.elapsedMs=now()-started;usedMs+=record.elapsedMs;}
+  }
+  async function identity(){
+    const t=(await request('Target.getTargetInfo'))?.targetInfo,f=(await request('Page.getFrameTree'))?.frameTree?.frame;
+    need(t?.type==='page'&&[t.targetId,f?.id,f?.loaderId].every(x=>typeof x==='string'&&Buffer.byteLength(x)<=256)&&typeof t.url==='string'&&t.url===f.url&&Buffer.byteLength(t.url)<=2048,'DOCUMENT_IDENTITY');
+    return{targetId:t.targetId,frameId:f.id,loaderId:f.loaderId,url:safeUrl(t.url),rawURLSHA256:hash(t.url)};
+  }
+  try{
+    need(Number.isInteger(budgetMs)&&budgetMs>0&&budgetMs<=5000,'REQUEST_BUDGET');
+    const obs=capture?.observations?.at(-1);
+    need(capture?.status==='OBSERVED_NOT_VISUALLY_ACCEPTED'&&capture.images?.length===2&&capture.images[0].kind==='canonical-default-surface'&&capture.images[1].kind==='diagnostic-view'&&obs?.actual?.scenario?.name==='phone-default'&&obs.actual.state?.visible===true,'POSITIVE_CAPTURES_REQUIRED');
+    need(paint?.status==='OBSERVED_NOT_RASTER_PROOF'&&paint.handlesReleased===true,'PAINT_REQUIRED');
+    const roles=['joystick','knob'].map(role=>{const nodes=paint.nodes?.filter(x=>x.role===role);need(nodes?.length===1&&Number.isSafeInteger(nodes[0].backendNodeId)&&nodes[0].backendNodeId>0&&nodes[0].layouts?.length===1,'PAINT_NODE_LINK');return nodes[0];});
+    need(roles[0].backendNodeId!==roles[1].backendNodeId,'DISTINCT_BACKENDS');
+    cdp.beginLayerPictureObservation();begun=true;
+    const before=await identity();report.before=before;
+    need(before.targetId===paint.after?.targetId&&before.frameId===paint.after.frameId&&before.loaderId===paint.after.loaderId&&before.url===safeUrl(paint.after.url)&&before.frameId===paint.document?.frameId&&before.url===safeUrl(paint.document.url)&&before.targetId===obs.target.id&&before.frameId===obs.frame.id&&before.loaderId===obs.frame.loaderId&&before.url===safeUrl(obs.frame.url),'PAINT_CAPTURE_DOCUMENT_LINK');
+    enableAttempted=true;await request('LayerTree.enable');
+    const waitMs=Math.floor(budgetMs-usedMs-reserve);need(waitMs>0,'EVENT_BUDGET');const eventStart=now();let event;
+    try{event=await cdp.waitLayerPictureEvent(waitMs);}finally{report.eventWaitMs=now()-eventStart;usedMs+=report.eventWaitMs;}
+    cdp.checkLayerPictureObservation();
+    need(event?.transport&&event.transport.bytes>0&&event.transport.bytes<=65536&&/^[a-f0-9]{64}$/.test(event.transport.sha256),'TREE_EVENT_GUARD');
+    const layers=event.params?.layers;need(Array.isArray(layers)&&layers.length>0&&layers.length<=128,'LAYER_TABLE_LIMIT');
+    const validId=x=>typeof x==='string'&&/^[0-9]{1,32}$/.test(x);
+    need(layers.every(x=>x&&validId(x.layerId)&&(x.parentLayerId===undefined||validId(x.parentLayerId))&&typeof x.drawsContent==='boolean'&&Number.isFinite(x.width)&&Number.isFinite(x.height)&&x.width>=0&&x.height>=0),'LAYER_SCHEMA');
+    need(new Set(layers.map(x=>x.layerId)).size===layers.length,'DUPLICATE_LAYER_ID');
+    const candidates=layers.filter(x=>roles.some(n=>n.backendNodeId===x.backendNodeId)&&x.drawsContent&&x.invisible!==true);
+    need(candidates.length===1,'NO_UNIQUE_CONTENT_LAYER');const layer=candidates[0],node=roles.find(n=>n.backendNodeId===layer.backendNodeId),bounds=node.layouts[0].bounds;
+    need(Array.isArray(bounds)&&bounds.length===4&&bounds.every(Number.isFinite),'PAINT_BOUNDS');
+    need(Number.isInteger(layer.width)&&Number.isInteger(layer.height)&&layer.width>0&&layer.height>0&&layer.width<=1280&&layer.height<=600&&layer.width===Math.ceil(bounds[2])&&layer.height===Math.ceil(bounds[3]),'SHARED_OR_UNBOUNDED_LAYER');
+    // No ancestor fallback or unrelated content within this selected subtree.
+    for(const other of layers){let parent=other.parentLayerId,seen=new Set();while(parent!==undefined){need(!seen.has(parent)&&seen.size<32,'LAYER_ANCESTRY');seen.add(parent);if(parent===layer.layerId&&other.drawsContent)need(roles.some(n=>n.backendNodeId===other.backendNodeId),'SHARED_CONTENT');const ancestor=layers.find(x=>x.layerId===parent);need(ancestor,'LAYER_PARENT_MISSING');parent=ancestor.parentLayerId;}}
+    const transform=layer.transform??null;need(transform===null||(Array.isArray(transform)&&transform.length===16&&transform.every(x=>Number.isFinite(x)&&Math.abs(x)<=1e7)),'LAYER_TRANSFORM');
+    need([layer.offsetX,layer.offsetY].every(x=>Number.isFinite(x)&&Math.abs(x)<=1e7)&&Number.isInteger(layer.paintCount)&&layer.paintCount>=0,'LAYER_GEOMETRY');
+    report.tree={transport:event.transport,totalLayers:layers.length};
+    report.layer={layerId:layer.layerId,parentLayerId:layer.parentLayerId??null,role:node.role,backendNodeId:layer.backendNodeId,width:layer.width,height:layer.height,offsetX:layer.offsetX,offsetY:layer.offsetY,transform,paintCount:layer.paintCount,drawsContent:true};
+    const made=await request('LayerTree.makeSnapshot',{layerId:layer.layerId});
+    need(typeof made?.snapshotId==='string'&&/^[0-9]{1,32}$/.test(made.snapshotId),'NO_PICTURE');snapshotId=made.snapshotId;report.snapshotId=snapshotId;
+    const replay=await request('LayerTree.replaySnapshot',{snapshotId,scale:1});
+    need(typeof replay?.dataURL==='string'&&replay.dataURL.startsWith('data:image/png;base64,'),'REPLAY_PNG');
+    const encoded=replay.dataURL.slice(22);need(encoded.length>0&&encoded.length<=2796204&&encoded.length%4===0&&/^[A-Za-z0-9+/]+={0,2}$/.test(encoded),'IMAGE_BYTE_LIMIT');
+    const bytes=Buffer.from(encoded,'base64');need(bytes.length<=2097152&&bytes.length>=24&&bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))&&bytes.toString('ascii',12,16)==='IHDR','PNG_HEADER');
+    const width=bytes.readUInt32BE(16),height=bytes.readUInt32BE(20);need(width===layer.width&&height===layer.height,'PNG_DIMENSIONS');
+    const after=await identity();report.after=after;need(JSON.stringify(before)===JSON.stringify(after),'DOCUMENT_CHANGED');cdp.checkLayerPictureObservation();
+    const file=out+'.layer.png';fs.writeFileSync(file,bytes,{flag:'wx'});
+    report.image={kind:'cpu-layer-picture-not-canonical',path:path.resolve(file),bytes:bytes.length,sha256:hash(bytes),width,height,base64Chars:encoded.length,base64SHA256:hash(encoded)};
+    report.status='OBSERVED_CPU_LAYER_PICTURE_NOT_CANONICAL_PROOF';
+  }catch(error){report.status='REFUSED';report.error=error.layerReason??'TRANSPORT_REFUSAL';}
+  finally{
+    if(snapshotId)try{await request('LayerTree.releaseSnapshot',{snapshotId},2);report.snapshotReleased=true;}catch{report.snapshotReleased=false;report.status='REFUSED';report.releaseError='RELEASE_REFUSAL';report.error??='RELEASE_REFUSAL';}
+    else report.snapshotReleased=null;
+    if(enableAttempted)try{await request('LayerTree.disable',{},1);report.disabled=true;}catch{report.disabled=false;report.status='REFUSED';report.disableError='DISABLE_REFUSAL';report.error??='DISABLE_REFUSAL';}
+    else report.disabled=null;
+    if(begun){try{cdp.checkLayerPictureObservation();}catch{report.status='REFUSED';report.observerError='TRANSPORT_REFUSAL';report.error??='TRANSPORT_REFUSAL';}report.observer=cdp.endLayerPictureObservation();}
+  }
+  report.usedMs=usedMs;
+  if(Buffer.byteLength(JSON.stringify({event:'touch5133-layer-picture',...report}))>16384){delete report.layer;delete report.before;delete report.after;report.status='REFUSED';report.error='OUTPUT_LIMIT';}
+  emit({event:'touch5133-layer-picture',...report});return report;
+}
+
+module.exports={scenarios,prepare,verify,captureDiagnostic,paintSnapshotDiagnostic,layerPictureDiagnostic};
