@@ -1301,6 +1301,7 @@ module.exports = function registerDemonSlayerQuest(api) {
     varbitValue: (stage) => stage >= STAGE_COMPLETE ? 3 : Math.min(stage, STAGE_KEY_HUNT),
     startedValue: STAGE_STARTED,
     completionValue: STAGE_COMPLETE,
+    completionMessageColor: "0ab0ff", // rsprox 1843 (the start message, 1723, has it too)
     questPoints: 3,
     scrollItemId: SILVERLIGHT_ITEM_ID,
     rewardItemLabel: "Silverlight",

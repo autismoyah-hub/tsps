@@ -170,7 +170,7 @@ module.exports = function registerCooksAssistantQuest(api) {
         pendingStart.delete(event.player);
         if (quest.getStage(event.player) !== 0) return;
         quest.setStage(event.player, STAGE_STARTED);
-        event.player.sendMessage("You've started a new quest: <col=081190>Cook's Assistant</col>");
+        event.player.sendMessage("You've started a new quest: <col=0ab0ff>Cook's Assistant</col>");
       };
     }
     const itemId = HANDOVER_LINE_ITEMS.get(event.text);
@@ -230,6 +230,7 @@ module.exports = function registerCooksAssistantQuest(api) {
     completionValue: STAGE_COMPLETE,
     questPoints: 1,
     completionJingleId: 152,
+    completionMessageColor: "0ab0ff", // rsprox 1718 (rev 227): the start and completion links
     xpRewards: [{ skillId: Skill.COOKING.getIndex(), amount: 300, label: "Cooking" }],
     scrollItemId: ItemIdentifiers.CAKE,
     buildJournal,

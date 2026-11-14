@@ -20,7 +20,11 @@ Repeat talk and relog hold. The "Where do I find..." branches have no capture an
 ## Findings
 
 - **open** Chat text wraps at a fixed character count rather than where live breaks its lines
-  (shared `Misc.wrapText`), and the chat quest link is always `081190` where 1718 sent `0ab0ff`.
+  (shared `Misc.wrapText`). Not re-checked against the captures here; the chat boxes now lay text out
+  with `ChatTextLayout`, so this may be stale.
+- **fixed** The chat quest link: the start and completion messages use `<col=0ab0ff>` as rsprox 1718
+  (rev 227) sent them ("You've started a new quest: <col=0ab0ff>Cook's Assistant</col>", "Congratulations,
+  you've completed a quest: <col=0ab0ff>Cook's Assistant</col>"); `tests/quest-chat-link-colour.test.cjs`.
 - **fixed** Against rsprox 1718 (rev 227) and 4156 (rev 238): the completed journal's wording, the
   missing "You've started a new quest" line, chat-head animations, completion jingle 152, and the
   ingredients leaving the inventory on continuing past the hand-over box.
