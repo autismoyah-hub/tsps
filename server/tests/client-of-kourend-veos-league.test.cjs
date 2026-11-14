@@ -27,6 +27,19 @@
 // for the key "league:type" only, and restores it in afterEach. Type values (plugins/modes/data/leagues.json): 2 = Leagues II
 // Trailblazer, 4 = Leagues IV Trailblazer Reloaded. A plain world has no league:type (stub returns the fallback).
 //
+// DERIVATION FOR THE ARRIVAL SIDE (npc 10724 = VEOS_5, Piscarilius, 1825,3691). The condition run [1]..[4] above is the
+// same run for every Veos npc id. For 10724 the answers are: [1] buVj4X: XMarks answers only for 8484/10723, so 10724 gets NO
+// XMarks answer; the Ferries membership answer covers only the free-to-play text, so [1] is unanswered (null). resolveCondition
+// (NpcDialogues.plugin.js:634-639) falls back to combatLevelCondition and skillLevelCondition (plugins/npcs/NpcDialogues.plugin.js:
+// 455-458, and the skill helper's 'if (!match) return null'), which return null for this text, so [1] is null. [2] HaZALO:
+// answerVeosMembership returns !isMembersWorld() on a plain members world: false. [3] 7m-RoE and [4] 4_GYUT: null.
+// chooseCondition (NpcDialogues.plugin.js:479-486): no true answer, so the first null (index 1, the teleport/sail branch) wins.
+// DERIVED PREDICTION (to be CONFIRMED by the run, not assumed): on a plain members world the prohibited line is NOT reached
+// from 10724 by this run; the sail branch plays. On a league world [1] is still null, so the teleport branch still wins. If the
+// run shows the prohibited line for 10724, the derivation is wrong and the run's lines decide.
+// X MARKS STATE (seeded through the quest API only): 'starting-off' (X Marks complete, stage 6, quest key x_marks_the_spot,
+// ClientOfKourend.Quest.js:61 and :423) versus X Marks NOT complete (stage 0). The reporter's state is taken as X Marks complete,
+// quest not started (ClientOfKourend stage 0), because the Port Sarim->Piscarilius sail is offered after the first conversation.
 // ARRIVAL SIDE (the reporter's state): Veos at Port Sarim (npc 8484 at the dock; spawn 1063) -> the ferry leg to Port Piscarilius
 // (1824,3695, the kourend-piscarilius route) -> Talk-to the Piscarilius Veos (npc 10724 at 1825,3691). This file seeds the
 // quest stage through the quest API only (quest.setStage); X Marks completion is not seeded (its state is read as-is).
@@ -54,7 +67,7 @@ const runtime = require("../plugins/quests/QuestRuntime");
 
 runtime.startTranscript = () => true;
 
-let core, quest = null, index = 9900;
+let core, quest = null, xMarks = null, index = 9900;
 const cleanups = [];
 const restore = [];
 const PROHIBITED = /access to Great Kourend is currently prohibited/;
@@ -63,6 +76,8 @@ const TAKE_ME = "That's great, can you take me there please?";
 const WHERE = "Where's that?";
 const PORT_SARIM_TILE = [3054, 3245, 0];
 const PISCARILIUS_TILE = [1825, 3691, 0];
+const X_MARKS_KEY = "x_marks_the_spot";
+const X_MARKS_COMPLETE_STAGE = 6;
 
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
@@ -74,6 +89,8 @@ before(async () => {
   require("../plugins/quests/quests/ClientOfKourend.Quest")(PM.createApi("KourendRuntimeQuest"));
   quest = runtime.getRegisteredQuests().slice(count).at(-1);
   assert.ok(quest, "ClientOfKourend registers through the real plugin API");
+  xMarks = runtime.getRegisteredQuests().find((q) => q.key === X_MARKS_KEY);
+  assert.ok(xMarks, "XMarksTheSpot registers through the real plugin API");
 });
 
 afterEach(() => {
@@ -91,13 +108,14 @@ function world({ league = null, members = true } = {}) {
 }
 
 /** A real player at a tile, a real Veos NPC of the given id, lines and messages recorded apart. */
-function actor(npcId, tile, stage = 0) {
+function actor(npcId, tile, stage = 0, { xMarksComplete = false } = {}) {
   const channel = { kind: "test", remoteAddress: "127.0.0.1", isOpen: () => true, send: () => true,
     close() {}, onData() {}, onError() {}, onClose() {} };
   const p = new Player(new PlayerSession(channel), new Location(...tile));
   p.setIndex(index++); p.setRegistered(true); p.setUsername("kourend" + index);
   p.setAttribute("bot-skip-persistence", true);
   quest.setStage(p, stage); // seeded through the quest API only (disclosed)
+  if (xMarksComplete) xMarks.setStage(p, X_MARKS_COMPLETE_STAGE); // X Marks completion through its own quest API (disclosed)
   const connection = new ClientConnection(channel);
   connection.player = p;
   const npc = core.NPC.create(npcId, new Location(...tile));
@@ -194,3 +212,35 @@ test("OTHER NPC UNCHANGED: a non-Veos league condition is answered exactly as on
   console.log(`# R5 other-npc 7m-RoE answer (npcId 1): ${JSON.stringify(answer)}`);
   assert.equal(answer, null, "a non-Veos npc gets no answer from the Veos-scoped quest answer");
 });
+
+// ---- ARRIVAL SIDE: Piscarilius Veos (npc 10724 at 1825,3691) ----
+const PISC = () => core.NpcIdentifiers.VEOS_5;
+
+test("ARRIVAL, plain members world, X Marks NOT complete (selectVariant null -> the first-time variant): probe (report-only)", async () => {
+  world({ league: null, members: true });
+  const a = actor(PISC(), PISCARILIUS_TILE, 0, { xMarksComplete: false });
+  talkTo(a);
+  await a.choose(WHERE).catch(() => {});
+  console.log(`# A1 pisc-xmarks-not-complete opening: ${JSON.stringify(a.lines.slice(0, 4))}`);
+});
+
+test("ARRIVAL, plain members world, X Marks complete ('starting-off'): travel option, play to end (report-only rows)", async () => {
+  world({ league: null, members: true });
+  const a = actor(PISC(), PISCARILIUS_TILE, 0, { xMarksComplete: true });
+  talkTo(a);
+  await a.choose(WHERE).catch(() => {});
+  console.log(`# A2 pisc-xmarks-complete opening: ${JSON.stringify(a.lines.slice(0, 4))} options: ${JSON.stringify(MultiChatboxPrompt.getPending(a.p)?.options ?? null)}`);
+});
+
+test("ARRIVAL, REPORTER STATE, plain members world (hard assert, the intended BEFORE red if the prohibited line appears): no prohibited line from 10724", async () => {
+  world({ league: null, members: true });
+  const a = actor(PISC(), PISCARILIUS_TILE, 0, { xMarksComplete: true });
+  talkTo(a);
+  await a.choose(WHERE).catch(() => {});
+  if (MultiChatboxPrompt.getPending(a.p)?.options.includes(TAKE_ME)) await a.choose(TAKE_ME);
+  await a.playToEnd();
+  console.log(`# A3 reporter-state lines: ${JSON.stringify(a.lines)}`);
+  console.log(`# A3 reporter-state messages: ${JSON.stringify(a.messages)}`);
+  assert.equal(a.lines.some((l) => PROHIBITED.test(l)), false, `a plain members world must not print the prohibited line: ${JSON.stringify(a.lines)}`);
+});
+
