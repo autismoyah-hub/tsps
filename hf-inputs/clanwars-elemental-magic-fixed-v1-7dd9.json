@@ -14,12 +14,12 @@
   "expectedTestCounts": {
     "clan-wars-game.test.cjs": 453,
     "clan-wars-rules.test.cjs": 26,
-    "spell-rune-costs.test.cjs": 61,
-    "spell-cast-context.test.cjs": 7,
-    "widget-action-spell-routing.test.cjs": 12,
     "elemental-tome-combat.test.cjs": 17,
     "elemental-tome-state.test.cjs": 10,
-    "rune-pouch.test.cjs": 31
+    "rune-pouch.test.cjs": 31,
+    "spell-cast-context.test.cjs": 7,
+    "spell-rune-costs.test.cjs": 61,
+    "widget-action-spell-routing.test.cjs": 12
   },
   "expectedInputs": {
     ".agents/skills/tsps-bugfix-loop/SKILL.md": "dd485753f5d5534ebda8aad17aed5604bbb7016348efa6c3ea0566f8f9db448a",
