@@ -280,19 +280,77 @@ test('the ice area can supply arrows from its six actual chest producers',async 
     });
   }
   assert.equal(f.p.getInventory().getAmount(arrows),0);assert.equal(b.p.getInventory().getAmount(arrows),0);
+  let motion=null;
+  const firstSearchRoutes=[],firstSearchDispatches=[];
+  const routeFact=row=>({object:objectFact(row.object),postDefinitionId:row.postDefinitionId,sourceLocation:row.sourceLocation,
+    destination:row.destination,extraFlagsPresent:row.extraFlagsPresent,extraFlagsWasUndefined:row.extraFlagsWasUndefined,
+    extraFlags:row.extraFlagsWasUndefined?null:row.extraFlags,width:row.width,length:row.length,sideMask:row.sideMask,
+    effectiveMask:row.effectiveMask,face:row.face,shape:row.shape,error:row.error??null});
+  function firstSearchComplete(){
+    for(const row of [...firstSearchRoutes,...firstSearchDispatches])if(row.failure)throw row.failure;
+    assert.ok(firstSearchRoutes.length<=1&&firstSearchDispatches.length<=1,'no duplicate first Search route/dispatch');
+    const actual=f.objectEvents.slice(motion.searchEventsA),deeds=operated.slice(motion.searchOps);
+    assert.ok(actual.length<=1&&deeds.length<=1,'no duplicate or wrong-owner first Search completion');
+    for(const event of [...actual,...deeds]){assert.equal(event.player,f.p);assert.equal(event.object,motion.target);assert.equal(event.option,'search');}
+    assert.equal(b.objectEvents.length,motion.searchEventsB,'first Search never dispatches for B');
+    return actual.length===1&&actual[0].handled===true&&deeds.length===1&&firstSearchDispatches.length===1&&firstSearchDispatches[0].handled===true;
+  }
+  function advanceMotion(phase){
+    assert.ok(motion.turns<16,'ordinary move and first Search share at most sixteen World turns');
+    turns();motion.turns++;
+    assert.equal(f.p.isRegistered(),true);assert.equal(f.p.isNeedsPlacement(),false);
+    assert.equal(f.p.getLocation().getZ(),motion.start.getZ());assert.equal(f.p.getArea(),area);assert.equal(f.p.getPrivateArea(),motion.privateArea);
+    assert.equal(f.p.hasFlag('movement:ignore-clipping'),false);assert.equal(f.p.getHitpoints(),motion.hp);
+    standing(f.p,opened);standing(b.p,bOpened);
+    if(firstSearchDispatches.length===0)assert.deepEqual(inventories(),motion.before,'no movement/approach reward before actual Search dispatch');
+    else{assert.equal(phase,'first Search approach');assert.equal(firstSearchComplete(),true,'actual Search dispatch completes through handled+operated');}
+    assert.deepEqual(inventory(b.p),motion.before[1],'motion/Search cannot change B inventory');
+    if(phase==='outgoing move'){
+      assert.equal(f.objectEvents.length,motion.eventsA);assert.equal(b.objectEvents.length,motion.eventsB);assert.equal(operated.length,motion.ops);
+    }
+    const queue=f.p.getMovementQueue(),queued=queue.getDestination();
+    if(phase==='outgoing move'&&!f.p.getLocation().equals(motion.destination)&&queued)assert.ok(queued.equals(motion.destination),'ordinary queued endpoint remains the requested adjacent cell');
+    if(phase==='outgoing move')motion.stepped=motion.stepped||queue.didMoveThisCycle();
+    motion.trace.push(where(f.p));
+    observe('IKOV_CHEST_MOVE',{phase,turn:motion.turns,at:where(f.p),requestedOutgoing:[motion.destination.getX(),motion.destination.getY(),motion.destination.getZ()],
+      queuedDestination:queued?[queued.getX(),queued.getY(),queued.getZ()]:null,routeEvaluated:queue.wasRouteEvaluated(),alternativeRoute:queue.usedAlternativeRoute(),
+      movedThisCycle:queue.didMoveThisCycle(),hp:f.p.getHitpoints(),ignore:false,inventories:inventories(),firstSearchDispatched:firstSearchDispatches.length,
+      firstSearchRoutes:firstSearchRoutes.map(routeFact),firstSearchDispatches:firstSearchDispatches.map(row=>row.facts),A:facts(opened),B:facts(bOpened)});
+  }
   async function action(who,base,id,option,clickType=1){
     const target=id===103?base:lookup(who.p,base);assert.ok(target);
     const before=inventories(),events=who.objectEvents.length,ops=operated.length;
-    await who.click(id,base.getLocation().getX(),base.getLocation().getY(),option,clickType);
+    const firstSearch=motion!==null&&!motion.firstSearchDone&&who===f&&base===first&&id===104&&option==='Search'&&clickType===1;
+    if(firstSearch){
+      assert.equal(target,motion.target);assert.ok(f.p.getLocation().equals(motion.destination),'outgoing ordinary move already arrived');
+      motion.searchEventsA=events;motion.searchEventsB=b.objectEvents.length;motion.searchOps=ops;motion.searchInputIssued=true;
+      try{
+        await who.input({type:'object_option',id,x:base.getLocation().getX(),y:base.getLocation().getY(),action:option,clickType},0);
+        while(!firstSearchComplete())advanceMotion('first Search approach');
+        assert.equal(firstSearchRoutes.length,1);assert.equal(firstSearchDispatches.length,1);motion.firstSearchDone=true;
+      }catch(error){
+        const queue=f.p.getMovementQueue(),queued=queue.getDestination();
+        observe('IKOV_CHEST_FIRST_SEARCH_FAILURE',{at:where(f.p),sharedTurns:motion.turns,trace:motion.trace,hp:f.p.getHitpoints(),
+          registered:f.p.isRegistered(),needsPlacement:f.p.isNeedsPlacement(),sameArea:f.p.getArea()===area,samePrivateArea:f.p.getPrivateArea()===motion.privateArea,
+          queuedDestination:queued?[queued.getX(),queued.getY(),queued.getZ()]:null,routeEvaluated:queue.wasRouteEvaluated(),alternativeRoute:queue.usedAlternativeRoute(),inventories:inventories(),
+          routes:firstSearchRoutes.map(routeFact),dispatches:firstSearchDispatches.map(row=>row.facts),
+          error:{name:error.name,message:error.message,stack:error.stack},A:facts(opened),B:facts(bOpened)});
+        throw error;
+      }
+    }else await who.click(id,base.getLocation().getX(),base.getLocation().getY(),option,clickType);
     const actual=who.objectEvents.slice(events).filter(e=>e.player===who.p);
     const deeds=operated.slice(ops).filter(e=>e.player===who.p);
-    assert.equal(actual.length,1);assert.equal(actual[0].object,target);assert.equal(actual[0].option,option.toLowerCase());assert.equal(actual[0].handled,true);
+    assert.equal(actual.length,1);assert.equal(actual[0].object,target);assert.equal(actual[0].definition?.id,id);assert.equal(actual[0].clickType,clickType);
+    assert.equal(actual[0].option,option.toLowerCase());assert.equal(actual[0].handled,true);
     assert.equal(deeds.length,1);assert.equal(deeds[0].object,target);assert.equal(deeds[0].option,option.toLowerCase());
-    shared();return {target,before,after:inventories(),event:actual[0],deed:deeds[0]};
+    shared();return {target,before,after:inventories(),event:actual[0],deed:deeds[0],
+      firstSearch:firstSearch?{sharedMotionTurns:motion.turns,route:routeFact(firstSearchRoutes[0]),dispatch:firstSearchDispatches[0].facts}:undefined};
   }
-  function record(label,result){
+  function record(label,result,movementSetup){
     const observation={label,actor:result.event.player.getUsername(),object:objectFact(result.target),option:result.event.option,handled:result.event.handled,
       operatedSameObject:result.deed.object===result.target,before:result.before,after:result.after,A:facts(opened),B:facts(bOpened)};
+    if(movementSetup!==undefined)observation.movementSetup=movementSetup;
+    if(result.firstSearch!==undefined)observation.firstSearch=result.firstSearch;
     observe('IKOV_CHEST_STEP',observation);
   }
   f.approach(first);
@@ -306,21 +364,81 @@ test('the ice area can supply arrows from its six actual chest producers',async 
   assert.equal(lookup(b.p,first),null);standing(f.p,opened);
   observe('IKOV_CHEST_FOREIGN_REFUSAL',{actor:b.p.getUsername(),at:objectFact(first).at,before:beforeForeign,after:inventories(),objectEvents:0,operatedEvents:0,A:facts(opened)});
   step=await action(b,first,103,'Open');assert.deepEqual(step.after,step.before);
-  bOpened.set(first,lookup(b.p,first));assert.ok(bOpened.get(first));assert.notEqual(bOpened.get(first),opened.get(first));standing(f.p,opened);standing(b.p,bOpened);record('B independent Open',step);
-  // ONE bounded ordinary move between actual usable approaches; no hand-mapped route or fallback teleport.
-  const start=f.p.getLocation().clone(),hp=f.p.getHitpoints(),beforeMove=inventories();
-  const candidates=[[at.getX()-2,at.getY()],[at.getX()+2,at.getY()],[at.getX(),at.getY()-2],[at.getX(),at.getY()+2]]
-    .map(([x,y])=>ClimbLinks.landingTile(first,{x,y},f.p.getPrivateArea())).filter(Boolean);
-  const destination=candidates.find(tile=>!tile.equals(start));assert.ok(destination,'setup: two distinct actual usable chest approach tiles');
-  const trace=[where(f.p)];await f.input({type:'move',worldX:destination.getX(),worldY:destination.getY(),modifierFlags:0,run:false},0);
-  for(let turn=1;turn<=16;turn++){
-    turns();trace.push(where(f.p));assert.equal(f.p.hasFlag('movement:ignore-clipping'),false);assert.equal(f.p.getHitpoints(),hp);assert.deepEqual(inventories(),beforeMove);
-    observe('IKOV_CHEST_MOVE',{turn,at:where(f.p),destination:[destination.getX(),destination.getY(),destination.getZ()],ignore:false,hp});
-    if(f.p.getLocation().equals(destination))break;
-  }
-  assert.ok(f.p.getLocation().equals(destination),'ordinary movement arrives within sixteen turns');assert.ok(trace.some(position=>position.join(',')!==trace[0].join(',')));
-  const reachedDefinition=core.ObjectDefinition.forPlayer(first.getId(),f.p);
-  assert.equal(core.PathFinder.reachedObject(f.p,at.getX(),at.getY(),reachedDefinition.getSizeX(),reachedDefinition.getSizeY(),first.getFace(),first.getType(),reachedDefinition.getBlockingMask()),true,'ordinary arrival actually reaches the chest');
+  bOpened.set(first,lookup(b.p,first));assert.ok(bOpened.get(first));assert.notEqual(bOpened.get(first),opened.get(first));standing(f.p,opened);standing(b.p,bOpened);
+  // The move endpoint is one actual connected cell; operation reach is checked at the real first Search dispatcher.
+  const start=f.p.getLocation().clone(),size=f.p.getSize(),privateArea=f.p.getPrivateArea(),hp=f.p.getHitpoints(),beforeMove=inventories();
+  assert.ok(Number.isInteger(size)&&size>0);assert.equal(f.p.getArea(),area);assert.equal(f.p.isRegistered(),true);assert.equal(f.p.isNeedsPlacement(),false);
+  assert.ok(hp>0);assert.equal(f.p.hasFlag('movement:ignore-clipping'),false);
+  const startBlocked=core.RegionManager.blocked(start,privateArea);
+  const candidates=[[0,1],[1,0],[0,-1],[-1,0]].map(([dx,dy])=>{
+    const tile=new core.Location(start.getX()+dx,start.getY()+dy,start.getZ());
+    const inside=boundaries.some(boundary=>boundary.inside(tile)),blocked=core.RegionManager.blocked(tile,privateArea);
+    const forward=core.RegionManager.canMovestart(start,tile,size,size,privateArea),reverse=core.RegionManager.canMovestart(tile,start,size,size,privateArea);
+    return {tile,inside,blocked,forward,reverse,eligible:!startBlocked&&inside&&!blocked&&forward&&reverse};
+  });
+  const chosen=candidates.find(candidate=>candidate.eligible),destination=chosen?.tile,target=opened.get(first);
+  const base104=core.ObjectDefinition.forId(target.getId()),resolved104=core.ObjectDefinition.forPlayer(target.getId(),f.p);
+  record('B independent Open',step,{actor:f.p.getUsername(),sampledAfter:'B Open invariants',start:where(f.p),size,plane:start.getZ(),startBlocked,
+    target:objectFact(target),baseFootprint:[base104.getSizeX(),base104.getSizeY()],resolvedDefinitionId:resolved104.id,sideMask:resolved104.getBlockingMask(),
+    candidates:candidates.map(candidate=>({at:[candidate.tile.getX(),candidate.tile.getY(),candidate.tile.getZ()],inside:candidate.inside,blocked:candidate.blocked,
+      forward:candidate.forward,reverse:candidate.reverse,eligible:candidate.eligible})),chosen:destination?[destination.getX(),destination.getY(),destination.getZ()]:null});
+  assert.ok(destination,'setup: an actual same-area adjacent bidirectional clipping-valid edge exists');
+  assert.equal(Math.abs(destination.getX()-start.getX())+Math.abs(destination.getY()-start.getY()),1);
+  motion={start,size,privateArea,hp,before:beforeMove,destination,target,turns:0,trace:[where(f.p)],stepped:false,
+    eventsA:f.objectEvents.length,eventsB:b.objectEvents.length,ops:operated.length,searchInputIssued:false,firstSearchDone:false};
+  const route=PM.emitObjectRoute,interact=PM.emitObjectInteraction;
+  t.mock.method(PM,'emitObjectRoute',function(event,...args){
+    const result=Reflect.apply(route,this,[event,...args]);
+    if(motion.searchInputIssued&&!motion.firstSearchDone&&event.player===f.p){
+      const extra=event.blockAccessFlags;
+      const footprint=core.ObjectDefinition.forId(event.object.getId()),resolved=core.ObjectDefinition.forPlayer(event.object.getId(),f.p);
+      const observed={object:event.object,postDefinitionId:event.definition?.id??null,sourceLocation:{...event.sourceLocation},
+        destination:event.destination==null?null:{...event.destination},extraFlagsPresent:Object.hasOwn(event,'blockAccessFlags'),extraFlagsWasUndefined:extra===undefined,extraFlags:extra,
+        width:footprint.getSizeX(),length:footprint.getSizeY(),sideMask:resolved.getBlockingMask(),effectiveMask:resolved.getBlockingMask()|(extra===undefined?0:extra),
+        face:event.object.getFace(),shape:10};
+      firstSearchRoutes.push(observed);
+      try{
+        assert.equal(firstSearchRoutes.length,1,'one original first Search route event');
+        assert.equal(event.object,target);assert.equal(event.objectId,104);assert.equal(event.clickType,1);assert.equal(event.object.getOwner(),f.p);
+        assert.equal(event.object.getType(),10);assert.equal(observed.postDefinitionId,104);assert.equal(resolved.id,104);
+        assert.ok(extra===undefined||Number.isInteger(extra),'actual extra access flags or production undefined default');
+        assert.equal(observed.destination,null,'setup: generic owned chest Search has no custom route destination');
+      }catch(error){observed.failure=error;observed.error={name:error.name,message:error.message,stack:error.stack};throw error;}
+    }
+    return result;
+  });
+  t.mock.method(PM,'emitObjectInteraction',function(event,...args){
+    if(!(motion.searchInputIssued&&!motion.firstSearchDone&&event.player===f.p))return Reflect.apply(interact,this,[event,...args]);
+    // Capture the actual dispatcher position BEFORE the original handler can change anything.
+    const position=where(f.p),source=event.sourceLocation?{...event.sourceLocation}:null;
+    const dispatch={facts:{actor:f.p.getUsername(),at:position,sourceLocation:source,cycle:core.World.getProcessCycle(),
+      object:objectFact(event.object),definitionId:event.definition?.id??null,clickType:event.clickType,option:event.option,
+      inventoryBefore:inventories()},handled:false};
+    firstSearchDispatches.push(dispatch);
+    try{
+      assert.equal(firstSearchDispatches.length,1,'one original first Search dispatcher');assert.equal(firstSearchRoutes.length,1);
+      const effective=firstSearchRoutes[0];if(effective.failure)throw effective.failure;
+      assert.equal(event.object,target);assert.equal(event.objectId,104);assert.equal(event.definition?.id,104);assert.equal(event.clickType,1);assert.equal(event.option,'search');
+      assert.equal(event.object.getOwner(),f.p);assert.equal(event.object.getType(),10);
+      assert.ok(source);assert.deepEqual(position,[source.x,source.y,source.z],'event-time sourceLocation is the real actor position');
+      assert.equal(f.p.getArea(),area);assert.equal(f.p.getPrivateArea(),privateArea);assert.equal(f.p.getLocation().getZ(),start.getZ());
+      assert.equal(f.p.hasFlag('movement:ignore-clipping'),false);assert.equal(f.p.getHitpoints(),hp);assert.deepEqual(inventories(),beforeMove,'no reward before real Search handler');
+      standing(f.p,opened);standing(b.p,bOpened);
+      const currentBase=core.ObjectDefinition.forId(target.getId()),currentResolved=core.ObjectDefinition.forPlayer(target.getId(),f.p);
+      assert.equal(currentBase.getSizeX(),effective.width);assert.equal(currentBase.getSizeY(),effective.length);assert.equal(currentResolved.getBlockingMask(),effective.sideMask);
+      assert.equal(target.getFace(),effective.face);assert.equal(effective.object,target);assert.equal(effective.destination,null);
+      const reached=core.PathFinder.reachedObject(f.p,target.getLocation().getX(),target.getLocation().getY(),effective.width,effective.length,effective.face,effective.shape,effective.effectiveMask);
+      dispatch.facts.reach=reached;dispatch.facts.effectiveRoute=routeFact(effective);
+      assert.equal(reached,true,'real first Search dispatcher reaches actual104 with observed effective access mask');
+      const result=Reflect.apply(interact,this,[event,...args]);
+      dispatch.handled=event.handled;dispatch.facts.handledAtReturn=event.handled;
+      return result;
+    }catch(error){dispatch.failure=error;dispatch.facts.error={name:error.name,message:error.message,stack:error.stack};throw error;}
+  });
+  await f.input({type:'move',worldX:destination.getX(),worldY:destination.getY(),modifierFlags:0,run:false},0);
+  while(!f.p.getLocation().equals(destination))advanceMotion('outgoing move');
+  assert.ok(motion.turns>0&&motion.stepped,'ordinary queue actually stepped before exact outgoing arrival');
+  assert.ok(motion.trace.some(position=>position.join(',')!==motion.trace[0].join(',')),'ordinary movement is not a no-op');
   const tuple=ownedReplays().find(row=>row.args[0]===f.p);assert.ok(tuple,'setup: actual PlayerSession-produced replay arguments');
   const beforeReplay=inventories(),sendStart=sends.length,opsStart=operated.length,eventsA=f.objectEvents.length,eventsB=b.objectEvents.length;
   Reflect.apply(core.ObjectManager.onRegionChange,core.ObjectManager,tuple.args);
