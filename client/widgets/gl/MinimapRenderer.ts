@@ -96,7 +96,7 @@ void main() {
         if (dist > uRadius) {
             discard;
         }
-        edge = smoothstep(uRadius, uRadius - 1.5, dist);
+        edge = 1.0 - smoothstep(uRadius - 1.5, uRadius, dist);
     }
 
     vec4 color = texture(uTexture, vUV);
