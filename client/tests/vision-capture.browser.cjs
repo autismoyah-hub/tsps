@@ -12,6 +12,7 @@
 //   [--check-responsive-gameframe 1] (desktop login, narrow/portrait windows keep the desktop layout)
 //   [--check-responsive-mobile-start 1] (phone-emulated login, disable emulation, then repeat resize switches)
 //   [--check-npc-specific-effects 1] (Vale Totems developer scene; native ::entvisit, records real received effects)
+//   [--check-touch-controls-default <scenario>] (reviewed emulated primary-input/HUD fixture)
 // VISION_CHROME_FLAGS is an optional JSON array for software rendering in CI.
 // --url defaults to this worktree's client (PORT in the root .env, see
 // docs/worktrees.md), then http://localhost:3000; VISION_CLIENT_URL overrides.
@@ -181,7 +182,7 @@ const SMOOTHING_JS = `((pm) => pm.getPlugins().find((p) => pm.getDescriptor(p).n
 // Returns { ok, proc, cdp, adapter } on success; cleans up and returns
 // { ok: false, reason } otherwise. Adapter label distinguishes hardware from
 // SwiftShader.
-async function tryBrowser(bin, viewport, budgetMs, targetHref) {
+async function tryBrowser(bin, viewport, budgetMs, targetHref, touchScenario = null) {
   const debugPort = await freePort();
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), PROFILE_MARKER));
   const proc = spawn(bin, [
@@ -214,6 +215,7 @@ async function tryBrowser(bin, viewport, budgetMs, targetHref) {
       await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: 375, height: 812, deviceScaleFactor: 2, mobile: true });
     }
+    if (touchScenario) await require("./touch-controls-default.browser.cjs").prepare(cdp, touchScenario);
     await cdp.send("Page.navigate", { url: targetHref });
     // Probe on the secure page; poll briefly in case the document is mid-load.
     let webgpu = false;
@@ -262,8 +264,18 @@ async function main() {
   const viewport = (arg("viewport", "1280x800") || "1280x800").split("x").map(Number);
   let proc = null;
   let cdp = null;
+  let touchFailure = null;
   try {
+    const touchName = arg("check-touch-controls-default", null);
+    const touchFixture = touchName === null ? null : require("./touch-controls-default.browser.cjs");
+    const touchScenario = touchFixture?.scenarios.find(scenario => scenario.name === touchName);
+    if (touchName !== null && !touchScenario) throw new Error("unknown touch-controls scenario");
     const target = new URL(arg("url", defaultUrl()));
+    if (touchScenario) {
+      if (!out || !arg("user", null)) throw new Error("touch-controls scenario requires screenshot and ordinary login");
+      if (touchScenario.touch === null) target.searchParams.delete("touch");
+      else target.searchParams.set("touch", touchScenario.touch);
+    }
     if (arg("user", null)) {
       target.searchParams.set("username", arg("user"));
       target.searchParams.set("password", arg("pass", ""));
@@ -278,7 +290,7 @@ async function main() {
     const tried = [];
     for (const bin of candidates) {
       if (Date.now() > deadline) throw new Error("deadline passed before a browser was ready");
-      const attempt = await tryBrowser(bin, viewport, Math.min(deadline - Date.now(), 45000), target.href);
+      const attempt = await tryBrowser(bin, viewport, Math.min(deadline - Date.now(), 45000), target.href, touchScenario);
       tried.push(`${bin} (${attempt.ok ? attempt.adapter : attempt.reason})`);
       if (!attempt.ok) {
         // Let the failed candidate's GPU process fully tear down before the
@@ -321,6 +333,16 @@ async function main() {
     }, (s) => s && s.present && (s.frames > 0) && (!needLogin || (s.loggedIn && s.maps > 0 && s.gameState === 30)));
     summary.client = state;
     await dismissWelcome(cdp);
+    if (touchScenario) {
+      try {
+        const actual = await touchFixture.verify(cdp, touchScenario, value => console.log(JSON.stringify(value)),
+          {timeoutMs:Math.max(1,Math.min(10000,deadline-Date.now()))});
+        summary.touchControlsDefault = {scenario:touchScenario.name,status:"PASS",actual};
+      } catch (error) {
+        touchFailure = error;
+        summary.touchControlsDefault = {scenario:touchScenario.name,status:"FAIL",error:String(error?.message ?? error)};
+      }
+    }
     const smoothing = arg("animation-smoothing", null);
     if (smoothing !== null) {
       await cdp.evaluate(`(async () => {
@@ -843,6 +865,9 @@ async function main() {
         viewport,
       });
     }
+    // Retain the ordinary screenshot before propagating the actual HUD assertion.
+    if (touchFailure) throw touchFailure;
+
     // A world-wait timeout with --user means login/loads never finished (server
     // restarting, session torn down, ...): fail loudly instead of handing the
     // caller a loading-screen image as if it were gameplay.
