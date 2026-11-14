@@ -773,38 +773,7 @@ async function main() {
       if (check.backend === "WebGPURenderer") {
         // Read the submitted scene itself: some headless Vulkan compositors capture a black
         // canvas even when the GPU rendered correctly. Pose-cache activity alone is not proof.
-        const scene = await cdp.evaluate(`(async () => {
-          const r = ${CLIENT_JS}.renderer;
-          const width = r.canvas.width, height = r.canvas.height;
-          const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
-          const buffer = r.device.createBuffer({size: bytesPerRow * height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ});
-          await new Promise((resolve, reject) => {
-            const render = r.render;
-            const timeout = setTimeout(() => { r.render = render; reject(new Error("scene readback timed out")); }, 10000);
-            r.render = function(...args) {
-              r.render = render;
-              try {
-                render.apply(r, args);
-                const encoder = r.device.createCommandEncoder();
-                encoder.copyTextureToBuffer({texture:r.context.getCurrentTexture()}, {buffer,bytesPerRow}, {width,height});
-                r.device.queue.submit([encoder.finish()]);
-                buffer.mapAsync(GPUMapMode.READ).then(resolve, reject).finally(() => clearTimeout(timeout));
-              } catch (e) { clearTimeout(timeout); reject(e); }
-            };
-          });
-          const bytes = new Uint8Array(buffer.getMappedRange());
-          const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
-          const ctx = canvas.getContext("2d"), pixels = ctx.createImageData(width, height);
-          const bgra = r.format.startsWith("bgra"), colours = new Set();
-          for (let y=0; y<height; y++) for (let x=0; x<width; x++) {
-            const src=y*bytesPerRow+x*4, dst=(y*width+x)*4;
-            pixels.data[dst]=bytes[src+(bgra?2:0)]; pixels.data[dst+1]=bytes[src+1];
-            pixels.data[dst+2]=bytes[src+(bgra?0:2)]; pixels.data[dst+3]=255;
-            if(x%16===0 && y%16===0) colours.add((bytes[src]<<16)|(bytes[src+1]<<8)|bytes[src+2]);
-          }
-          buffer.unmap(); buffer.destroy(); ctx.putImageData(pixels,0,0);
-          return {colours:colours.size,png:canvas.toDataURL("image/png").split(",")[1]};
-        })()`);
+        const scene = await cdp.evaluate(`(${submittedSceneInPage.toString()})(${CLIENT_JS})`);
         check.sceneColours = scene.colours;
         if (scene.colours < 16) throw new Error("WebGPU scene is blank: " + scene.colours + " colours");
         if (out) {
@@ -824,25 +793,66 @@ async function main() {
       await sleep(Math.min(holdSecs, 300) * 1000);
     }
 
-    if (out) {
-      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
-      if (shot.error) throw new Error(shot.error.message || JSON.stringify(shot.error));
-      const data = shot.result?.data;
-      if (!data) throw new Error("captureScreenshot returned no pixels");
-      fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
-      fs.writeFileSync(out, Buffer.from(data, "base64"));
-      summary.screenshot = path.resolve(out);
+    if (arg("paired-scene-diagnostic", "0") === "1") {
+      if (!out) throw new Error("paired scene diagnostic requires page output");
+      const phase = arg("diagnostic-phase", ""), source = arg("diagnostic-source", "");
+      if (!/^[a-zA-Z0-9_-]{1,128}$/.test(phase) || !/^[0-9a-f]{40}$/.test(source)) throw new Error("paired scene identity required");
+      const startedUTC = new Date().toISOString(), requestMonotonicNs = process.hrtime.bigint().toString();
+      console.log(JSON.stringify({event:"orb4693-paired-readback-request",phase,source,monotonicNs:requestMonotonicNs}));
+      const file = path.resolve(out.replace(/\.png$/i, "") + "-paired-scene.png");
+      let outcome;
+      try {
+        const scene = await cdp.evaluate(`(${submittedSceneInPage.toString()})(${CLIENT_JS})`);
+        const bytes = Buffer.from(scene.png, "base64"), dimensions = pngDimensions(bytes);
+        outcome = {status:"PASS",phase,source,startedUTC,requestMonotonicNs,finishedMonotonicNs:process.hrtime.bigint().toString(),
+          finishedUTC:new Date().toISOString(),requestedViewport:viewport,dimensions,surface:scene.surface,colours:scene.colours,limits:scene.limits};
+        if (dimensions.width !== scene.surface.canvas.width || dimensions.height !== scene.surface.canvas.height) throw new Error("paired scene dimensions disagree");
+        fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file,bytes);
+      } catch (error) {
+        outcome = {status:"FAILED",phase,source,startedUTC,requestMonotonicNs,finishedMonotonicNs:process.hrtime.bigint().toString(),
+          finishedUTC:new Date().toISOString(),requestedViewport:viewport,
+          error:{name:String(error?.name ?? "Error").slice(0,128),message:String(error?.message ?? error).slice(0,1024)},
+          limits:"Failed GPU diagnostic; preserve independent page evidence then refuse overall acceptance"};
+      }
+      summary.pairedSceneDiagnostic = {file,metadata:file + ".json",...outcome};
+      try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file + ".json",JSON.stringify(outcome)); }
+      catch (error) { summary.pairedSceneDiagnostic.status="FAILED"; summary.pairedSceneDiagnostic.metadataWriteError=String(error?.message ?? error).slice(0,1024); }
+      console.log(JSON.stringify({event:"orb4693-paired-readback-outcome",...summary.pairedSceneDiagnostic}));
     }
 
-    if (clipSecs > 0) {
-      summary.clip = await recordClip(cdp, {
-        secs: clipSecs,
-        fps: Number(arg("clip-fps", "10")) || 10,
-        out: arg("clip-out", null),
-        framesDir: arg("frames-dir", null),
-        viewport,
-      });
+    // Diagnostic failure never removes independent page evidence. Try both media paths.
+    const mediaErrors = [];
+    if (out) {
+      try {
+        const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+        if (shot.error) throw new Error(shot.error.message || JSON.stringify(shot.error));
+        const data = shot.result?.data;
+        if (!data) throw new Error("captureScreenshot returned no pixels");
+        const bytes = Buffer.from(data, "base64");
+        fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true }); fs.writeFileSync(out,bytes);
+        summary.screenshotDimensions = pngDimensions(bytes); summary.screenshot = path.resolve(out);
+      } catch (error) {
+        if (!summary.pairedSceneDiagnostic) throw error;
+        mediaErrors.push({stage:"page-screenshot",error:String(error?.message ?? error).slice(0,1024)});
+      }
     }
+    if (clipSecs > 0) {
+      try {
+        summary.clip = await recordClip(cdp, {
+          phase:arg("diagnostic-phase",""),source:arg("diagnostic-source",""),secs:clipSecs,
+          fps:Number(arg("clip-fps","10"))||10,out:arg("clip-out",null),framesDir:arg("frames-dir",null),viewport,
+        });
+      } catch (error) {
+        if (!summary.pairedSceneDiagnostic) throw error;
+        mediaErrors.push({stage:"page-clip",error:String(error?.message ?? error).slice(0,1024)});
+      }
+    }
+    if (mediaErrors.length) summary.mediaErrors = mediaErrors;
+    if (summary.pairedSceneDiagnostic?.status === "FAILED" || mediaErrors.length) {
+      summary.ok = false;
+      throw new Error("paired diagnostic/media refused after retaining available page evidence");
+    }
+
     // A world-wait timeout with --user means login/loads never finished (server
     // restarting, session torn down, ...): fail loudly instead of handing the
     // caller a loading-screen image as if it were gameplay.
@@ -1052,10 +1062,82 @@ async function dismissWelcome(cdp) {
   }
 }
 
-async function recordClip(cdp, { secs, fps, out, framesDir, viewport }) {
-  const frames = [];
+// Extracted from the existing smoothing check: submitted texture, NOT page visibility.
+async function submittedSceneInPage(client) {
+  const r = client?.renderer, canvas = r?.canvas;
+  if (r?.constructor.name !== "WebGPURenderer" || window.__WEBGPU_RENDERER__ !== r
+      || !(canvas instanceof HTMLCanvasElement) || !canvas.isConnected || !document.contains(canvas)
+      || r.context?.canvas !== canvas) throw new Error("paired scene: active attached WebGPU canvas required");
+  const width = canvas.width, height = canvas.height, rect = canvas.getBoundingClientRect();
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1
+      || width * height > 2097152 || ![rect.x,rect.y,rect.width,rect.height,window.innerWidth,window.innerHeight].every(Number.isFinite)
+      || rect.width <= 0 || rect.height <= 0) throw new Error("paired scene: invalid surface dimensions");
+  const surface = { backend:r.constructor.name, canvasAttached:true, contextCanvasIdentity:true,
+    canvas:{width,height}, clientRect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},
+    window:{innerWidth:window.innerWidth,innerHeight:window.innerHeight,devicePixelRatio:window.devicePixelRatio},
+    format:r.format, startedPerformanceMs:performance.now(), timeOrigin:performance.timeOrigin };
+  const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
+  const buffer = r.device.createBuffer({size:bytesPerRow * height,usage:GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ});
+  const render = r.render; let hook, timer, mapped = false, settled = false;
+  try {
+    await new Promise((resolve,reject) => {
+      const finish = error => { if (settled) return; settled = true; clearTimeout(timer);
+        if (r.render === hook) r.render = render; error ? reject(error) : resolve(); };
+      hook = function(...args) {
+        if (r.render === hook) r.render = render;
+        try {
+          if (client.renderer !== r || r.canvas !== canvas || !canvas.isConnected || r.context.canvas !== canvas
+              || canvas.width !== width || canvas.height !== height) throw new Error("paired scene: surface changed before render");
+          render.apply(r,args);
+          if (client.renderer !== r || r.canvas !== canvas || canvas.width !== width || canvas.height !== height)
+            throw new Error("paired scene: surface changed during render");
+          const encoder = r.device.createCommandEncoder();
+          encoder.copyTextureToBuffer({texture:r.context.getCurrentTexture()},{buffer,bytesPerRow},{width,height});
+          r.device.queue.submit([encoder.finish()]);
+          buffer.mapAsync(GPUMapMode.READ).then(() => { if (!settled) { mapped = true; finish(); } },finish);
+        } catch (error) { finish(error); }
+      };
+      timer = setTimeout(() => finish(new Error("paired scene readback timed out")),10000);
+      r.render = hook;
+    });
+    const bytes = new Uint8Array(buffer.getMappedRange());
+    const output = document.createElement("canvas"); output.width = width; output.height = height;
+    const ctx = output.getContext("2d"), pixels = ctx.createImageData(width,height);
+    const bgra = r.format.startsWith("bgra"), colours = new Set();
+    for (let y=0;y<height;y++) for (let x=0;x<width;x++) {
+      const src=y*bytesPerRow+x*4,dst=(y*width+x)*4;
+      pixels.data[dst]=bytes[src+(bgra?2:0)];pixels.data[dst+1]=bytes[src+1];
+      pixels.data[dst+2]=bytes[src+(bgra?0:2)];pixels.data[dst+3]=255;
+      if(x%16===0&&y%16===0)colours.add((bytes[src]<<16)|(bytes[src+1]<<8)|bytes[src+2]);
+    }
+    ctx.putImageData(pixels,0,0);
+    const png = output.toDataURL("image/png").split(",")[1];
+    if (typeof png !== "string" || png.length > 16777216) throw new Error("paired scene: PNG output bound");
+    return {surface:{...surface,finishedPerformanceMs:performance.now()},colours:colours.size,png,
+      limits:"Single submitted GPU texture diagnostic; NOT page visibility or THREE moving orb acceptance"};
+  } finally {
+    settled = true; clearTimeout(timer); if (r.render === hook) r.render = render;
+    try { if (mapped || buffer.mapState === "mapped") buffer.unmap(); } finally { buffer.destroy(); }
+  }
+}
+
+function pngDimensions(bytes) {
+  if (bytes.length < 24 || bytes.subarray(0,8).toString("hex") !== "89504e470d0a1a0a"
+      || bytes.toString("ascii",12,16) !== "IHDR") throw new Error("invalid PNG dimensions");
+  return {width:bytes.readUInt32BE(16),height:bytes.readUInt32BE(20)};
+}
+
+async function recordClip(cdp, { secs, fps, out, framesDir, viewport, phase, source }) {
+  const frames = [], timing = []; let timestampError = null;
   cdp.ws.onScreencastFrame = async (params) => {
-    frames.push(Buffer.from(params.data, "base64"));
+    const ordinal = frames.length, timestamp = params.metadata?.timestamp;
+    if (ordinal >= 4096) timestampError = "screencast frame bound exceeded";
+    else {
+      frames.push(Buffer.from(params.data, "base64"));
+      timing.push({ordinal,timestamp:typeof timestamp === "number" && Number.isFinite(timestamp) ? timestamp : null});
+      if (typeof timestamp !== "number" || !Number.isFinite(timestamp) || timestamp < 0
+          || (ordinal > 0 && !(timestamp > timing[ordinal-1].timestamp))) timestampError = "invalid/missing/nonincreasing CDP frame timestamp";
+    }
     try {
       await cdp.send("Page.screencastFrameAck", { sessionId: params.sessionId });
     } catch {}
@@ -1073,7 +1155,11 @@ async function recordClip(cdp, { secs, fps, out, framesDir, viewport }) {
   const dir = framesDir || path.join(process.cwd(), `clip-frames-${stamp}`);
   fs.mkdirSync(dir, { recursive: true });
   frames.forEach((b, i) => fs.writeFileSync(path.join(dir, `f${String(i).padStart(4, "0")}.jpg`), b));
-  const result = { frames: frames.length, framesDir: path.resolve(dir) };
+  const timingFile = path.join(dir,"frame-timestamps.json");
+  fs.writeFileSync(timingFile,JSON.stringify({version:1,phase,source,clock:"CDP metadata.timestamp seconds",valid:timestampError === null,
+    error:timestampError,frames:timing,limits:"Actual CDP event timestamps/arrival ordinals; not inferred FPS or visible motion"}));
+  if (timestampError) throw new Error(timestampError);
+  const result = { frames: frames.length, framesDir: path.resolve(dir), timingFile:path.resolve(timingFile), encoderAttempts:[] };
   if (out && frames.length > 0) {
     try {
       const { spawnSync } = require("node:child_process");
@@ -1092,11 +1178,16 @@ async function recordClip(cdp, { secs, fps, out, framesDir, viewport }) {
       for (const codecArgs of attempts) {
         const r = spawnSync("ffmpeg", ["-y", "-framerate", String(measuredFps),
           "-i", path.join(dir, "f%04d.jpg"), ...codecArgs, path.resolve(out)],
-          { stdio: "ignore" });
+          { stdio:["ignore","ignore","pipe"], encoding:"utf8", timeout:5000, maxBuffer:65536, killSignal:"SIGKILL" });
+        result.encoderAttempts.push({codec:codecArgs[1],status:r.status ?? null,signal:r.signal ?? null,
+          errorCode:r.error?.code ?? null,errorMessage:r.error ? String(r.error.message ?? r.error).slice(0,512) : null,
+          stderr:String(r.stderr ?? "").slice(0,8192),stderrTruncated:Buffer.byteLength(String(r.stderr ?? "")) > 8192,
+          limits:{timeoutMs:5000,maxBufferBytes:65536,retainedStderrChars:8192}});
         if (r.status === 0 && fs.existsSync(path.resolve(out))
           && fs.statSync(path.resolve(out)).size > 0) {
           result.video = path.resolve(out);
           result.videoCodec = codecArgs[1];
+          delete result.videoError;
           break;
         }
         result.videoError = `ffmpeg ${codecArgs[1]} exit ${r.status}`;
