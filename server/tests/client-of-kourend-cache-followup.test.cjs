@@ -27,11 +27,20 @@ function read(fn) {
   try { return fn(); } catch (error) { return `unreadable: ${error?.message ?? error}`; }
 }
 
-/** The bit range value of a varp for a given value of the varbit: (varp >> startBit) & mask. */
-function bitsFor(startBit, endBit, value) {
-  const width = endBit - startBit + 1;
-  const mask = (1 << width) - 1;
-  return (value >> startBit) & mask;
+/**
+ * Decoding a varp change for a varbit: the varbit occupies varp bits startBit..endBit. maskShifted = mask << startBit is the
+ * varp bits it occupies; the shifted value (value << startBit) is what a varp holds when the varbit equals `value`. Decode with
+ * (varp & maskShifted) >> startBit. BigInt keeps unsigned 32-bit values exact (endBit can be >= 30).
+ */
+function decodeRows(startBit, endBit, values) {
+  const width = BigInt(endBit - startBit + 1);
+  const mask = (1n << width) - 1n;
+  const maskShifted = mask << BigInt(startBit);
+  const rows = values.map((value) => ({
+    value,
+    shifted: BigInt(value) << BigInt(startBit),
+  }));
+  return { width: Number(width), maskShifted, rows };
 }
 
 test("CACHE LOADS (the only assertion)", () => {
@@ -47,8 +56,10 @@ test("(a) VARBIT BACKING for 12148 and 12151 (VarBitType: baseVar, startBit, end
     const endBit = read(() => v.endBit) ?? "absent";
     console.log(`# DEF varbit ${id} baseVar=${baseVar} startBit=${startBit} endBit=${endBit}`);
     if (typeof startBit === "number" && typeof endBit === "number") {
-      for (const value of [0, 1, 2, 3, 4]) {
-        console.log(`# DEF varbit ${id} decodes varp value ${value} -> bits=${bitsFor(startBit, endBit, value)} (varp ${baseVar})`);
+      const d = decodeRows(startBit, endBit, [0, 1, 2, 3, 4]);
+      console.log(`# DEF varbit ${id} width=${d.width} maskShifted=0x${d.maskShifted.toString(16)} (${d.maskShifted.toString(10)}) in varp ${baseVar}`);
+      for (const row of d.rows) {
+        console.log(`# DEF varbit ${id} value=${row.value} shiftedValue=0x${row.shifted.toString(16)} (${row.shifted.toString(10)}) in varp ${baseVar}`);
       }
     }
   }
