@@ -1,0 +1,451 @@
+// After yarn build: node --test --test-concurrency=1 tests/temple-of-ikov-progression.test.cjs
+// Real cache, production plugins, World and decoded client inputs. Positions, supplies and
+// quest checkpoints are declared setup: these cases do not claim a natural playthrough or rendering.
+process.env.DISABLE_PLAYER_BOTS = '1';
+const assert = require('node:assert/strict'), path = require('node:path');
+const { before, after, test } = require('node:test');
+require('../dist/Server').Server.installProductionPathResolver();
+const { CachePipeline } = require('../dist/game/cache/CachePipeline');
+const { NpcDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
+const { PluginManager: PM } = require('../dist/plugins/PluginManager');
+const { Player } = require('../dist/game/entity/impl/player/Player');
+const { PlayerSession } = require('../dist/net/PlayerSession');
+const { ClientConnection } = require('../dist/net/NetworkBuilder');
+const { MultiChatboxPrompt } = require('../dist/game/model/menu/MultiChatboxPrompt');
+const { getRegisteredQuests } = require('../plugins/quests/QuestRuntime');
+const ClimbLinks = require('../plugins/objects/ClimbLinks');
+let core, quest, serial = 0, originalSubmit, originalWarn, originalError, originalLog;
+const tasks = new Set(), errors = [];
+before(async () => {
+  originalWarn = console.warn; originalError = console.error; originalLog = console.log;
+  console.log = (...args) => {
+    if (args.some(value => value instanceof Error)) errors.push(args.map(String).join(' '));
+    originalLog(...args);
+  };
+  console.warn = (...args) => {
+    if (/\[plugins\].*hook.*(?:threw|failed)/.test(args.map(String).join(' '))) errors.push(args.map(String).join(' '));
+    originalWarn(...args);
+  };
+  console.error = (...args) => { errors.push(args.map(String).join(' ')); originalError(...args); };
+  await CachePipeline.initialize(path.resolve(__dirname, '..'));
+  new NpcDefinitionLoader().load();
+  PM.loadFromDirectory(path.resolve(__dirname, '../plugins')); core = PM.getCoreApi();
+  originalSubmit = core.TaskManager.submit;
+  core.TaskManager.submit = function(task, ...args) { tasks.add(task); return originalSubmit.call(this, task, ...args); };
+  core.RegionManager.init();
+  for (const [x,y] of [[2651,9805],[2639,9764],[2665,9855],[2710,9850],[2646,9870],[3122,3483]]) core.RegionManager.loadMapFiles(x,y);
+  PM.emitServerStartup({});
+  quest = getRegisteredQuests().findLast(q => q.key === 'temple_of_ikov'); assert.ok(quest);
+});
+after(() => {
+  try {
+    if (core) PM.emitServerShutdown({});
+    for (const task of tasks) if (task.isRunning()) task.stop();
+    assert.deepEqual(errors, [], 'no swallowed plugin/engine failures');
+  } finally {
+    console.warn = originalWarn; console.error = originalError; console.log = originalLog;
+    if (core) core.TaskManager.submit = originalSubmit;
+  }
+});
+function turns(n=1) { for (let i=0;i<n;i++) core.World.process(); }
+const where = p => [p.getLocation().getX(),p.getLocation().getY(),p.getLocation().getZ()];
+function object(id,x,y,player=null) {
+  core.RegionManager.loadMapFiles(x,y);
+  const found = player ? core.MapObjects.getPrivateArea(player,id,new core.Location(x,y,0))
+    : (core.MapObjects.mapObjects.get(core.MapObjects.getHash(x,y,0)) ?? []).find(o => o.getId()===id);
+  assert.ok(found, `actual map object ${id} at ${x},${y},0`); return found;
+}
+function templeStairs(id,player) {
+  const matches=[];
+  for(const list of core.MapObjects.mapObjects.values()) for(const candidate of list) {
+    const at=candidate.getLocation();
+    if(at.getZ()!==0||at.getX()<2630||at.getX()>2670||at.getY()<9758||at.getY()>9814)continue;
+    if(core.ObjectDefinition.forPlayer(candidate.getId(),player)?.id===id)matches.push(candidate);
+  }
+  assert.equal(matches.length,1,`one actual visible stairs producer${id} in the loaded Temple of Ikov region`);
+  return matches[0];
+}
+function actor(t,x,y,stage=10) {
+  const channel = {kind:'test',remoteAddress:'127.0.0.1',isOpen:()=>true,send:()=>true,close(){},onData(){},onError(){},onClose(){}};
+  const session = new PlayerSession(channel), p = new Player(session), c = new ClientConnection(channel);
+  c.player=p; session.setPlayer(p); session.setTurnPacketProcessor(()=>c.processTurnPackets());
+  p.setUsername(`ikovqa${++serial}`); p.setLongUsername(core.Misc.stringToLongBigInt(p.getUsername()));
+  p.setAttribute('bot-skip-persistence',true); assert.equal(core.World.getPlayers().add(p),true);
+  p.moveTo(new core.Location(x,y,0)); quest.setStage(p,stage);
+  turns(4); assert.equal(p.isNeedsPlacement(),false); assert.equal(p.isRegistered(),true); assert.ok(p.getHitpoints()>0);
+  const messages=[]; const send=p.sendMessage.bind(p); p.sendMessage=text=>{messages.push(text);return send(text);};
+  const sender=p.getPacketSender(), sendString=sender.sendString.bind(sender);
+  sender.sendString=(text,...args)=>{messages.push(String(text));return sendString(text,...args);};
+  const spawned=[];
+  const objectEvents=[],itemEvents=[],emitObject=PM.emitObjectInteraction.bind(PM),emitItem=PM.emitItemOnObject.bind(PM);
+  t.mock.method(PM,'emitObjectInteraction',event=>{if(event.player===p)objectEvents.push(event);return emitObject(event);});
+  t.mock.method(PM,'emitItemOnObject',event=>{if(event.player===p)itemEvents.push(event);return emitItem(event);});
+  t.after(()=>{
+    for (const npc of spawned) PM.removeNpc(npc);
+    for (const item of [...core.World.getItems()]) if (item.getOwner()===p.getUsername()) {
+      core.ItemOnGroundManager.deregister(item);
+      const at=core.World.getItems().indexOf(item); if(at>=0)core.World.getItems().splice(at,1);
+    }
+    assert.equal(core.World.getItems().some(item=>item.getOwner()===p.getUsername()),false);
+    const index=p.getIndex(); PM.emitPlayerDisconnect({player:p,username:p.getUsername()}); PM.emitPlayerLogout({player:p,username:p.getUsername()});
+    p.closeInterruptibleInterfaces(); p.getMovementQueue().reset(); p.getMovementQueue().walkToReset();
+    core.TaskManager.cancelTasks(p); core.TaskManager.cancelTasks(index); core.World.getPlayers().remove(p);
+    assert.equal(p.isRegistered(),false); assert.equal(core.TaskManager.hasActiveTask(p),false); assert.equal(core.TaskManager.hasActiveTask(index),false);
+  });
+  async function input(packet,n=3) { await c.dispatch([packet]); turns(n); }
+  async function click(id,ox,oy,action='Open',clickType=1,n=4) {
+    const target=object(id,ox,oy,p),before=objectEvents.length;
+    await input({type:'object_option',id,x:ox,y:oy,action,clickType},n);
+    assert.ok(objectEvents.slice(before).some(event=>event.object===target&&event.definition?.id===id&&event.clickType===clickType),
+      `ordinary input reached the actual registered object dispatcher for ${id}`);
+  }
+  function approach(target) {
+    const at=target.getLocation(),def=core.ObjectDefinition.forPlayer(target.getId(),p);
+    const tile=ClimbLinks.landingTile(target,{x:at.getX(),y:at.getY()-1},p.getPrivateArea());
+    assert.ok(tile,'the existing cache reach helper finds a usable approach');
+    p.moveTo(tile);turns(3);assert.equal(p.isNeedsPlacement(),false);assert.deepEqual(where(p),[tile.getX(),tile.getY(),tile.getZ()]);
+    assert.equal(core.PathFinder.reachedObject(p,at.getX(),at.getY(),def.getSizeX(),def.getSizeY(),target.getFace(),target.getType(),def.getBlockingMask()),true,
+      'the settled actor actually reaches this rotated cache object before input');
+  }
+  function add(id,n=1) {const was=p.getInventory().getAmount(id);p.getInventory().adds(id,n);assert.equal(p.getInventory().getAmount(id),was+n);}
+  async function talk(id,nx,ny) {
+    const npc=PM.spawnNpc({id,x:nx,y:ny,z:0,owner:p,ownerOnly:true,wanderRadius:0}); assert.ok(npc);spawned.push(npc); turns(3);
+    assert.equal(npc.isRegistered(),true);assert.ok(npc.getIndex()>=0);assert.equal(core.World.getNpcs().get(npc.getIndex()),npc);
+    assert.equal(p.isNeedsPlacement(),false);assert.ok(p.getLocation().isWithinDistance(npc.getLocation(),3));
+    assert.ok([...p.getLocalNpcs()].includes(npc),'the actual visible actor is available before Talk-to');
+    const actions=core.NpcDefinition.forId(id).getActions(); const clickType=actions.indexOf('Talk-to')+1;assert.ok(clickType>0);
+    await input({type:'npc_option',index:npc.getIndex(),clickType},4);return npc;
+  }
+  async function resume() {
+    const group=p.getPacketSender().getChatboxGroupId(); assert.ok(group>=0,'real mounted source chatbox');
+    await input({type:'dialogue_continue',widgetId:(group<<16)|(group===229?4:5),childIndex:-1},1);
+  }
+  return {p,c,messages,input,click,add,talk,resume,approach,itemEvents};
+}
+test('the active map contains the displaced stairs and six canonical ice chests',t=>{
+  const f=actor(t,2653,9806,0);
+  // Compact source diagnostics bind connected geometry to the cache actually loaded by this run.
+  const rows=[];
+  for(const list of core.MapObjects.mapObjects.values()) for(const o of list) {
+    const [x,y,z]=where({getLocation:()=>o.getLocation()});
+    if(z!==0)continue;
+    if((x>=2634&&x<=2653&&y>=9814&&y<=9823)||(x>=2647&&x<=2656&&y>=9800&&y<=9810)
+      ||(o.getId()>=86&&o.getId()<=104&&x>=2630&&x<=2750&&y>=9758&&y<=9915)||(o.getId()===102&&x>=3110&&x<=3130&&y>=3470&&y<=3495)) {
+      const visible=core.ObjectDefinition.forPlayer(o.getId(),f.p);
+      rows.push([o.getId(),x,y,o.getType(),o.getFace(),core.ObjectDefinition.forId(o.getId()).getName(),visible.id,visible.getName()]);
+    }
+  }
+  // Emit bounded rows before any mapping assertion. Provider raw-line limits cannot clip a giant array.
+  for(const row of rows.sort((a,b)=>a[1]-b[1]||a[2]-b[2]||a[0]-b[0]))console.log('IKOV_CACHE_LOC',JSON.stringify(row));
+  const down=templeStairs(98,f.p),up=templeStairs(96,f.p);
+  assert.ok(down.getLocation().getDistance(up.getLocation())>4,'the real endpoints are displaced beyond generic pairing distance');
+  for (const [x,y] of [[2710,9850],[2719,9838],[2729,9850],[2747,9848],[2738,9835],[2745,9821]]) object(103,x,y);
+});
+test('boots stairs refuse darkness through the ordinary descend input',async t=>{
+  const f=actor(t,2653,9806,0),stairs=templeStairs(98,f.p);f.approach(stairs);
+  await f.click(98,stairs.getLocation().getX(),stairs.getLocation().getY(),'Climb-down');
+  assert.ok(f.messages.some(s=>s.includes("It's a bit dark down here!")), 'the quest explains why descent is refused');
+  assert.ok(f.p.getLocation().getY()>9800,'no descent without light');
+});
+test('boots stairs descend with a lit source and return to the dungeon',async t=>{
+  // Same canonical startup-data producer used by the existing traversal fixture.
+  const { GroundItemSpawnDefinitionLoader } = require('../dist/game/definition/loader/impl/GroundItemSpawnDefinitionLoader');
+  assert.equal(new GroundItemSpawnDefinitionLoader().load(),true,'canonical ground-spawn loader');
+  const f=actor(t,2653,9806,0);f.add(core.ItemIdentifiers.LIT_TORCH);
+  // Supplied cutting tool, not a naturally earned item or injected quest outcome.
+  // The existing Web producer gives this real tool chance1; no RNG stub/retry.
+  const boots=core.ItemIdentifiers.BOOTS_OF_LIGHTNESS,tool=core.ItemIdentifiers.WILDERNESS_SWORD_1;
+  const webId=733,slashedId=734; // exact pinned242 definitions and existing Web producer
+  f.add(tool);assert.equal(f.p.getInventory().getAmount(boots),0);
+  const toolDefinition=core.ItemDefinition.forId(tool);
+  assert.equal(toolDefinition.getName(),'Wilderness sword 1');
+  assert.equal(toolDefinition.getEquipmentType().getSlot(),core.Equipment.WEAPON_SLOT);
+  const down=templeStairs(98,f.p);f.approach(down);
+  await f.click(98,down.getLocation().getX(),down.getLocation().getY(),'Climb-down',1,8);
+  assert.ok(f.p.getLocation().getY()>=9759&&f.p.getLocation().getY()<=9768,'the lit descend reaches the boots room');
+  // Guide boots-room bounds select actual map data; no web coordinate is invented.
+  const webs=[];
+  for(const list of core.MapObjects.mapObjects.values())for(const web of list){
+    const at=web.getLocation();
+    if(web.getId()===webId&&at.getZ()===0&&at.getX()>=2637&&at.getX()<=2654&&at.getY()>=9759&&at.getY()<=9767)webs.push(web);
+  }
+  assert.equal(webs.length,1,'setup: one actual733 web in the guide boots-room bounds');
+  const web=webs[0],at=web.getLocation().clone(),area=web.getPrivateArea(),shape=web.getType(),face=web.getFace();
+  assert.equal(area,f.p.getPrivateArea());
+  assert.equal(core.MapObjects.getPrivateArea(f.p,webId,at),web,'setup: ordinary object lookup resolves that actual standing web');
+  assert.equal(core.ObjectDefinition.forPlayer(webId,f.p).getInteractions()[0],'Slash');
+  const stock=core.World.getItems().filter(item=>item.isStaticSpawn()&&!item.isPendingRemoval()&&item.getItem().getId()===boots&&item.getPosition().equals(new core.Location(2654,9767,0)));
+  assert.equal(stock.length,1,'setup: actual generated static boots stock, not an injected item');
+  const ground=stock[0];assert.equal(ground.getPrivateArea(),f.p.getPrivateArea());
+  assert.equal(core.ItemOnGroundManager.canOperate(f.p,ground,core.ItemOnGroundManager.takeOperation(boots)),true);
+  const taken=[],emitCustom=PM.emitCustomEvent.bind(PM);
+  t.mock.method(PM,'emitCustomEvent',(name,event)=>{
+    if(name==='ground-items:taken'&&event.player===f.p)taken.push(event);
+    return emitCustom(name,event);
+  });
+  // Exactly one ordinary Slash: the production path walks to the real object,
+  // cuts with its real carried tool and runs its own delayed replacement.
+  await f.click(webId,at.getX(),at.getY(),'Slash',1,32);
+  assert.ok(f.messages.includes('You slash the web apart.'));
+  const slashed=core.MapObjects.getPrivateArea(f.p,slashedId,at);
+  assert.ok(slashed,'ordinary slash replaces the standing web');
+  assert.equal(slashed.getType(),shape);assert.equal(slashed.getFace(),face);assert.equal(slashed.getPrivateArea(),area);
+  assert.equal(core.MapObjects.getPrivateArea(f.p,webId,at),null);
+  // One ordinary ground Take keeps the actual stack identity through arrival.
+  // No moveTo/teleport, inventory add or quest flag supplies the boots.
+  await f.input({type:'ground_item_action',itemId:boots,x:2654,y:9767,option:'Take',stackId:ground.getId()},32);
+  assert.equal(f.p.getInventory().getAmount(boots),1);
+  assert.ok(taken.some(event=>event.groundItem===ground&&event.itemId===boots&&event.amount===1&&event.source==='pickup'));
+  assert.ok(ground.isPendingRemoval()||!core.World.getItems().includes(ground),'the physical stock was removed by pickup');
+  const up=templeStairs(96,f.p);
+  const stand=ClimbLinks.landingTile(up,{x:f.p.getLocation().getX(),y:f.p.getLocation().getY()},f.p.getPrivateArea());
+  assert.ok(stand,'setup: existing geometry helper finds a climbable return stand');
+  await f.input({type:'move',worldX:stand.getX(),worldY:stand.getY(),modifierFlags:0,run:false},32);
+  assert.deepEqual(where(f.p),[stand.getX(),stand.getY(),stand.getZ()],'ordinary walk returns to the stairs without placement bypass');
+  await f.click(96,up.getLocation().getX(),up.getLocation().getY(),'Climb-up',1,12);
+  assert.ok(f.p.getLocation().getY()>=9803&&f.p.getLocation().getY()<=9810,'the climb returns to the main room');
+  assert.equal(f.p.getInventory().getAmount(boots),1,'the acquired optional boots survive the ordinary return');
+});
+test('using the physical lever on its bracket consumes it once and creates the Pull interaction',async t=>{
+  const f=actor(t,2671,9805); f.add(core.ItemIdentifiers.LEVER); object(86,2671,9804);
+  await f.input({type:'item_on_object',widgetId:3214,objectId:86,itemId:core.ItemIdentifiers.LEVER,slot:f.p.getInventory().getSlotForItemId(core.ItemIdentifiers.LEVER),x:2671,y:9804},5);
+  assert.ok(f.itemEvents.some(event=>event.objectId===86&&event.itemId===core.ItemIdentifiers.LEVER),'native item-on-object dispatch reached the physical bracket producer');
+  assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.LEVER),0,'fitting consumes the physical lever');
+  assert.ok(f.messages.some(s=>s.includes('fit the lever into the bracket')));
+  const fitted=core.MapObjects.getPrivateArea(f.p,87,new core.Location(2671,9804,0));
+  assert.ok(fitted,'the fitted lever is a real object visible to the player');
+  assert.ok(core.ObjectDefinition.forId(fitted.getId()).getInteractions().some(s=>s==='Pull'),'the fitted lever has a native Pull menu');
+});
+test('searching the trapped lever at 42 Thieving disarms its actual trap',async t=>{
+  const f=actor(t,2665,9854);const sm=f.p.getSkillManager();sm.setMaxLevel(core.Skill.THIEVING,42);sm.setCurrentLevel(core.Skill.THIEVING,42);
+  assert.equal(sm.getCurrentLevel(core.Skill.THIEVING),42);
+  await f.click(91,2665,9855,'Search for traps',2,5);
+  assert.ok(f.messages.some(s=>s.includes('disable the trap')),'successful search has the canonical trap feedback');
+});
+test('the ice area can supply arrows from its six actual chest producers',async t=>{
+  const f=actor(t,2710,9849); const arrows=core.ItemIdentifiers.ICE_ARROWS;assert.equal(f.p.getInventory().getAmount(arrows),0);
+  for(const [x,y] of [[2710,9850],[2719,9838],[2729,9850],[2747,9848],[2738,9835],[2745,9821]]) {
+    f.approach(object(103,x,y,f.p));
+    await f.click(103,x,y,'Open');
+    const location=new core.Location(x,y,0);
+    const found=core.MapObjects.getPrivateArea(f.p,104,location)??core.MapObjects.getPrivateArea(f.p,103,location);assert.ok(found);
+    if(found.getId()===104)await f.click(104,x,y,'Search');
+    if(f.p.getInventory().getAmount(arrows)>0)break;
+  }
+  const count=f.p.getInventory().getAmount(arrows);assert.ok(count>=1&&count<=5,`one containing chest supplies1..5 arrows, actual=${count}`);
+});
+test('first Winelda conversation without roots plays the introduction',async t=>{
+  const f=actor(t,2654,9876); assert.equal(f.p.getInventory().getAmount(core.ItemIdentifiers.LIMPWURT_ROOT),0);
+  await f.talk(core.NpcIdentifiers.WINELDA,2655,9876);
+  const line=f.p.getDialogueManager().getCurrent();assert.ok(line,'ordinary talk opens a real dialogue');
+  assert.match(line.getText(),/Hehe! We see you're in a pickle!/);
+});
+test('wearing Lucien\'s pendant selects the hostile Guardian greeting',async t=>{
+  const f=actor(t,2644,9897);f.p.getEquipment().setItem(core.Equipment.AMULET_SLOT,new core.Item(core.ItemIdentifiers.PENDANT_OF_LUCIEN,1));
+  assert.equal(f.p.getEquipment().get(core.Equipment.AMULET_SLOT).getId(),core.ItemIdentifiers.PENDANT_OF_LUCIEN);
+  await f.talk(core.NpcIdentifiers.GUARDIAN_OF_ARMADYL,2645,9897);
+  const line=f.p.getDialogueManager().getCurrent();assert.ok(line);assert.match(line.getText(),/foul agent of Lucien/);
+});
+function restoreEncounterDoor(t) {
+  const closed=object(93,2646,9870);
+  t.after(()=>{if(!core.MapObjects.exists(closed))core.ObjectManager.register(closed,true);});
+}
+// Criterion correction after NATIVE001/reviewer015: face1 at y9870 blocks
+// 9870->9871. Original immutable16 receipts remain failed and unchanged.
+function gateWitness(label, actor, turn) {
+  const p=actor.p;
+  const leaves=[9870,9871].flatMap(y=>(core.MapObjects.mapObjects.get(core.MapObjects.getHash(2646,y,0))??[])
+    .map(o=>({id:o.getId(),type:o.getType(),face:o.getFace(),at:where(o)})));
+  const row={label,turn,at:where(p),registered:p.isRegistered(),placement:p.isNeedsPlacement(),
+    queue:p.getMovementQueue().size(),ignoreClipping:p.hasFlag('movement:ignore-clipping'),
+    stage:quest.getStage(p),leaves,clips:[9869,9870,9871,9872].map(y=>[2646,y,0,core.RegionManager.getClipping(2646,y,0,p.getPrivateArea())])};
+  console.log('IKOV_GATE_EDGE',JSON.stringify(row));
+  return row;
+}
+async function traceGateMove(label, actor) {
+  const rows=[gateWitness(label,actor,'before-input')];
+  await actor.input({type:'move',worldX:2646,worldY:9872,modifierFlags:0,run:false},0);
+  for(let i=1;i<=8;i++){turns();rows.push(gateWitness(label,actor,i));}
+  return rows;
+}
+test('encountering the Warrior cannot knock the owner through the unearned door',async t=>{
+  restoreEncounterDoor(t);const a=actor(t,2646,9869);
+  // Observe the real owner's local-NPC update data during the existing World turns.
+  // This wrapper calls and returns the original producer unchanged; no flags,
+  // text, actor views, emitters or network scheduling are injected.
+  const session=a.p.getSession(),createActorUpdates=session.createActorUpdates,updates=[];
+  assert.equal(typeof createActorUpdates,'function','native session exposes its compiled actor-update producer');
+  t.mock.method(session,'createActorUpdates',function(...args){
+    const view=Reflect.apply(createActorUpdates,this,args),npc=args[0];
+    if(npc!==a.p&&npc.getId?.()===core.NpcIdentifiers.FIRE_WARRIOR_OF_LESARKUS&&npc.getOwner?.()===a.p){
+      updates.push({npc,view:{...view},tick:core.World.getProcessCycle(),
+        registered:npc.isRegistered()&&core.World.getNpcs().get(npc.getIndex())===npc,
+        local:a.p.getLocalNpcs().includes(npc),ownerOnly:npc.isOwnerOnly(),
+        samePlane:npc.getLocation().getZ()===a.p.getLocation().getZ(),
+        sameArea:npc.getPrivateArea()===a.p.getPrivateArea()});
+    }
+    return view;
+  });
+  // Observe the original fixture channel boundary, including its normal batched flush.
+  // Preserve every original call, argument and return; no extra tick/flush or packet.
+  assert.deepEqual(session.npcSyncState.indices,[],'setup: owner has no pre-existing encoded local NPC state');
+  assert.equal(a.p.getLocalNpcs().length,0,'setup: owner has no pre-existing local NPCs; never clear or seed them');
+  const channel=session.channel,send=channel.send,sent=[];let sentBytes=0;
+  assert.equal(typeof send,'function','the owner has its original native channel');
+  t.mock.method(channel,'send',function(...args){
+    assert.ok(Buffer.isBuffer(args[0]),'normal channel output is binary');
+    const bytes=Buffer.from(args[0]);
+    assert.ok(sent.length<64&&sentBytes+bytes.length<=1024*1024,'bounded original channel observations');
+    const result=Reflect.apply(send,this,args);
+    sent.push({bytes:bytes.toString('base64'),level:a.p.getLocation().getZ(),result});sentBytes+=bytes.length;
+    return result;
+  });
+  await a.click(93,2646,9870,'Open',1,8);
+  const warriors=[...core.World.getNpcs()].filter(n=>n.getId()===core.NpcIdentifiers.FIRE_WARRIOR_OF_LESARKUS&&n.getOwner()===a.p);
+  assert.equal(warriors.length,1,'the ordinary input spawns exactly one owned quest encounter');
+  const warrior=warriors[0];
+  // Exact overhead lines from the qualified Temple of Ikov opening-door transcript.
+  // Returned pre-encoding NPC update evidence is not rendered-overhead/pixel proof.
+  for(const text of ['You will not pass!','Amitus! Setitii!']){
+    const spoken=updates.filter(row=>row.view.forcedChat===text);
+    assert.ok(spoken.length>0,`ordinary owner NPC updates contain exact overhead: ${text}`);
+    assert.ok(spoken.every(row=>row.npc===warrior&&row.registered&&row.local&&row.ownerOnly&&row.samePlane&&row.sameArea),
+      'overhead updates belong to the registered local owner-only Warrior in the owner plane and area');
+    assert.equal(a.messages.some(message=>message.includes(text)),false,'intended overhead does not fall back to chatbox text');
+  }
+  // Reuse the existing client batch/NPC consumers without registering a TS loader
+  // in this World process (the existing Mimic test uses the same child boundary).
+  // These are ONLY bytes actually passed to this owner's original channel.send.
+  assert.ok(sent.length>0,'the normal flush called the original owner channel');
+  assert.ok(sent.every(row=>row.result===true),'the original fixture channel accepted each observed send');
+  const childSource=String.raw`
+    const assert=require('node:assert/strict'),fs=require('node:fs');
+    const {decodeBatchedServerPackets}=require('../client/network/packet/ServerBinaryDecoder');
+    const {NpcUpdateDecoder}=require('../client/game/sync/NpcUpdateDecoder');
+    const input=JSON.parse(fs.readFileSync(0,'utf8')),decoder=new NpcUpdateDecoder(),types=new Map(),rows=[],spawns=[];
+    assert.ok(input.sent.length>0&&input.sent.length<=64);
+    let frames=0,total=0;
+    for(const item of input.sent){
+      const bytes=Buffer.from(item.bytes,'base64');total+=bytes.length;assert.ok(total<=1024*1024);
+      const batch=decodeBatchedServerPackets(bytes);assert.equal(batch.stalled,false,'the existing client batch consumer accepts the actual complete send');
+      for(const message of batch.messages){
+        if(message.type!=='npc_info')continue;
+        const payload=message.payload;
+        // P9 is a same-plane main-world fixture; real root tile and flags come from the wire.
+        // clientCycle is an unused-for-say consumer fixture parameter, not retail timing.
+        const frame=decoder.decode(payload.packet,{large:payload.large,crossFloor:payload.crossFloor,
+          loopCycle:payload.loopCycle,clientCycle:0,localTileX:payload.rootTileX,localTileY:payload.rootTileY,
+          rootTileX:payload.rootTileX,rootTileY:payload.rootTileY,level:item.level});frames++;
+        for(const index of frame.removals)types.delete(index);
+        for(const spawn of frame.spawns){types.set(spawn.npcId,spawn.typeId);spawns.push({index:spawn.npcId,typeId:spawn.typeId,tick:payload.loopCycle});}
+        for(const [index,block]of frame.updateBlocks){
+          if(block.say===undefined)continue;
+          assert.ok(frame.localNpcIds.includes(index),'decoded overhead belongs to a retained local NPC');
+          assert.ok(types.has(index),'decoded overhead has a real decoded spawn/type association');
+          rows.push({index,typeId:types.get(index),text:block.say,tick:payload.loopCycle});
+        }
+      }
+    }
+    assert.ok(frames>0,'actual channel output contains decoded NPC_INFO');
+    process.stdout.write(JSON.stringify({frames,rows,spawns}));
+  `;
+  const {spawnSync}=require('node:child_process');
+  const decoded=spawnSync(process.execPath,[require.resolve('ts-node/dist/bin.js'),'--transpile-only',
+    '--compiler-options','{"target":"es2020","module":"commonjs"}','-e',childSource],
+    {cwd:path.resolve(__dirname,'..'),input:JSON.stringify({sent}),encoding:'utf8',timeout:10000,maxBuffer:1024*1024});
+  assert.ifError(decoded.error);assert.equal(decoded.signal,null,'existing protocol consumer child completes');
+  assert.equal(decoded.status,0,`existing protocol consumer failed: ${decoded.stderr}`);
+  assert.equal(decoded.stderr,'','protocol consumer emits no hidden warnings/errors');
+  const wire=JSON.parse(decoded.stdout);
+  assert.ok(wire.spawns.some(row=>row.index===warrior.getIndex()&&row.typeId===warrior.getId()),
+    'the unchanged client decoder received the actual owned Warrior index and type on this channel');
+  for(const text of ['You will not pass!','Amitus! Setitii!']){
+    const encoded=wire.rows.filter(row=>row.text===text);
+    assert.ok(encoded.length>0,`actual owner channel decodes exact NPC overhead: ${text}`);
+    assert.ok(encoded.every(row=>row.index===warrior.getIndex()&&row.typeId===warrior.getId()&&
+      updates.some(update=>update.npc===warrior&&update.view.forcedChat===text&&update.tick===row.tick&&
+        update.registered&&update.local&&update.ownerOnly&&update.samePlane&&update.sameArea)),
+      'encoded say is bound to the same real registered local owned Warrior and producer tick');
+  }
+  console.log('IKOV_WARRIOR_WIRE',JSON.stringify({layer:'owner-fixture-channel-send/existing-client-decoders',
+    npcIndex:warrior.getIndex(),npcId:warrior.getId(),npcInfoFrames:wire.frames,
+    batches:sent.map(row=>{const bytes=Buffer.from(row.bytes,'base64');return {bytes:bytes.length,
+      sha256:require('node:crypto').createHash('sha256').update(bytes).digest('hex'),originalSendResult:row.result};}),
+    overhead:wire.rows.filter(row=>row.index===warrior.getIndex()&&row.typeId===warrior.getId()&&
+      ['You will not pass!','Amitus! Setitii!'].includes(row.text))}));
+  assert.ok(a.p.getLocation().getY()<9870,'the encounter cannot knock the owner through the locked door');
+});
+test('a character credited with the Warrior kill can cross the same door from its south approach',async t=>{
+  restoreEncounterDoor(t);const a=actor(t,2646,9869,60);
+  await a.click(93,2646,9870,'Open',1,8);
+  await traceGateMove('authorized-positive',a);
+  assert.equal(a.p.getLocation().getX(),2646);assert.equal(a.p.getLocation().getZ(),0);
+  assert.ok(a.p.getLocation().getY()>=9871,'positive route control: the same doorway is traversable when earned');
+});
+test('an independent bystander cannot walk orthogonally through another player\'s encounter gate',async t=>{
+  restoreEncounterDoor(t);const a=actor(t,2646,9869),b=actor(t,2646,9868);
+  await a.click(93,2646,9870,'Open',1,8);
+  b.p.moveTo(new core.Location(2646,9869,0));turns(3);
+  assert.equal(b.p.isNeedsPlacement(),false);assert.deepEqual(where(b.p),[2646,9869,0]);
+  const trace=await traceGateMove('independent-bystander-corrected-edge',b);
+  assert.ok(trace.every(row=>row.registered&&!row.placement&&!row.ignoreClipping),'bystander remains a settled ordinary actor without passage authorization');
+  assert.ok(trace.every(row=>row.at[0]===2646&&row.at[2]===0),'bounded ordinary route remains on the tested column and plane');
+  assert.ok(trace.some(row=>row.at[1]===9870),'positive approach witness: the bystander reaches the near-side edge, rather than being held by an unrelated obstruction');
+  assert.ok(trace.every(row=>row.at[1]<9871),'a separate actor cannot cross the actual north edge9870->9871');
+});
+test('the registered completion reward preserves an acquired pair of boots and pays XP once',t=>{
+  const f=actor(t,3122,3483,70),boots=core.ItemIdentifiers.BOOTS_OF_LIGHTNESS;f.add(boots);
+  const sm=f.p.getSkillManager(),ranged=sm.getExperience(core.Skill.RANGED),fletching=sm.getExperience(core.Skill.FLETCHING);
+  assert.equal(quest.complete(f.p,{scroll:false,announce:false}),true);
+  assert.equal(f.p.getInventory().getAmount(boots),1,'completion must not grant another dungeon pickup');
+  assert.equal(sm.getExperience(core.Skill.RANGED)-ranged,10500);assert.equal(sm.getExperience(core.Skill.FLETCHING)-fletching,8000);
+  assert.equal(quest.complete(f.p,{scroll:false,announce:false}),false);assert.equal(f.p.getInventory().getAmount(boots),1);
+  assert.equal(sm.getExperience(core.Skill.RANGED)-ranged,10500);assert.equal(sm.getExperience(core.Skill.FLETCHING)-fletching,8000);
+});
+
+// The observed sequence list contains his entrance teleport as well as combat.
+// This checks the loaded server role, not the rendered size of an animated model.
+test('the Fire Warrior does not use his smoke-puff entrance as a defence animation', () => {
+  const core = PM.getCoreApi();
+  const id = core.CacheDefinitions.getNpcId('ikov_firewarrior');
+  assert.equal(id, 3448, 'the active cache resolves the quest actor');
+  const entrance = core.CacheDefinitions.getSeqId('human_smokepuff_tele_appear');
+  assert.equal(entrance, 803, 'the candidate is an entrance teleport, not a block');
+  const warrior = core.NPC.create(id, new core.Location(2646, 9867, 0));
+  assert.equal(warrior.getAttackAnim(), core.CacheDefinitions.getSeqId('human_caststrike'),
+    'positive control: the observed spell remains his attack');
+  assert.equal(warrior.getCurrentDefinition().getDeathAnim(), 836,
+    'positive control: the observed death retains its role');
+  assert.notEqual(warrior.getBlockAnim(), entrance, 'taking damage must not replay the entrance teleport');
+  assert.equal(warrior.getBlockAnim(), core.CacheDefinitions.getSeqId('human_unarmedblock'),
+    'an unclassified entrance must leave the human rig default intact');
+});
+
+test('the animation loader preserves explicitly configured creature combat roles', () => {
+  const core = PM.getCoreApi();
+  const mole = core.NpcDefinition.forId(5779);
+  assert.deepEqual([mole.getAttackAnim(), mole.getDefenceAnim(), mole.getDeathAnim()], [3312, 3311, 3310]);
+});
+
+test('captured combat roles retain spawn-named attacks and defensive teleports',()=>{
+  const spawn=core.NpcDefinition.forId(10),abyssal=core.NpcDefinition.forId(415);
+  assert.equal(core.CacheDefinitions.getSeqName(1540),'demon_spawn_attack');
+  assert.deepEqual([spawn.getAttackAnim(),spawn.getDefenceAnim(),spawn.getDeathAnim()],[1540,1542,1541],
+    'a spawn word in an actual captured attack/parry/death does not erase its combat role');
+  assert.equal(core.CacheDefinitions.getSeqName(2309),'abyssal_demon_teleport');
+  assert.equal(abyssal.getDefenceAnim(),2309,'the capture-supported defensive blink remains a block');
+});
+test('an unnamed observed candidate still fills a missing role in a mixed list',t=>{
+  // Inject only the legacy untyped observed-list input. The cache, resolver, configured
+  // roles and resulting NpcDefinition are real; this is not a new live-capture claim.
+  const unnamed=7145;
+  assert.equal(core.CacheDefinitions.getSeqName(unnamed),null,'the active cache leaves this observed legacy candidate unnamed');
+  const loader=new NpcDefinitionLoader(),read=loader.read.bind(loader);
+  t.mock.method(loader,'read',(directory,name)=>name==='npc-animations.json'
+    ? {'3448':[unnamed,803,711,836]} : read(directory,name));
+  t.after(()=>{t.mock.restoreAll();new NpcDefinitionLoader().load();});
+  assert.equal(loader.load(),true);
+  const warrior=core.NpcDefinition.forId(3448);
+  assert.equal(warrior.getAttackAnim(),711);assert.equal(warrior.getDeathAnim(),836);
+  assert.equal(warrior.getDefenceAnim(),unnamed,'an unknown name is still eligible; a named entrance does not become a block');
+});

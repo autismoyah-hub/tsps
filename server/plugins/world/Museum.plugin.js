@@ -48,6 +48,8 @@ const SOUND_KUDOS = 3653;
 const DIG_SITE_KEY = "the_dig_site";
 const WHAT_LIES_BELOW_KEY = "what_lies_below";
 const TEMPLE_OF_IKOV_KEY = "temple_of_ikov";
+const IKOV_SIDE_ATTRIBUTE = "temple-of-ikov:side";
+const IKOV_LEGACY_SIDE_ATTRIBUTE = "quest.temple_of_ikov.side";
 const EMPTY_LORD_KEY = "curse_of_the_empty_lord";
 
 const KUDOS_INFO_INTERFACE = 600; // cache gameval vm_kudos_info
@@ -645,11 +647,11 @@ function answerMinasCondition({ player, npcId, stepId }) {
   }
   if (stepId === MINAS_TEMPLE_GUARDIANS) {
     return isQuestComplete(player, TEMPLE_OF_IKOV_KEY)
-      && Number(player.getAttribute("quest.temple_of_ikov.side")) === 1;
+      && Number(player.getAttribute(IKOV_SIDE_ATTRIBUTE) ?? player.getAttribute(IKOV_LEGACY_SIDE_ATTRIBUTE)) === 1;
   }
   if (stepId === MINAS_TEMPLE_LUCIEN) {
     return isQuestComplete(player, TEMPLE_OF_IKOV_KEY)
-      && Number(player.getAttribute("quest.temple_of_ikov.side")) === 2;
+      && Number(player.getAttribute(IKOV_SIDE_ATTRIBUTE) ?? player.getAttribute(IKOV_LEGACY_SIDE_ATTRIBUTE)) === 2;
   }
   const key = MINAS_QUESTS.get(stepId);
   if (!key) return null;

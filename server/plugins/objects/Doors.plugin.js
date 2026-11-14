@@ -93,6 +93,7 @@ const NAMELESS_DOOR_LEAF_IDS = Object.freeze({
   // tick 940, 239 tick 1649); nameless in the cache, so ObjectIdentifiers has no property for them.
   FARMING_GUILD_DOOR_LEFT_OPEN: 34465,
   FARMING_GUILD_DOOR_RIGHT_OPEN: 34466,
+  IKOV_LUCIEN_DOOR_OPEN: 11403, // ikov_luciendoor_open, cache242 same-model inactive leaf of102
 });
 
 let SELF_OPENING_DOOR_IDS, IN_PLACE_DOOR_IDS, OWN_TILE_DOOR_IDS, SINGLE_DOOR_OPEN_IDS, COMPOSITE_DOOR_OPENINGS, WOODEN_GATES, WOODEN_GATE_BY_ID;
@@ -157,6 +158,7 @@ function defineDoorData({ ObjectIdentifiers: O }) {
   // interior doors (DOOR_499 closed -> DOOR_498 open) are inverted: the open "Close"-only leaf
   // carries the lower id, so the ascending scan never sees the pair.
   SINGLE_DOOR_OPEN_IDS = new Map([
+    [O.DOOR_13, NAMELESS_DOOR_LEAF_IDS.IKOV_LUCIEN_DOOR_OPEN],
     // Generic trapdoors have distinct open models, two ids after their closed variants.
     [O.TRAPDOOR_4, O.TRAPDOOR_6],
     [O.TRAPDOOR_5, O.TRAPDOOR_7],
@@ -425,6 +427,29 @@ function defineDoorData({ ObjectIdentifiers: O }) {
   // crossRows is a gate more than one tile thick whose tiles the map blocks: the player is carried
   // across, from the low side to the high side or back, along their own row.
   PASS_THROUGH_GATES = Object.freeze([
+    // Ikov cache242/2757 boundaries. Keep the existing blocker/walkOver
+    // mechanism while the quest authorizes each actor through door:toggle.
+    // Rotated same-id leaves and the standard two-tick close are presentation
+    // defaults, not a claimed retail capture of these openings.
+    Object.freeze({
+      closed: [[O.GATE_10, 2662, 9803, 0, 3], [O.GATE_11, 2661, 9803, 0, 3]],
+      opened: [
+        [NAMELESS_DOOR_LEAF_IDS.INVISWALL, 2662, 9803, 0, 3],
+        [NAMELESS_DOOR_LEAF_IDS.INVISWALL, 2661, 9803, 0, 3],
+        [O.GATE_10, 2662, 9802, 0, 0], [O.GATE_11, 2661, 9802, 0, 2],
+      ],
+      crossY: 9803, walkOver: true, closeTicks: 2,
+    }),
+    Object.freeze({
+      closed: [[O.DOOR_10, 2648, 9857, 0, 1]],
+      opened: [[NAMELESS_DOOR_LEAF_IDS.INVISWALL, 2648, 9857, 0, 1], [O.DOOR_10, 2648, 9858, 0, 2]],
+      crossY: 9858, walkOver: true, closeTicks: 2,
+    }),
+    Object.freeze({
+      closed: [[O.DOOR_11, 2646, 9870, 0, 1]],
+      opened: [[NAMELESS_DOOR_LEAF_IDS.INVISWALL, 2646, 9870, 0, 1], [O.DOOR_11, 2646, 9871, 0, 2]],
+      crossY: 9871, walkOver: true, closeTicks: 2,
+    }),
     // Death Plateau: Harold's door (233/03247.txt:4726-4744, and leaving at :5755-5783). The doorway gets inviswall
     // 38848 and the open door the tile south; the player walks over, and the door is back two ticks later. Entering,
     // the quest knocks first ("You knock on the door.", "Harold: Come in!") and opens it through door:open.
