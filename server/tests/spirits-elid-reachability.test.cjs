@@ -361,6 +361,9 @@ test("sourced out-of-range sample: SHOES_TILE, reported", () => {
 // key (or any item) started outside sight.
 // ---------------------------------------------------------------------------------------------------------
 const RETAIL_ORIGIN = new Location(3428, 2929, 0);
+// The other tiles of the same retail walk (recording 3018): the local PlayerInfo coordinate at line 2565 and the
+// ground click target at line 2554. Report-only starts.
+const RETAIL_WALK_TILES = [new Location(3426, 2929, 0), new Location(3427, 2928, 0)];
 const PROJ_FLAG_NAMES = Object.getOwnPropertyNames(RegionManager)
   .filter((k) => /^PROJECTILE_|^UNKNOWN$|^UNLOADED_TILE$/.test(k) && typeof RegionManager[k] === "number")
   .map((k) => [k, RegionManager[k]]);
@@ -461,12 +464,15 @@ test("REACH 3a': what blocks the projectile line from each start to the key (por
   const starts = [["ghaslor-spawn", GHASLOR_SPAWN], ["shoes", SHOES_TILE], ["east-route-end", new Location(3433, 2928, 0)],
     ["retail-origin", RETAIL_ORIGIN], ["in-range-seed", IN_RANGE_SEED], ["walk-proof-start", new Location(3421, 2927, 0)]];
   console.log(`# REACH 3a' keyTile clip=0x${RegionManager.getProjectileClipping(KEY_TILE.getX(), KEY_TILE.getY(), 0, null).toString(16)} blockedBy=${JSON.stringify(flagNames(RegionManager.getProjectileClipping(KEY_TILE.getX(), KEY_TILE.getY(), 0, null)))} objects=${JSON.stringify(objectsAt(KEY_TILE.getX(), KEY_TILE.getY()))}`);
+  const mismatches = [];
   for (const [label, from] of starts) {
     const port = rayTrace(from.getX(), from.getY(), KEY_TILE.getX(), KEY_TILE.getY());
     const production = RegionManager.canProjectileAttackBounds(from, KEY_TILE, 1, 1, 1, 1, null);
     console.log(`# REACH 3a' ray ${label} from=${tileKey(from)} portBlocked=${port.blocked} productionClear=${production} hits=${JSON.stringify(port.hits.slice(0, 4))}`);
-    assert.equal(!port.blocked, production, `the ray port agrees with RegionManager.canProjectileAttackBounds for ${label}; otherwise the blocker report is unreliable`);
+    if (!port.blocked !== production) mismatches.push(`${label} ${tileKey(from)}: port clear=${!port.blocked}, production clear=${production}`);
   }
+  // Asserted after every row is printed, so one disagreement does not hide the other starts in the single job.
+  assert.deepEqual(mismatches, [], "the ray port must agree with RegionManager.canProjectileAttackBounds at every start; otherwise the blocker report is unreliable");
 });
 
 test("REACH 3b: the Ghaslor conversation tiles (player adjacent to each of his 25 wander tiles) as report-only starts", () => {
@@ -510,4 +516,12 @@ test("REACH retail-observed start (3428,2929): the tile a retail player cast the
   console.log(`# REACH retail-origin ${JSON.stringify(out)}`);
   console.log(`# REACH retail-origin note: retail resolved the cast at once from here; predicateAtStart=${out.predicateAtStart} here (false would mean this server's clipping differs from retail at this tile)`);
   cleanup();
+  for (const [i, tile] of RETAIL_WALK_TILES.entries()) {
+    const a = actor(tile, `retail-walk-${i}`);
+    loginWithKey(a.player, a.username);
+    const row = castAndDrive(a.player, a.messages, a.username, tile);
+    console.log(`# REACH retail-walk-tile ${JSON.stringify(row)}`);
+    console.log(`# REACH retail-walk-tile note: ${tileKey(tile)} is a tile of the retail walk in recording 3018 (line ${i === 0 ? 2565 : 2554}); predicateAtStart=${row.predicateAtStart}`);
+    cleanup();
+  }
 });
