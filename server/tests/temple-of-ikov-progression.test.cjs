@@ -346,6 +346,43 @@ test('the ice area can supply arrows from its six actual chest producers',async 
     shared();return {target,before,after:inventories(),event:actual[0],deed:deeds[0],
       firstSearch:firstSearch?{sharedMotionTurns:motion.turns,route:routeFact(firstSearchRoutes[0]),dispatch:firstSearchDispatches[0].facts}:undefined};
   }
+  async function walkToChest(base,id,label){
+    const target=id===103?base:lookup(f.p,base);assert.ok(target);
+    const at=base.getLocation(),start=f.p.getLocation().clone(),privateArea=f.p.getPrivateArea(),hp=f.p.getHitpoints();
+    const tile=ClimbLinks.landingTile(base,{x:at.getX(),y:at.getY()-1},privateArea);
+    assert.ok(tile,'existing cache geometry supplies the same declared chest approach');
+    assert.equal(tile.getZ(),start.getZ());assert.ok(boundaries.some(boundary=>boundary.inside(tile)));
+    const before=inventories(),eventsA=f.objectEvents.length,eventsB=b.objectEvents.length,ops=operated.length;
+    const trace=[where(f.p)];let arrived=false,moved=false,usedTurns=0;
+    try{
+      await f.input({type:'move',worldX:tile.getX(),worldY:tile.getY(),modifierFlags:0,run:false},0);
+      // Reuse the existing connected-route fixture's finite96-turn ceiling; wall/output caps do not change.
+      for(let turn=1;turn<=96;turn++){
+        turns();usedTurns=turn;trace.push(where(f.p));moved=moved||f.p.getMovementQueue().didMoveThisCycle();
+        assert.equal(f.p.isRegistered(),true);assert.equal(f.p.isNeedsPlacement(),false);
+        assert.equal(f.p.getLocation().getZ(),start.getZ());assert.equal(f.p.getArea(),area);assert.equal(f.p.getPrivateArea(),privateArea);
+        assert.equal(f.p.hasFlag('movement:ignore-clipping'),false);assert.equal(f.p.getHitpoints(),hp);
+        assert.deepEqual(inventories(),before,'walking alone cannot grant arrows or change either inventory');
+        assert.equal(f.objectEvents.length,eventsA);assert.equal(b.objectEvents.length,eventsB);assert.equal(operated.length,ops);
+        assert.equal(core.MapObjects.getPrivateArea(f.p,id,at),target,'the actual target survives its ordinary approach');
+        standing(f.p,opened);standing(b.p,bOpened);
+        if(f.p.getLocation().equals(tile)){arrived=true;break;}
+      }
+      assert.equal(arrived,true,'decoded ordinary movement arrives without fixture placement');
+      if(!start.equals(tile)){assert.equal(moved,true);assert.ok(trace.some(position=>position.join(',')!==trace[0].join(',')));}
+      const footprint=core.ObjectDefinition.forId(target.getId()),resolved=core.ObjectDefinition.forPlayer(target.getId(),f.p);
+      assert.equal(resolved.id,id);assert.equal(target.getType(),10);
+      assert.equal(core.PathFinder.reachedObject(f.p,at.getX(),at.getY(),footprint.getSizeX(),footprint.getSizeY(),target.getFace(),10,resolved.getBlockingMask()),true,
+        'ordinary arrival reaches the actual rotated chest before its separate operation');
+      observe('IKOV_CHEST_WALK',{label,actor:f.p.getUsername(),target:objectFact(target),start:[start.getX(),start.getY(),start.getZ()],
+        destination:[tile.getX(),tile.getY(),tile.getZ()],usedTurns,moved,trace,before,after:inventories(),
+        footprint:[footprint.getSizeX(),footprint.getSizeY()],resolvedDefinitionId:resolved.id,sideMask:resolved.getBlockingMask(),A:facts(opened),B:facts(bOpened)});
+    }catch(error){
+      observe('IKOV_CHEST_WALK_FAILURE',{label,target:objectFact(target),start:[start.getX(),start.getY(),start.getZ()],
+        destination:[tile.getX(),tile.getY(),tile.getZ()],usedTurns,moved,arrived,trace,before,after:inventories(),
+        error:{name:error.name,message:error.message,stack:error.stack}});throw error;
+    }
+  }
   function record(label,result,movementSetup){
     const observation={label,actor:result.event.player.getUsername(),object:objectFact(result.target),option:result.event.option,handled:result.event.handled,
       operatedSameObject:result.deed.object===result.target,before:result.before,after:result.after,A:facts(opened),B:facts(bOpened)};
@@ -450,7 +487,7 @@ test('the ice area can supply arrows from its six actual chest producers',async 
     sends:replaySends.map(row=>({actor:row.player.getUsername(),object:objectFact(row.object)})),before:beforeReplay,after:inventories(),A:facts(opened),B:facts(bOpened)});
   // Preserve the original finite six-producer unforced search and final 1..5 assertion.
   for(const base of bases){
-    if(base!==first)f.approach(base);
+    if(base!==first)await walkToChest(base,103,'next visited chest');
     if(!opened.has(base)){
       step=await action(f,base,103,'Open');assert.deepEqual(step.after,step.before);opened.set(base,lookup(f.p,base));assert.ok(opened.get(base));standing(f.p,opened);record('A Open',step);
     }
@@ -472,7 +509,7 @@ test('the ice area can supply arrows from its six actual chest producers',async 
   observe('IKOV_CHEST_LOGOUT',{actor:b.p.getUsername(),removed:bObjects.map(objectFact),before:beforeLogout,after:inventories(),A:facts(opened),scope:'fixture production logout hook; not network account logout'});
   bOpened.clear();
   for(const [base,object]of opened){
-    f.approach(base);step=await action(f,base,104,'Shut',2);assert.equal(step.target,object);assert.deepEqual(step.after,step.before);
+    await walkToChest(base,104,'Shut approach');step=await action(f,base,104,'Shut',2);assert.equal(step.target,object);assert.deepEqual(step.after,step.before);
     assert.equal(lookup(f.p,base),null);assert.equal(core.ObjectManager.objectsAt(base.getLocation()).includes(object),false);
     const current=ownedReplays().find(row=>row.args[0]===f.p);assert.ok(current);assert.equal(core.MapObjects.ownerObjectsInScene(f.p,current.args[1],current.args[2],104).includes(object),false);
     assert.equal(core.MapObjects.getPrivateArea(f.p,103,base.getLocation()),base);opened.delete(base);shared();record('A Shut',step);
