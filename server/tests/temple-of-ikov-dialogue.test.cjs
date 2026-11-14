@@ -209,10 +209,51 @@ function lethalNativeHit(f,npc){
   for(let i=0;i<24&&npc.isRegistered();i++)turns();
   assert.equal(npc.isRegistered(),false,'native death/removal completed');
 }
-function snapshotAndLogout(f){
-  const save=PlayerSave.fromPlayer(f.p);save.attributes=JSON.parse(JSON.stringify(save.attributes));
+function snapshotAndLogout(f,expected){
+  if(expected===undefined){
+    const save=PlayerSave.fromPlayer(f.p);save.attributes=JSON.parse(JSON.stringify(save.attributes));
+    disposeActor(f.p);
+    return save;
+  }
+  const {side,delivered,defeated}=expected;
+  // Same production codec seam as run-energy-save-round-trip.test.cjs. Lazy
+  // registration occurs only in D14/D15, after the existing suite setup.
+  const Json=require('../plugins/persistence/JsonPlayerPersistence.plugin');
+  const backend=core.GameConstants.PLAYER_PERSISTENCE;
+  let codec,registrations=0;
+  Json.register({getSkillManager:()=>core.SkillManager,setPlayerPersistence(value){codec=value;registrations++;},log(){}});
+  assert.equal(registrations,1,'setup: production JSON codec registered without a host override');
+  assert.ok(codec instanceof Json.JsonPlayerPersistence,'setup: actual exported production codec');
+  assert.equal(core.GameConstants.PLAYER_PERSISTENCE,backend,'captured API never installs a backend');
+  const inventory=JSON.parse(JSON.stringify(f.p.getInventory().getItems(),codec.replacer.bind(codec)));
+  const equipment=JSON.parse(JSON.stringify(f.p.getEquipment().getItems(),codec.replacer.bind(codec)));
+  const save=PlayerSave.fromPlayer(f.p);
+  const serialized=JSON.stringify(save,codec.replacer.bind(codec));
+  const parsed=JSON.parse(serialized,codec.reviver.bind(codec));
+  const restored=codec.hydratePlayerSave(parsed);
+  assert.notEqual(restored,save,'hydrate a new save from serialized bytes');
+  assert.ok(restored instanceof PlayerSave,'compiled PlayerSave identity matches the suite');
+  assert.notEqual(restored.attributes,save.attributes);
+  assert.notEqual(restored.inventory,save.inventory);
+  const canonical={'quest.temple_of_ikov.stage':70,'temple-of-ikov:state-version':1,
+    'temple-of-ikov:side':side,'temple-of-ikov:staff-delivered':delivered,'temple-of-ikov:lucien-defeated':defeated};
+  for(const attributes of [parsed.attributes,restored.attributes]){
+    assert.ok(attributes&&typeof attributes==='object'&&!Array.isArray(attributes));
+    for(const [key,value] of Object.entries(canonical)){
+      if(value===0)assert.equal(Object.hasOwn(attributes,key),false,`${key}: production omits registered default zero`);
+      else assert.equal(attributes[key],value,`${key}: canonical serialized/hydrated checkpoint`);
+    }
+  }
+  assert.deepEqual(restored.attributes,parsed.attributes);
+  assert.equal(parsed.inventory.length,28);assert.equal(parsed.equipment.length,14);
+  assert.deepEqual(parsed.inventory,inventory);assert.deepEqual(parsed.equipment,equipment);
+  assert.ok(restored.inventory.every(item=>item instanceof core.Item));
+  assert.ok(restored.equipment.every(item=>item instanceof core.Item));
+  assert.deepEqual(JSON.parse(JSON.stringify(restored.inventory,codec.replacer.bind(codec))),inventory);
+  assert.deepEqual(JSON.parse(JSON.stringify(restored.equipment,codec.replacer.bind(codec))),equipment);
+  assert.equal(core.GameConstants.PLAYER_PERSISTENCE,backend,'codec leaves the shared backend unchanged');
   disposeActor(f.p);
-  return save;
+  return restored;
 }
 test('the real Guardian menu reaches the yearly-bath branch and physical pendant award',async t=>{
   const f=actor(t,2644,9897,60),npc=f.guardian();await f.talk(npc);
@@ -241,15 +282,23 @@ test('only the actual house Lucien death earns the Guardian ending, which comple
 test('an earned Guardian ending survives PlayerSave and a fresh owned house actor',async t=>{
   const f=actor(t,3122,3482,70),npc=f.own(HOUSE);f.p.setAttribute('temple-of-ikov:side',1);
   f.p.getEquipment().setItem(core.Equipment.AMULET_SLOT,new core.Item(core.ItemIdentifiers.ARMADYL_PENDANT,1));lethalNativeHit(f,npc);
-  const username=f.p.getUsername(),save=snapshotAndLogout(f);assert.equal(save.attributes['temple-of-ikov:lucien-defeated'],1);
+  const username=f.p.getUsername(),save=snapshotAndLogout(f,{side:1,delivered:0,defeated:1});assert.equal(save.attributes['temple-of-ikov:lucien-defeated'],1);
   const fresh=actor(t,3122,3482,0,{save,username});const replacement=fresh.own(HOUSE);assert.notEqual(replacement,npc);
+  assert.equal(quest.getStage(fresh.p),70);assert.equal(fresh.p.getAttribute('temple-of-ikov:state-version'),1);
+  assert.equal(fresh.p.getAttribute('temple-of-ikov:side'),1);assert.equal(fresh.p.getAttribute('temple-of-ikov:lucien-defeated'),1);
+  assert.equal(fresh.p.getAttribute('temple-of-ikov:staff-delivered'),0);assert.equal(fresh.p.getAttribute('bot-skip-persistence'),true);
+  assert.deepEqual(fresh.p.getInventory().getItems(),save.inventory);assert.deepEqual(fresh.p.getEquipment().getItems(),save.equipment);
   await fresh.talk(replacement);assert.match(fresh.p.getDialogueManager().getCurrent().getText(),/You have defeated me for now/);await fresh.next();assert.equal(quest.isComplete(fresh.p),true);
 });
 test('delivered staff recovery survives PlayerSave without a second physical debit',async t=>{
   const f=actor(t,3122,3482,70),npc=f.own(HOUSE),staff=core.ItemIdentifiers.STAFF_OF_ARMADYL;f.add(staff);
   stageMessage(f,npc,'VBn1hb',HANDOVER);await f.next();assert.equal(f.p.getInventory().getAmount(staff),0);
-  const username=f.p.getUsername(),save=snapshotAndLogout(f);assert.equal(save.attributes['temple-of-ikov:staff-delivered'],1);
+  const username=f.p.getUsername(),save=snapshotAndLogout(f,{side:0,delivered:1,defeated:0});assert.equal(save.attributes['temple-of-ikov:staff-delivered'],1);
   const fresh=actor(t,3122,3482,0,{save,username}),replacement=fresh.own(HOUSE);
+  assert.equal(quest.getStage(fresh.p),70);assert.equal(fresh.p.getAttribute('temple-of-ikov:state-version'),1);
+  assert.equal(fresh.p.getAttribute('temple-of-ikov:side'),0);assert.equal(fresh.p.getAttribute('temple-of-ikov:staff-delivered'),1);
+  assert.equal(fresh.p.getAttribute('temple-of-ikov:lucien-defeated'),0);assert.equal(fresh.p.getAttribute('bot-skip-persistence'),true);
+  assert.deepEqual(fresh.p.getInventory().getItems(),save.inventory);assert.deepEqual(fresh.p.getEquipment().getItems(),save.equipment);
   stageMessage(fresh,replacement,'VBn1hb',HANDOVER);await fresh.next();await fresh.drain();
   assert.equal(fresh.p.getInventory().getAmount(staff),0);assert.equal(quest.isComplete(fresh.p),true);assert.ok(fresh.text.some(s=>s.includes('already given Lucien')));
 });
