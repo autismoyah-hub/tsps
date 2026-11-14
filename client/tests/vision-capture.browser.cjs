@@ -13,6 +13,7 @@
 //   [--check-responsive-mobile-start 1] (phone-emulated login, disable emulation, then repeat resize switches)
 //   [--check-npc-specific-effects 1] (Vale Totems developer scene; native ::entvisit, records real received effects)
 //   [--check-touch-controls-default <scenario>] (reviewed emulated primary-input/HUD fixture)
+//   [--touch-capture-diagnostic 1] (optional same-page surface/view observations; requires touch scenario)
 // VISION_CHROME_FLAGS is an optional JSON array for software rendering in CI.
 // --url defaults to this worktree's client (PORT in the root .env, see
 // docs/worktrees.md), then http://localhost:3000; VISION_CLIENT_URL overrides.
@@ -149,16 +150,17 @@ function createCdp(url) {
     graphicsErrors,
     opened: new Promise((res, rej) => { ws.on("open", res); ws.on("error", rej); }),
     close() { try { ws.close(); } catch {} },
-    send(method, params = {}) {
+    send(method, params = {}, timeoutMs = 60000, onRequest = null) {
       return new Promise((resolve, reject) => {
         const myId = ++id;
+        if (onRequest) onRequest(myId);
         pending.set(myId, resolve);
         ws.send(JSON.stringify({ id: myId, method, params }), (err) => {
           if (err) { pending.delete(myId); reject(err); }
         });
         setTimeout(() => {
           if (pending.has(myId)) { pending.delete(myId); reject(new Error(`cdp timeout: ${method}`)); }
-        }, 60000);
+        }, timeoutMs);
       });
     },
     async evaluate(expression) {
@@ -265,8 +267,11 @@ async function main() {
   let proc = null;
   let cdp = null;
   let touchFailure = null;
+  let captureDiagnosticFailure = null;
   try {
     const touchName = arg("check-touch-controls-default", null);
+    const captureDiagnostic = arg("touch-capture-diagnostic", "0");
+    if (!["0","1"].includes(captureDiagnostic) || (captureDiagnostic === "1" && touchName === null)) throw new Error("capture diagnostic requires an exact touch scenario");
     const touchFixture = touchName === null ? null : require("./touch-controls-default.browser.cjs");
     const touchScenario = touchFixture?.scenarios.find(scenario => scenario.name === touchName);
     if (touchName !== null && !touchScenario) throw new Error("unknown touch-controls scenario");
@@ -848,13 +853,23 @@ async function main() {
       }
     }
     if (out) {
-      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
-      if (shot.error) throw new Error(shot.error.message || JSON.stringify(shot.error));
-      const data = shot.result?.data;
-      if (!data) throw new Error("captureScreenshot returned no pixels");
-      fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
-      fs.writeFileSync(out, Buffer.from(data, "base64"));
-      summary.screenshot = path.resolve(out);
+      const canonical = async (onRequest = null) => {
+        const shot = await cdp.send("Page.captureScreenshot", { format: "png" }, 60000, onRequest);
+        if (shot.error) throw Object.assign(new Error(shot.error.message || JSON.stringify(shot.error)), {protocolError:shot.error,responseId:shot.id});
+        const data = shot.result?.data;
+        if (!data) throw Object.assign(new Error("captureScreenshot returned no pixels"), {responseId:shot.id});
+        fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
+        fs.writeFileSync(out, Buffer.from(data, "base64"));
+        summary.screenshot = path.resolve(out);
+        return shot;
+      };
+      try {
+        if (captureDiagnostic === "1") {
+          summary.touchCaptureDiagnostic = await touchFixture.captureDiagnostic(cdp,out,canonical,value=>console.log(JSON.stringify(value)),
+            {budgetMs:Math.max(1,Math.min(5000,deadline-Date.now()))});
+          if (summary.touchCaptureDiagnostic.status === "REFUSED") captureDiagnosticFailure = new Error("TOUCH5133_CAPTURE_DIAGNOSTIC_REFUSED: " + summary.touchCaptureDiagnostic.error);
+        } else await canonical();
+      } catch (error) { throw touchFailure || error; }
     }
 
     if (clipSecs > 0) {
@@ -868,6 +883,7 @@ async function main() {
     }
     // Retain the ordinary screenshot before propagating the actual HUD assertion.
     if (touchFailure) throw touchFailure;
+    if (captureDiagnosticFailure) throw captureDiagnosticFailure;
 
     // A world-wait timeout with --user means login/loads never finished (server
     // restarting, session torn down, ...): fail loudly instead of handing the

@@ -133,4 +133,73 @@ async function verify(cdp, scenario, emit, {timeoutMs=10000}={}) {
   return actual;
 }
 
-module.exports={scenarios,prepare,verify};
+
+// Optional observation only: keep the canonical surface image and compare one
+// view image of the same unchanged page. Neither image implies visual acceptance.
+async function captureDiagnostic(cdp, out, canonical, emit, {budgetMs=5000}={}) {
+  const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+  const report={status:'PENDING',budgetMs,requests:[],observations:[],images:[]};
+  let usedMs=0;
+  const safeUrl=value=>{const u=new URL(value);if(u.searchParams.has('password'))u.searchParams.set('password','***');return u.href;};
+  async function request(method,params={}) {
+    const remaining=Math.floor(budgetMs-usedMs);
+    if(remaining<=0)throw Error('diagnostic observation budget exhausted');
+    const record={method,params,requestId:null,responseId:null,startedMs:Date.now()};report.requests.push(record);
+    const started=Date.now();
+    try {
+      const reply=await cdp.send(method,params,remaining,id=>{record.requestId=id;});
+      record.responseId=reply.id??null;
+      assert.ok(Number.isSafeInteger(record.requestId)&&record.requestId>0&&reply.id===record.requestId,'diagnostic actual CDP request/response identity');
+      if(reply.error){record.protocolError=reply.error;throw Error(reply.error.message||'diagnostic protocol refusal');}
+      if(typeof reply.result?.data==='string'){record.base64Chars=reply.result.data.length;record.base64SHA256=crypto.createHash('sha256').update(reply.result.data).digest('hex');}
+      return reply.result;
+    }catch(error){record.error=String(error.message??error);throw error;}
+    finally{record.elapsedMs=Date.now()-started;usedMs+=record.elapsedMs;}
+  }
+  async function observe(label) {
+    const target=await request('Target.getTargetInfo');
+    const frames=await request('Page.getFrameTree');
+    const hud=await request('Runtime.evaluate',{expression:`(${readPage.toString()})()`,returnByValue:true,awaitPromise:true});
+    assert.ok(!hud.exceptionDetails&&hud.result?.value,'diagnostic actual HUD observation');
+    const info=target.targetInfo,frame=frames.frameTree?.frame;
+    assert.ok(info?.targetId&&info.type==='page'&&frame?.id,'diagnostic page/frame identity');
+    report.observations.push({label,target:{id:info.targetId,type:info.type,url:safeUrl(info.url)},
+      frame:{id:frame.id,loaderId:frame.loaderId,url:safeUrl(frame.url)},actual:hud.result.value});
+  }
+  function imageRecord(kind,file,bytes) {
+    assert.ok(bytes.length>=24&&bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))&&bytes.toString('ascii',12,16)==='IHDR','diagnostic PNG header');
+    const width=bytes.readUInt32BE(16),height=bytes.readUInt32BE(20);assert.ok(width>0&&height>0,'diagnostic positive PNG dimensions');
+    report.images.push({kind,path:path.resolve(file),bytes:bytes.length,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),width,height});
+  }
+  let failure=null;
+  try{await observe('before-canonical');}catch(error){failure=error;}
+  // Metadata refusal must never prevent the unchanged canonical capture/write.
+  const canonicalRecord={method:'Page.captureScreenshot',params:{format:'png'},requestId:null,responseId:null,startedMs:Date.now()};
+  report.requests.push(canonicalRecord);
+  try {
+    const reply=await canonical(id=>{canonicalRecord.requestId=id;});
+    canonicalRecord.responseId=reply.id??null;
+    if(typeof reply.result?.data==='string'){canonicalRecord.base64Chars=reply.result.data.length;canonicalRecord.base64SHA256=crypto.createHash('sha256').update(reply.result.data).digest('hex');}
+    assert.ok(Number.isSafeInteger(canonicalRecord.requestId)&&canonicalRecord.requestId>0&&reply.id===canonicalRecord.requestId,'canonical actual CDP request/response identity');
+  }catch(error){canonicalRecord.responseId=error.responseId??canonicalRecord.responseId;if(error.protocolError)canonicalRecord.protocolError=error.protocolError;canonicalRecord.error=String(error.message??error);report.status='REFUSED';report.error=canonicalRecord.error;emit({event:'touch5133-capture-diagnostic',...report});throw error;}
+  finally{canonicalRecord.elapsedMs=Date.now()-canonicalRecord.startedMs;}
+  try {
+    imageRecord('canonical-default-surface',out,fs.readFileSync(out));
+    if(failure)throw failure;
+    await observe('after-canonical-before-view');
+    const image=await request('Page.captureScreenshot',{format:'png',fromSurface:false});
+    assert.ok(typeof image?.data==='string'&&image.data.length>0,'diagnostic view capture returned pixels');
+    const bytes=Buffer.from(image.data,'base64'),file=out+'.view.png';imageRecord('diagnostic-view',file,bytes);
+    fs.writeFileSync(file,bytes,{flag:'wx'});
+    await observe('after-view');
+    const first=report.observations[0];
+    assert.ok(report.observations.every(x=>x.target.id===first.target.id&&x.target.url===first.target.url&&x.frame.id===first.frame.id&&x.frame.loaderId===first.frame.loaderId&&x.frame.url===first.frame.url),'diagnostic same target/document across captures');
+    assert.ok(report.observations.every(x=>JSON.stringify(x.actual.joystick.viewport)===JSON.stringify(first.actual.joystick.viewport)),'diagnostic observed viewport unchanged');
+    report.status='OBSERVED_NOT_VISUALLY_ACCEPTED';
+  }catch(error){report.status='REFUSED';report.error=String(error.message??error);}
+  report.usedMs=usedMs;
+  emit({event:'touch5133-capture-diagnostic',...report});
+  return report;
+}
+
+module.exports={scenarios,prepare,verify,captureDiagnostic};
