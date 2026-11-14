@@ -202,4 +202,127 @@ async function captureDiagnostic(cdp, out, canonical, emit, {budgetMs=5000}={}) 
   return report;
 }
 
-module.exports={scenarios,prepare,verify,captureDiagnostic};
+// One optional post-capture observation for phone-default, never pixel proof.
+const paintStyles=['display','visibility','opacity','position','z-index','transform','transform-style','isolation','contain','content-visibility','overflow-x','overflow-y','clip','clip-path','mask-image','filter','backdrop-filter','mix-blend-mode','background-color','border-top-color','border-top-width','box-shadow','width','height'];
+async function paintSnapshotDiagnostic(cdp, capture, emit, {budgetMs=5000}={}) {
+  const crypto=require('node:crypto');
+  const report={status:'PENDING',budgetMs,requests:[],identities:[],nodes:[],
+    scope:'Post-capture layout flush to compositing inputs clean; non-atomic observations and enclosing paint-layer order, not raster or visible-HUD proof'};
+  let usedMs=0,handlesMayExist=false;
+  const now=()=>Number(process.hrtime.bigint())/1e6;
+  const group='touch5133-paint-snapshot';
+  const fail=code=>{throw Object.assign(new Error('TOUCH5133_PAINT_'+code),{paintReason:code});};
+  const need=(ok,code)=>{if(!ok)fail(code);};
+  const digest=value=>crypto.createHash('sha256').update(value).digest('hex');
+  const safeUrl=value=>{const u=new URL(value);u.username='';u.password='';u.hash='';for(const k of [...u.searchParams.keys()])if(!['touch','renderer','username'].includes(k))u.searchParams.set(k,'***');return u.href;};
+  async function request(method,params={},cleanup=false) {
+    const remaining=Math.floor(budgetMs-usedMs-(cleanup?0:Math.min(500,budgetMs)));
+    need(remaining>0&&report.requests.length<12,'REQUEST_BUDGET');
+    const record={method,params,requestId:null,responseId:null};report.requests.push(record);
+    const started=now();
+    try {
+      const reply=await cdp.send(method,params,remaining,id=>{record.requestId=id;},method==='DOMSnapshot.captureSnapshot');
+      record.responseId=reply.id??null;
+      need(Number.isSafeInteger(record.requestId)&&record.requestId>0&&reply.id===record.requestId,'RESPONSE_ID');
+      if(reply.snapshotTransport)record.transport=reply.snapshotTransport;
+      if(reply.error){record.protocolError={code:Number.isInteger(reply.error.code)?reply.error.code:null,messageSHA256:digest(String(reply.error.message??''))};fail('PROTOCOL_ERROR');}
+      if(method==='DOMSnapshot.captureSnapshot')need(record.transport?.status==='BOUNDED_REPLY'&&Number.isSafeInteger(record.transport.bytes)&&record.transport.bytes>0&&record.transport.bytes<=4194304&&/^[a-f0-9]{64}$/.test(record.transport.sha256),'RAW_REPLY_GUARD');
+      return reply.result;
+    } catch(error) {
+      if(error.snapshotTransport)record.transport=error.snapshotTransport;
+      record.error=error.paintReason??'TRANSPORT_REFUSAL';throw error;
+    } finally {record.elapsedMs=now()-started;usedMs+=record.elapsedMs;}
+  }
+  async function identity() {
+    const target=await request('Target.getTargetInfo'),frames=await request('Page.getFrameTree');
+    const t=target?.targetInfo,f=frames?.frameTree?.frame;
+    need(t?.type==='page'&&typeof t.targetId==='string'&&typeof t.url==='string'&&f?.id&&f.loaderId&&typeof f.url==='string','PAGE_IDENTITY');
+    need(t.url===f.url,'PAGE_URL');
+    need([t.targetId,f.id,f.loaderId].every(x=>typeof x==='string'&&Buffer.byteLength(x)<=256)&&Buffer.byteLength(f.url)<=2048,'IDENTITY_LIMIT');
+    return {targetId:t.targetId,frameId:f.id,loaderId:f.loaderId,url:f.url};
+  }
+  function safeIdentity(x){return {...x,url:safeUrl(x.url)};}
+  function subset(snapshot, ids, before) {
+    need(Array.isArray(snapshot?.documents)&&snapshot.documents.length>0&&snapshot.documents.length<=8&&Array.isArray(snapshot.strings)&&snapshot.strings.length<=32768,'TABLE_LIMIT');
+    const strings=snapshot.strings;
+    // Never serialize this table, attributes, node text, or input values.
+    const text=(i,empty=false)=>{if(empty&&i===-1)return '';need(Number.isInteger(i)&&i>=0&&i<strings.length&&typeof strings[i]==='string','STRING_INDEX');return strings[i];};
+    let totalNodes=0,totalLayouts=0;
+    for(const d of snapshot.documents){need(Array.isArray(d.nodes?.backendNodeId)&&Array.isArray(d.layout?.nodeIndex),'TABLE_SCHEMA');totalNodes+=d.nodes.backendNodeId.length;totalLayouts+=d.layout.nodeIndex.length;}
+    need(totalNodes<=8192&&totalLayouts<=8192,'TABLE_LIMIT');
+    const docs=snapshot.documents.filter(d=>text(d.frameId)===before.frameId);
+    need(docs.length===1,'DOCUMENT_IDENTITY');const doc=docs[0],nodes=doc.nodes,layout=doc.layout;
+    need(text(doc.documentURL)===before.url,'DOCUMENT_URL');
+    const n=nodes.backendNodeId.length,l=layout.nodeIndex.length;
+    need(Array.isArray(nodes.parentIndex)&&nodes.parentIndex.length===n&&Array.isArray(nodes.nodeName)&&nodes.nodeName.length===n&&Array.isArray(nodes.nodeType)&&nodes.nodeType.length===n&&Array.isArray(nodes.attributes)&&nodes.attributes.length===n,'NODE_SCHEMA');
+    need([layout.styles,layout.bounds,layout.paintOrders].every(x=>Array.isArray(x)&&x.length===l)&&Array.isArray(layout.stackingContexts?.index),'LAYOUT_SCHEMA');
+    const stacking=new Set(layout.stackingContexts.index);need(stacking.size===layout.stackingContexts.index.length&&[...stacking].every(x=>Number.isInteger(x)&&x>=0&&x<l),'STACKING_INDEX');
+    const selected=new Set(),roles=new Map();
+    need(new Set(Object.values(ids)).size===3,'DISTINCT_BACKENDS');
+    for(const [role,id]of Object.entries(ids)) {
+      let matches=0,index=-1;
+      for(const d of snapshot.documents)for(let i=0;i<d.nodes.backendNodeId.length;i++)if(d.nodes.backendNodeId[i]===id){matches++;if(d===doc)index=i;}
+      need(matches===1&&index>=0,'BACKEND_IDENTITY');roles.set(index,role);
+      need(text(nodes.nodeName[index])===(role==='knob'?'SPAN':role==='canvas'?'CANVAS':'DIV'),'NODE_TAG');
+      const attrs=nodes.attributes[index];need(Array.isArray(attrs)&&attrs.length<=128&&attrs.length%2===0,'NODE_ATTRIBUTES');
+      const attr=name=>{let found=[];for(let a=0;a<attrs.length;a+=2)if(text(attrs[a])===name)found.push(text(attrs[a+1]));need(found.length<=1,'DUPLICATE_ATTRIBUTE');return found[0];};
+      if(role==='joystick')need(attr('aria-label')==='Movement joystick'&&attr('class')?.split(/\s+/).includes('touch-joystick'),'JOYSTICK_IDENTITY');
+      if(role==='knob')need(attr('class')?.split(/\s+/).includes('touch-joystick-knob'),'KNOB_IDENTITY');
+      let current=index;const chain=new Set();
+      while(current!==-1){need(Number.isInteger(current)&&current>=0&&current<n&&!chain.has(current)&&chain.size<32,'ANCESTOR_LIMIT');chain.add(current);selected.add(current);need(selected.size<=64,'NODE_LIMIT');current=nodes.parentIndex[current];}
+      need(nodes.nodeType[[...chain].at(-1)]===9,'DOCUMENT_ANCESTRY');
+    }
+    const targetIndexes=Object.fromEntries([...roles].map(([index,role])=>[role,index]));
+    need(nodes.parentIndex[targetIndexes.knob]===targetIndexes.joystick,'KNOB_PARENT');
+    const rowMap=new Map();
+    for(let i=0;i<l;i++){const ni=layout.nodeIndex[i];need(Number.isInteger(ni)&&ni>=0&&ni<n,'LAYOUT_NODE_INDEX');if(selected.has(ni)){const rows=rowMap.get(ni)??[];rows.push(i);need(rows.length<=4,'LAYOUT_FRAGMENT_LIMIT');rowMap.set(ni,rows);}}
+    let retainedLayouts=0;
+    for(const index of [...selected].sort((a,b)=>a-b)) {
+      const tag=text(nodes.nodeName[index]);need(/^(?:[A-Z][A-Z0-9-]{0,31}|#document)$/.test(tag),'TAG_LIMIT');
+      const rows=rowMap.get(index)??[];
+      need(Number.isSafeInteger(nodes.backendNodeId[index])&&nodes.backendNodeId[index]>0,'ANCESTOR_BACKEND_ID');
+      // An absent row is new diagnostic information, never a visibility verdict.
+      const record={role:roles.get(index)??'ancestor',nodeIndex:index,backendNodeId:nodes.backendNodeId[index],tag,parentIndex:nodes.parentIndex[index],layoutPresent:rows.length>0,layouts:[]};
+      for(const li of rows){need(++retainedLayouts<=128,'RETAINED_LAYOUT_LIMIT');const bounds=layout.bounds[li],styles=layout.styles[li],order=layout.paintOrders[li];
+        need(Array.isArray(bounds)&&bounds.length===4&&bounds.every(x=>Number.isFinite(x)&&Math.abs(x)<=1e7)&&Number.isInteger(order)&&order>=0,'LAYOUT_VALUES');
+        need(Array.isArray(styles)&&(styles.length===paintStyles.length||(nodes.nodeType[index]===9&&styles.length===0)),'STYLE_SCHEMA');
+        const values={};for(let k=0;k<styles.length;k++){const value=text(styles[k],true);need(Buffer.byteLength(value)<=256,'STYLE_VALUE_LIMIT');values[paintStyles[k]]=/url\s*\(/i.test(value)?{redacted:true,sha256:digest(value),bytes:Buffer.byteLength(value)}:value;}
+        record.layouts.push({layoutIndex:li,bounds,paintOrder:order,stackingContext:stacking.has(li),styles:values});
+      }
+      report.nodes.push(record);
+    }
+    const geometry={};for(const key of ['scrollOffsetX','scrollOffsetY','contentWidth','contentHeight']){const value=doc[key];need(value===undefined||(Number.isFinite(value)&&Math.abs(value)<=1e7),'DOCUMENT_GEOMETRY');geometry[key]=value??null;}
+    report.document={frameId:before.frameId,url:safeUrl(before.url),nodeCount:n,layoutCount:l,coordinateSpace:'document CSS pixels',...geometry};
+  }
+  try {
+    need(Number.isInteger(budgetMs)&&budgetMs>0&&budgetMs<=5000,'REQUEST_BUDGET');
+    need(capture?.status==='OBSERVED_NOT_VISUALLY_ACCEPTED'&&capture.images?.length===2&&capture.images[0].kind==='canonical-default-surface'&&capture.images[1].kind==='diagnostic-view','CAPTURES_REQUIRED');
+    const observed=capture.observations?.at(-1);need(observed?.actual?.scenario?.name==='phone-default'&&observed.actual.state?.visible===true,'POSITIVE_PHONE_ONLY');
+    const before=await identity();report.before=safeIdentity(before);
+    need(before.targetId===observed.target.id&&before.frameId===observed.frame.id&&before.loaderId===observed.frame.loaderId&&safeUrl(before.url)===safeUrl(observed.frame.url),'CAPTURE_DOCUMENT_LINK');
+    const ids={};
+    const expressions={joystick:'document.querySelector(\'[aria-label="Movement joystick"]\')',knob:'document.querySelector(\'[aria-label="Movement joystick"]\')?.querySelector(\'.touch-joystick-knob\')',canvas:'(window.osrsClient??window.__osrsClient??window.__WEBGPU_RENDERER__?.osrsClient)?.renderer?.canvas'};
+    for(const [role,expression]of Object.entries(expressions)) {
+      handlesMayExist=true;
+      const result=await request('Runtime.evaluate',{expression,objectGroup:group,returnByValue:false,awaitPromise:false});
+      need(!result?.exceptionDetails&&result?.result?.subtype==='node'&&typeof result.result.objectId==='string'&&Buffer.byteLength(result.result.objectId)<=256,'NODE_HANDLE');
+      const description=await request('DOM.describeNode',{objectId:result.result.objectId,depth:0,pierce:false});
+      need(Number.isSafeInteger(description?.node?.backendNodeId)&&description.node.backendNodeId>0,'BACKEND_ID');ids[role]=description.node.backendNodeId;
+      report.identities.push({role,backendNodeId:ids[role],objectIdSHA256:digest(result.result.objectId),evaluateRequestId:report.requests.at(-2).requestId,describeRequestId:report.requests.at(-1).requestId});
+    }
+    const snapshot=await request('DOMSnapshot.captureSnapshot',{computedStyles:paintStyles,includePaintOrder:true,includeDOMRects:true});
+    subset(snapshot,ids,before);
+    const after=await identity();report.after=safeIdentity(after);
+    need(before.targetId===after.targetId&&before.frameId===after.frameId&&before.loaderId===after.loaderId&&before.url===after.url,'DOCUMENT_CHANGED');
+    report.status='OBSERVED_NOT_RASTER_PROOF';
+  }catch(error){report.status='REFUSED';report.error=error.paintReason??'TRANSPORT_REFUSAL';}
+  finally {
+    if(handlesMayExist)try{await request('Runtime.releaseObjectGroup',{objectGroup:group},true);report.handlesReleased=true;}catch{report.handlesReleased=false;report.status='REFUSED';report.cleanupError='HANDLE_RELEASE_REFUSAL';}
+    else report.handlesReleased=true;
+  }
+  report.usedMs=usedMs;
+  if(Buffer.byteLength(JSON.stringify({event:'touch5133-paint-snapshot',...report}))>65536){report.nodes=[];report.status='REFUSED';report.error='OUTPUT_LIMIT';}
+  emit({event:'touch5133-paint-snapshot',...report});return report;
+}
+
+module.exports={scenarios,prepare,verify,captureDiagnostic,paintSnapshotDiagnostic};
