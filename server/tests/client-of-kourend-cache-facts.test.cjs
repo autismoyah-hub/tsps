@@ -44,10 +44,12 @@ function field(obj, name) {
   }
 }
 
+/** The 5 action slots, with explicit nulls for holes: the slot index is the right-click position (NpcType.ts:115, 203-205). */
 function actionsOf(npc) {
   try {
-    const list = typeof npc?.getActions === "function" ? npc.getActions() : npc?.actions;
-    return Array.isArray(list) ? list.filter((a) => a !== undefined && a !== null) : field(npc, "actions");
+    const list = npc?.actions;
+    if (!list) return "absent";
+    return Array.from({ length: 5 }, (_, i) => (list[i] === undefined || list[i] === null ? null : list[i]));
   } catch (error) {
     return `unreadable: ${error?.message ?? error}`;
   }
@@ -88,6 +90,28 @@ test("PART 2 (cache facts): each Veos NPC's own actions, transform data, and its
       let c = null;
       try { c = CacheDefinitions.getNpc(child); } catch (error) { console.log(`# DEF   child=${child} getNpc threw: ${error?.message ?? error}`); continue; }
       console.log(`# DEF   child=${child} name=${JSON.stringify(nameOf(c))} actions=${JSON.stringify(actionsOf(c))} transforms=${JSON.stringify(field(c, "transforms"))}`);
+    }
+  }
+});
+
+test("PART 2 (cache facts): the REAL transform variable of each Veos id, enumerated 0..transforms.length-2 with resolveNpc", () => {
+  for (const id of VEOS_IDS) {
+    let npc = null;
+    try { npc = CacheDefinitions.getNpc(id); } catch (error) { console.log(`# DEF enum npc=${id} getNpc threw: ${error?.message ?? error}`); continue; }
+    if (!npc) { console.log(`# DEF enum npc=${id} NOT IN CACHE`); continue; }
+    const varbit = typeof npc.transformVarbit === "number" ? npc.transformVarbit : -1;
+    const varp = typeof npc.transformVarp === "number" ? npc.transformVarp : -1;
+    const transforms = Array.isArray(npc.transforms) ? npc.transforms : null;
+    const kind = varbit !== -1 ? "varbit" : varp !== -1 ? "varp" : "none";
+    const ref = kind === "varbit" ? varbit : varp;
+    console.log(`# DEF enum npc=${id} transformVarbit=${varbit} transformVarp=${varp} kind=${kind} ref=${ref} transforms=${JSON.stringify(transforms)}`);
+    if (!transforms || kind === "none") continue;
+    // The last transforms[] entry is the default; indices 0..length-2 select a child (NpcType.ts transform logic).
+    for (let value = 0; value <= transforms.length - 2; value++) {
+      const v = kind === "varbit" ? vars({ [ref]: value }, {}) : vars({}, { [ref]: value });
+      let resolved = null;
+      try { resolved = CacheDefinitions.resolveNpc(id, v); } catch (error) { console.log(`# DEF enum npc=${id} ${kind}=${ref} value=${value} threw: ${error?.message ?? error}`); continue; }
+      console.log(`# DEF enum npc=${id} ${kind}=${ref} value=${value} -> id=${resolved?.id ?? "undefined"} name=${JSON.stringify(nameOf(resolved))} actions=${JSON.stringify(actionsOf(resolved))}`);
     }
   }
 });
