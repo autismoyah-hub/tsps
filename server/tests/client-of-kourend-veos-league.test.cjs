@@ -29,10 +29,11 @@
 // BASELINE ROW (C4): the OTHER-NPC probe (npcId 1) records the hook answers for the same league texts on the BEFORE run. It is
 // report-only here; the AFTER run must assert equality with the recorded BEFORE values (not asserted in this BEFORE file).
 
+const savedBots = process.env.DISABLE_PLAYER_BOTS;
+process.env.DISABLE_PLAYER_BOTS = "1";
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const { before, after, afterEach, test } = require("node:test");
-process.env.DISABLE_PLAYER_BOTS = "1";
 const { Server } = require("../dist/Server");
 Server.installProductionPathResolver();
 const { CachePipeline } = require("../dist/game/cache/CachePipeline");
@@ -51,7 +52,6 @@ runtime.startTranscript = () => true;
 
 let core, kourend = null, xMarks = null, index = 9900;
 const cleanups = [], restore = [];
-const savedBots = process.env.DISABLE_PLAYER_BOTS;
 const PROHIBITED = /access to Great Kourend is currently prohibited/;
 const SAIL = /Certainly! I hope you don't get seasick/;
 const TAKE_ME = "That's great, can you take me there please?";
@@ -181,7 +181,7 @@ function probe(player, npcId, tile, label) {
   let pick = emitted.findIndex((a) => a === true);
   if (pick === -1) pick = emitted.findIndex((a) => a === null);
   const pickedId = pick === -1 ? null : CONDITIONS[pick].id;
-  console.log(`# PROBE ${label} npc=${npcId} definition=${player && npcId ? "yes" : "no"} indexEntry=${hasIndex} hooks=${hooks.length} ${JSON.stringify(rows.map((r) => ({ id: r.id, emitted: r.emitted, answers: r.answers, thrown: r.thrown })))} pick=${pickedId}`);
+  console.log(`# PROBE ${label} npc=${npcId} indexEntry=${hasIndex} hooks=${hooks.length} ${JSON.stringify(rows.map((r) => ({ id: r.id, emitted: r.emitted, answersCount: r.answers.length, answers: r.answers, thrownCount: r.thrown.length, thrown: r.thrown.slice(0, 5) })))} pick=${pickedId}`);
   return { rows, pickedId };
 }
 
