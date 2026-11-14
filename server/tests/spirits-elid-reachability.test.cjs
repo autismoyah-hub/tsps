@@ -30,6 +30,9 @@ const { TaskManager } = require("../dist/game/task/TaskManager");
 const { ItemOnGroundManager } = require("../dist/game/entity/impl/grounditem/ItemOnGroundManager");
 const { MagicOnItemPacketListener } = require("../dist/net/packet/impl/MagicOnItemPacketListener");
 const { CombatRange } = require("../dist/game/content/combat/CombatRange");
+const { PathFinder } = require("../dist/game/model/movement/path/PathFinder");
+const { MapObjects } = require("../dist/game/entity/impl/object/MapObjects");
+const { ObjectDefinition } = require("../dist/game/definition/ObjectDefinition");
 const runtime = require("../plugins/quests/QuestRuntime");
 
 runtime.startTranscript = () => true;
@@ -57,6 +60,7 @@ const actors = [];
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
   new NpcDefinitionLoader().load();
+  ObjectDefinition.init(); // object names for the blocker report
   // Collision is loaded here. Without init() the region map is empty and every canMove is open, so
   // the diagnostic would find no block by construction (the same init + loadMapFiles the #5289 test uses).
   PluginManager.getCoreApi().RegionManager.init();
@@ -339,5 +343,171 @@ test("sourced out-of-range sample: SHOES_TILE, reported", () => {
   loginWithKey(player, username);
   const out = castAndDrive(player, messages, username, SHOES_TILE);
   console.log(`# REACH shoes-tile ${JSON.stringify(out)}`);
+  cleanup();
+});
+
+
+// ---------------------------------------------------------------------------------------------------------
+// Report-only extension (3a sight set, 3a' blocker identification, 3b Ghaslor conversation tiles).
+// Retail datum used as a SOURCED START (private RSProx corpus rsprox-corpus-v001, decoded header revision 231.1,
+// recording 3018, transcript SHA256 a827c61063d46f68e5f93f5314b32dcc3bb29b5a382b93610c26bcdfc9322612,
+// lines 2400-2640; decoder build and capture date UNKNOWN): the player walked to (3428,2929) (MoveGameClick lines
+// 2554-2560; local PlayerInfo coord 3428,2929 at line 2576), stood idle for three ticks, then sent
+// OpObjT(id=6792, x=3432, z=2928, interface 218 component 27) at line 2621; within the same tick the server sent
+// SetMapFlag (57,48) = (3433,2928) with build base (3376,2880) from RebuildNormalV1 zone 428/366 (line 2400),
+// cleared it (line 2631), and played Spotanim 142 / MapProjAnimV2 143 / MapAnim 144 on the key tile.
+// So retail resolved this cast at once from (3428,2929), and retail's destination flag was the same east tile
+// (3433,2928) that the closest-tile ground-item route picks here. No recording in the snapshot shows a cast on this
+// key (or any item) started outside sight.
+// ---------------------------------------------------------------------------------------------------------
+const RETAIL_ORIGIN = new Location(3428, 2929, 0);
+const PROJ_FLAG_NAMES = Object.getOwnPropertyNames(RegionManager)
+  .filter((k) => /^PROJECTILE_|^UNKNOWN$|^UNLOADED_TILE$/.test(k) && typeof RegionManager[k] === "number")
+  .map((k) => [k, RegionManager[k]]);
+const flagNames = (clip) => PROJ_FLAG_NAMES.filter(([, v]) => (clip & v) !== 0).map(([k]) => k);
+
+function objectsAt(x, y) {
+  return MapObjects.getObjectsAt(new Location(x, y, 0), null).map((o) => ({
+    id: o.getId(), name: ObjectDefinition.forId(o.getId())?.getName?.() ?? "?", type: o.getType(), face: o.getFace(),
+  }));
+}
+
+/** Exact route cost the combat route helper uses (PathFinder.calculateRouteToAny): exact-tile findRoute, no moveNear. */
+function routeCost(from, to) {
+  const route = PathFinder.rsmodRouteFinding.findRoute({
+    level: 0, srcX: from.getX(), srcY: from.getY(), srcSize: 1, destX: to.getX(), destY: to.getY(),
+    destWidth: 1, destLength: 1, locShape: -1, moveNear: false, privateArea: null,
+  });
+  if (!route.success) return null;
+  let cost = 0, fx = from.getX(), fy = from.getY();
+  for (const w of route.waypoints) { cost += Math.max(Math.abs(w.x - fx), Math.abs(w.y - fy)); fx = w.x; fy = w.y; }
+  return cost;
+}
+
+/** A port of RegionManager.canProjectileRay (RegionManager.ts:657-710) that records every blocking check instead of stopping at the first. */
+function rayTrace(sx, sy, ex, ey) {
+  const hits = [];
+  if (sx === ex && sy === ey) return { blocked: false, hits };
+  const R = RegionManager;
+  const dx = ex - sx, dy = ey - sy, east = dx >= 0, north = dy >= 0;
+  const xFlags = R.UNLOADED_TILE | R.UNKNOWN | R.PROJECTILE_TILE_BLOCKED | (east ? R.PROJECTILE_WEST_BLOCKED : R.PROJECTILE_EAST_BLOCKED);
+  const yFlags = R.UNLOADED_TILE | R.UNKNOWN | R.PROJECTILE_TILE_BLOCKED | (north ? R.PROJECTILE_SOUTH_BLOCKED : R.PROJECTILE_NORTH_BLOCKED);
+  const check = (x, y, flags, atEnd, axis) => {
+    const mask = atEnd ? flags & ~R.PROJECTILE_TILE_BLOCKED : flags;
+    const clip = R.getProjectileClipping(x, y, 0, null);
+    if ((clip & mask) !== 0) {
+      hits.push({ tile: `${x},${y}`, axis, clip: `0x${clip.toString(16)}`, blockedBy: flagNames(clip & mask), objects: objectsAt(x, y) });
+    }
+  };
+  const scale = 65536, half = scale / 2;
+  if (Math.abs(dx) > Math.abs(dy)) {
+    const off = east ? 1 : -1;
+    let sc = sy * scale + half + (north ? 0 : -1);
+    const tan = Math.trunc(dy * scale / Math.abs(dx));
+    for (let x = sx; x !== ex;) {
+      x += off;
+      const y = Math.floor(sc / scale);
+      check(x, y, xFlags, x === ex && y === ey, "x");
+      sc += tan;
+      const ny = Math.floor(sc / scale);
+      if (ny !== y) check(x, ny, yFlags, x === ex && ny === ey, "y");
+    }
+  } else {
+    const off = north ? 1 : -1;
+    let sc = sx * scale + half + (east ? 0 : -1);
+    const tan = Math.trunc(dx * scale / Math.abs(dy));
+    for (let y = sy; y !== ey;) {
+      y += off;
+      const x = Math.floor(sc / scale);
+      check(x, y, yFlags, x === ex && y === ey, "y");
+      sc += tan;
+      const nx = Math.floor(sc / scale);
+      if (nx !== x) check(nx, y, xFlags, nx === ex && y === ey, "x");
+    }
+  }
+  return { blocked: hits.length > 0, hits };
+}
+
+test("REACH 3a: the sight set (tiles within range that satisfy the approach predicate), its map and route costs", () => {
+  const { seen } = explore();
+  const { player: probe } = actor(IN_RANGE_SEED, "probe-3a");
+  const sight = [];
+  for (let dx = -GRAB_RANGE; dx <= GRAB_RANGE; dx++) for (let dy = -GRAB_RANGE; dy <= GRAB_RANGE; dy++) {
+    const t = new Location(KEY_TILE.getX() + dx, KEY_TILE.getY() + dy, 0);
+    if (approachAt(probe, t)) sight.push(t);
+  }
+  const connected = sight.filter((t) => seen.has(tileKey(t)));
+  const xs = sight.map((t) => t.getX()), ys = sight.map((t) => t.getY());
+  console.log(`# REACH 3a sightSet count=${sight.length} connectedToSeed=${connected.length} bbox x ${Math.min(...xs)}..${Math.max(...xs)} y ${Math.min(...ys)}..${Math.max(...ys)}`);
+  assert.ok(sight.length > 0, "precondition: the sight set is non-empty");
+  // A picture of the box: K key, S sight tile connected to the seed, s sight tile not connected, . walkable connected tile, ' ' not walkable/not reached.
+  const sightKeys = new Set(sight.map(tileKey));
+  for (let y = KEY_TILE.getY() + GRAB_RANGE; y >= KEY_TILE.getY() - GRAB_RANGE; y--) {
+    let row = "";
+    for (let x = KEY_TILE.getX() - GRAB_RANGE; x <= KEY_TILE.getX() + GRAB_RANGE; x++) {
+      const k = `${x},${y}`;
+      row += x === KEY_TILE.getX() && y === KEY_TILE.getY() ? "K" : sightKeys.has(k) ? (seen.has(k) ? "S" : "s") : seen.has(k) ? "." : " ";
+    }
+    console.log(`# REACH 3a map y=${y} x=${KEY_TILE.getX() - GRAB_RANGE}..${KEY_TILE.getX() + GRAB_RANGE} |${row}|`);
+  }
+  const starts = [["ghaslor-spawn", GHASLOR_SPAWN], ["shoes", SHOES_TILE], ["east-route-end", new Location(3433, 2928, 0)], ["retail-origin", RETAIL_ORIGIN], ["walk-proof-start", new Location(3421, 2927, 0)]];
+  for (const [label, from] of starts) {
+    const costs = sight.map((t) => ({ t, c: routeCost(from, t) })).filter((e) => e.c !== null).sort((a, b) => a.c - b.c || a.t.getX() - b.t.getX() || a.t.getY() - b.t.getY());
+    console.log(`# REACH 3a routeToSight ${label} from=${tileKey(from)} reachableSightTiles=${costs.length}/${sight.length} nearest=${JSON.stringify(costs.slice(0, 4).map((e) => ({ tile: tileKey(e.t), cost: e.c, chebyshevToKey: chebyshev(e.t, KEY_TILE) })))}`);
+  }
+});
+
+test("REACH 3a': what blocks the projectile line from each start to the key (port of the ray, agreement with production asserted)", () => {
+  const starts = [["ghaslor-spawn", GHASLOR_SPAWN], ["shoes", SHOES_TILE], ["east-route-end", new Location(3433, 2928, 0)],
+    ["retail-origin", RETAIL_ORIGIN], ["in-range-seed", IN_RANGE_SEED], ["walk-proof-start", new Location(3421, 2927, 0)]];
+  console.log(`# REACH 3a' keyTile clip=0x${RegionManager.getProjectileClipping(KEY_TILE.getX(), KEY_TILE.getY(), 0, null).toString(16)} blockedBy=${JSON.stringify(flagNames(RegionManager.getProjectileClipping(KEY_TILE.getX(), KEY_TILE.getY(), 0, null)))} objects=${JSON.stringify(objectsAt(KEY_TILE.getX(), KEY_TILE.getY()))}`);
+  for (const [label, from] of starts) {
+    const port = rayTrace(from.getX(), from.getY(), KEY_TILE.getX(), KEY_TILE.getY());
+    const production = RegionManager.canProjectileAttackBounds(from, KEY_TILE, 1, 1, 1, 1, null);
+    console.log(`# REACH 3a' ray ${label} from=${tileKey(from)} portBlocked=${port.blocked} productionClear=${production} hits=${JSON.stringify(port.hits.slice(0, 4))}`);
+    assert.equal(!port.blocked, production, `the ray port agrees with RegionManager.canProjectileAttackBounds for ${label}; otherwise the blocker report is unreliable`);
+  }
+});
+
+test("REACH 3b: the Ghaslor conversation tiles (player adjacent to each of his 25 wander tiles) as report-only starts", () => {
+  const { seen } = explore();
+  const { player: probe } = actor(IN_RANGE_SEED, "probe-3b");
+  const starts = new Map();
+  for (let nx = -2; nx <= 2; nx++) for (let ny = -2; ny <= 2; ny++) {
+    const npcTile = new Location(GHASLOR_SPAWN.getX() + nx, GHASLOR_SPAWN.getY() + ny, 0);
+    if (!seen.has(tileKey(npcTile))) continue; // Ghaslor must be able to stand there
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      if (!dx && !dy) continue;
+      const t = new Location(npcTile.getX() + dx, npcTile.getY() + dy, 0);
+      if (seen.has(tileKey(t))) starts.set(tileKey(t), t);
+    }
+  }
+  const all = [...starts.values()].sort((a, b) => a.getX() - b.getX() || a.getY() - b.getY());
+  const withPredicate = all.map((t) => ({ t, p: approachAt(probe, t) }));
+  const yes = withPredicate.filter((e) => e.p).length;
+  const d = all.map((t) => chebyshev(t, KEY_TILE));
+  console.log(`# REACH 3b ghaslorConversationTiles total=${all.length} predicateTrue=${yes} predicateFalse=${all.length - yes} chebyshev ${Math.min(...d)}..${Math.max(...d)}`);
+  assert.ok(all.length > 0, "precondition: Ghaslor conversation tiles exist");
+  const cap = 30, stride = Math.max(1, Math.floor(all.length / cap));
+  const sample = withPredicate.filter((_, i) => i % stride === 0).slice(0, cap);
+  const rows = [];
+  sample.forEach((e, i) => {
+    const { player, messages, username } = actor(e.t, `ghaslor-conv-${i}`);
+    loginWithKey(player, username);
+    rows.push(castAndDrive(player, messages, username, e.t));
+    cleanup();
+  });
+  for (const r of rows) console.log(`# REACH 3b conv ${JSON.stringify(r)}`);
+  const byPred = (v) => rows.filter((r) => r.predicateAtStart === v);
+  console.log(`# REACH 3b summary sampled=${rows.length} predicateTrue landed=${byPred(true).filter((r) => r.keyInInventory).length}/${byPred(true).length} predicateFalse landed=${byPred(false).filter((r) => r.keyInInventory).length}/${byPred(false).length}`);
+  for (const r of rows.filter((r) => !r.keyInInventory)) console.log(`# REACH 3b NOT-LANDED ${JSON.stringify(r)}`);
+});
+
+test("REACH retail-observed start (3428,2929): the tile a retail player cast the key grab from (recording 3018), report-only", () => {
+  const { player, messages, username } = actor(RETAIL_ORIGIN, "retail-origin");
+  assert.ok(loginWithKey(player, username));
+  const out = castAndDrive(player, messages, username, RETAIL_ORIGIN);
+  console.log(`# REACH retail-origin ${JSON.stringify(out)}`);
+  console.log(`# REACH retail-origin note: retail resolved the cast at once from here; predicateAtStart=${out.predicateAtStart} here (false would mean this server's clipping differs from retail at this tile)`);
   cleanup();
 });
