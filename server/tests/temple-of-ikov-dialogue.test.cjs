@@ -629,7 +629,11 @@ async function snapshotActor(requestVariant,store){
     assert.equal(sha(fs.readFileSync(path.join(cacheDir,'keys.json'))),'44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a');
     const {CachePipeline}=require('./dist/game/cache/CachePipeline');cache=CachePipeline;
     phase('bootstrap','cache-enter');await CachePipeline.initialize(input.serverRoot);phase('bootstrap','cache-return');
-    new (require('./dist/game/definition/loader/impl/NpcDefinitionLoader').NpcDefinitionLoader)().load();phase('bootstrap','definitions-return');
+    // This unarmed child proves PLAYER persistence, not NPC combat decoration.
+    // Real NpcDefinition.forId lazily hydrates cache metadata; all registrars
+    // and genuine server startup remain below. The parent suite still runs
+    // its full bulk combat/status/animation loader before this helper.
+    phase('bootstrap','npc-cache-metadata');
     manager=require('./dist/game/task/TaskManager').TaskManager;submit=manager.submit;
     manager.submit=function(task,...args){tasks.add(task);return submit.call(this,task,...args);};
     PM.loadFromDirectory(input.stage);phase('bootstrap','plugins-return');core=PM.getCoreApi();assert.equal(core.TaskManager,manager);backend=core.GameConstants.PLAYER_PERSISTENCE;
@@ -869,7 +873,6 @@ let backend;
           const entries=lines[++i],groups=lines[++i],end=lines[++i];assert.match(entries,/^  potionEntries: \d+,$/);assert.match(groups,/^  potionGroups: \d+$/);assert.equal(end,'}');logs.push(entries,groups,end);addLog('Potions.registered');continue;
         }
         if(/^\[cache\] definitions npc=\d+ item=\d+ object=\d+$/.test(line)){addLog('CacheDefinitions.loaded');continue;}
-        if(/^\[npc-definitions\] cache-backed; configured stats applied=\d+, mismatched=\d+, service animations captured=\d+, inferred=\d+ \(by name=\d+\), guessed=\d+, by family=\d+$/.test(line)){addLog('NpcDefinitionLoader.loaded');continue;}
         if(/^\[collision\] indexed \d+ cache regions$/.test(line)){addLog('RegionManager.indexed');continue;}
         if(line==='[World] Registering player - [username, host] : ['+inputName()+', undefined]'||line==='[World] Deregistering player - [username, host] : ['+inputName()+', undefined]'){
           assert.ok(activeActorEpoch==='direct'||activeActorEpoch==='request','real player log belongs to an active source-bound actor epoch');
@@ -886,7 +889,7 @@ let backend;
       for(const r of [owners[0],proofs[0]]){assert.equal(r.role,request.role);assert.equal(r.nonce,nonce);assert.deepEqual(r.source,source);assert.equal(r.owner.pid,result.pid);assert.deepEqual(r.owner.children,[]);}
       assert.equal(owners[0].owner.startTicks,proofs[0].owner.startTicks);
       assert.deepEqual(proofs[0].resolutions,request.pins.map(pin=>({rel:pin.rel,target:path.join(serverRoot,'plugins',pin.rel),bytes:pin.bytes,sha256:pin.sha256,resolved:path.join(serverRoot,'plugins',pin.rel)})));
-      const expected=request.role==='writer'?['bootstrap/cache-enter','bootstrap/cache-return','bootstrap/definitions-return','bootstrap/plugins-return','bootstrap/region-enter','bootstrap/region-return','bootstrap/startup-enter','bootstrap/startup-return','direct/actor-enter','direct/actor-return','request/actor-enter','request/actor-return','closure/shutdown-enter','closure/shutdown-return','closure/cache-close-return']:[];
+      const expected=request.role==='writer'?['bootstrap/cache-enter','bootstrap/cache-return','bootstrap/npc-cache-metadata','bootstrap/plugins-return','bootstrap/region-enter','bootstrap/region-return','bootstrap/startup-enter','bootstrap/startup-return','direct/actor-enter','direct/actor-return','request/actor-enter','request/actor-return','closure/shutdown-enter','closure/shutdown-return','closure/cache-close-return']:[];
       assert.deepEqual(phases.map(p=>p.epoch+'/'+p.name),expected,'complete ordered source phases, no inferred missing markers');
       assert.equal(activeActorEpoch,null);assert.deepEqual(actorLogEpochs.map(x=>x.epoch),request.role==='writer'?['direct','request']:[]);
       return{proof:proofs[0],owner:owners[0],logs,phases,actorLogEpochs};
