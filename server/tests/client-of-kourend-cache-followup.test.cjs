@@ -30,7 +30,8 @@ function read(fn) {
 /**
  * Decoding a varp change for a varbit: the varbit occupies varp bits startBit..endBit. maskShifted = mask << startBit is the
  * varp bits it occupies; the shifted value (value << startBit) is what a varp holds when the varbit equals `value`. Decode with
- * (varp & maskShifted) >> startBit. BigInt keeps unsigned 32-bit values exact (endBit can be >= 30).
+ * ((varp >> startBit) & mask) === value, or equivalently (varp & maskShifted) === shifted. BigInt keeps unsigned 32-bit values exact
+ * (endBit can be >= 30).
  */
 function decodeRows(startBit, endBit, values) {
   const width = BigInt(endBit - startBit + 1);
@@ -62,6 +63,19 @@ test("(a) VARBIT BACKING for 12148 and 12151 (VarBitType: baseVar, startBit, end
         console.log(`# DEF varbit ${id} value=${row.value} shiftedValue=0x${row.shifted.toString(16)} (${row.shifted.toString(10)}) in varp ${baseVar}`);
       }
     }
+  }
+});
+
+test("(c) VARBIT GAMEVAL NAMES matching /veos|sarim|kourend|client_of/i (capped 60), with baseVar/startBit/endBit (cache names, NOT retail)", () => {
+  const names = read(() => CacheDefinitions.getVarbitNames()) ?? new Map();
+  const hits = [...names.entries()].filter(([, name]) => /veos|sarim|kourend|client_of/i.test(String(name))).slice(0, 60);
+  console.log(`# DEF varbit-name matches (capped 60) = ${hits.length}`);
+  for (const [id, name] of hits) {
+    const v = read(() => CacheDefinitions.getVarbit(id));
+    const baseVar = read(() => v?.baseVar) ?? "absent";
+    const startBit = read(() => v?.startBit) ?? "absent";
+    const endBit = read(() => v?.endBit) ?? "absent";
+    console.log(`# DEF varbit-name id=${id} name=${JSON.stringify(name)} baseVar=${baseVar} startBit=${startBit} endBit=${endBit}`);
   }
 });
 
