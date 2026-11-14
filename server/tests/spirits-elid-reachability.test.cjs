@@ -56,6 +56,10 @@ const actors = [];
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
   new NpcDefinitionLoader().load();
+  // Collision is loaded here. Without init() the region map is empty and every canMove is open, so
+  // the diagnostic would find no block by construction (the same init + loadMapFiles the #5289 test uses).
+  PluginManager.getCoreApi().RegionManager.init();
+  PluginManager.getCoreApi().RegionManager.loadMapFiles(KEY_TILE.getX(), KEY_TILE.getY());
   const count = runtime.getRegisteredQuests().length;
   require("../plugins/quests/quests/SpiritsOfTheElid.Quest")(PluginManager.createApi("ElidReachability"));
   quest = runtime.getRegisteredQuests().slice(count).at(-1);
@@ -81,6 +85,7 @@ function actor(start, label) {
   const player = new Player(new PlayerSession(channel), new Location(start.getX(), start.getY(), start.getZ()));
   player.setIndex(index++);
   player.setRegistered(true);
+  player.setNeedsPlacement(false);
   player.setUsername(username);
   const sender = player.getPacketSender();
   const messages = [];
@@ -164,12 +169,47 @@ function castAndDrive(player, messages, username, start) {
   };
 }
 
-/** Cleanup per actor: cancel its tasks so one start's walk cannot leak into the next. */
+/** Cleanup per actor: cancel its tasks, remove its key pile, so one start cannot leak into the next. */
 function cleanup() {
   for (const p of actors.splice(0)) {
     TaskManager.cancelTasks(p.getIndex());
+    const pile = ItemOnGroundManager.getGroundItem(p.getUsername(), KEY, KEY_TILE, p.getPrivateArea() ?? null);
+    if (pile) ItemOnGroundManager.deregister(pile);
     p.setRegistered(false);
   }
+}
+
+/** Collision is live: the region exists, the box around the key has blocked edges, and the key's neighbours are reported. */
+function collisionFacts() {
+  const core = PluginManager.getCoreApi();
+  const region = core.RegionManager.getRegion(KEY_TILE.getX(), KEY_TILE.getY());
+  let blocked = 0, total = 0;
+  for (let dx = -15; dx <= 15; dx++) for (let dy = -15; dy <= 15; dy++) {
+    total++;
+    if (core.RegionManager.getClipping(KEY_TILE.getX() + dx, KEY_TILE.getY() + dy, 0, null) !== 0) blocked++;
+  }
+  const neighbours = [[1, 0, "E"], [-1, 0, "W"], [0, 1, "N"], [0, -1, "S"]].map(([dx, dy, name]) => {
+    const open = stepOk(KEY_TILE, dx, dy);
+    return `${name}=${open ? "open" : "blocked"}`;
+  });
+  const keyClip = core.RegionManager.getClipping(KEY_TILE.getX(), KEY_TILE.getY(), 0, null);
+  return { region: !!region, loaded: !!region, blocked, total, keyClip, neighbours };
+}
+
+test("PRECONDITION: collision is live (region loaded, box has blocked edges, key neighbours reported)", () => {
+  const facts = collisionFacts();
+  console.log(`# REACH collision region loaded=${facts.loaded} box31x31 blockedEdges=${facts.blocked}/${facts.total} keyClip=${facts.keyClip} neighbours ${facts.neighbours.join(" ")}`);
+  assert.equal(facts.loaded, true, "precondition: the key's region is loaded (RegionManager.init + loadMapFiles)");
+  assert.ok(facts.blocked > 0, "precondition: the 31x31 box has blocked edges, so canMove is not vacuously open");
+});
+
+/** Hard-assert starts: a missing key, a dead click delay or a bad level is a harness precondition failure. */
+function assertPrecondition(out) {
+  assert.equal(out.pre.keyOnGround, true, `precondition: key on the ground: ${JSON.stringify(out.pre)}`);
+  assert.equal(out.pre.clickDelayOk, true, `precondition: click delay elapsed: ${JSON.stringify(out.pre)}`);
+  assert.equal(out.pre.sameFloor, true, "precondition: same floor");
+  assert.ok(out.pre.runesLaw > 0 && out.pre.runesAir > 0, `precondition: law and air runes: ${JSON.stringify(out.pre)}`);
+  assert.ok(out.pre.hitpoints > 0, "precondition: live hitpoints");
 }
 
 test("REACH: frontier precondition and Ghaslor conversation-tile range (real RegionManager)", () => {
@@ -198,7 +238,7 @@ test("harness proof: a start 11 tiles away with an open step into range walks an
   assert.ok(loginWithKey(player, username), "precondition: the real login hook registered the key for this player");
   const out = castAndDrive(player, messages, username, oneStep);
   console.log(`# REACH walk-proof ${JSON.stringify(out)}`);
-  assert.equal(out.pre.keyOnGround, true, "precondition: key on the ground for this player");
+  assertPrecondition(out);
   assert.equal(out.keyInInventory, true, `walk proof must land: ${JSON.stringify(out)}`);
   assert.equal(out.stage, STAGE_KEY, "stage 20 -> 25");
   cleanup();
@@ -210,6 +250,7 @@ test("positive: an in-range start (no walk) grabs the key and advances 20 -> 25"
   assert.ok(loginWithKey(player, username));
   const out = castAndDrive(player, messages, username, IN_RANGE_SEED);
   console.log(`# REACH in-range ${JSON.stringify(out)}`);
+  assertPrecondition(out);
   assert.equal(out.keyInInventory, true, `in-range must land: ${JSON.stringify(out)}`);
   assert.equal(out.stage, STAGE_KEY);
   cleanup();
@@ -220,6 +261,7 @@ test("positive: Ghaslor's spawn tile (in range, no walk) grabs the key", () => {
   assert.ok(loginWithKey(player, username));
   const out = castAndDrive(player, messages, username, GHASLOR_SPAWN);
   console.log(`# REACH ghaslor-spawn ${JSON.stringify(out)}`);
+  assertPrecondition(out);
   assert.equal(out.keyInInventory, true, `ghaslor spawn must land: ${JSON.stringify(out)}`);
   cleanup();
 });
