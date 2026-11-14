@@ -51,7 +51,8 @@ async function prepare(cdp, scenario) {
 
 function readPage() {
   const client = window.osrsClient ?? window.__osrsClient ?? window.__WEBGPU_RENDERER__?.osrsClient;
-  const candidates = client?.clientPlugins?.plugins?.filter(p => p.constructor?.descriptor?.configKey === 'touchcontrolsplugin') ?? [];
+  const manager = client?.runeLite?.pluginManager;
+  const candidates = manager?.getPlugins().filter(p => manager.getDescriptor(p).configKey === 'touchcontrolsplugin') ?? [];
   const plugin = candidates.length === 1 ? candidates[0] : null;
   const node = document.querySelector('[aria-label="Movement joystick"]');
   const rect = node?.getBoundingClientRect();
@@ -60,7 +61,8 @@ function readPage() {
     scenario:window.__touch5133Scenario ?? null, pluginCount:candidates.length,
     loggedIn:client?.isLoggedIn?.() === true, gameState:client?.gameState ?? null,
     pluginEnabled:plugin?.isEnabled?.() ?? false, state:plugin?.getUiState?.() ?? null,
-    padMode:plugin?.configManager?.getConfiguration('touchcontrols','padMode') ?? null,
+    movementAllowed:plugin?.canMove?.() === true,
+    padMode:client?.runeLite?.configManager.getConfiguration('touchcontrols','padMode') ?? null,
     media:{coarse:matchMedia('(pointer: coarse)').matches,fine:matchMedia('(pointer: fine)').matches,
       noHover:matchMedia('(hover: none)').matches,points:navigator.maxTouchPoints},
     touch:new URLSearchParams(location.search).get('touch'),
@@ -74,7 +76,7 @@ async function verify(cdp, scenario, emit, {timeoutMs=10000}={}) {
   const deadline=Date.now()+timeoutMs; let actual;
   do {
     actual=await cdp.evaluate(`(${readPage.toString()})()`);
-    if (actual.pluginCount === 1 && actual.loggedIn && actual.gameState === 30 && actual.pluginEnabled
+    if (actual.pluginCount === 1 && actual.loggedIn && actual.gameState === 30 && actual.pluginEnabled && actual.movementAllowed
       && actual.state?.visible === scenario.expected && actual.joystick.visible === scenario.expected) break;
     await new Promise(resolve=>setTimeout(resolve,50));
   } while(Date.now()<deadline);
@@ -83,9 +85,11 @@ async function verify(cdp, scenario, emit, {timeoutMs=10000}={}) {
   assert.equal(actual.pluginCount,1,'exact registered Touch Controls instance');
   assert.equal(actual.loggedIn,true,'actual client logged in'); assert.equal(actual.gameState,30);
   assert.equal(actual.pluginEnabled,true,'plugin enabled, not hidden by disabling plugin');
+  assert.equal(actual.movementAllowed,true,'TOUCH5133_PREREQUISITE: actual plugin canMove must permit movement');
   assert.equal(actual.scenario?.name,scenario.name,'actual page fixture identity');
   assert.equal(actual.media.points,scenario.points,'actual emulated touch count');
   assert.equal(actual.media.coarse,scenario.pointer==='coarse'); assert.equal(actual.media.noHover,!scenario.hover);
+  assert.equal(actual.media.fine,scenario.pointer==='fine','TOUCH5133_PREREQUISITE: declared primary fine pointer');
   assert.equal(actual.touch,scenario.touch,'literal URL override, not fixture-only expectation');
   assert.equal(actual.padMode,scenario.mode,'actual config storage value');
   assert.equal(actual.state.visible,scenario.expected,'TOUCH5133_CONNECTED_DEFAULT_VISIBILITY');
