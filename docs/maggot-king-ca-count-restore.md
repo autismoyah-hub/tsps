@@ -31,8 +31,23 @@ login restoration, 1/25 thresholds, max merge and repeated-restore idempotence.
 It also includes a supplied lethal `PendingHit` through the real owned
 `NPCDeathTask` path after a local-24/shared-0 catch-up.
 
-These cases are **unexecuted pending normal source/input/native review**. The
-save probe round-trips the registered attribute JSON and applies the real
+At source `1d8aaecb8bf3bd6d0c74c266e45e668428370c31`, AFTER003 job
+`6af82b2423985fb9cd81cbc7` observed all three new bridge cases passing. The
+native suite finished **63 PASS / 1 FAIL**: an existing twin-crush control did
+not reach its joint melee-phase precondition. The remaining 66 planned tests
+were unexecuted after that first-suite failure. The job is closed with ERROR;
+these results do not make the bridge Ready.
+
+The twin-crush fixture now starts its existing selected `Math.random => 0.5`
+input before either native entry constructs a `Fight`. Each constructor draws
+an independent 4–8 attack count; previously this input selection began only
+after waiting for both rotations to overlap in melee. Real entry, World tasks,
+the joint 75-turn boundary, first/second splat and defence-roll assertions,
+other-actor negative control, and cleanup remain intact. No production phase,
+head or schedule is changed. This revised fixture is **unexecuted pending
+normal source/input/native review**; the earlier failure's cause is not proven.
+
+The save probe round-trips the registered attribute JSON and applies the real
 `PlayerSave` snapshot before dispatching registered login hooks. It does not
 claim a disk or socket relog. The lethal hit and survival setting are supplied
 checkpoints, not a natural full-fight or supply-acquisition proof. Existing

@@ -1015,6 +1015,9 @@ test('the existing Dizana quiver decrement handler retains one payment and its o
 test('real twin crush attacks boost only the first splat and first defence roll; other actors remain ordinary', t => {
   const p = player(t);
   const q = player(t);
+  // Select attack-count inputs before both Fight constructors, as well as later damage rolls.
+  // Real entry/World rotations must still reach the joint melee boundary within the same 75 turns.
+  const random = t.mock.method(Math, 'random', () => 0.5);
   const session = enter(p);
   const other = enter(q);
   invulnerable(p); invulnerable(q);
@@ -1030,7 +1033,6 @@ test('real twin crush attacks boost only the first splat and first defence roll;
     // Retain the real defence-roll producer; select two successful outcomes to exercise nonzero first/second splats.
     return (attacker === p && target === session.boss) || (attacker === q && target === other.boss) ? true : actual;
   });
-  const random = t.mock.method(Math, 'random', () => 0.5);
   const startDamage = finalDamage.length;
   const startDefence = defenceRolls.length;
   let clicked = false, otherClicked = false;
