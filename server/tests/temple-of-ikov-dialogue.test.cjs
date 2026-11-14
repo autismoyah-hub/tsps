@@ -260,6 +260,36 @@ function snapshotAndLogout(f,expected){
   assert.equal(f.p.getProfile(),Json.JsonPlayerPersistence.PROFILES.MAIN_PROFILE);
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'ikov-json-store-'));
   let ownedRoot,reopened,observation,failure,childResult;
+  let producerObservation,producerFailureEvidence,producerChildrenTerminal=true,producerStagingSafe=true;
+  const producerRaw=[];let proofDeadline,proofBudgetUsed=0;
+  const proofLimit=1024*1024,proofReserve=8192;
+  function chargeProof(value,label){const n=Buffer.isBuffer(value)?value.length:Buffer.byteLength(String(value),'utf8');assert.ok(proofBudgetUsed+n<=proofLimit-proofReserve,'aggregate FILE helper 1MiB: '+label);proofBudgetUsed+=n;}
+  function remainingChildTime(){assert.ok(proofDeadline!==undefined);const ms=Number((proofDeadline-process.hrtime.bigint())/1000000n);assert.ok(ms>0,'original shared10000ms helper deadline');return ms;}
+  function remainingChildBuffer(){const n=Math.floor((proofLimit-proofReserve-proofBudgetUsed)/4);assert.ok(n>1024,'aggregate child raw/encoded capacity');return n;}
+  function retainChildResult(role,result){
+    const bytes=b=>Buffer.isBuffer(b)?b:Buffer.alloc(0),stdout=bytes(result.stdout),stderr=bytes(result.stderr);
+    const record={role,pid:result.pid??null,status:result.status,signal:result.signal,
+      error:result.error?{name:result.error.name,code:result.error.code,message:result.error.message}:null,
+      stdoutBytes:stdout.length,stderrBytes:stderr.length,stdoutSHA256:crypto.createHash('sha256').update(stdout).digest('hex'),
+      stderrSHA256:crypto.createHash('sha256').update(stderr).digest('hex'),stdoutBase64:stdout.toString('base64'),stderrBase64:stderr.toString('base64'),rawComplete:true};
+    record.rawComplete=Buffer.isBuffer(result.stdout)&&Buffer.isBuffer(result.stderr)&&!result.error&&result.signal===null;
+    record.retentionScope=record.rawComplete?'complete returned child stream':'returned buffers only; child stream may be incomplete';
+    if(!Buffer.isBuffer(result.stdout)){record.stdoutBytes=null;record.stdoutSHA256=null;record.stdoutBase64=null;}
+    if(!Buffer.isBuffer(result.stderr)){record.stderrBytes=null;record.stderrSHA256=null;record.stderrBase64=null;}
+    const encoded=JSON.stringify(record);
+    if(Buffer.byteLength(encoded)>proofLimit-proofReserve-proofBudgetUsed){
+      record.stdoutBase64=null;record.stderrBase64=null;record.rawComplete=false;record.unretainedRawBytes=stdout.length+stderr.length;
+      producerFailureEvidence={reason:'encoded child artifact cap',partial:record};
+      throw new Error('aggregate encoded child output exceeds unchanged helper cap');
+    }
+    chargeProof(encoded,'retained raw child result');return record;
+  }
+  function reportProducerFailure(error){
+    const facts=producerFailureEvidence??{rawChildren:producerRaw,childrenTerminal:producerChildrenTerminal,stagingSafe:producerStagingSafe,ownedRoot,usedBytes:proofBudgetUsed};
+    facts.error={name:error.name,message:error.message};
+    let raw=JSON.stringify(facts);if(Buffer.byteLength(raw)>proofLimit-proofReserve)raw=JSON.stringify({reason:'failure evidence cap',rawComplete:false,unretainedJSONBytes:Buffer.byteLength(raw),partial:facts.partial??null,ownedRoot,childrenTerminal:producerChildrenTerminal,stagingSafe:producerStagingSafe});
+    console.log('IKOV_JSON_PRODUCER_FAILURE',raw);
+  }
   try{
     ownedRoot=fs.realpathSync(root);
     const childSource=String.raw`
@@ -334,10 +364,13 @@ function snapshotAndLogout(f,expected){
       process.stdout.write(output);
     })().catch(error=>{console.error(error);process.exitCode=1;});
 `;
+    proofDeadline=process.hrtime.bigint()+10000000000n;
     const request=JSON.stringify({root:ownedRoot,username:f.p.getUsername(),profile:f.p.getProfile(),serialized});
     assert.ok(Buffer.byteLength(request,'utf8')<=1024*1024);
+    chargeProof(childSource,'original static child argv');chargeProof(request,'original input');
     const result=childResult=spawnSync(process.execPath,['-e',childSource],{cwd:path.resolve(__dirname,'..'),
-      input:request,timeout:10000,maxBuffer:1024*1024});
+      input:request,timeout:remainingChildTime(),maxBuffer:remainingChildBuffer()});
+    const originalRaw=retainChildResult('original-json70',result);producerRaw.push(originalRaw);chargeProof(JSON.stringify(originalRaw),'original failure-record reservation');
     assert.ifError(result.error);assert.equal(result.signal,null,'store child exits before owned-root cleanup');
     assert.equal(result.status,0,`production store child failed: ${result.stderr}`);
     assert.ok(Buffer.isBuffer(result.stdout)&&Buffer.isBuffer(result.stderr));
@@ -364,6 +397,412 @@ function snapshotAndLogout(f,expected){
     assert.deepEqual(JSON.parse(JSON.stringify(reopened.inventory,codec.replacer.bind(codec))),inventory);
     assert.deepEqual(JSON.parse(JSON.stringify(reopened.equipment,codec.replacer.bind(codec))),equipment);
     assert.deepEqual(JSON.parse(JSON.stringify(reopened.position)),parsed.position,'verify loaded position BEFORE fixture movement');
+    // FILE80 is a direct producer fixture; the original FILE70 proof/return stays separate.
+    const sourceBase='0d84f10f124550b511a2c622bbfcf52232a4a719';
+    const candidatePins=[{"rel":"areas/TutorialIsland.plugin.js","bytes":2159,"sha256":"2636b702695e322ce6f618f0707d9d8774ca012488ce972f84815f279adbe394","gitBlob":"a6098c6980dbefe007e694bb613c7c23f448278d"},{"rel":"bosses/Zulrah.plugin.js","bytes":619,"sha256":"813e22d060357d8cea4b2c1fc58fd37bd2dc41cd8ad40c86d6c866a5a3a003f9","gitBlob":"1c9c83eca4c023a3102c5a26c76f63daf57286c4"},{"rel":"interface/Settings.plugin.js","bytes":64343,"sha256":"352a171b562c142cd8fd3cf791a43e54e4ef71eb89a240913ba4f22577458543","gitBlob":"b568b24a2136c1f6d6b889aa606696b715791305"},{"rel":"items/DiaryRewards.plugin.js","bytes":1352,"sha256":"717dc33208a3f68891f25e3c6f680e8dbc346d1d4f60c23d73cc6afacd8cfd40","gitBlob":"c75043c758941b88efa8306ae86778a96b0950ad"},{"rel":"items/Potions.plugin.js","bytes":115878,"sha256":"4334d85381dea3271687a2e5faeed5ba4d0540b4f0af4d77628fb331773cd3c4","gitBlob":"7b6c54ccd4dca35e42a168591c88c74d95116889"},{"rel":"minigames/GolemCrafting.plugin.js","bytes":244,"sha256":"f0001f6d0ed5eb760caf831dd7ad119b272b90750dbfabebfb13fbbd6e0a9c4a","gitBlob":"fdf8438b217301d49628abe478a8667c161e34e6"},{"rel":"minigames/MasteringMixology.plugin.js","bytes":1145,"sha256":"7130ca50625e8a53c3aa9d3a3d445fdccf5b75dd31ce7de78eb207f73240196b","gitBlob":"07023c59bd5e252ddaf992975448d1d7da6681d0"},{"rel":"minigames/ValeTotems.plugin.js","bytes":1155,"sha256":"badc59885b38b31151c25bcdc84e787bd7e294ea8815d587b755d7236df8ca48","gitBlob":"322afdfb630f6b923d5c93ba2b5b520bf7da1193"},{"rel":"npcs/BarbarianTraining.plugin.js","bytes":19098,"sha256":"84f312bf54260606867bc642509e1c25df3fe267eff81a42fe34e5626f38e90b","gitBlob":"7d9463b40ec8ec3349c8336a6ffca5f714c8bfd6"},{"rel":"npcs/NpcDialogues.plugin.js","bytes":73841,"sha256":"3c6fc47d9422d0243d92f6a840183ecf01ca3c7db60f94f187e71e9222717d84","gitBlob":"d453ab4ea391ef09ea971e91bb375404ef869fd2"},{"rel":"npcs/RandomEvents.plugin.js","bytes":2870,"sha256":"bc1b87a927adfdc1cfbcf146574598f3b8dc6f64535ab3c68868441eecacc0d5","gitBlob":"26ae30aacc5bc86fb4347ae158245cd7542da6d0"},{"rel":"objects/Windmill.plugin.js","bytes":9490,"sha256":"0ff8dc0c7a70192bc4542ad2bff4995f08619e33aa529a15bf5635e45c2a718b","gitBlob":"91a5fd758e5ff55321bcb2671be0903773e29c24"},{"rel":"persistence/JsonPlayerPersistence.plugin.js","bytes":20618,"sha256":"dc738d0ef6e4e2c35e0bc3bd73f9b1070bb71421209ec8088e950fa995948d63","gitBlob":"d1ccbe3bbc743e14e38fe6a9bf610cc531e1085c"},{"rel":"persistence/SaveEvents.plugin.js","bytes":2034,"sha256":"5659056d0f57b63e6f6e4ddb5c53a5950a6368b931cff3ca23f27d6de398e3a1","gitBlob":"f16a657e05186ff9c2f73d3cec6cf70333629a90"},{"rel":"quests/Quests.plugin.js","bytes":8549,"sha256":"05f211a639939d834377f877879307418f6e3cbe58a4f14f3f4d79afefc7f0ce","gitBlob":"3190c41ed59bcfa259f420662bebdca0d9b0b8f0"},{"rel":"skills/Farming.plugin.js","bytes":481,"sha256":"8d4095b8879e33fd5d95d2f7e5d1149946ebd9b632321326a373a150789202a4","gitBlob":"efbebaff34ce6950cf61fa1d006fd88006b883e9"},{"rel":"treasuretrails/TreasureTrails.plugin.js","bytes":774,"sha256":"b20ebe1d3e9897eebf4ac142d047d0ade0c7f97d4d932ccc5471994b7106685a","gitBlob":"92b542b34ae6c9c545231b5ee85d62f98c03416c"},{"rel":"world/Music.plugin.js","bytes":33538,"sha256":"5a58b20de51821cd2ef7f1542007119e251bfc9facf235b7328e47e641745ccd","gitBlob":"4e959cf4aaaf19acb113af0cbb0d503d047cfdcc"}];
+    const writerSource=String.raw`'use strict';
+const ROLE='writer';
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+const sha=b=>crypto.createHash('sha256').update(b).digest('hex');
+const inputBytes=fs.readFileSync(0);assert.ok(inputBytes.length>0&&inputBytes.length<=1024*1024);
+const input=JSON.parse(inputBytes.toString('utf8'));
+assert.equal(input.role,ROLE);assert.match(input.nonce,/^[0-9a-f]{32}$/);
+function identity(){
+  const raw=fs.readFileSync('/proc/self/stat','utf8'),v=raw.slice(raw.lastIndexOf(')')+2).trim().split(/\s+/);
+  const children=new Set();for(const tid of fs.readdirSync('/proc/self/task')){
+    try{for(const pid of fs.readFileSync('/proc/self/task/'+tid+'/children','utf8').trim().split(/\s+/))if(pid)children.add(Number(pid));}
+    catch(e){if(e.code!=='ENOENT')throw e;}
+  }
+  return{pid:process.pid,ppid:Number(v[1]),pgrp:Number(v[2]),session:Number(v[3]),startTicks:v[19],children:[...children].sort((a,b)=>a-b)};
+}
+const initialOwner=identity();assert.deepEqual(initialOwner.children,[]);
+fs.writeSync(1,'IKOV_FILE80_OWNER '+JSON.stringify({role:ROLE,nonce:input.nonce,source:input.source,owner:initialOwner})+'\n');
+function directory(p){assert.ok(path.isAbsolute(p));const s=fs.lstatSync(p);assert.ok(s.isDirectory()&&!s.isSymbolicLink());assert.equal(fs.realpathSync(p),p);}
+function regular(p){const s=fs.lstatSync(p);assert.ok(s.isFile()&&!s.isSymbolicLink());return s;}
+directory(input.root);directory(input.store);directory(input.stage);
+assert.equal(path.dirname(input.store),input.root);assert.equal(path.dirname(input.stage),input.root);
+assert.equal(fs.realpathSync(process.cwd()),input.serverRoot);
+assert.deepEqual(JSON.parse(fs.readFileSync(path.join(input.serverRoot,'data/definitions/world.json'),'utf8')).plugins,{TutorialIsland:false});
+assert.equal(fs.existsSync(path.join(input.serverRoot,'data/definitions/world.local.json')),false);
+assert.notEqual(process.env.BROWSER_HOST,'1');
+const options=process.execArgv.filter((v,i,a)=>i===0||a[i-1]!=='-e').join(' ')+' '+(process.env.NODE_OPTIONS||'');
+assert.ok(!/(?:^|[\s"'])--(?:preserve-symlinks(?:-main)?|require|import)(?:[=\s"']|$)/.test(options),'unqualified module-resolution/preload option');
+const e=process.execArgv.indexOf('-e');assert.ok(e>=0);assert.equal(sha(Buffer.from(process.execArgv[e+1])),input.programSHA256);
+const testFile=path.join(input.serverRoot,'tests/temple-of-ikov-dialogue.test.cjs');regular(testFile);
+assert.equal(sha(fs.readFileSync(testFile)),input.source.testSHA256);
+assert.equal(input.source.reviewedBase,'0d84f10f124550b511a2c622bbfcf52232a4a719');
+assert.ok(Array.isArray(input.pins)&&input.pins.length===(ROLE==='writer'?18:2));
+const stagedFiles=[],stagedDirs=[];function walkStage(dir,rel){
+  for(const name of fs.readdirSync(dir).sort()){
+    const child=path.join(dir,name),key=rel?rel+'/'+name:name,st=fs.lstatSync(child);
+    if(st.isDirectory()&&!st.isSymbolicLink()){assert.equal(fs.realpathSync(child),child);stagedDirs.push(key);walkStage(child,key);}
+    else{assert.ok(st.isSymbolicLink(),'only exact production FILE links');stagedFiles.push(key);}
+  }
+}
+walkStage(input.stage,'');assert.deepEqual(stagedFiles.sort(),input.pins.map(p=>p.rel).sort());
+const expectedDirs=new Set();for(const pin of input.pins){let dir=path.posix.dirname(pin.rel);while(dir!=='.'){expectedDirs.add(dir);dir=path.posix.dirname(dir);}}
+assert.deepEqual(stagedDirs.sort(),[...expectedDirs].sort());
+const resolutions=[];for(const pin of input.pins){
+  assert.ok(!path.isAbsolute(pin.rel)&&!pin.rel.split('/').includes('..'));
+  const link=path.join(input.stage,pin.rel),target=path.join(input.serverRoot,'plugins',pin.rel);
+  assert.ok(fs.lstatSync(link).isSymbolicLink());assert.equal(fs.readlinkSync(link),target);
+  assert.equal(fs.realpathSync(link),target);regular(target);
+  const bytes=fs.readFileSync(target);assert.equal(bytes.length,pin.bytes);assert.equal(sha(bytes),pin.sha256);
+  assert.equal(require.resolve(link),target);
+  resolutions.push({rel:pin.rel,target:target,bytes:bytes.length,sha256:sha(bytes),resolved:require.resolve(link)});
+}
+require('./dist/Server').Server.installProductionPathResolver();
+const Json=require('./plugins/persistence/JsonPlayerPersistence.plugin');
+Json.JsonPlayerPersistence.SAVE_DIRECTORY=input.store;
+const {PluginManager:PM}=require('./dist/plugins/PluginManager');
+const {GameConstants}=require('./dist/game/GameConstants');
+const {PlayerSave}=require('./dist/game/entity/impl/player/persistence/PlayerSave');
+function data(save){return JSON.parse(JSON.stringify(save,backend.replacer.bind(backend)),backend.reviver.bind(backend));}
+function selected(save){const o=data(save);return{attributes:o.attributes,inventory:o.inventory,equipment:o.equipment,skills:o.skills,position:o.position};}
+function idle(){assert.equal(backend.pendingSerializedSaves.size,0);assert.equal(backend.failedWrites.size,0);assert.equal(GameConstants.PLAYER_PERSISTENCE,backend);assert.equal(Json.JsonPlayerPersistence.SAVE_DIRECTORY,input.store);}
+function fileProof(){
+  const name=backend.resolveFilePath(input.username,input.profile);assert.equal(path.dirname(name),input.store);
+  const st=regular(name),bytes=fs.readFileSync(name);assert.equal(bytes.length,st.size);assert.ok(bytes.length>0&&bytes.length<=1024*1024);
+  assert.deepEqual(fs.readdirSync(input.store).sort(),[path.basename(name)]);
+  return{path:name,mode:st.mode&0o777,bytes:bytes.length,sha256:sha(bytes),base64:bytes.toString('base64'),json:bytes.toString('utf8')};
+}
+async function emit(proof){
+  const owner=identity();assert.deepEqual(owner.children,[]);assert.equal(owner.startTicks,initialOwner.startTicks);
+  const record={role:ROLE,nonce:input.nonce,source:input.source,owner:owner,resolutions:resolutions,...proof};
+  const output='IKOV_FILE80_PROOF '+JSON.stringify(record,backend.replacer.bind(backend))+'\n';assert.ok(Buffer.byteLength(output)<=1024*1024);
+  await new Promise((resolve,reject)=>process.stdout.write(output,e=>e?reject(e):resolve()));
+}
+let backend;
+(async()=>{
+  let actor,core,manager,submit,cache,primary,proof,startup=false;const tasks=new Set();
+  try{
+    assert.equal(input.profile,'main');assert.deepEqual(fs.readdirSync(input.store),[]);
+    assert.equal(fs.readFileSync('target.txt','utf8').trim(),'osrs-242_2026-11-03');
+    const cacheDir=path.resolve('caches/osrs-242_2026-11-03');directory(cacheDir);
+    for(const name of ['main_file_cache.dat2','main_file_cache.idx255','info.json','keys.json'])regular(path.join(cacheDir,name));
+    assert.ok(fs.statSync(path.join(cacheDir,'main_file_cache.idx255')).size>24*6,'prepared gameval cache, no download fallback');
+    assert.equal(sha(fs.readFileSync(path.join(cacheDir,'info.json'))),'40dfaae45cea053345ee44375ce6d8e778df47a58bc666f4e97ad3db37bae36e');
+    assert.equal(sha(fs.readFileSync(path.join(cacheDir,'keys.json'))),'44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a');
+    const {CachePipeline}=require('./dist/game/cache/CachePipeline');cache=CachePipeline;
+    await CachePipeline.initialize(input.serverRoot);
+    new (require('./dist/game/definition/loader/impl/NpcDefinitionLoader').NpcDefinitionLoader)().load();
+    manager=require('./dist/game/task/TaskManager').TaskManager;submit=manager.submit;
+    manager.submit=function(task,...args){tasks.add(task);return submit.call(this,task,...args);};
+    PM.loadFromDirectory(input.stage);core=PM.getCoreApi();assert.equal(core.TaskManager,manager);backend=core.GameConstants.PLAYER_PERSISTENCE;
+    assert.ok(backend instanceof Json.JsonPlayerPersistence);assert.equal(backend.save,Json.JsonPlayerPersistence.prototype.save);
+    assert.equal(backend.load,Json.JsonPlayerPersistence.prototype.load);idle();assert.equal(backend.nextWriteSequence,0);
+    core.RegionManager.init();startup=true;PM.emitServerStartup({});
+    const quests=require('./plugins/quests/QuestRuntime').getRegisteredQuests(),quest=quests.findLast(q=>q.key==='temple_of_ikov');assert.ok(quest);
+    const {Player}=require('./dist/game/entity/impl/player/Player');
+    const {PlayerSession}=require('./dist/net/PlayerSession');
+    const channel={kind:'test',remoteAddress:'127.0.0.1',isOpen:()=>true,send:()=>true,close(){},onData(){},onError(){},onClose(){}};
+    const session=new PlayerSession(channel);actor=new Player(session);session.setPlayer(actor);
+    actor.setUsername(input.username);actor.setLongUsername(core.Misc.stringToLongBigInt(input.username));actor.setProfile(input.profile);
+    actor.setAttribute('bot-skip-persistence',true);assert.equal(core.World.getPlayers().add(actor),true);
+    assert.equal(actor.isPlayerBot(),false);assert.equal(actor.isRegistered(),true);
+    const baseline=selected(PlayerSave.fromPlayer(actor));
+    const parsed=JSON.parse(input.serialized,backend.reviver.bind(backend));
+    assert.equal(parsed.inventory.length,28);assert.equal(parsed.equipment.length,14);
+    assert.ok(parsed.equipment[core.Equipment.WEAPON_SLOT].id<=0,'unchanged unarmed supplied checkpoint');
+    const hydrated=backend.hydratePlayerSave(parsed);assert.ok(hydrated instanceof PlayerSave);
+    assert.ok(hydrated.inventory.every(i=>i instanceof core.Item));assert.ok(hydrated.equipment.every(i=>i instanceof core.Item));hydrated.applyToPlayer(actor);assert.ok(actor.getLocation() instanceof core.Location);
+    const before=selected(PlayerSave.fromPlayer(actor));
+    for(const key of ['attributes','inventory','equipment','skills','position'])assert.deepEqual(before[key],parsed[key],key+' genuine complete input preserved');
+    assert.equal(quest.getStage(actor),70);assert.equal(actor.getAttribute('bot-skip-persistence'),true);
+    const boots=core.ItemIdentifiers.BOOTS_OF_LIGHTNESS;assert.ok(Number.isInteger(boots)&&boots>0);
+    const countBoots=()=>actor.getInventory().getAmount(boots)+actor.getEquipment().getAmount(boots);
+    const bootCount=countBoots(),qp=Number(actor.getAttribute('quest.points'))||0;
+    const ranged=actor.getSkillManager().getExperience(core.Skill.RANGED),fletching=actor.getSkillManager().getExperience(core.Skill.FLETCHING);
+    assert.equal(quest.complete(actor,{scroll:false,announce:false}),true);
+    assert.equal(quest.getStage(actor),80);assert.equal(actor.getAttribute('quest.points'),qp+1);
+    const rangedDelta=actor.getSkillManager().getExperience(core.Skill.RANGED)-ranged,fletchingDelta=actor.getSkillManager().getExperience(core.Skill.FLETCHING)-fletching;
+    assert.equal(rangedDelta,10500);assert.equal(fletchingDelta,8000);assert.equal(countBoots(),bootCount);
+    const completed=selected(PlayerSave.fromPlayer(actor));
+    const repeated=quest.complete(actor,{scroll:false,announce:false});assert.equal(repeated,false);
+    assert.deepEqual(selected(PlayerSave.fromPlayer(actor)),completed,'same actor duplicate completion changes no saved state');
+    assert.equal(actor.getAttribute('bot-skip-persistence'),true);idle();assert.equal(backend.nextWriteSequence,0,'skip flag leaves direct producer only');
+    assert.equal(actor.isRegistered(),true);backend.save(actor,'ikov-fixture-completed80');await backend.flush();idle();
+    assert.equal(backend.nextWriteSequence,1,'one actual installed save(liveactor)');
+    const file=fileProof(),disk=JSON.parse(file.json,backend.reviver.bind(backend));
+    for(const key of ['attributes','inventory','equipment','skills','position'])assert.deepEqual(disk[key],completed[key],key+' actual completed snapshot committed');
+    assert.equal(disk.attributes['quest.temple_of_ikov.stage'],80);assert.equal(disk.attributes['quest.points'],qp+1);
+    proof={scope:'hydrated70/registered-direct-complete80/direct-JSON-save-only',username:input.username,profile:input.profile,
+      normalizedUsername:backend.normalizeUsername(input.username),privateDirectory:Json.JsonPlayerPersistence.SAVE_DIRECTORY,
+      backendClass:backend.constructor.name,baseline:baseline,before:before,completed:completed,file:file,
+      reward:{rangedDelta,fletchingDelta,questPointsDelta:actor.getAttribute('quest.points')-qp,bootsId:boots,bootsBefore:bootCount,bootsAfter:countBoots(),duplicateRefused:repeated===false},
+      writes:backend.nextWriteSequence,pending:backend.pendingSerializedSaves.size,failed:backend.failedWrites.size};
+  }catch(e){primary=e;}
+  finally{
+    for(const cleanup of [
+      ()=>{if(actor&&core){actor.closeInterruptibleInterfaces();core.TaskManager.cancelTasks(actor);core.TaskManager.cancelTasks(actor.getIndex());
+        if(actor.isRegistered())core.World.getPlayers().remove(actor);assert.equal(actor.isRegistered(),false);
+        assert.equal([...core.World.getNpcs(),...core.World.getAddNPCQueue()].some(n=>n&&n.getOwner()===actor),false,'no child actor-owned NPC');
+        assert.equal(core.World.getItems().some(i=>i.getOwner()===input.username),false,'no owned floor item');}},
+      ()=>{if(startup)PM.emitServerShutdown({});},
+      ()=>{for(const task of tasks){if(task.isRunning())task.stop();assert.equal(task.isRunning(),false);}if(manager&&submit)manager.submit=submit;},
+      async()=>{if(backend){await backend.flush();idle();assert.equal(backend.nextWriteSequence,1);}},
+      ()=>{if(cache&&cache.isInitialized())cache.getStore().close();}
+    ])try{await cleanup();}catch(e){primary=primary?new AggregateError([primary,e],'producer and owned cleanup failed'):e;}
+  }
+  if(primary)throw primary;
+  assert.ok(proof);proof.cleanup={actorAbsent:!actor.isRegistered(),tasksStopped:[...tasks].every(t=>!t.isRunning()),shutdownDispatched:startup,cacheCloseReturned:true,scene:{registeredNpcs:[...core.World.getNpcs()].filter(Boolean).length,queuedNpcs:core.World.getAddNPCQueue().length,floorItems:core.World.getItems().length}};
+  assert.deepEqual(fileProof(),proof.file,'cleanup does not silently replace direct snapshot');
+  await emit(proof);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+`;
+    const readerSource=String.raw`'use strict';
+const ROLE='reader';
+'use strict';
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+const sha=b=>crypto.createHash('sha256').update(b).digest('hex');
+const inputBytes=fs.readFileSync(0);assert.ok(inputBytes.length>0&&inputBytes.length<=1024*1024);
+const input=JSON.parse(inputBytes.toString('utf8'));
+assert.equal(input.role,ROLE);assert.match(input.nonce,/^[0-9a-f]{32}$/);
+function identity(){
+  const raw=fs.readFileSync('/proc/self/stat','utf8'),v=raw.slice(raw.lastIndexOf(')')+2).trim().split(/\s+/);
+  const children=new Set();for(const tid of fs.readdirSync('/proc/self/task')){
+    try{for(const pid of fs.readFileSync('/proc/self/task/'+tid+'/children','utf8').trim().split(/\s+/))if(pid)children.add(Number(pid));}
+    catch(e){if(e.code!=='ENOENT')throw e;}
+  }
+  return{pid:process.pid,ppid:Number(v[1]),pgrp:Number(v[2]),session:Number(v[3]),startTicks:v[19],children:[...children].sort((a,b)=>a-b)};
+}
+const initialOwner=identity();assert.deepEqual(initialOwner.children,[]);
+fs.writeSync(1,'IKOV_FILE80_OWNER '+JSON.stringify({role:ROLE,nonce:input.nonce,source:input.source,owner:initialOwner})+'\n');
+function directory(p){assert.ok(path.isAbsolute(p));const s=fs.lstatSync(p);assert.ok(s.isDirectory()&&!s.isSymbolicLink());assert.equal(fs.realpathSync(p),p);}
+function regular(p){const s=fs.lstatSync(p);assert.ok(s.isFile()&&!s.isSymbolicLink());return s;}
+directory(input.root);directory(input.store);directory(input.stage);
+assert.equal(path.dirname(input.store),input.root);assert.equal(path.dirname(input.stage),input.root);
+assert.equal(fs.realpathSync(process.cwd()),input.serverRoot);
+assert.deepEqual(JSON.parse(fs.readFileSync(path.join(input.serverRoot,'data/definitions/world.json'),'utf8')).plugins,{TutorialIsland:false});
+assert.equal(fs.existsSync(path.join(input.serverRoot,'data/definitions/world.local.json')),false);
+assert.notEqual(process.env.BROWSER_HOST,'1');
+const options=process.execArgv.filter((v,i,a)=>i===0||a[i-1]!=='-e').join(' ')+' '+(process.env.NODE_OPTIONS||'');
+assert.ok(!/(?:^|[\s"'])--(?:preserve-symlinks(?:-main)?|require|import)(?:[=\s"']|$)/.test(options),'unqualified module-resolution/preload option');
+const e=process.execArgv.indexOf('-e');assert.ok(e>=0);assert.equal(sha(Buffer.from(process.execArgv[e+1])),input.programSHA256);
+const testFile=path.join(input.serverRoot,'tests/temple-of-ikov-dialogue.test.cjs');regular(testFile);
+assert.equal(sha(fs.readFileSync(testFile)),input.source.testSHA256);
+assert.equal(input.source.reviewedBase,'0d84f10f124550b511a2c622bbfcf52232a4a719');
+assert.ok(Array.isArray(input.pins)&&input.pins.length===(ROLE==='writer'?18:2));
+const stagedFiles=[],stagedDirs=[];function walkStage(dir,rel){
+  for(const name of fs.readdirSync(dir).sort()){
+    const child=path.join(dir,name),key=rel?rel+'/'+name:name,st=fs.lstatSync(child);
+    if(st.isDirectory()&&!st.isSymbolicLink()){assert.equal(fs.realpathSync(child),child);stagedDirs.push(key);walkStage(child,key);}
+    else{assert.ok(st.isSymbolicLink(),'only exact production FILE links');stagedFiles.push(key);}
+  }
+}
+walkStage(input.stage,'');assert.deepEqual(stagedFiles.sort(),input.pins.map(p=>p.rel).sort());
+const expectedDirs=new Set();for(const pin of input.pins){let dir=path.posix.dirname(pin.rel);while(dir!=='.'){expectedDirs.add(dir);dir=path.posix.dirname(dir);}}
+assert.deepEqual(stagedDirs.sort(),[...expectedDirs].sort());
+const resolutions=[];for(const pin of input.pins){
+  assert.ok(!path.isAbsolute(pin.rel)&&!pin.rel.split('/').includes('..'));
+  const link=path.join(input.stage,pin.rel),target=path.join(input.serverRoot,'plugins',pin.rel);
+  assert.ok(fs.lstatSync(link).isSymbolicLink());assert.equal(fs.readlinkSync(link),target);
+  assert.equal(fs.realpathSync(link),target);regular(target);
+  const bytes=fs.readFileSync(target);assert.equal(bytes.length,pin.bytes);assert.equal(sha(bytes),pin.sha256);
+  assert.equal(require.resolve(link),target);
+  resolutions.push({rel:pin.rel,target:target,bytes:bytes.length,sha256:sha(bytes),resolved:require.resolve(link)});
+}
+require('./dist/Server').Server.installProductionPathResolver();
+const Json=require('./plugins/persistence/JsonPlayerPersistence.plugin');
+Json.JsonPlayerPersistence.SAVE_DIRECTORY=input.store;
+const {PluginManager:PM}=require('./dist/plugins/PluginManager');
+const {GameConstants}=require('./dist/game/GameConstants');
+const {PlayerSave}=require('./dist/game/entity/impl/player/persistence/PlayerSave');
+function data(save){return JSON.parse(JSON.stringify(save,backend.replacer.bind(backend)),backend.reviver.bind(backend));}
+function selected(save){const o=data(save);return{attributes:o.attributes,inventory:o.inventory,equipment:o.equipment,skills:o.skills,position:o.position};}
+function idle(){assert.equal(backend.pendingSerializedSaves.size,0);assert.equal(backend.failedWrites.size,0);assert.equal(GameConstants.PLAYER_PERSISTENCE,backend);assert.equal(Json.JsonPlayerPersistence.SAVE_DIRECTORY,input.store);}
+function fileProof(){
+  const name=backend.resolveFilePath(input.username,input.profile);assert.equal(path.dirname(name),input.store);
+  const st=regular(name),bytes=fs.readFileSync(name);assert.equal(bytes.length,st.size);assert.ok(bytes.length>0&&bytes.length<=1024*1024);
+  assert.deepEqual(fs.readdirSync(input.store).sort(),[path.basename(name)]);
+  return{path:name,mode:st.mode&0o777,bytes:bytes.length,sha256:sha(bytes),base64:bytes.toString('base64'),json:bytes.toString('utf8')};
+}
+async function emit(proof){
+  const owner=identity();assert.deepEqual(owner.children,[]);assert.equal(owner.startTicks,initialOwner.startTicks);
+  const record={role:ROLE,nonce:input.nonce,source:input.source,owner:owner,resolutions:resolutions,...proof};
+  const output='IKOV_FILE80_PROOF '+JSON.stringify(record,backend.replacer.bind(backend))+'\n';assert.ok(Buffer.byteLength(output)<=1024*1024);
+  await new Promise((resolve,reject)=>process.stdout.write(output,e=>e?reject(e):resolve()));
+}
+let backend;
+(async()=>{
+  let primary,proof;
+  try{
+    assert.equal(input.profile,'main');PM.loadFromDirectory(input.stage);backend=GameConstants.PLAYER_PERSISTENCE;
+    assert.ok(backend instanceof Json.JsonPlayerPersistence);assert.equal(backend.load,Json.JsonPlayerPersistence.prototype.load);
+    idle();assert.equal(backend.nextWriteSequence,0);
+    const initial=fileProof();assert.equal(initial.sha256,input.expectedFileSHA256);assert.equal(initial.bytes,input.expectedFileBytes);
+    const loaded=backend.load(input.username,input.profile);assert.ok(loaded instanceof PlayerSave);
+    const {Item}=require('./dist/game/model/Item'),{Location}=require('./dist/game/model/Location');
+    assert.ok(loaded.inventory.every(i=>i instanceof Item));assert.ok(loaded.equipment.every(i=>i instanceof Item));assert.ok(loaded.getPosition() instanceof Location);
+    const loadedJSON=JSON.stringify(loaded,backend.replacer.bind(backend));
+    const saved=JSON.parse(initial.json,backend.reviver.bind(backend)),decoded=JSON.parse(loadedJSON,backend.reviver.bind(backend));
+    for(const key of ['attributes','inventory','equipment','skills','position'])assert.deepEqual(decoded[key],saved[key],key+' genuine fresh-process FILE load');
+    assert.equal(decoded.inventory.length,28);assert.equal(decoded.equipment.length,14);
+    assert.equal(decoded.attributes['quest.temple_of_ikov.stage'],80);idle();assert.equal(backend.nextWriteSequence,0);
+    assert.deepEqual(fileProof(),initial,'reader left actual file bytes and metadata unchanged');
+    proof={scope:'fresh-process-original-FILE-load80/no-actor-no-auth',username:input.username,profile:input.profile,
+      normalizedUsername:backend.normalizeUsername(input.username),privateDirectory:Json.JsonPlayerPersistence.SAVE_DIRECTORY,
+      backendClass:backend.constructor.name,file:initial,loadedJSON:loadedJSON,writes:backend.nextWriteSequence,pending:backend.pendingSerializedSaves.size,failed:backend.failedWrites.size};
+  }catch(e){primary=e;}
+  finally{try{if(backend){await backend.flush();idle();assert.equal(backend.nextWriteSequence,0);}}catch(e){primary=primary?new AggregateError([primary,e],'reader and flush failed'):e;}}
+  if(primary)throw primary;await emit(proof);
+})().catch(e=>{console.error(e);process.exitCode=1;});
+`;
+    const serverRoot=fs.realpathSync(path.resolve(__dirname,'..'));
+    const source={reviewedBase:sourceBase,testSHA256:crypto.createHash('sha256').update(fs.readFileSync(__filename)).digest('hex')};
+    const nonce=crypto.randomBytes(16).toString('hex');
+    const store=path.join(ownedRoot,'producer-file80');fs.mkdirSync(store,{mode:0o700});
+    const sourceWorld=path.join(serverRoot,'data/definitions/world.json');
+    const parentWorldSHA=crypto.createHash('sha256').update(fs.readFileSync(sourceWorld)).digest('hex');
+    assert.equal(parentWorldSHA,'0a9e7c31b5fd56a9d6fadb1fdcdfa5e13a0e1abcf1d6b98d7a7d931e3c230012','unchanged bound shipped world source');
+    const parentEnv=JSON.stringify(process.env),parentBackendStatic=backend.constructor.DATABASE_PATH,linkRecords=[];
+    const baselineGroup=ownedGroup();
+    function digest(bytes){return crypto.createHash('sha256').update(bytes).digest('hex');}
+    function procIdentity(pid){
+      const raw=fs.readFileSync('/proc/'+pid+'/stat','utf8'),v=raw.slice(raw.lastIndexOf(')')+2).trim().split(/\s+/);
+      return{pid:Number(pid),ppid:Number(v[1]),pgrp:Number(v[2]),session:Number(v[3]),startTicks:v[19]};
+    }
+    function ownedGroup(){
+      const own=procIdentity(process.pid),out=[];
+      for(const name of fs.readdirSync('/proc'))if(/^\d+$/.test(name)){
+        try{const v=procIdentity(Number(name));if(v.pgrp===own.pgrp&&v.session===own.session)out.push(v);}
+        catch(e){if(e.code!=='ENOENT'&&e.code!=='ESRCH')throw e;}
+      }
+      return out.sort((a,b)=>a.pid-b.pid);
+    }
+    function stage(role,pins){
+      remainingChildTime();producerStagingSafe=false;const dir=path.join(ownedRoot,'producer-plugins-'+role);fs.mkdirSync(dir,{mode:0o700});
+      for(const pin of pins){
+        const target=path.join(serverRoot,'plugins',pin.rel),link=path.join(dir,pin.rel);
+        assert.ok(!path.isAbsolute(pin.rel)&&!pin.rel.split('/').includes('..'));
+        const st=fs.lstatSync(target);assert.ok(st.isFile()&&!st.isSymbolicLink());assert.equal(fs.realpathSync(target),target);
+        const bytes=fs.readFileSync(target);assert.equal(bytes.length,pin.bytes);assert.equal(digest(bytes),pin.sha256);
+        fs.mkdirSync(path.dirname(link),{recursive:true,mode:0o700});fs.symlinkSync(target,link,'file');
+        const row={role,relativePath:pin.rel,link,target,bytes:bytes.length,sha256:pin.sha256,unlinked:false};linkRecords.push(row);
+        assert.ok(fs.lstatSync(link).isSymbolicLink());assert.equal(fs.readlinkSync(link),target);assert.equal(fs.realpathSync(link),target);
+      }
+      return dir;
+    }
+    function unstage(){
+      assert.equal(producerChildrenTerminal,true,'no unlink before known terminal owner group');
+      for(const row of linkRecords)if(!row.unlinked){
+        assert.ok(fs.lstatSync(row.link).isSymbolicLink());assert.equal(fs.readlinkSync(row.link),row.target);
+        assert.equal(fs.realpathSync(row.link),row.target);const bytes=fs.readFileSync(row.target);
+        assert.equal(bytes.length,row.bytes);assert.equal(digest(bytes),row.sha256);
+        fs.unlinkSync(row.link);row.unlinked=true;assert.equal(fs.existsSync(row.link),false);
+      }
+      for(const role of ['writer','reader']){
+        const dir=path.join(ownedRoot,'producer-plugins-'+role);if(!fs.existsSync(dir))continue;
+        function empty(real){for(const name of fs.readdirSync(real)){const child=path.join(real,name),st=fs.lstatSync(child);assert.ok(st.isDirectory()&&!st.isSymbolicLink());empty(child);fs.rmdirSync(child);}}
+        const st=fs.lstatSync(dir);assert.ok(st.isDirectory()&&!st.isSymbolicLink());assert.equal(fs.realpathSync(dir),dir);empty(dir);fs.rmdirSync(dir);
+      }
+      producerStagingSafe=true;
+    }
+    function fileBytes(proof){
+      assert.equal(path.dirname(proof.path),store);const st=fs.lstatSync(proof.path);assert.ok(st.isFile()&&!st.isSymbolicLink());
+      const bytes=fs.readFileSync(proof.path);assert.equal(bytes.length,st.size);assert.equal(bytes.length,proof.bytes);
+      assert.equal(st.mode&0o777,proof.mode);assert.equal(digest(bytes),proof.sha256);
+      const returned=Buffer.from(proof.base64,'base64');assert.equal(returned.toString('base64'),proof.base64);assert.deepEqual(bytes,returned);
+      assert.equal(bytes.toString('utf8'),proof.json);assert.deepEqual(Buffer.from(proof.json),bytes);
+      assert.deepEqual(fs.readdirSync(store).sort(),[path.basename(proof.path)]);return bytes;
+    }
+    function parsePhase(result,request){
+      const text=result.stdout.toString('utf8');assert.deepEqual(Buffer.from(text),result.stdout);
+      assert.ok(text.endsWith('\n'));const lines=text.slice(0,-1).split('\n'),owners=[],proofs=[],logs=[];
+      const fixed=new Set(["[plugin:JsonPlayerPersistence] registered { saveDirectory: 'data/saves/characters' }",
+        '[plugins] player persistence set by JsonPlayerPersistence: NullPlayerPersistence -> JsonPlayerPersistence',
+        '[plugins] active='+(request.role==='writer'?17:1)+' disabled=1']);
+      const seen=new Map();const addLog=line=>{seen.set(line,(seen.get(line)||0)+1);assert.equal(seen.get(line),1,'duplicate source log');};
+      for(let i=0;i<lines.length;i++){
+        const line=lines[i];
+        if(line.startsWith('IKOV_FILE80_OWNER ')){owners.push(JSON.parse(line.slice(18)));continue;}
+        if(line.startsWith('IKOV_FILE80_PROOF ')){proofs.push(JSON.parse(line.slice(18),codec.reviver.bind(codec)));continue;}
+        logs.push(line);
+        if(fixed.has(line)){addLog(line);continue;}
+        if(line==='[plugin:JsonPlayerPersistence] registered {'){
+          const detail=lines[++i],end=lines[++i];assert.equal(detail,"  saveDirectory: 'data/saves/characters'");assert.equal(end,'}');logs.push(detail,end);
+          addLog("[plugin:JsonPlayerPersistence] registered { saveDirectory: 'data/saves/characters' }");continue;
+        }
+        assert.equal(request.role,'writer','reader has no other source log');
+        if(line==='[plugin:Settings] registered'){addLog(line);continue;}
+        if(/^\[plugin:Potions\] registered \{ potionEntries: \d+, potionGroups: \d+ \}$/.test(line)){addLog('Potions.registered');continue;}
+        if(line==='[plugin:Potions] registered {'){
+          const entries=lines[++i],groups=lines[++i],end=lines[++i];assert.match(entries,/^  potionEntries: \d+,$/);assert.match(groups,/^  potionGroups: \d+$/);assert.equal(end,'}');logs.push(entries,groups,end);addLog('Potions.registered');continue;
+        }
+        if(/^\[cache\] definitions npc=\d+ item=\d+ object=\d+$/.test(line)){addLog('CacheDefinitions.loaded');continue;}
+        if(/^\[npc-definitions\] cache-backed; configured stats applied=\d+, mismatched=\d+, service animations captured=\d+, inferred=\d+ \(by name=\d+\), guessed=\d+, by family=\d+$/.test(line)){addLog('NpcDefinitionLoader.loaded');continue;}
+        if(/^\[collision\] indexed \d+ cache regions$/.test(line)){addLog('RegionManager.indexed');continue;}
+        if(line==='[World] Registering player - [username, host] : ['+inputName()+', undefined]'||line==='[World] Deregistering player - [username, host] : ['+inputName()+', undefined]'){addLog(line);continue;}
+        throw new Error('unexpected FILE80 child stdout: '+line.slice(0,256));
+      }
+      for(const line of fixed)assert.equal(seen.get(line),1,'actual production registration log');
+      assert.equal(owners.length,1);assert.equal(proofs.length,1);
+      for(const r of [owners[0],proofs[0]]){assert.equal(r.role,request.role);assert.equal(r.nonce,nonce);assert.deepEqual(r.source,source);assert.equal(r.owner.pid,result.pid);assert.deepEqual(r.owner.children,[]);}
+      assert.equal(owners[0].owner.startTicks,proofs[0].owner.startTicks);
+      assert.deepEqual(proofs[0].resolutions,request.pins.map(pin=>({rel:pin.rel,target:path.join(serverRoot,'plugins',pin.rel),bytes:pin.bytes,sha256:pin.sha256,resolved:path.join(serverRoot,'plugins',pin.rel)})));
+      return{proof:proofs[0],owner:owners[0],logs};
+    }
+    function inputName(){return f.p.getUsername();}
+    function runPhase(role,program,pins,extra){
+      remainingChildTime();const stageDir=stage(role,pins);
+      const request={role,nonce,source,root:ownedRoot,store,stage:stageDir,serverRoot,pins,username:inputName(),profile:f.p.getProfile(),
+        programSHA256:digest(Buffer.from(program)),...extra};
+      const requestText=JSON.stringify(request);chargeProof(program,'static child argv');chargeProof(requestText,'child input');
+      producerChildrenTerminal=false;const result=spawnSync(process.execPath,['-e',program],{cwd:serverRoot,input:requestText,timeout:remainingChildTime(),maxBuffer:remainingChildBuffer()});
+      let ownerError;try{assert.deepEqual(ownedGroup(),baselineGroup,'original owned group after child terminal');producerChildrenTerminal=true;}catch(e){ownerError=e;}
+      const record=retainChildResult(role,result);producerRaw.push(record);if(ownerError)throw ownerError;
+      assert.ifError(result.error);assert.equal(result.status,0,'FILE80 '+role+' status');assert.equal(result.signal,null,'natural FILE80 '+role+' terminal');
+      assert.ok(Buffer.isBuffer(result.stdout)&&Buffer.isBuffer(result.stderr));assert.equal(result.stderr.length,0,'no child stderr/warnings');remainingChildTime();
+      const parsedPhase=parsePhase(result,request);assert.equal(parsedPhase.proof.profile,f.p.getProfile());
+      assert.equal(parsedPhase.proof.username,inputName());assert.equal(parsedPhase.proof.normalizedUsername,codec.normalizeUsername(inputName()));
+      assert.equal(parsedPhase.proof.privateDirectory,store);assert.equal(parsedPhase.proof.backendClass,'JsonPlayerPersistence');
+      assert.equal(parsedPhase.proof.pending,0);assert.equal(parsedPhase.proof.failed,0);
+      return parsedPhase;
+    }
+    let supplementFailure;
+    try{
+      const writer=runPhase('writer',writerSource,candidatePins,{serialized});assert.equal(writer.proof.writes,1);
+      const actual=fileBytes(writer.proof.file),decoded=JSON.parse(actual.toString('utf8'),codec.reviver.bind(codec));
+      for(const key of ['attributes','inventory','equipment','skills','position']){
+        assert.deepEqual(writer.proof.before[key],parsed[key],'whole original input '+key);
+        assert.deepEqual(decoded[key],writer.proof.completed[key],'whole actual completed '+key);
+      }
+      assert.equal(decoded.attributes['quest.temple_of_ikov.stage'],80);assert.equal(writer.proof.reward.duplicateRefused,true);
+      assert.equal(writer.proof.reward.rangedDelta,10500);assert.equal(writer.proof.reward.fletchingDelta,8000);assert.equal(writer.proof.reward.questPointsDelta,1);
+      assert.equal(writer.proof.reward.bootsBefore,writer.proof.reward.bootsAfter);
+      const readerPins=candidatePins.filter(p=>['persistence/JsonPlayerPersistence.plugin.js','areas/TutorialIsland.plugin.js'].includes(p.rel));
+      const reader=runPhase('reader',readerSource,readerPins,{expectedFileSHA256:writer.proof.file.sha256,expectedFileBytes:writer.proof.file.bytes});
+      assert.equal(reader.proof.writes,0);assert.deepEqual(fileBytes(reader.proof.file),actual);
+      const loaded=JSON.parse(reader.proof.loadedJSON,codec.reviver.bind(codec));
+      for(const key of ['attributes','inventory','equipment','skills','position'])assert.deepEqual(loaded[key],decoded[key],'fresh process original loader '+key);
+      producerObservation={layer:'hydrated-fixture/direct-registered-complete80/installed-JSON-save/fresh-process-FILE-load',source,nonce,
+        writer:writer.proof,reader:reader.proof,rawChildren:producerRaw,sourceLogs:{writer:writer.logs,reader:reader.logs},
+        ownedGroupBefore:baselineGroup,ownedGroupAfter:ownedGroup(),stagingLinks:linkRecords,
+        deadlineMs:10000,budgetUsedBytes:proofBudgetUsed,scope:'no ordinary account/auth/stock save/world restart/crashdurability/SQLite/full15 proof'};
+      chargeProof(JSON.stringify(producerObservation,codec.replacer.bind(codec)),'complete encoded producer proof');producerObservation.budgetUsedBytes=proofBudgetUsed;remainingChildTime();
+    }catch(e){
+      supplementFailure=e;const artifacts=[];
+      if(producerChildrenTerminal)for(const name of fs.readdirSync(store)){
+        const file=path.join(store,name),st=fs.lstatSync(file);const row={name,mode:st.mode&0o777,bytes:st.size,regular:st.isFile()&&!st.isSymbolicLink()};
+        if(row.regular&&st.size<=Math.floor((proofLimit-proofReserve-proofBudgetUsed)/3)){
+          const bytes=fs.readFileSync(file);row.sha256=digest(bytes);row.base64=bytes.toString('base64');row.complete=true;
+          chargeProof(JSON.stringify(row),'failure store bytes');
+        }else{row.complete=false;row.unretainedBytes=st.size;}
+        artifacts.push(row);
+      }
+      producerFailureEvidence={...producerFailureEvidence,reason:e.message,rawChildren:producerRaw,artifacts,ownedRoot,childrenTerminal:producerChildrenTerminal,stagingLinks:linkRecords};
+    }
+    finally{
+      for(const cleanup of [
+        ()=>{assert.deepEqual(ownedGroup(),baselineGroup);producerChildrenTerminal=true;},
+        ()=>{unstage();},
+        ()=>{assert.equal(core.GameConstants.PLAYER_PERSISTENCE,backend);assert.equal(Json.JsonPlayerPersistence.SAVE_DIRECTORY,parentDirectory);
+          assert.equal(backend.constructor.DATABASE_PATH,parentBackendStatic);assert.equal(JSON.stringify(process.env),parentEnv);assert.equal(digest(fs.readFileSync(sourceWorld)),parentWorldSHA);}
+      ])try{cleanup();}catch(e){supplementFailure=supplementFailure?new AggregateError([supplementFailure,e],'producer proof and source/owned cleanup failed'):e;}
+    }
+    if(supplementFailure)throw supplementFailure;
+
     observation={layer:'isolated-json-flush/new-instance-filesystem-load',profile:proof.profile,
       normalizedUsername:proof.normalizedUsername,filePath:proof.filePath,privateRoot:ownedRoot,regularFile:stat.isFile()&&!stat.isSymbolicLink(),
       fileBytes:proof.fileBytes,fileSHA256:proof.fileSHA256,fileBase64:file.toString('base64'),loadedJSON:proof.loadedJSON,
@@ -371,6 +810,7 @@ function snapshotAndLogout(f,expected){
       readerPending:proof.readerPending,readerFailed:proof.readerFailed,readerWrites:proof.readerWrites};
     // Existing root stdout transport frames this bounded logical JSON into <=3072-byte payloads.
     assert.ok(Buffer.byteLength(JSON.stringify(observation),'utf8')<=1024*1024);
+    chargeProof(JSON.stringify(observation),'original JSON70 public proof');remainingChildTime();
   }catch(error){failure=error;}
   finally{
     for(const cleanup of [
@@ -379,10 +819,13 @@ function snapshotAndLogout(f,expected){
         const actual=fs.realpathSync(root);if(ownedRoot!==undefined)assert.equal(actual,ownedRoot);
         // Before a child starts, mkdtemp alone owns this still-private root too.
         assert.ok(ownedRoot!==undefined||childResult===undefined);
-        fs.rmSync(root,{recursive:true});assert.equal(fs.existsSync(root),false,'only owned private store root cleaned after child exit');}
+        assert.equal(producerChildrenTerminal,true,'all owned children terminal before root removal');assert.equal(producerStagingSafe,true,'only validated staging links unlinked');
+        fs.rmSync(root,{recursive:true});assert.equal(fs.existsSync(root),false,'only owned private store root cleaned after child exit');
+        if(proofDeadline!==undefined)remainingChildTime();}
     ])try{cleanup();}catch(error){failure=failure?new AggregateError([failure,error],'store proof and owned cleanup failed'):error;}
   }
   if(failure){
+    reportProducerFailure(failure);
     if(childResult)console.log('IKOV_JSON_STORE_CHILD_FAILURE',JSON.stringify({
       error:childResult.error?{name:childResult.error.name,code:childResult.error.code,message:childResult.error.message}:null,
       status:childResult.status,signal:childResult.signal,
@@ -390,8 +833,11 @@ function snapshotAndLogout(f,expected){
       stderrBase64:Buffer.isBuffer(childResult.stderr)?childResult.stderr.toString('base64'):null}));
     throw failure;
   }
-  disposeActor(f.p);
+  try{disposeActor(f.p);}catch(error){reportProducerFailure(error);throw error;}
   console.log('IKOV_JSON_STORE',JSON.stringify({...observation,ownedRootCleaned:true}));
+  try{assert.ok(producerObservation);remainingChildTime();
+    console.log('IKOV_JSON_PRODUCER_STORE',JSON.stringify({...producerObservation,ownedRootCleaned:true,stagingLinksUnlinked:producerStagingSafe},codec.replacer.bind(codec)));
+  }catch(error){reportProducerFailure(error);throw error;}
   return reopened;
 }
 test('the real Guardian menu reaches the yearly-bath branch and physical pendant award',async t=>{
