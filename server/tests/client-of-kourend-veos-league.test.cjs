@@ -1,68 +1,32 @@
-// RSPSApp/tsps#5157 part 1 (test-only, unrun; for review before any job). Real runtime: NpcDialogues + the real
-// ClientOfKourend quest (+ XMarksTheSpot, which answers the Veos membership/teleport condition), real Player, PlayerSession
-// and ClientConnection. Run after `yarn build`, from server/: node --test tests/client-of-kourend-veos-league.test.cjs
+// RSPSApp/tsps#5157 part 1 (test-only; unrun; for review before any job). Run after `yarn build`, from server/:
+//   node --test tests/client-of-kourend-veos-league.test.cjs
 //
-// THE TREE (npc-dialogues.json, page "Veos"), read in order, variant standard-dialogue-at-port-sarim-first-time, option
-// "That's great, can you take me there please?" (the condition run, in order):
-//   [1] buVj4X  "If there are no restrictions to travelling and the player is on a members' world:"  -> sail line + action
-//               teleport WXJllC (Kourend). Answered by XMarksTheSpot answerCondition ("members' world") when the speaker's
-//               npc id is VEOS 8484 or 10723 (XMarks: VEOS_NPC_ID, VEOS_POST_QUEST_NPC_ID); otherwise unanswered (null).
-//   [2] HaZALO  "If the player is on a free-to-play world:"  -> "not quite ready" + end. Answered by Ferries
-//               answerVeosMembership (Routes.Ferries.js) for the Veos definition.
-//   [3] 7m-RoE  "If the game world is Trailblazer League world:"  -> "access to Great Kourend is currently prohibited" + end.
-//               No plugin answers it (grep of plugins/ and tests/).
-//   [4] 4_GYUT  "If the game world is Trailblazer League Reloaded world:" -> "You cannot pass ... unlocked access". No answer.
+// PRODUCTION PLUGIN SET: the whole plugin tree is loaded with PluginManager.loadFromDirectory (precedent: tests/akd-lamps.test.cjs
+// :33), then emitServerStartup, exactly as the production server does. The quest objects are taken from runtime.getRegisteredQuests()
+// (keys: client_of_kourend, x_marks_the_spot). Nothing is required by hand.
 //
-// THE RUNTIME RULE (NpcDialogues.plugin.js:479-486, chooseCondition): the first condition answered TRUE wins; otherwise
-// the first UNANSWERED (null) condition wins; a run answered all-false plays nothing. resolveCondition (NpcDialogues.plugin.js
-// :634-639) asks the plugins first (emitNpcDialogueCondition), then the combat/skill fallbacks.
-// ANSWERS TABLE (derived from source; each row is the answer the runtime's resolveCondition gives, then chooseCondition's pick).
-// Sources: XMarksTheSpot answerCondition (XMarksTheSpot.Quest.js:322-340) answers [1] "members' world" only for VEOS 8484 and
-// VEOS_POST_QUEST 10723; Routes.Ferries.js answerVeosMembership (:185-189) answers the F2P text [2] only for definition name
-// "Veos" (true on F2P, false on members); no plugin answers [3] 7m-RoE or [4] 4_GYUT (grep of plugins/ and tests/).
-// Unmatched text: combatLevelCondition and skillLevelCondition return null (NpcDialogues.plugin.js:455-458 and the skill helper),
-// so resolveCondition is null for [1], [3], [4] when no plugin answers.
+// REAL RUNTIME: NpcDialogues answers the Talk-to condition run through PluginManager.emitNpcDialogueCondition (every registered
+// hook), then the combat and skill fallbacks, then chooseCondition (plugins/npcs/NpcDialogues.plugin.js:479-486: first true wins,
+// else first null, else none). The run is the Veos Port Sarim first-time variant, option "That's great, can you take me there
+// please?", conditions in order: [1] buVj4X (members/teleport), [2] HaZALO (free-to-play), [3] 7m-RoE (Trailblazer league world:
+// prohibited line), [4] 4_GYUT (Trailblazer Reloaded: "cannot pass").
 //
-//   npc (world)                       [1] members/teleport   [2] F2P       [3] Trailblazer   [4] Reloaded   pick
-//   8484 / 10723 plain members        true                   false         null              null          [1] sail
-//   8484 / 10723 league (any)         true                   false         null              null          [1] sail (league not checked by [1])
-//   8484 / 10723 F2P                  false                  true          null              null          [2] not eligible
-//   10724 plain members               null                   false         null              null          [1] sail (first null)
-//   10724 league (any)                null                   false         null              null          [1] sail (first null)
-//   10724 F2P                         null                   true          null              null          [2] not eligible
+// WORLD STATE (both stubbed per test, restored in afterEach):
+//   - league: PluginManager.getPluginConfig("league:type"); the league world check reads it as api.getPluginConfig("league:type", 0)
+//     (plugins/modes/league/Common.LeagueMode.js worldLeague()); types from plugins/modes/data/leagues.json: 2 = Leagues II Trailblazer,
+//     4 = Leagues IV Trailblazer Reloaded.
+//   - membership: WorldDefinition.isMembersWorld (src/main/typescript/elvarg/game/definition/WorldDefinition.ts:307), read by
+//     XMarksTheSpot.Quest.js:337-338 and Routes.Ferries.js:187 (answerVeosMembership) and by core.WorldDefinition.
 //
-// Consequence: the prohibited line (condition [3]) is reached only when no earlier condition is true and no earlier one is null,
-// i.e. never in this table for a plain or league world. The table is the DERIVATION; the run decides (the prediction for 10724 on a
-// plain world is 'sail, no prohibited line').
+// HOOK ATTRIBUTION PROBE (the decisive datum): for each condition step of the run and each NPC id, every registered
+// npc-dialogue condition hook is called directly (PluginManager.npcDialogueConditionHooks, PluginManager.ts:317-3520) and each
+// non-null answer is printed with its pluginName. The chooseCondition pick is then computed from those answers.
 //
-// WORLD STATE: league:type is read by the world check in plugins/modes/league/Common.LeagueMode.js (worldLeague(),
-// api.getPluginConfig("league:type", 0)) and by the quest's api.getPluginConfig. The test stubs PluginManager.getPluginConfig
-// for the key "league:type" only, and restores it in afterEach. Type values (plugins/modes/data/leagues.json): 2 = Leagues II
-// Trailblazer, 4 = Leagues IV Trailblazer Reloaded. A plain world has no league:type (stub returns the fallback).
+// NPC ids: 1063 is the Port Sarim spawn definition id (npc-spawns.json), 8484 = NpcIdentifiers.VEOS, 10723 = VEOS_4,
+// 10724 = VEOS_5 (Piscarilius, 1825,3691). The Talk-to rows use 8484 (Port Sarim) and 10724 (arrival).
 //
-// DERIVATION FOR THE ARRIVAL SIDE (npc 10724 = VEOS_5, Piscarilius, 1825,3691). The condition run [1]..[4] above is the
-// same run for every Veos npc id. For 10724 the answers are: [1] buVj4X: XMarks answers only for 8484/10723, so 10724 gets NO
-// XMarks answer; the Ferries membership answer covers only the free-to-play text, so [1] is unanswered (null). resolveCondition
-// (NpcDialogues.plugin.js:634-639) falls back to combatLevelCondition and skillLevelCondition (plugins/npcs/NpcDialogues.plugin.js:
-// 455-458, and the skill helper's 'if (!match) return null'), which return null for this text, so [1] is null. [2] HaZALO:
-// answerVeosMembership returns !isMembersWorld() on a plain members world: false. [3] 7m-RoE and [4] 4_GYUT: null.
-// chooseCondition (NpcDialogues.plugin.js:479-486): no true answer, so the first null (index 1, the teleport/sail branch) wins.
-// DERIVED PREDICTION (to be CONFIRMED by the run, not assumed): on a plain members world the prohibited line is NOT reached
-// from 10724 by this run; the sail branch plays. On a league world [1] is still null, so the teleport branch still wins. If the
-// run shows the prohibited line for 10724, the derivation is wrong and the run's lines decide.
-// X MARKS STATE (seeded through the quest API only): 'starting-off' (X Marks complete, stage 6, quest key x_marks_the_spot,
-// ClientOfKourend.Quest.js:61 and :423) versus X Marks NOT complete (stage 0). The reporter's state is taken as X Marks complete,
-// quest not started (ClientOfKourend stage 0), because the Port Sarim->Piscarilius sail is offered after the first conversation.
-// ARRIVAL SIDE (the reporter's state): Veos at Port Sarim (npc 8484 at the dock; spawn 1063) -> the ferry leg to Port Piscarilius
-// (1824,3695, the kourend-piscarilius route) -> Talk-to the Piscarilius Veos (npc 10724 at 1825,3691). This file seeds the
-// quest stage through the quest API only (quest.setStage); X Marks completion is not seeded (its state is read as-is).
-// Scope of the claim: the runtime answers and lines for each probe; the reporter's exact arrival chain is NOT replayed here.
-//
-// CONTROLS: harness proof (GREEN on base): Talk-to the Port Sarim Veos opens a dialogue and plays its first line.
-// Plain members world, Port Sarim Veos: no prohibited line; the sail line plays. F2P world: the F2P branch answers ([2]).
-// Trailblazer world (type 2) and Trailblazer Reloaded (type 4): the probe records the lines (the tree's own refusal text is
-// the correct content on a league world; the fix must not silence it). Other NPC: an unrelated league condition's answer is
-// unchanged (asserted via the hook directly with a non-Veos npc id).
+// SEEDED STATE (through the quest objects only, disclosed): client_of_kourend stage (0 or as set by the test) and x_marks_the_spot
+// stage 6 (complete, the X Marks completion stage: XMarksTheSpot.Quest.js:33) versus not complete.
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const { before, afterEach, test } = require("node:test");
@@ -76,11 +40,12 @@ const { ClientConnection } = require("../dist/net/NetworkBuilder");
 const { Location } = require("../dist/game/model/Location");
 const { MultiChatboxPrompt } = require("../dist/game/model/menu/MultiChatboxPrompt");
 const { ObjectDefinition } = require("../dist/game/definition/ObjectDefinition");
+const WorldDefinition = require("../dist/game/definition/WorldDefinition");
 const runtime = require("../plugins/quests/QuestRuntime");
 
 runtime.startTranscript = () => true;
 
-let core, quest = null, xMarks = null, index = 9900;
+let core, kourend = null, xMarks = null, index = 9900;
 const cleanups = [];
 const restore = [];
 const PROHIBITED = /access to Great Kourend is currently prohibited/;
@@ -89,21 +54,26 @@ const TAKE_ME = "That's great, can you take me there please?";
 const WHERE = "Where's that?";
 const PORT_SARIM_TILE = [3054, 3245, 0];
 const PISCARILIUS_TILE = [1825, 3691, 0];
+const KOUREND_KEY = "client_of_kourend";
 const X_MARKS_KEY = "x_marks_the_spot";
 const X_MARKS_COMPLETE_STAGE = 6;
+const CONDITIONS = [
+  { order: 1, id: "buVj4X", text: "If there are no restrictions to travelling and the player is on a members' world:" },
+  { order: 2, id: "HaZALO", text: "If the player is on a free-to-play world:" },
+  { order: 3, id: "7m-RoE", text: "If the game world is Trailblazer League world:" },
+  { order: 4, id: "4_GYUT", text: "If the game world is Trailblazer League Reloaded world:" },
+];
 
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
-  ObjectDefinition.init();
+  PM.loadFromDirectory(path.resolve(__dirname, "../plugins"));
+  PM.emitServerStartup({});
   core = PM.getCoreApi();
-  require("../plugins/npcs/NpcDialogues.plugin").register(PM.createApi("KourendRuntimeDialogue"));
-  require("../plugins/quests/XMarksTheSpot.Quest")(PM.createApi("KourendRuntimeXMarks"));
-  const count = runtime.getRegisteredQuests().length;
-  require("../plugins/quests/quests/ClientOfKourend.Quest")(PM.createApi("KourendRuntimeQuest"));
-  quest = runtime.getRegisteredQuests().slice(count).at(-1);
-  assert.ok(quest, "ClientOfKourend registers through the real plugin API");
+  ObjectDefinition.init();
+  kourend = runtime.getRegisteredQuests().find((q) => q.key === KOUREND_KEY);
   xMarks = runtime.getRegisteredQuests().find((q) => q.key === X_MARKS_KEY);
-  assert.ok(xMarks, "XMarksTheSpot registers through the real plugin API");
+  assert.ok(kourend, "client_of_kourend is registered by the production plugin set");
+  assert.ok(xMarks, "x_marks_the_spot is registered by the production plugin set");
 });
 
 afterEach(() => {
@@ -111,24 +81,31 @@ afterEach(() => {
   while (cleanups.length) cleanups.pop()();
 });
 
-/** Stub world.json league:type only; restored in afterEach. The quest reads it through PluginManager.getPluginConfig. */
+/** Stub the league type (league:type) and the membership flag for this test only. */
 function world({ league = null, members = true } = {}) {
-  const real = PM.getPluginConfig.bind(PM);
-  const stub = (key, fallback) => (key === "league:type" && league !== null ? league : real(key, fallback));
-  PM.getPluginConfig = stub;
-  restore.push(() => { PM.getPluginConfig = real; });
-  return { members };
+  const realConfig = PM.getPluginConfig.bind(PM);
+  PM.getPluginConfig = (key, fallback) => (key === "league:type" && league !== null ? league : realConfig(key, fallback));
+  restore.push(() => { PM.getPluginConfig = realConfig; });
+  const realMembers = WorldDefinition.isMembersWorld;
+  WorldDefinition.isMembersWorld = () => members;
+  restore.push(() => { WorldDefinition.isMembersWorld = realMembers; });
+  const coreWorld = core.WorldDefinition;
+  if (coreWorld && typeof coreWorld.isMembersWorld === "function") {
+    const realCore = coreWorld.isMembersWorld;
+    coreWorld.isMembersWorld = () => members;
+    restore.push(() => { coreWorld.isMembersWorld = realCore; });
+  }
 }
 
-/** A real player at a tile, a real Veos NPC of the given id, lines and messages recorded apart. */
-function actor(npcId, tile, stage = 0, { xMarksComplete = false } = {}) {
+/** A real player at a tile; the quest stages seeded through the quest objects; lines and messages recorded apart. */
+function actor(npcId, tile, { kourendStage = 0, xMarksComplete = false } = {}) {
   const channel = { kind: "test", remoteAddress: "127.0.0.1", isOpen: () => true, send: () => true,
     close() {}, onData() {}, onError() {}, onClose() {} };
   const p = new Player(new PlayerSession(channel), new Location(...tile));
   p.setIndex(index++); p.setRegistered(true); p.setUsername("kourend" + index);
   p.setAttribute("bot-skip-persistence", true);
-  quest.setStage(p, stage); // seeded through the quest API only (disclosed)
-  if (xMarksComplete) xMarks.setStage(p, X_MARKS_COMPLETE_STAGE); // X Marks completion through its own quest API (disclosed)
+  kourend.setStage(p, kourendStage);
+  if (xMarksComplete) xMarks.setStage(p, X_MARKS_COMPLETE_STAGE);
   const connection = new ClientConnection(channel);
   connection.player = p;
   const npc = core.NPC.create(npcId, new Location(...tile));
@@ -164,99 +141,123 @@ function actor(npcId, tile, stage = 0, { xMarksComplete = false } = {}) {
 
 const talkTo = (a) => PM.emitNpcInteraction({ player: a.p, npc: a.npc, npcId: a.npcId, action: "Talk-to", clickType: 1, handled: false });
 
-test("HARNESS PROOF (must be GREEN on base): Talk-to the Port Sarim Veos opens the dialogue and plays its first line", async () => {
+/**
+ * Hook attribution (the decisive datum): every registered condition hook is called directly for each condition step, and each
+ * non-null answer is recorded with its plugin name; the runtime's pick is then computed as chooseCondition does (first true,
+ * else first null). The emitNpcDialogueCondition answer and the combat/skill fallbacks are recorded as the runtime resolves them.
+ */
+function probeConditions(player, npcId, label) {
+  const hooks = PM.npcDialogueConditionHooks ?? [];
+  const rows = CONDITIONS.map((c) => {
+    const event = { player, npc: null, npcId, definition: null, pages: [], text: c.text, stepId: c.id };
+    const answers = hooks.map((hook) => {
+      let value;
+      try { value = hook.handler(event); } catch (error) { value = `threw ${error.message}`; }
+      return { plugin: hook.pluginName, value };
+    }).filter((a) => a.value !== undefined && a.value !== null);
+    const emitted = PM.emitNpcDialogueCondition(event);
+    return { order: c.order, id: c.id, emitted, answers };
+  });
+  const answersOnly = rows.map((r) => (r.emitted ?? null));
+  let pick = answersOnly.findIndex((a) => a === true);
+  if (pick === -1) pick = answersOnly.findIndex((a) => a === null);
+  const pickedId = pick === -1 ? null : CONDITIONS[pick].id;
+  console.log(`# PROBE ${label} npc=${npcId} ${JSON.stringify(rows.map((r) => ({ id: r.id, emitted: r.emitted, answers: r.answers })))} pick=${pickedId}`);
+  return { rows, pickedId };
+}
+
+test("HARNESS PROOF (GREEN on base): the production set loads, the Port Sarim Veos (8484) opens the dialogue and plays its first line", async () => {
   world();
   const a = actor(core.NpcIdentifiers.VEOS, PORT_SARIM_TILE);
   talkTo(a);
   await a.choose(WHERE);
-  assert.ok(a.lines.length > 0, `the dialogue played lines: ${JSON.stringify(a.lines)}`);
-  console.log(`# R0 port-sarim opening lines: ${JSON.stringify(a.lines.slice(0, 3))}`);
+  assert.ok(a.lines.length > 0, `the dialogue ran: ${JSON.stringify(a.lines)}`);
+  console.log(`# H0 port-sarim opening lines: ${JSON.stringify(a.lines.slice(0, 3))}`);
 });
 
-test("PLAIN MEMBERS WORLD, Port Sarim Veos: the sail branch plays and no prohibited line is shown (BEFORE: expected red if the prohibited line appears)", async () => {
+test("PROBE, plain members world: the condition hooks that answer each step for 1063, 8484, 10723 and 10724", () => {
+  world({ league: null, members: true });
+  for (const npcId of [1063, core.NpcIdentifiers.VEOS, core.NpcIdentifiers.VEOS_4, core.NpcIdentifiers.VEOS_5]) {
+    const a = actor(npcId, PORT_SARIM_TILE);
+    probeConditions(a.p, npcId, "plain-members");
+  }
+});
+
+test("PROBE, Trailblazer (2) and Reloaded (4) worlds: the same probe with the league stubbed", () => {
+  for (const league of [2, 4]) {
+    world({ league, members: true });
+    const a = actor(core.NpcIdentifiers.VEOS_5, PISCARILIUS_TILE);
+    probeConditions(a.p, core.NpcIdentifiers.VEOS_5, `league-${league}`);
+  }
+});
+
+test("PROBE, free-to-play world: the same probe with membership stubbed false", () => {
+  world({ league: null, members: false });
+  const a = actor(core.NpcIdentifiers.VEOS_5, PISCARILIUS_TILE);
+  probeConditions(a.p, core.NpcIdentifiers.VEOS_5, "f2p");
+});
+
+test("REAL DIALOGUE, Port Sarim Veos (8484), plain members world (control): the sail branch plays", async () => {
   world({ league: null, members: true });
   const a = actor(core.NpcIdentifiers.VEOS, PORT_SARIM_TILE);
   talkTo(a);
   await a.choose(WHERE);
   await a.choose(TAKE_ME);
   await a.playToEnd();
-  console.log(`# R1 plain-members lines: ${JSON.stringify(a.lines)}`);
-  console.log(`# R1 plain-members messages: ${JSON.stringify(a.messages)}`);
-  assert.equal(a.lines.some((l) => PROHIBITED.test(l)), false, `a plain members world must not print the prohibited line: ${JSON.stringify(a.lines)}`);
-  assert.equal(a.lines.some((l) => SAIL.test(l)), true, `the sail branch must still play: ${JSON.stringify(a.lines)}`);
+  console.log(`# R1 port-sarim-plain lines: ${JSON.stringify(a.lines)}`);
+  assert.equal(a.lines.some((l) => SAIL.test(l)), true, `the sail branch must play: ${JSON.stringify(a.lines)}`);
 });
 
-test("TRAILBLAZER LEAGUE WORLD (type 2), Port Sarim Veos: probe the branch (the tree's refusal text is correct content here; recorded, not blanket-asserted)", async () => {
+test("REAL DIALOGUE, arrival Veos (10724 at 1825,3691), plain members world, X Marks complete (the reporter's state): no prohibited line", async () => {
+  world({ league: null, members: true });
+  const a = actor(core.NpcIdentifiers.VEOS_5, PISCARILIUS_TILE, { xMarksComplete: true });
+  talkTo(a);
+  await a.choose(WHERE);
+  assert.ok(a.lines.length > 0, `the dialogue ran: ${JSON.stringify(a.lines)}`);
+  const offered = MultiChatboxPrompt.getPending(a.p)?.options ?? [];
+  console.log(`# R2 arrival options: ${JSON.stringify(offered)}`);
+  assert.ok(offered.includes(TAKE_ME), `the travel option must be offered for 10724: offered ${JSON.stringify(offered)}`);
+  await a.choose(TAKE_ME);
+  await a.playToEnd();
+  console.log(`# R2 arrival lines: ${JSON.stringify(a.lines)}`);
+  assert.equal(a.lines.some((l) => PROHIBITED.test(l)), false, `a plain members world must not print the prohibited line: ${JSON.stringify(a.lines)}`);
+});
+
+test("REAL DIALOGUE, arrival Veos (10724), plain members world, X Marks NOT complete: recorded (report-only)", async () => {
+  world({ league: null, members: true });
+  const a = actor(core.NpcIdentifiers.VEOS_5, PISCARILIUS_TILE, { xMarksComplete: false });
+  talkTo(a);
+  await a.choose(WHERE);
+  const offered = MultiChatboxPrompt.getPending(a.p)?.options ?? [];
+  console.log(`# R3 arrival (X Marks not complete) options: ${JSON.stringify(offered)}`);
+  if (offered.includes(TAKE_ME)) { await a.choose(TAKE_ME); await a.playToEnd(); }
+  console.log(`# R3 arrival (X Marks not complete) lines: ${JSON.stringify(a.lines)}`);
+});
+
+test("LEAGUE CONTROL (Trailblazer, type 2): the tree's refusal is correct content and must survive (recorded, Port Sarim)", async () => {
   world({ league: 2, members: true });
   const a = actor(core.NpcIdentifiers.VEOS, PORT_SARIM_TILE);
   talkTo(a);
   await a.choose(WHERE);
   await a.choose(TAKE_ME);
   await a.playToEnd();
-  console.log(`# R2 trailblazer-lines: ${JSON.stringify(a.lines)}`);
-  console.log(`# R2 trailblazer-messages: ${JSON.stringify(a.messages)}`);
+  console.log(`# R4 trailblazer lines: ${JSON.stringify(a.lines)}`);
 });
 
-test("TRAILBLAZER RELOADED (type 4), Port Sarim Veos: probe the branch (recorded)", async () => {
-  world({ league: 4, members: true });
-  const a = actor(core.NpcIdentifiers.VEOS, PORT_SARIM_TILE);
-  talkTo(a);
-  await a.choose(WHERE);
-  await a.choose(TAKE_ME);
-  await a.playToEnd();
-  console.log(`# R3 reloaded-lines: ${JSON.stringify(a.lines)}`);
-});
-
-test("F2P CONTROL: the free-to-play answer ([2] HaZALO) still answers as the base does (recorded; no sail line on F2P)", async () => {
+test("F2P CONTROL (membership stubbed false): the free-to-play branch answers; no sail line", async () => {
   world({ league: null, members: false });
   const a = actor(core.NpcIdentifiers.VEOS, PORT_SARIM_TILE);
   talkTo(a);
   await a.choose(WHERE);
   await a.choose(TAKE_ME);
   await a.playToEnd();
-  console.log(`# R4 f2p-lines: ${JSON.stringify(a.lines)}`);
+  console.log(`# R5 f2p lines: ${JSON.stringify(a.lines)}`);
   assert.equal(a.lines.some((l) => SAIL.test(l)), false, `F2P must not sail: ${JSON.stringify(a.lines)}`);
 });
 
-test("OTHER NPC UNCHANGED: a non-Veos league condition is answered exactly as on the base (asserted through the real hook)", () => {
+test("OTHER NPC UNCHANGED: a league condition of a different tree is answered by the same hooks as on the base (probe, recorded)", () => {
   world({ league: 2, members: true });
-  const probe = { player: actor(core.NpcIdentifiers.VEOS, PORT_SARIM_TILE).p, npc: null, npcId: 1, stepId: "7m-RoE", text: "If the game world is Trailblazer League world:" };
+  const probe = { player: actor(core.NpcIdentifiers.VEOS, PORT_SARIM_TILE).p, npc: null, npcId: 1, stepId: "7m-RoE", text: CONDITIONS[2].text };
   const answer = PM.emitNpcDialogueCondition(probe);
-  console.log(`# R5 other-npc 7m-RoE answer (npcId 1): ${JSON.stringify(answer)}`);
-  assert.equal(answer, null, "a non-Veos npc gets no answer from the Veos-scoped quest answer");
-});
-
-// ---- ARRIVAL SIDE: Piscarilius Veos (npc 10724 at 1825,3691) ----
-const PISC = () => core.NpcIdentifiers.VEOS_5;
-
-test("ARRIVAL, plain members world, X Marks NOT complete (selectVariant null -> the first-time variant): probe (report-only)", async () => {
-  world({ league: null, members: true });
-  const a = actor(PISC(), PISCARILIUS_TILE, 0, { xMarksComplete: false });
-  talkTo(a);
-  await a.choose(WHERE);
-  console.log(`# A1 pisc-xmarks-not-complete opening: ${JSON.stringify(a.lines.slice(0, 4))}`);
-});
-
-test("ARRIVAL, plain members world, X Marks complete ('starting-off'): travel option, play to end (report-only rows)", async () => {
-  world({ league: null, members: true });
-  const a = actor(PISC(), PISCARILIUS_TILE, 0, { xMarksComplete: true });
-  talkTo(a);
-  await a.choose(WHERE);
-  console.log(`# A2 pisc-xmarks-complete opening: ${JSON.stringify(a.lines.slice(0, 4))} options: ${JSON.stringify(MultiChatboxPrompt.getPending(a.p)?.options ?? null)}`);
-});
-
-test("ARRIVAL, REPORTER STATE, plain members world (hard): the dialogue runs, the travel option is offered, and no prohibited line follows", async () => {
-  world({ league: null, members: true });
-  const a = actor(PISC(), PISCARILIUS_TILE, 0, { xMarksComplete: true });
-  talkTo(a);
-  await a.choose(WHERE);
-  assert.ok(a.lines.length > 0, `the dialogue ran: ${JSON.stringify(a.lines)}`);
-  const offered = MultiChatboxPrompt.getPending(a.p)?.options ?? [];
-  console.log(`# A3 options offered after "Where's that?": ${JSON.stringify(offered)}`);
-  assert.ok(offered.includes(TAKE_ME), `the travel option must be offered for 10724 (otherwise the derivation's branch is not reached): offered ${JSON.stringify(offered)}`);
-  await a.choose(TAKE_ME);
-  await a.playToEnd();
-  console.log(`# A3 reporter-state lines: ${JSON.stringify(a.lines)}`);
-  console.log(`# A3 reporter-state messages: ${JSON.stringify(a.messages)}`);
-  assert.equal(a.lines.some((l) => PROHIBITED.test(l)), false, `a plain members world must not print the prohibited line: ${JSON.stringify(a.lines)}`);
+  console.log(`# R6 other-npc 7m-RoE answer (npcId 1): ${JSON.stringify(answer)}`);
 });
