@@ -107,7 +107,10 @@ test("PART 2 (cache facts): the REAL transform variable of each Veos id, enumera
     console.log(`# DEF enum npc=${id} transformVarbit=${varbit} transformVarp=${varp} kind=${kind} ref=${ref} transforms=${JSON.stringify(transforms)}`);
     if (!transforms || kind === "none") continue;
     // The last transforms[] entry is the default; indices 0..length-2 select a child (NpcType.ts transform logic).
-    for (let value = 0; value <= transforms.length - 2; value++) {
+    // Cap the enumeration at 40 rows; a longer list says so in the output (the cap is printed, never silent).
+    const last = Math.min(transforms.length - 2, 39);
+    if (transforms.length - 2 > 39) console.log(`# DEF enum npc=${id} CAPPED: transforms has ${transforms.length - 1} variable values; printing the first 40 (0..39)`);
+    for (let value = 0; value <= last; value++) {
       const v = kind === "varbit" ? vars({ [ref]: value }, {}) : vars({}, { [ref]: value });
       let resolved = null;
       try { resolved = CacheDefinitions.resolveNpc(id, v); } catch (error) { console.log(`# DEF enum npc=${id} ${kind}=${ref} value=${value} threw: ${error?.message ?? error}`); continue; }
