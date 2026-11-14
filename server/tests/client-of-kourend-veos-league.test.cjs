@@ -16,11 +16,24 @@
 // THE RUNTIME RULE (NpcDialogues.plugin.js:479-486, chooseCondition): the first condition answered TRUE wins; otherwise
 // the first UNANSWERED (null) condition wins; a run answered all-false plays nothing. resolveCondition (NpcDialogues.plugin.js
 // :634-639) asks the plugins first (emitNpcDialogueCondition), then the combat/skill fallbacks.
-// CONSEQUENCE (derived, to be confirmed by the BEFORE run): a null answer on [1] makes [1] the chosen branch just as an answer
-// true does, so [3] (prohibited) is reached only if [1] is answered FALSE and [2] is not true. On a plain members world [1]
-// is true (XMarks, Veos ids) or null (other ids): either way the sail branch plays and the prohibited line should NOT.
-// The league worlds are the interesting case: XMarks answers [1] true on any members world, so the restriction the tree
-// names in [1] ("no restrictions to travelling") is not checked by any answer. This test records what the runtime does.
+// ANSWERS TABLE (derived from source; each row is the answer the runtime's resolveCondition gives, then chooseCondition's pick).
+// Sources: XMarksTheSpot answerCondition (XMarksTheSpot.Quest.js:322-340) answers [1] "members' world" only for VEOS 8484 and
+// VEOS_POST_QUEST 10723; Routes.Ferries.js answerVeosMembership (:185-189) answers the F2P text [2] only for definition name
+// "Veos" (true on F2P, false on members); no plugin answers [3] 7m-RoE or [4] 4_GYUT (grep of plugins/ and tests/).
+// Unmatched text: combatLevelCondition and skillLevelCondition return null (NpcDialogues.plugin.js:455-458 and the skill helper),
+// so resolveCondition is null for [1], [3], [4] when no plugin answers.
+//
+//   npc (world)                       [1] members/teleport   [2] F2P       [3] Trailblazer   [4] Reloaded   pick
+//   8484 / 10723 plain members        true                   false         null              null          [1] sail
+//   8484 / 10723 league (any)         true                   false         null              null          [1] sail (league not checked by [1])
+//   8484 / 10723 F2P                  false                  true          null              null          [2] not eligible
+//   10724 plain members               null                   false         null              null          [1] sail (first null)
+//   10724 league (any)                null                   false         null              null          [1] sail (first null)
+//   10724 F2P                         null                   true          null              null          [2] not eligible
+//
+// Consequence: the prohibited line (condition [3]) is reached only when no earlier condition is true and no earlier one is null,
+// i.e. never in this table for a plain or league world. The table is the DERIVATION; the run decides (the prediction for 10724 on a
+// plain world is 'sail, no prohibited line').
 //
 // WORLD STATE: league:type is read by the world check in plugins/modes/league/Common.LeagueMode.js (worldLeague(),
 // api.getPluginConfig("league:type", 0)) and by the quest's api.getPluginConfig. The test stubs PluginManager.getPluginConfig
@@ -220,7 +233,7 @@ test("ARRIVAL, plain members world, X Marks NOT complete (selectVariant null -> 
   world({ league: null, members: true });
   const a = actor(PISC(), PISCARILIUS_TILE, 0, { xMarksComplete: false });
   talkTo(a);
-  await a.choose(WHERE).catch(() => {});
+  await a.choose(WHERE);
   console.log(`# A1 pisc-xmarks-not-complete opening: ${JSON.stringify(a.lines.slice(0, 4))}`);
 });
 
@@ -228,19 +241,22 @@ test("ARRIVAL, plain members world, X Marks complete ('starting-off'): travel op
   world({ league: null, members: true });
   const a = actor(PISC(), PISCARILIUS_TILE, 0, { xMarksComplete: true });
   talkTo(a);
-  await a.choose(WHERE).catch(() => {});
+  await a.choose(WHERE);
   console.log(`# A2 pisc-xmarks-complete opening: ${JSON.stringify(a.lines.slice(0, 4))} options: ${JSON.stringify(MultiChatboxPrompt.getPending(a.p)?.options ?? null)}`);
 });
 
-test("ARRIVAL, REPORTER STATE, plain members world (hard assert, the intended BEFORE red if the prohibited line appears): no prohibited line from 10724", async () => {
+test("ARRIVAL, REPORTER STATE, plain members world (hard): the dialogue runs, the travel option is offered, and no prohibited line follows", async () => {
   world({ league: null, members: true });
   const a = actor(PISC(), PISCARILIUS_TILE, 0, { xMarksComplete: true });
   talkTo(a);
-  await a.choose(WHERE).catch(() => {});
-  if (MultiChatboxPrompt.getPending(a.p)?.options.includes(TAKE_ME)) await a.choose(TAKE_ME);
+  await a.choose(WHERE);
+  assert.ok(a.lines.length > 0, `the dialogue ran: ${JSON.stringify(a.lines)}`);
+  const offered = MultiChatboxPrompt.getPending(a.p)?.options ?? [];
+  console.log(`# A3 options offered after "Where's that?": ${JSON.stringify(offered)}`);
+  assert.ok(offered.includes(TAKE_ME), `the travel option must be offered for 10724 (otherwise the derivation's branch is not reached): offered ${JSON.stringify(offered)}`);
+  await a.choose(TAKE_ME);
   await a.playToEnd();
   console.log(`# A3 reporter-state lines: ${JSON.stringify(a.lines)}`);
   console.log(`# A3 reporter-state messages: ${JSON.stringify(a.messages)}`);
   assert.equal(a.lines.some((l) => PROHIBITED.test(l)), false, `a plain members world must not print the prohibited line: ${JSON.stringify(a.lines)}`);
 });
-
