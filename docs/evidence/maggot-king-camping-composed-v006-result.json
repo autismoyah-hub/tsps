@@ -1,0 +1,1292 @@
+{
+  "schema": 1,
+  "status": "INDEPENDENT_RESULT_GO_COMPOSED_EVIDENCE_NOT_FRESH132",
+  "scope": "Camping the King task639 only, with retained prior controls; no wholeboss/reward/otherCA/sticky lifecycle closure",
+  "primary": "https://oldschool.runescape.wiki/w/Camping_the_King?oldid=15344273",
+  "fresh": {
+    "source": "541c6b3b52b694612852bee6f3fbf1b8a0fe3e3a",
+    "job": "6af7f80823985fb9cd81576b",
+    "terminal": "COMPLETED",
+    "retry": 0,
+    "raw": {
+      "path": "maggot-king-camping-after-v006.log",
+      "bytes": 714729,
+      "sha256": "b0fce4b40a1e68a5cab9f4b47e2b0b6ef04dc4555f597f90b72607167da7b307"
+    },
+    "selectedTests": [
+      "maggot-king.test.cjs",
+      "shared-poison-counter.test.cjs",
+      "serpentine-helm.test.cjs",
+      "poison-orb.test.cjs"
+    ],
+    "expectedTestCounts": {
+      "maggot-king.test.cjs": 6,
+      "shared-poison-counter.test.cjs": 32,
+      "serpentine-helm.test.cjs": 21,
+      "poison-orb.test.cjs": 10
+    },
+    "actualPerCaseVerdicts": [
+      {
+        "number": 1,
+        "pass": true,
+        "title": "the entrance, exit and exact options match the live cache",
+        "rawLine": 91,
+        "suite": "maggot-king.test.cjs"
+      },
+      {
+        "number": 2,
+        "pass": true,
+        "title": "Blood Moon access opens a private solo lair and cleans it up on escape and logout",
+        "rawLine": 97,
+        "suite": "maggot-king.test.cjs"
+      },
+      {
+        "number": 3,
+        "pass": true,
+        "title": "a killed Maggot King respawns in its private lair and closing the session cancels the next respawn",
+        "rawLine": 103,
+        "suite": "maggot-king.test.cjs"
+      },
+      {
+        "number": 4,
+        "pass": true,
+        "title": "Camping callback negatives preserve death cleanup for wrong and missing killers",
+        "rawLine": 109,
+        "suite": "maggot-king.test.cjs"
+      },
+      {
+        "number": 5,
+        "pass": true,
+        "title": "Camping completion failure occurs after authoritative death retirement and scheduled respawn",
+        "rawLine": 115,
+        "suite": "maggot-king.test.cjs"
+      },
+      {
+        "number": 6,
+        "pass": true,
+        "title": "Camping shutdown callback retires the run instead of saving it for a new entry",
+        "rawLine": 121,
+        "suite": "maggot-king.test.cjs"
+      },
+      {
+        "number": 1,
+        "pass": true,
+        "title": "anti-venom+ retains an existing poison pulse instead of starting an independent stopwatch",
+        "rawLine": 141,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 2,
+        "pass": true,
+        "title": "actual anti-venom+ and the captured modal schedule reproduce all observed protection counters",
+        "rawLine": 147,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 3,
+        "pass": true,
+        "title": "a protection-only player owns one task; renewal and weaker doses never reset the phase",
+        "rawLine": 153,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 4,
+        "pass": true,
+        "title": "the final due counter stays protective while modal and releases once when closed",
+        "rawLine": 159,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 5,
+        "pass": true,
+        "title": "ordinary antipoison downgrades venom first, then a second dose cures and protects",
+        "rawLine": 165,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 6,
+        "pass": true,
+        "title": "ordinary poison protection does not block venom, whereas -39 does and -38 does not",
+        "rawLine": 171,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 7,
+        "pass": true,
+        "title": "short poison/venom flags coexist with a stronger dose and do not cure existing affliction",
+        "rawLine": 177,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 8,
+        "pass": true,
+        "title": "actual JSON save codec preserves a held counter and its phase through logout/load",
+        "rawLine": 183,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 9,
+        "pass": true,
+        "title": "positive poison also resumes its saved phase and unaffected saves omit the optional snapshot",
+        "rawLine": 189,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 10,
+        "pass": true,
+        "title": "death reset synchronously resets the phase even if a new dose arrives before old task cleanup",
+        "rawLine": 195,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 11,
+        "pass": true,
+        "title": "canonical extended anti-venom and supermix dose chains apply their proper protection tiers",
+        "rawLine": 201,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 12,
+        "pass": true,
+        "title": "snapshot restoration retains independent brief durations and rejects malformed counter/phase state",
+        "rawLine": 207,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 13,
+        "pass": true,
+        "title": "the resistance lines come one pulse before and at each end, once each",
+        "rawLine": 213,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 14,
+        "pass": true,
+        "title": "protection duration reduction retains the shared nonboundary pulse and roundtrips its fractional dose",
+        "rawLine": 219,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 15,
+        "pass": true,
+        "title": "duration reduction safely exhausts a dose, preserves no-dose phase and independently reduces brief protection",
+        "rawLine": 225,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 16,
+        "pass": true,
+        "title": "reduced protection emits warning and expiry through the actual Effect between status pulses",
+        "rawLine": 231,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 17,
+        "pass": true,
+        "title": "a reduced final dose holds its due transition while modal and releases once on close",
+        "rawLine": 237,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 18,
+        "pass": true,
+        "title": "reduced venom-tier transitions use the Effect feedback path between unchanged status pulses",
+        "rawLine": 243,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 19,
+        "pass": true,
+        "title": "duration reduction leaves the existing affliction on its native Effect pulse",
+        "rawLine": 249,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 20,
+        "pass": true,
+        "title": "synchronous reduction 3->1 delivers native feedback before the next status pulse",
+        "rawLine": 255,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 21,
+        "pass": true,
+        "title": "synchronous reduction 2->0 delivers native feedback before the next status pulse",
+        "rawLine": 261,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 22,
+        "pass": true,
+        "title": "synchronous reduction 41->39 delivers native feedback before the next status pulse",
+        "rawLine": 267,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 23,
+        "pass": true,
+        "title": "synchronous reduction 40->38 delivers native feedback before the next status pulse",
+        "rawLine": 273,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 24,
+        "pass": true,
+        "title": "synchronous reduction 39->37 delivers native feedback before the next status pulse",
+        "rawLine": 279,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 25,
+        "pass": true,
+        "title": "modal synchronous exhaustion retains one pending end until close, including repeated subtraction",
+        "rawLine": 285,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 26,
+        "pass": true,
+        "title": "new dose, stop and restore discard stale pending reduction lines; repeated reductions coalesce",
+        "rawLine": 291,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 27,
+        "pass": true,
+        "title": "synchronous protection exhaustion keeps an existing affliction on its original pulse without resistance lines",
+        "rawLine": 297,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 28,
+        "pass": true,
+        "title": "known dose provenance follows a real stronger potion and ignored weaker doses keep it without moving phase",
+        "rawLine": 303,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 29,
+        "pass": true,
+        "title": "read-only dose provenance and dose-only venom queries expire with the native counter, not brief flags",
+        "rawLine": 309,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 30,
+        "pass": true,
+        "title": "actual JSON save codec preserves dose provenance and its held phase",
+        "rawLine": 315,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 31,
+        "pass": true,
+        "title": "missing or invalid saved provenance stays unknown without discarding otherwise valid numeric protection",
+        "rawLine": 321,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 32,
+        "pass": true,
+        "title": "legacy unknown origin is not fabricated by an ignored plus drink but a later actual extension establishes it",
+        "rawLine": 327,
+        "suite": "shared-poison-counter.test.cjs"
+      },
+      {
+        "number": 1,
+        "pass": true,
+        "title": "the charged helm grants poison/venom immunity and spends scales in combat",
+        "rawLine": 346,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 2,
+        "pass": true,
+        "title": "the envenom chance depends on the weapon: 1/6 plain, 1/2 poisoned, 100% toxic",
+        "rawLine": 352,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 3,
+        "pass": true,
+        "title": "a successful hit on a monster can envenom it, but never a player",
+        "rawLine": 358,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 4,
+        "pass": true,
+        "title": "scales charge the helm and uncharging returns them",
+        "rawLine": 364,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 5,
+        "pass": true,
+        "title": "charging leaves unrelated target items and their materials untouched",
+        "rawLine": 370,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 6,
+        "pass": true,
+        "title": "ordinary ranged and magic hits cannot use the helm's basic melee venom chance",
+        "rawLine": 376,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 7,
+        "pass": true,
+        "title": "the noxious halberd's helm roll is 1/4, making 1/2 with its own 1/3",
+        "rawLine": 382,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 8,
+        "pass": true,
+        "title": "poisonous melee weapon 12006 has a 50% helm chance",
+        "rawLine": 388,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 9,
+        "pass": true,
+        "title": "poisonous melee weapon 26484 has a 50% helm chance",
+        "rawLine": 394,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 10,
+        "pass": true,
+        "title": "toxic trident variant 22292 guarantees venom",
+        "rawLine": 400,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 11,
+        "pass": true,
+        "title": "toxic trident variant 33314 guarantees venom",
+        "rawLine": 406,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 12,
+        "pass": true,
+        "title": "toxic trident variant 33318 guarantees venom",
+        "rawLine": 412,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 13,
+        "pass": true,
+        "title": "recoloured helm 13197 provides immunity and venom and keeps its colour when depleted",
+        "rawLine": 418,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 14,
+        "pass": true,
+        "title": "recoloured helm 13199 provides immunity and venom and keeps its colour when depleted",
+        "rawLine": 424,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 15,
+        "pass": true,
+        "title": "selected poisoned ammunition gets 50%, but enchanted emerald bolts do not",
+        "rawLine": 430,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 16,
+        "pass": true,
+        "title": "helm procs require damage and never affect players",
+        "rawLine": 436,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 17,
+        "pass": true,
+        "title": "being attacked with retaliation off still consumes scales",
+        "rawLine": 442,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 18,
+        "pass": true,
+        "title": "uncharging can return scales to an existing stack in a full inventory",
+        "rawLine": 448,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 19,
+        "pass": true,
+        "title": "uncharging without room preserves the helmet and all scales",
+        "rawLine": 454,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 20,
+        "pass": true,
+        "title": "charging reports total scales and percentage as in recording 1074",
+        "rawLine": 460,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 21,
+        "pass": true,
+        "title": "the registered protection query observes positive worn charges without upkeep or a timer refresh",
+        "rawLine": 466,
+        "suite": "serpentine-helm.test.cjs"
+      },
+      {
+        "number": 1,
+        "pass": true,
+        "title": "charged helmet protects without curing existing poison",
+        "rawLine": 486,
+        "suite": "poison-orb.test.cjs"
+      },
+      {
+        "number": 2,
+        "pass": true,
+        "title": "bare protection preserves the existing poison clock",
+        "rawLine": 492,
+        "suite": "poison-orb.test.cjs"
+      },
+      {
+        "number": 3,
+        "pass": true,
+        "title": "an explicit cure stops damage but retains the protection clock for poison",
+        "rawLine": 498,
+        "suite": "poison-orb.test.cjs"
+      },
+      {
+        "number": 4,
+        "pass": true,
+        "title": "protection rejects new poison while an unprotected player is afflicted",
+        "rawLine": 504,
+        "suite": "poison-orb.test.cjs"
+      },
+      {
+        "number": 5,
+        "pass": true,
+        "title": "charged helmet protects without curing existing venom",
+        "rawLine": 510,
+        "suite": "poison-orb.test.cjs"
+      },
+      {
+        "number": 6,
+        "pass": true,
+        "title": "bare protection preserves the existing venom clock",
+        "rawLine": 516,
+        "suite": "poison-orb.test.cjs"
+      },
+      {
+        "number": 7,
+        "pass": true,
+        "title": "an explicit cure stops damage but retains the protection clock for venom",
+        "rawLine": 522,
+        "suite": "poison-orb.test.cjs"
+      },
+      {
+        "number": 8,
+        "pass": true,
+        "title": "protection rejects new venom while an unprotected player is afflicted",
+        "rawLine": 528,
+        "suite": "poison-orb.test.cjs"
+      },
+      {
+        "number": 9,
+        "pass": true,
+        "title": "poison shows its severity, venom 1,000,000 plus its hits, immunity its 18-second steps",
+        "rawLine": 534,
+        "suite": "poison-orb.test.cjs"
+      },
+      {
+        "number": 10,
+        "pass": true,
+        "title": "the orb's Cure says so when nothing in the pack can cure, and does nothing unpoisoned",
+        "rawLine": 540,
+        "suite": "poison-orb.test.cjs"
+      }
+    ],
+    "stages": [
+      {
+        "event": "stage-result",
+        "name": "extract",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 1541,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "455770112",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "install-server",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 4645,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "1757581312",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "ldd",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 27,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "1757581312",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "native-load",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 43,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "1757581312",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "build",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 10565,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "1757581312",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "cache",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 27562,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2179604480",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "test:maggot-king.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 6,
+        "passes": 6,
+        "durationMs": 2274,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2179604480",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "test:shared-poison-counter.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 32,
+        "passes": 32,
+        "durationMs": 2256,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2179604480",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "test:serpentine-helm.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 21,
+        "passes": 21,
+        "durationMs": 679,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2179604480",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "test:poison-orb.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 10,
+        "passes": 10,
+        "durationMs": 870,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2179604480",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    ],
+    "closure": [
+      {
+        "event": "source-closure",
+        "afterFailure": false,
+        "available": true,
+        "sourceManifestHash": "0e81ccabaa2c73b2bac6f8f44b87caad100e68cb00e6171aa3d1f2fd3b3461ec",
+        "postSourceHash": "0e81ccabaa2c73b2bac6f8f44b87caad100e68cb00e6171aa3d1f2fd3b3461ec",
+        "originalSourceFiles": 8779,
+        "distManifestHash": "5dae19d461cf1f73e816eaf5798a7d46631c61b87ac1b88eb6d25fb25e819d3c",
+        "postDistHash": "5dae19d461cf1f73e816eaf5798a7d46631c61b87ac1b88eb6d25fb25e819d3c",
+        "postCacheFilesChecked": 28,
+        "sourceStatus": "PASS",
+        "distStatus": "PASS",
+        "cacheStatus": "PASS",
+        "complete": true,
+        "cacheMismatches": [],
+        "errors": [],
+        "sealsUnchanged": true,
+        "limitation": "Content identities only; no process or sandbox-wide closure inference"
+      }
+    ],
+    "qualificationEvents": [
+      {
+        "event": "native-qualification-result",
+        "source": "541c6b3b52b694612852bee6f3fbf1b8a0fe3e3a",
+        "status": "TESTS_PASS_AWAIT_SANDBOX_TERMINAL",
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2179604480",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        },
+        "closureScope": "process groups checked; full descendant closure requires platform containment and terminal receipt",
+        "scope": "Linux fresh dependency/build/cache/test route; no Windows equivalence, client rendering or concurrent capacity claim"
+      }
+    ],
+    "inputManifest": {
+      "artifactCommit": "b9bae689d5268722f961d8a6988fc36c0a237d65",
+      "path": "docs/evidence/maggot-king-camping-after-v003-input-manifest.json",
+      "sha256": "cf0a39175d72c4fd17484be47e00f453441cd98533e5ee72805dbabf59b14bdc",
+      "bytes": 1297743,
+      "source": "541c6b3b52b694612852bee6f3fbf1b8a0fe3e3a",
+      "count": 5685,
+      "schema": 1,
+      "repository": "autismoyah-hub/tsps"
+    },
+    "actualInputCount": 5685,
+    "actualInputsEqualManifest": true,
+    "returnedSHAReconstruction": "Contiguous returnedbytes; no insertion/repair; original runtime per-row Gitblob guards remain distinct",
+    "testCommandTemplate": "node --max-old-space-size=3072 --test --test-concurrency=1 --test-reporter=tap tests/<selected-file>",
+    "buildCommand": "node --max-old-space-size=3072 node_modules/typescript/bin/tsc --build tsconfig.json --pretty false",
+    "cacheCommand": "node --max-old-space-size=4096 node_modules/ts-node/dist/bin.js --compiler-options '{\"target\":\"es2020\"}' scripts/ensure-cache.ts"
+  },
+  "reusedNative": {
+    "qualification": "Independent source projection851 and original result846",
+    "source": "fc6f1cb703ab95c7cdd6ccc25c1dc862874fecd2",
+    "job": "6af7df6423985fb9cd81341f",
+    "wholeJobTerminal": "ERROR",
+    "nativeTests": 63,
+    "nativePasses": 63,
+    "raw": {
+      "path": "maggot-king-camping-after-v002.log",
+      "bytes": 763841,
+      "sha256": "7d63f62e8c1a042be654c43a175c5fc377b6fdd451663471b9693a9f02b572dc"
+    },
+    "perCaseNativeVerdicts": [
+      {
+        "number": 1,
+        "pass": true,
+        "title": "active cache identifies the separated lair floor, bone wall, head definition and projectile LOS",
+        "rawLine": 706,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 2,
+        "pass": true,
+        "title": "registered quest-gated entry reaches the separated combat arena without admitting another player",
+        "rawLine": 712,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 3,
+        "pass": true,
+        "title": "ordinary ranged Attack starts boss combat and publishes the first ranged animation through native world ticks",
+        "rawLine": 718,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 4,
+        "pass": true,
+        "title": "ranged impact reads current prayer and lays consumed bile on the impact tile",
+        "rawLine": 724,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 5,
+        "pass": true,
+        "title": "screech reacts to prayer changes each tick, restores defence and alternates to magic",
+        "rawLine": 730,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 6,
+        "pass": true,
+        "title": "sticky contact follows native walking, consumes the pool, drains a combat stat and delays attacks",
+        "rawLine": 736,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 7,
+        "pass": true,
+        "title": "airborne standard bow Attack kills the owned larva and overwrites an existing cooldown",
+        "rawLine": 742,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 8,
+        "pass": true,
+        "title": "landed larvae traverse their row, eat carrion, heal actual contact loss and reset after stepping off",
+        "rawLine": 748,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 9,
+        "pass": true,
+        "title": "edge slams keep body footprints clear; fresh same-tick melee input grants one punish",
+        "rawLine": 754,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 10,
+        "pass": true,
+        "title": "whole1500HP encounter traverses rotations and thresholds through real ranged hits, then cleans up and retries",
+        "rawLine": 760,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 11,
+        "pass": true,
+        "title": "ordinary owned Escape removes all encounter actors and pending effects; a fresh entry works",
+        "rawLine": 766,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 12,
+        "pass": true,
+        "title": "native paid ammunition lands in the player arena and delayed drops cannot survive a destroyed room",
+        "rawLine": 772,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 13,
+        "pass": true,
+        "title": "dangerous native death leaves the grave outside, returns to Vampyrium and permits retry",
+        "rawLine": 778,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 14,
+        "pass": true,
+        "title": "native Cave menu input walks to the eastern recovery prop and escapes",
+        "rawLine": 784,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 15,
+        "pass": true,
+        "title": "poisonous-bile walking contact removes45seconds from a nonboundary dose without moving the status pulse",
+        "rawLine": 790,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 16,
+        "pass": true,
+        "title": "unrelated ordinary shots keep their target snapshot and original surviving private scene after the owner leaves",
+        "rawLine": 796,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 17,
+        "pass": true,
+        "title": "the existing Dizana quiver decrement handler retains one payment and its own delayed scheduling",
+        "rawLine": 802,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 18,
+        "pass": true,
+        "title": "real twin crush attacks boost only the first splat and first defence roll; other actors remain ordinary",
+        "rawLine": 808,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 19,
+        "pass": true,
+        "title": "native object lookup rejects another session cave and a retracted head",
+        "rawLine": 814,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 20,
+        "pass": true,
+        "title": "native incoming-hit auto-retaliation and a held target never mint a fresh extension punish",
+        "rawLine": 820,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 21,
+        "pass": true,
+        "title": "native encounter death claims deferred generic loot after session markers clear, while another same-ID NPC still drops",
+        "rawLine": 826,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 22,
+        "pass": true,
+        "title": "native poisonous-bile walking exhaustion delivers one end line through the real Effect",
+        "rawLine": 832,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 23,
+        "pass": true,
+        "title": "native base egg Pop consumes one unit on each side of the published 1/3000 threshold",
+        "rawLine": 838,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 24,
+        "pass": true,
+        "title": "native sickly egg Pop consumes one unit on each side of the published 1/2500 threshold",
+        "rawLine": 844,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 25,
+        "pass": true,
+        "title": "native warm egg Pop consumes one unit on each side of the published 1/1250 threshold",
+        "rawLine": 850,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 26,
+        "pass": true,
+        "title": "native pulsating egg Pop consumes one unit on each side of the published 1/500 threshold",
+        "rawLine": 856,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 27,
+        "pass": true,
+        "title": "native wriggling egg Pop consumes one unit on each side of the published 1/10 threshold",
+        "rawLine": 862,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 28,
+        "pass": true,
+        "title": "native writhing egg Pop consumes one unit on each side of the published 1/2 threshold",
+        "rawLine": 868,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 29,
+        "pass": true,
+        "title": "native egg Pop refuses stale slots, another container and placeholder copies without consuming an egg",
+        "rawLine": 874,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 30,
+        "pass": true,
+        "title": "native pet duplicate refusal consumes a successful egg roll without refund or duplicate delivery",
+        "rawLine": 880,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 31,
+        "pass": true,
+        "title": "egg Pop with another native follower and a full pack preserves the freed-slot pet item outcome",
+        "rawLine": 886,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 32,
+        "pass": true,
+        "title": "egg Pop with another native follower and a full pack preserves the insured full-pack recovery outcome",
+        "rawLine": 892,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 33,
+        "pass": true,
+        "title": "decoded native backpack base egg Pop crosses the published threshold through the real turn dispatcher",
+        "rawLine": 898,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 34,
+        "pass": true,
+        "title": "decoded native backpack sickly egg Pop crosses the published threshold through the real turn dispatcher",
+        "rawLine": 904,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 35,
+        "pass": true,
+        "title": "decoded native backpack warm egg Pop crosses the published threshold through the real turn dispatcher",
+        "rawLine": 910,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 36,
+        "pass": true,
+        "title": "decoded native backpack pulsating egg Pop crosses the published threshold through the real turn dispatcher",
+        "rawLine": 916,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 37,
+        "pass": true,
+        "title": "decoded native backpack wriggling egg Pop crosses the published threshold through the real turn dispatcher",
+        "rawLine": 922,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 38,
+        "pass": true,
+        "title": "decoded native backpack writhing egg Pop crosses the published threshold through the real turn dispatcher",
+        "rawLine": 928,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 39,
+        "pass": true,
+        "title": "decoded native FIRE_STRIKE impact adds a shared five-damage burn after manual-cast selection clears",
+        "rawLine": 934,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 40,
+        "pass": true,
+        "title": "decoded native FIRE_BOLT impact adds a shared five-damage burn after manual-cast selection clears",
+        "rawLine": 940,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 41,
+        "pass": true,
+        "title": "decoded native FIRE_BLAST impact adds a shared five-damage burn after manual-cast selection clears",
+        "rawLine": 946,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 42,
+        "pass": true,
+        "title": "decoded native FIRE_WAVE impact adds a shared five-damage burn after manual-cast selection clears",
+        "rawLine": 952,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 43,
+        "pass": true,
+        "title": "decoded native FIRE_SURGE impact adds a shared five-damage burn after manual-cast selection clears",
+        "rawLine": 958,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 44,
+        "pass": true,
+        "title": "decoded fire splash and accurate nonfire spell do not create encounter burn stacks",
+        "rawLine": 964,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 45,
+        "pass": true,
+        "title": "native shared stack queries preserve cap, cadence, expiry and owner credit without refreshing burns",
+        "rawLine": 970,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 46,
+        "pass": true,
+        "title": "encounter magic rolls compose live stack reduction and near stance without overwriting bonus drains or screech levels",
+        "rawLine": 976,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 47,
+        "pass": true,
+        "title": "closing an owner encounter clears its native burns before removal and a fresh retry inherits none",
+        "rawLine": 982,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 48,
+        "pass": true,
+        "title": "real paid Soul Rend keeps its permanent magic bonus drain while encounter burns compose and expire",
+        "rawLine": 988,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 49,
+        "pass": true,
+        "title": "the shared read-only count distinguishes mixed burn durations on an unrelated native player",
+        "rawLine": 994,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 50,
+        "pass": true,
+        "title": "off-phase expiry removes only unexpired shared stacks from the actual magic roll (10+5 damage)",
+        "rawLine": 1000,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 51,
+        "pass": true,
+        "title": "off-phase expiry removes only unexpired shared stacks from the actual magic roll (5+5 damage)",
+        "rawLine": 1006,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 52,
+        "pass": true,
+        "title": "decoded fresh anti-venom+ plus a natively charged and equipped Serp helm prevents poisonous contact effects",
+        "rawLine": 1012,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 53,
+        "pass": true,
+        "title": "a charged helm brief venom flag alone cannot impersonate a consumed plus dose",
+        "rawLine": 1018,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 54,
+        "pass": true,
+        "title": "decoded anti-venom+ alone does not provide the charged-helm half of poisonous-bile protection",
+        "rawLine": 1024,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 55,
+        "pass": true,
+        "title": "decoded ordinary anti-venom with a charged helm is not the anti-venom+ source family",
+        "rawLine": 1030,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 56,
+        "pass": true,
+        "title": "real combat upkeep depletes the last helm scales before poisonous-bile eligibility is queried",
+        "rawLine": 1036,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 57,
+        "pass": true,
+        "title": "a charged helm left in the backpack does not satisfy the worn-item predicate",
+        "rawLine": 1042,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 58,
+        "pass": true,
+        "title": "a cache placeholder in a supplied invalid equipment checkpoint cannot provide helm protection",
+        "rawLine": 1048,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 59,
+        "pass": true,
+        "title": "the native dose cutoff excludes the poison-only tail even while a charged helm refreshes brief venom protection",
+        "rawLine": 1054,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 60,
+        "pass": true,
+        "title": "a decoded plus drink ignored by a longer legacy-unknown dose does not fabricate saved provenance",
+        "rawLine": 1060,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 61,
+        "pass": true,
+        "title": "another session walking its own floor cannot consume an owner pool or inherit owner protection",
+        "rawLine": 1066,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 62,
+        "pass": true,
+        "title": "Camping the King completes once on the twelfth native owner death in one session",
+        "rawLine": 1072,
+        "suite": "maggot-king-combat.test.cjs"
+      },
+      {
+        "number": 63,
+        "pass": true,
+        "title": "Camping resets on native Escape and owned logout/teleport retirement boundaries",
+        "rawLine": 1078,
+        "suite": "maggot-king-combat.test.cjs"
+      }
+    ],
+    "inputManifest": {
+      "artifactCommit": "7276aedcabc2873c880fc1759726022e8682c290",
+      "path": "docs/evidence/maggot-king-camping-after-v001-input-manifest.json",
+      "sha256": "9701d8b70d403a0757ba2a9cd2805d8e221b7cfddffc3140ede6e4d525de5251",
+      "bytes": 1297817,
+      "source": "fc6f1cb703ab95c7cdd6ccc25c1dc862874fecd2",
+      "count": 5685,
+      "schema": 1,
+      "repository": "autismoyah-hub/tsps"
+    },
+    "sourceProjection": "maggot-king-camping-native63-reuse-projection.json",
+    "nativeFixtureGitBlob": "933b0143d0fbdeb9452da6088c2f653b14843c9d",
+    "limit": "Old fc6f execution; not new541c native. Oldjobsetup4PASS2FAIL/later63UNEXECUTED immutable; sole setupmockquery correction preserves nativefixture and allproduction/native inputs."
+  },
+  "baseline": {
+    "source": "6deb81bcb9b368f1457d0f6ac3667ec4f78ea749",
+    "job": "6af7d77b29dd05ff0366475a",
+    "terminal": "ERROR",
+    "raw": {
+      "path": "maggot-king-camping-before-v003.log",
+      "bytes": 735118,
+      "sha256": "a7c71d2f0c3d563304c396dca2bcb3328bbcc67f6ea9d9580b42d643a9aaa832"
+    },
+    "nativeOutcomes": "63UNKNOWN",
+    "laterControls": "69UNEXECUTED",
+    "expectedMissingFeatureFailure": "NOT_ESTABLISHED",
+    "heapCause": "UNKNOWN",
+    "noCausalBeforeAfterOrHeapFix": true
+  },
+  "profile": {
+    "image": "node@sha256:b04ce4ae4e95b522112c2e5c52f781471a5cbc3b594527bcddedee9bc48c03a0",
+    "flavor": "cpu-upgrade",
+    "timeout": 1800,
+    "attempts": 1,
+    "cacheTarget": "osrs-242_2026-11-03",
+    "cacheId": 2757,
+    "expectedCacheFiles": {
+      "caches/caches.json": "17036487545d06b6b3fa96792b12d96c3f1e60b88591f05967a5b36c28877909",
+      "caches/osrs-242_2026-11-03/info.json": "40dfaae45cea053345ee44375ce6d8e778df47a58bc666f4e97ad3db37bae36e",
+      "caches/osrs-242_2026-11-03/keys.json": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "caches/osrs-242_2026-11-03/main_file_cache.dat2": "4cabf5ce6ee90d925d4e667653f7811a0b32fe6ed849995022b8d420f0975fee",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx0": "d28251e09564793da2daebc46f7d1eadd8c2d83454b9ca9eb9c53f4643bbf74b",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx1": "e04e0d0a79927832a3143a65b2b67346593051ab35efdeb415bc34576de5d17f",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx10": "ac59bbc333a0dc0f069e89ab427b1bdb00d21019c57f79f89fd714d59528ab10",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx11": "a28d76344176fdd9ce4019e2561f339512d16ba2fac375c01f69c3e2aa40cb85",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx12": "201701ad5781a619d59b197c32f1dfb696496b21915703f0106115f2e311b447",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx13": "d3c89293b13ce8f3dd9dc8af2095b673760b321c7457a40e2e02abe0a2e1625f",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx14": "641b4b11d7c37a75de672114d167af159e6b332367303496dbc837a3b3046b87",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx15": "5320aa933e817ff258bf19168b9dd456c43ca99a225fc93006dc3b38d455a0fc",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx17": "c8f11bf679ee83172e162c802caa252c91deaf3dab9993da4515b2cd46ab3749",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx18": "7df1fbd2fd1fca05b41e3b98ba163345dfa3f6adebac155bdac15be52b739fae",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx19": "7f3ffddd233eeb340bf49d3709dcd203208bb9eba5684dc94d48d309d34e9ae4",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx2": "00656b5f84cbd890b9d65787a9af0e913e33e2da2d117a4f5767530d28853d7e",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx20": "076bb052f22bfd86d6b9ded24b105f1539701723ce5b760fc84fb1fd431ff8ce",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx21": "ce97bbb6817bc5b53f4d708937843bb5e2da13508ed78f2c089291d5662a31d7",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx22": "cc58799eca141f42a08f22c1f2c6eccdca3b34f4480f635928f9c47140b773d5",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx24": "baf1c84c9937faca3b583872ac260c46abac429758646863603bf746fb69efd9",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx255": "962b6717326d6e20d11898a03ed2727226f788ef26a46dc0842b898d67e12282",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx3": "225a2b9dae7700fda2889b3f36e4c54f37b2a68f1b3fbfb249fe1d2a52e47c60",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx4": "690172320e3217ad5f37f4c3e65c0590753481285f2a01cff078e4dbf2da7f9d",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx5": "df2413cf13d2e2072e9c5e31abd963d826a014ad4ed54af65b6ab7372a84ad32",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx6": "0b2748aa79f9d780f6e4e9e436426b27fee9476056397de6b017d99251a26c54",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx7": "68bdf7aa52bb0a09e8eda89618018ac3ea807360b2bdbedf71d6f48c143e5a5b",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx8": "1070da0d81921aa07562eb686065657becc538cf71fb48e65be94f7504c75767",
+      "caches/osrs-242_2026-11-03/main_file_cache.idx9": "583b674ead7d0d8c55db88da0a392cd33256cdb220f4bc9ebb24bab7176f339d"
+    }
+  },
+  "coverageComposition": "69fresh541cPASS + qualifiedoldfc6f63PASSreuse, NOTfresh132run",
+  "sourceCorrection": "isRegistered() returns false for fixture-local neverWorldregistered NPC mock; allassertions/realcleanup preserved",
+  "bounds": [
+    "Native Camping uses supplied quest/materials/equipment/survival/1500lethal hits and real death/respawn; not twelve natural acquisition/survival kills.",
+    "Native missingkiller emits only when nonnull; robustness callback is labeled separately.",
+    "Injectedcompletionerror pass observes retirement/scheduledrespawn, not successfulaward.",
+    "Ownedlogout/teleport boundary is not socketlogout/diskrelog.",
+    "Closure ownedgroups/content/platformterminal, not globalescapeddescendants/reaping/capacity.",
+    "Old failedfinally may mask oldbody assertions; freshpasses do not rewrite oldresult.",
+    "No priorheapcausefix, causalbaseline, generateddroptruth, producerimport, corpse/supply/rewardchain/otherCA/wholeboss claim."
+  ],
+  "independentReview": "Original independent reviewer accepted exact fresh69 raw/build/closure plus bounded originalnative63reuse. Finalpublicationhead/sourcefit/Ready remains separate."
+}
