@@ -333,16 +333,6 @@ async function main() {
     }, (s) => s && s.present && (s.frames > 0) && (!needLogin || (s.loggedIn && s.maps > 0 && s.gameState === 30)));
     summary.client = state;
     await dismissWelcome(cdp);
-    if (touchScenario) {
-      try {
-        const actual = await touchFixture.verify(cdp, touchScenario, value => console.log(JSON.stringify(value)),
-          {timeoutMs:Math.max(1,Math.min(10000,deadline-Date.now()))});
-        summary.touchControlsDefault = {scenario:touchScenario.name,status:"PASS",actual};
-      } catch (error) {
-        touchFailure = error;
-        summary.touchControlsDefault = {scenario:touchScenario.name,status:"FAIL",error:String(error?.message ?? error)};
-      }
-    }
     const smoothing = arg("animation-smoothing", null);
     if (smoothing !== null) {
       await cdp.evaluate(`(async () => {
@@ -846,6 +836,17 @@ async function main() {
       await sleep(Math.min(holdSecs, 300) * 1000);
     }
 
+    // Observe the settled HUD immediately before its ordinary page screenshot.
+    if (touchScenario) {
+      try {
+        const actual = await touchFixture.verify(cdp, touchScenario, value => console.log(JSON.stringify(value)),
+          {timeoutMs:Math.max(1,Math.min(10000,deadline-Date.now()))});
+        summary.touchControlsDefault = {scenario:touchScenario.name,status:"PASS",actual};
+      } catch (error) {
+        touchFailure = error;
+        summary.touchControlsDefault = {scenario:touchScenario.name,status:"FAIL",error:String(error?.message ?? error)};
+      }
+    }
     if (out) {
       const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
       if (shot.error) throw new Error(shot.error.message || JSON.stringify(shot.error));

@@ -57,6 +57,33 @@ function readPage() {
   const node = document.querySelector('[aria-label="Movement joystick"]');
   const rect = node?.getBoundingClientRect();
   const style = node ? getComputedStyle(node) : null;
+  const box = r => r ? {x:r.x,y:r.y,left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height} : null;
+  const viewport = {width:innerWidth,height:innerHeight,visual:window.visualViewport ? {
+    left:visualViewport.offsetLeft,top:visualViewport.offsetTop,width:visualViewport.width,height:visualViewport.height,scale:visualViewport.scale,
+  } : null};
+  const clip = {left:0,top:0,right:innerWidth,bottom:innerHeight};
+  if (viewport.visual) {
+    clip.left = Math.max(clip.left,viewport.visual.left); clip.top = Math.max(clip.top,viewport.visual.top);
+    clip.right = Math.min(clip.right,viewport.visual.left+viewport.visual.width);
+    clip.bottom = Math.min(clip.bottom,viewport.visual.top+viewport.visual.height);
+  }
+  const ancestors = []; let paintAllowed = true, parent = node;
+  for (; parent && ancestors.length < 32; parent = parent.parentElement) {
+    const css = getComputedStyle(parent), bounds = parent.getBoundingClientRect();
+    if (css.display === 'none' || css.visibility !== 'visible' || Number(css.opacity) === 0) paintAllowed = false;
+    const clipX = /^(hidden|clip|scroll|auto)$/.test(css.overflowX);
+    const clipY = /^(hidden|clip|scroll|auto)$/.test(css.overflowY);
+    if (parent !== node) {
+      if (clipX) { clip.left=Math.max(clip.left,bounds.left); clip.right=Math.min(clip.right,bounds.right); }
+      if (clipY) { clip.top=Math.max(clip.top,bounds.top); clip.bottom=Math.min(clip.bottom,bounds.bottom); }
+    }
+    ancestors.push({tag:parent.tagName,className:String(parent.className).slice(0,160),rect:box(bounds),
+      overflowX:css.overflowX,overflowY:css.overflowY,display:css.display,visibility:css.visibility,opacity:css.opacity});
+  }
+  const inViewport = !!rect && rect.width > 0 && rect.height > 0
+    && rect.left >= clip.left && rect.top >= clip.top && rect.right <= clip.right && rect.bottom <= clip.bottom;
+  const hit = rect && inViewport ? document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2) : null;
+  const hitTarget = !!node && !!hit && node.contains(hit);
   return {
     scenario:window.__touch5133Scenario ?? null, pluginCount:candidates.length,
     loggedIn:client?.isLoggedIn?.() === true, gameState:client?.gameState ?? null,
@@ -66,9 +93,10 @@ function readPage() {
     media:{coarse:matchMedia('(pointer: coarse)').matches,fine:matchMedia('(pointer: fine)').matches,
       noHover:matchMedia('(hover: none)').matches,points:navigator.maxTouchPoints},
     touch:new URLSearchParams(location.search).get('touch'),
-    joystick:{present:!!node,visible:!!node && !!rect && rect.width > 0 && rect.height > 0
-      && style?.display !== 'none' && style?.visibility !== 'hidden',
-      width:rect?.width ?? 0,height:rect?.height ?? 0},
+    joystick:{present:!!node,visible:!!node && inViewport && paintAllowed && !parent && hitTarget,
+      width:rect?.width ?? 0,height:rect?.height ?? 0,rect:box(rect),viewport,clip,ancestors,
+      ancestryComplete:!parent,inViewport,paintAllowed,hitTarget,
+      paintStyle:style ? {background:style.backgroundColor,opacity:style.opacity,border:style.borderColor} : null},
   };
 }
 
@@ -92,6 +120,13 @@ async function verify(cdp, scenario, emit, {timeoutMs=10000}={}) {
   assert.equal(actual.media.fine,scenario.pointer==='fine','TOUCH5133_PREREQUISITE: declared primary fine pointer');
   assert.equal(actual.touch,scenario.touch,'literal URL override, not fixture-only expectation');
   assert.equal(actual.padMode,scenario.mode,'actual config storage value');
+  if (actual.state.visible || actual.joystick.present) {
+    assert.equal(actual.joystick.present,true,'TOUCH5133_PREREQUISITE: visible state has actual HUD node');
+    assert.equal(actual.joystick.inViewport,true,'TOUCH5133_PREREQUISITE: HUD is within viewport and ancestor clip bounds');
+    assert.equal(actual.joystick.ancestryComplete,true,'TOUCH5133_PREREQUISITE: complete clipping ancestry');
+    assert.equal(actual.joystick.paintAllowed,true,'TOUCH5133_PREREQUISITE: HUD and ancestors permit painting');
+    assert.equal(actual.joystick.hitTarget,true,'TOUCH5133_PREREQUISITE: HUD center is not occluded');
+  }
   assert.equal(actual.state.visible,scenario.expected,'TOUCH5133_CONNECTED_DEFAULT_VISIBILITY');
   assert.equal(actual.joystick.present,scenario.expected,'actual HUD node presence');
   assert.equal(actual.joystick.visible,scenario.expected,'actual HUD geometry/visibility');
