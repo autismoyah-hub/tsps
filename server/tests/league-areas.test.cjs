@@ -1129,7 +1129,44 @@ test("same-coordinate teleport serial stops the queued run; legal running still 
   const legal = movingCharacter(t, "legal-run-control", 3240, 3220);
   legal.setRunning(true);
   const energy = legal.getRunEnergyUnits();
-  step(legal, 3243, 3220);
+  const movement = legal.getMovementQueue();
+  const xyz = location => location === null ? null : [location.getX(), location.getY(), location.getZ()];
+  const start = legal.getLocation().clone();
+  const edges = [[start, at(3241, 3220)], [at(3241, 3220), at(3242, 3220)]].map(([source, target]) => ({
+    source: xyz(source), target: xyz(target),
+    staticPass: core.RegionManager.canMovestart(source, target, legal.getSize(), legal.getSize(), legal.getPrivateArea()),
+    dynamicBlocked: core.World.isPlayerBlockingNpcOnTile(target, legal.getSize(), legal.getPrivateArea()),
+    staticAndDynamicPass: movement.canWalkTo(target, source),
+  }));
+  const prerequisites = {
+    start: xyz(start), health: legal.getHitpoints(), needsPlacement: legal.isNeedsPlacement(),
+    running: legal.isRunningReturn(), runToggled: movement.isRunToggled(), energyUnits: energy,
+    mobilityCanMove: movement.getMobility().canMove(), combinedCanWalkEast: movement.canWalk(1, 0), edges,
+  };
+  console.log("LEAGUE5386_LEGAL_RUN_PREREQUISITES", JSON.stringify(prerequisites));
+  assert.deepEqual(prerequisites.start, [3240, 3220, 0], "LEAGUE5386_LEGAL_RUN_PREREQUISITE: supplied start");
+  assert.ok(prerequisites.health > 0, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: living actor");
+  assert.equal(prerequisites.needsPlacement, false, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: no pending placement");
+  assert.equal(prerequisites.mobilityCanMove, true, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: mobility");
+  assert.equal(prerequisites.combinedCanWalkEast, true, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: combined first step");
+  for (const edge of edges) {
+    assert.equal(edge.staticPass, true, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: static edge");
+    assert.equal(edge.dynamicBlocked, false, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: dynamic edge");
+    assert.equal(edge.staticAndDynamicPass, true, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: static/dynamic edge");
+  }
+  movement.requestWalk(at(3243, 3220));
+  console.log("LEAGUE5386_LEGAL_RUN_ROUTE", JSON.stringify({
+    evaluated: movement.wasRouteEvaluated(), found: movement.hasRoute(), alternative: movement.usedAlternativeRoute(),
+    destination: xyz(movement.getDestination()), queue: movement.size(),
+  }));
+  movement.process();
+  console.log("LEAGUE5386_LEGAL_RUN_RESULT", JSON.stringify({
+    location: xyz(legal.getLocation()), needsPlacement: legal.isNeedsPlacement(), running: legal.isRunningReturn(),
+    runToggled: movement.isRunToggled(), walkingDirection: legal.getWalkingDirection().getId(),
+    runningDirection: legal.getRunningDirection().getId(), energyBefore: energy, energyAfter: legal.getRunEnergyUnits(),
+    evaluated: movement.wasRouteEvaluated(), found: movement.hasRoute(), alternative: movement.usedAlternativeRoute(),
+    destination: xyz(movement.getDestination()), queue: movement.size(),
+  }));
   assert.ok(legal.getLocation().equals(at(3242, 3220)));
   assert.notEqual(legal.getWalkingDirection(), Direction.NONE);
   assert.notEqual(legal.getRunningDirection(), Direction.NONE);
@@ -1239,6 +1276,20 @@ test("league correction retains an already owned private Area and does not regis
 test("real league two-step run stops at the sourced intra-square Misthalin edge", t => {
   const p = movingCharacter(t, "league-edge-run", 3265, 3260, "league");
   const movement = p.getMovementQueue();
+  const xyz = location => [location.getX(), location.getY(), location.getZ()];
+  const start = p.getLocation().clone();
+  const edges = [[start, at(3266, 3260)], [at(3266, 3260), at(3267, 3260)]].map(([source, target]) => ({
+    source: xyz(source), target: xyz(target),
+    staticPass: core.RegionManager.canMovestart(source, target, p.getSize(), p.getSize(), p.getPrivateArea()),
+    dynamicBlocked: core.World.isPlayerBlockingNpcOnTile(target, p.getSize(), p.getPrivateArea()),
+    staticAndDynamicPass: movement.canWalkTo(target, source),
+  }));
+  console.log("LEAGUE5386_EDGE_RUN_PREREQUISITES", JSON.stringify({
+    start: xyz(start), health: p.getHitpoints(), needsPlacement: p.isNeedsPlacement(),
+    running: p.isRunningReturn(), runToggled: movement.isRunToggled(), energyUnits: p.getRunEnergyUnits(),
+    mobilityCanMove: movement.getMobility().canMove(), combinedCanWalkEast: movement.canWalk(1, 0), edges,
+    league: p.getAttribute("league:type"), unlocked: p.getAttribute("league:areas"),
+  }));
   assert.equal(p.getAttribute("league:type"), 4, "LEAGUE5386_RUN_PREREQUISITE: type4");
   assert.deepEqual(p.getAttribute("league:areas"), [MISTHALIN, KARAMJA]);
   assert.equal(movement.canWalk(1, 0), true, "LEAGUE5386_RUN_PREREQUISITE: mobility/first static step");
