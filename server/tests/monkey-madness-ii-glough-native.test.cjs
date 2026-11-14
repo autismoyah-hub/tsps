@@ -341,7 +341,19 @@ test('Glough ordinary attacks traverse the three chambers and final real death a
   assert.equal(f.boss.hasFlag('combat:no-regen'), true);
   assert.equal(f.boss.getSize(), 2);
   adjacent(f); await attack(f);
-  until(() => quest.getStage(f.p) >= 165, 240, 'ordinary final damage reaches the actual delayed NPCDeathTask credit');
+  let reacquired = 0;
+  for (let turns = 0; turns < 240 && quest.getStage(f.p) < 165; turns++) {
+    // Canonical forced displacement marks placement, which can end the old
+    // attack. Drive the player's ordinary next Attack click; do not replace
+    // boss health/death, move the player, or invoke the quest credit helper.
+    if (f.boss.isRegistered() && f.boss.getHitpoints() > 0
+      && !f.p.isNeedsPlacement() && f.p.getCombat().getTarget() !== f.boss) {
+      await attack(f); reacquired++;
+    } else tick();
+  }
+  assert.ok(quest.getStage(f.p) >= 165,
+    `ordinary final damage reaches the actual delayed NPCDeathTask credit (reacquired=${reacquired}, bossHP=${f.boss.getHitpoints()}, ownerHP=${f.p.getHitpoints()})`);
+  t.diagnostic(`ordinary final-phase Attack reacquisitions: ${reacquired}`);
   await drain(f);
   assert.equal(quest.getStage(f.p), 170);
   assert.equal(f.p.getPrivateArea(), null); assert.equal(f.boss.isRegistered(), false);
