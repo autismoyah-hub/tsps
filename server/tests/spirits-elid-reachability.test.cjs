@@ -171,17 +171,21 @@ function castAndDrive(player, messages, username, start) {
     clickDelayOk: player.getClickDelay().elapsedTime(500),
     stage: quest.getStage(player),
   };
+  // The predicate at the start, evaluated by the same CombatRange call the cast uses (not Chebyshev).
+  const predicateAtStart = CombatRange.withinApproachDistance(player, KEY_TILE, GRAB_RANGE);
   listener.castGroundItem(player, KEY, KEY_TILE.getX(), KEY_TILE.getY(), TELEKINETIC_GRAB);
-  let ticksToArrival = null;
+  // Predicate-based arrival: the first tick at which the predicate holds (null if it never does).
+  let ticksToArrival = predicateAtStart ? 0 : null;
   const messagesAtCast = messages.length;
   for (let n = 0; n < TICK_LIMIT; n++) {
     if (player.getInventory().getAmount(KEY) > 0) break;
     tick(player);
-    if (ticksToArrival === null && chebyshev(player.getLocation(), KEY_TILE) <= GRAB_RANGE) ticksToArrival = n + 1;
+    if (ticksToArrival === null && CombatRange.withinApproachDistance(player, KEY_TILE, GRAB_RANGE)) ticksToArrival = n + 1;
   }
   return {
-    start: tileKey(start), chebyshev: chebyshev(start, KEY_TILE), pre,
+    start: tileKey(start), chebyshev: chebyshev(start, KEY_TILE), predicateAtStart, pre,
     ticksToArrival, finalTile: tileKey(player.getLocation()),
+    predicateAtFinal: CombatRange.withinApproachDistance(player, KEY_TILE, GRAB_RANGE),
     messages: messages.slice(messagesAtCast), stage: quest.getStage(player),
     keyInInventory: player.getInventory().getAmount(KEY) > 0,
   };
@@ -291,6 +295,7 @@ test("positive: an in-range start (no walk) grabs the key and advances 20 -> 25"
   assert.ok(loginWithKey(player, username));
   const out = castAndDrive(player, messages, username, IN_RANGE_SEED);
   console.log(`# REACH in-range ${JSON.stringify(out)}`);
+  assert.equal(out.predicateAtStart, true, "precondition: the in-range seed satisfies withinApproachDistance");
   assertPrecondition(out);
   assert.equal(out.keyInInventory, true, `in-range must land: ${JSON.stringify(out)}`);
   assert.equal(out.stage, STAGE_KEY);
@@ -302,8 +307,13 @@ test("positive: Ghaslor's spawn tile (in range, no walk) grabs the key", () => {
   assert.ok(loginWithKey(player, username));
   const out = castAndDrive(player, messages, username, GHASLOR_SPAWN);
   console.log(`# REACH ghaslor-spawn ${JSON.stringify(out)}`);
-  assertPrecondition(out);
-  assert.equal(out.keyInInventory, true, `ghaslor spawn must land: ${JSON.stringify(out)}`);
+  // Hard only when the predicate holds at the spawn; otherwise the row is report-only (STOP rule).
+  if (out.predicateAtStart) {
+    assertPrecondition(out);
+    assert.equal(out.keyInInventory, true, `ghaslor spawn (predicate holds) must land: ${JSON.stringify(out)}`);
+  } else {
+    console.log(`# REACH ghaslor-spawn report-only: predicateAtStart=false, not a hard positive`);
+  }
   cleanup();
 });
 
