@@ -679,6 +679,92 @@ test('encountering the Warrior cannot knock the owner through the unearned door'
     overhead:wire.rows.filter(row=>row.index===warrior.getIndex()&&row.typeId===warrior.getId()&&
       ['You will not pass!','Amitus! Setitii!'].includes(row.text))}));
   assert.ok(a.p.getLocation().getY()<9870,'the encounter cannot knock the owner through the locked door');
+  {
+    // Supplied initial position/stage and controlled lethal damage remain fixture inputs.
+    // The real mapped encounter's native death must earn this SAME actor's passage.
+    const player=a.p,area=player.getPrivateArea(),plane=player.getLocation().getZ();
+    const items=container=>structuredClone(container.getItems().map(item=>({id:item.getId(),amount:item.getAmount(),meta:item.getMeta()})));
+    const inventory=items(player.getInventory()),equipment=items(player.getEquipment());
+    const progress=()=>({stage:quest.getStage(player),killed:Number(player.getAttribute('temple-of-ikov:warrior-killed'))||0,
+      complete:quest.isComplete(player)});
+    const stageBefore=progress(),hpBefore=player.getHitpoints(),deathEvents=[],operated=[],deathTrace=[],doorTrace=[];
+    assert.equal(stageBefore.killed,0);assert.ok(stageBefore.stage<60);assert.equal(stageBefore.complete,false);
+    assert.equal(plane,0);assert.equal(warrior.getOwner(),player);assert.equal(warrior.getPrivateArea(),area);
+    assert.equal(warrior.getLocation().getZ(),plane);assert.equal(warrior.isRegistered(),true);
+    assert.equal(core.World.getNpcs().get(warrior.getIndex()),warrior);assert.ok(warrior.getHitpoints()>0);
+    const target={id:warrior.getId(),contentId:warrior.getContentId(player),index:warrior.getIndex(),at:where(warrior)};
+    const stable=(phase,allowDoorWalkOver=false)=>{
+      assert.equal(player.isRegistered(),true);assert.equal(player.isNeedsPlacement(),false);assert.ok(player.getHitpoints()>0);
+      assert.equal(player.getPrivateArea(),area);assert.equal(player.getLocation().getZ(),plane);
+      assert.deepEqual(items(player.getInventory()),inventory);assert.deepEqual(items(player.getEquipment()),equipment);
+      if(!allowDoorWalkOver)assert.equal(player.hasFlag('movement:ignore-clipping'),false);
+      return{phase,at:where(player),hp:player.getHitpoints(),registered:player.isRegistered(),placement:player.isNeedsPlacement(),
+        sameArea:player.getPrivateArea()===area,ignoreClipping:player.hasFlag('movement:ignore-clipping'),...progress()};
+    };
+    stable('before-controlled-hit');
+    const emitDeath=PM.emitNpcDeath,emitCustom=PM.emitCustomEvent;
+    t.mock.method(PM,'emitNpcDeath',function(event,...args){
+      const row=event.npc===warrior?{sameNpc:true,sameKiller:event.killer===player,ownerSame:event.npc.getOwner()===player,
+        id:event.npc.getId(),contentId:event.npcId,index:event.npc.getIndex(),at:where(event.npc),
+        registered:event.npc.isRegistered()&&core.World.getNpcs().get(event.npc.getIndex())===event.npc,
+        hp:event.npc.getHitpoints(),sameArea:event.npc.getPrivateArea()===area,before:progress()}:null;
+      if(row)deathEvents.push(row);
+      const result=Reflect.apply(emitDeath,this,[event,...args]);
+      if(row){row.after=progress();assert.equal(deathEvents.length,1);}
+      return result;
+    });
+    const hp=warrior.getHitpoints();warrior.getCombat().addDamage(player,hp);
+    warrior.getCombat().getHitQueue().addPendingDamage([new core.HitDamage(hp,core.HitMask.RED)]);
+    deathTrace.push(stable('death-before-turn'));
+    for(let i=0;i<24&&warrior.isRegistered();i++){turns();deathTrace.push(stable('death-turn-'+(i+1)));}
+    assert.equal(warrior.isRegistered(),false,'real NPCDeathTask removes the actual encounter; never force removal');
+    assert.equal(deathEvents.length,1);const death=deathEvents[0];
+    assert.equal(death.sameKiller,true);assert.equal(death.ownerSame,true);assert.equal(death.registered,true);
+    assert.equal(death.id,target.id);assert.equal(death.contentId,target.contentId);assert.equal(death.index,target.index);
+    assert.equal(death.at[2],plane);assert.equal(death.sameArea,true);assert.ok(death.hp<=0);
+    assert.deepEqual(death.before,stageBefore);assert.equal(death.after.killed,1);assert.equal(death.after.stage,60);
+    assert.equal(death.after.complete,false);assert.deepEqual(progress(),death.after);
+    assert.ok(player.getLocation().getY()<9870,'kill credit alone has not moved the actor through the door');
+    const door=object(93,2646,9870,player),doorDefinition=core.ObjectDefinition.forPlayer(door.getId(),player);
+    const doorTarget={id:door.getId(),definitionId:doorDefinition.id,at:where(door),type:door.getType(),face:door.getFace()};
+    assert.equal(door.getPrivateArea(),area);assert.equal(doorTarget.definitionId,93);
+    assert.deepEqual(doorTarget.at,[2646,9870,0]);assert.equal(doorTarget.type,0);assert.equal(doorTarget.face,1);
+    t.mock.method(PM,'emitCustomEvent',function(name,event,...args){
+      const row=name==='object:operated'&&event.player===player&&event.object===door?
+        {sameObject:true,id:event.objectId,option:event.option,location:{...event.location},at:where(player),progress:progress()}:null;
+      if(row)operated.push(row);
+      const result=Reflect.apply(emitCustom,this,[name,event,...args]);
+      if(row)assert.equal(operated.length,1);
+      return result;
+    });
+    const beforeObjects=a.objectEvents.length;
+    doorTrace.push(stable('before-earned-open'));
+    await a.input({type:'object_option',id:93,x:2646,y:9870,action:'Open',clickType:1},0);
+    // Ordinary Doors.walkOverGate owns its temporary clipping flag and queued crossing.
+    // Observe its eight existing operation turns; the test never writes that flag or route.
+    for(let i=1;i<=8;i++){turns();doorTrace.push(stable('earned-open-turn-'+i,true));}
+    const openEvents=a.objectEvents.slice(beforeObjects);
+    assert.equal(openEvents.length,1);assert.equal(openEvents[0].object,door);assert.equal(openEvents[0].definition.id,93);
+    assert.equal(openEvents[0].clickType,1);assert.equal(openEvents[0].option,'open');assert.equal(openEvents[0].handled,true);
+    assert.equal(operated.length,1);assert.equal(operated[0].sameObject,true);assert.equal(operated[0].id,93);
+    assert.equal(operated[0].option,'open');assert.deepEqual(operated[0].location,{x:2646,y:9870,z:0});
+    assert.equal(operated[0].progress.killed,1);
+    assert.ok(doorTrace.every(row=>row.at[0]===2646&&row.at[2]===plane),'ordinary Open stays on the actual door column and plane');
+    assert.ok(doorTrace.some((row,i)=>i>0&&doorTrace[i-1].at[1]===9870&&row.at[1]===9871),
+      'actual ordinary Open queues the real boundary step9870->9871 after the native kill');
+    stable('after-earned-open-flag-cleared');
+    const movement=[gateWitness('same-encounter-earned-continuation',a,'before-input')];
+    await a.input({type:'move',worldX:2646,worldY:9872,modifierFlags:0,run:false},0);
+    for(let i=1;i<=8;i++){turns();stable('earned-move-turn-'+i);movement.push(gateWitness('same-encounter-earned-continuation',a,i));}
+    assert.ok(movement.every(row=>row.registered&&!row.placement&&!row.ignoreClipping&&row.at[0]===2646&&row.at[2]===plane));
+    assert.ok(movement.some(row=>row.at[1]!==movement[0].at[1]),'decoded continuation has actual displacement');
+    assert.deepEqual(where(player),[2646,9872,0]);assert.equal(progress().killed,1);assert.equal(quest.getStage(player),60);
+    console.log('IKOV_WARRIOR_EARNED_PASSAGE',JSON.stringify({
+      scope:'supplied initial stage/position; controlled lethal hit -> actual encounter native death/kill credit -> ordinary Open boundary step -> decoded north continuation; not natural fight/accuracy/render/whole quest',
+      username:player.getUsername(),target,controlledDamage:hp,stageBefore,death,deathTrace,doorTarget,operated:operated[0],doorTrace,movement,
+      hpBefore,hpAfter:player.getHitpoints(),inventoryBefore:inventory,inventoryAfter:items(player.getInventory()),
+      equipmentBefore:equipment,equipmentAfter:items(player.getEquipment())}));
+  }
 });
 test('a character credited with the Warrior kill can cross the same door from its south approach',async t=>{
   restoreEncounterDoor(t);const a=actor(t,2646,9869,60);
