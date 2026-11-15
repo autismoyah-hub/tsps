@@ -395,3 +395,27 @@ test('M2 real cache objects around the Awowogei snake pit', () => {
   const pit = ObjectDefinition.forId(core.ObjectIdentifiers.PIT_3);
   console.log('MEASURE PIT_3', core.ObjectIdentifiers.PIT_3, pit?.getName?.(), JSON.stringify(pit?.getActions?.()));
 });
+
+test('M3 real plugin load: who claims Climb on the pit rope', () => {
+  PluginManager.loadFromDirectory(path.resolve(__dirname, '../plugins'));
+  const { MapObjects } = require('../dist/game/entity/impl/object/MapObjects');
+  const { ObjectDefinition } = require('../dist/game/definition/ObjectDefinition');
+  const L = core.Location;
+  const object = MapObjects.get(15571, new L(3023, 5488, 0), null);
+  console.log('MEASURE M3 object', !!object);
+  const named = PluginManager.objectHooksByName.get('Rope') ?? [];
+  console.log('MEASURE M3 Rope named hooks', JSON.stringify(named.map(h => ({ plugin: h.pluginName, order: h.order }))));
+  const generic = PluginManager.objectInteractionHooks.filter(h => h.handler.name === 'handleAwowogeiSnakePit');
+  console.log('MEASURE M3 RFD pit hook', JSON.stringify(generic.map(h => ({ plugin: h.pluginName, order: h.order }))));
+  const p = makePlayer();
+  p.attrs.set('recipe-for-disaster:awowogei-state', 8 | 64 | 1 | 2 | 4 | 16 | 32 | 128);
+  runtime.getRegisteredQuests().findLast(e => e.key === 'recipe_for_disaster').setStage(p, 4);
+  p.setLocation(3022, 5488, 0);
+  p.getPrivateArea = () => null;
+  const def = ObjectDefinition.forId(15571);
+  const event = { player: p, object, definition: def, objectId: 15571, clickType: 1, option: 'climb',
+    location: { x: 3023, y: 5488, z: 0 }, sourceLocation: { x: 3022, y: 5488, z: 0 }, handled: false };
+  let err = null;
+  try { PluginManager.emitObjectInteraction(event); } catch (e) { err = String(e).slice(0, 300); }
+  console.log('MEASURE M3 result', JSON.stringify({ handled: event.handled, moves: p.moves, prompt: p.prompt?.title ?? null, messages: p.messages, err }));
+});
