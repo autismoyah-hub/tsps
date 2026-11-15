@@ -50,10 +50,10 @@ test("league 5 is a league character with points in this harness", (t) => {
 
 const L5 = data.leagues["5"];
 L5.tiers.forEach((tier, tierIndex) => tier.relics.forEach((relic, slotIndex) => {
-  const granted = Unlock.grantedItems(relic);
-  if (granted.length === 0) return;
+  if (!relic.grants || relic.grants.length === 0) return;
   test(`league 5 ${relic.key} (tier ${tierIndex}, slot ${slotIndex + 1}) grants ${relic.grants.join(", ")}`, (t) => {
     const { p, messages } = leaguer(t);
+    const granted = Unlock.grantedItems(relic);
     const ok = Unlock.unlock(p, tierIndex, slotIndex + 1, { bankOpen: true });
     const inv = ids(p), bank = banked(p);
     const owedAfter = Collect.owed(p, 5);
