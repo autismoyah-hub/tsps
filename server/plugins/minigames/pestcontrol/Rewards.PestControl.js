@@ -16,6 +16,7 @@ const VOID_COMBAT_LEVEL = 42;
 const VOID_PRAYER_LEVEL = 22;
 
 let core = null;
+let pluginApi = null;
 
 function getPoints(player) {
   const points = Number(player?.getAttribute?.(POINTS_ATTRIBUTE));
@@ -112,8 +113,14 @@ function refusal(player, reward) {
   if (reward.stat !== undefined) {
     if (player.getAttribute(XP_LOCKED_ATTRIBUTE) === true)
       return "Unlock experience with ::lockxp before claiming an XP reward.";
-    if (skills.getMaxLevel(statSkill(reward.stat)) < SKILL_LEVEL)
+    const skill = statSkill(reward.stat);
+    if (skills.getMaxLevel(skill) < SKILL_LEVEL)
       return `The Void Knights will not offer training in skills for which you have a level under ${SKILL_LEVEL}.`;
+    // An XP gate (the Character Summary's combat-XP lock, a minigame's no-XP rule) would drop the
+    // gain after the points were spent.
+    const xp = xpPerPoint(reward.stat, skills.getMaxLevel(skill)) * reward.points * reward.bonus;
+    if (core.PluginManager.emitCanGainExperience(player, skill, xp).allow === false)
+      return "You can't gain experience in that skill right now.";
   } else if (reward.skill && skills.getCurrentLevel(Skill[reward.skill]) < SKILL_LEVEL) {
     return `You need level ${SKILL_LEVEL} ${Skill[reward.skill].getName()} to purchase that item.`;
   } else if (reward.voidItem && (skills.getMaxLevel(Skill.PRAYER) < VOID_PRAYER_LEVEL ||
@@ -151,7 +158,12 @@ function claimReward(player, option) {
     return false;
   }
   setPoints(player, getPoints(player) - reward.points);
-  for (const [id, amount] of items) inventory.adds(id, amount);
+  for (const [id, amount] of items) {
+    const before = inventory.getAmount(id);
+    inventory.adds(id, amount);
+    const credited = Math.max(0, inventory.getAmount(id) - before);
+    if (credited > 0) pluginApi.emitCustomEvent("collection-log:obtain", { player, itemId: id, amount: credited });
+  }
   return true;
 }
 
@@ -161,6 +173,7 @@ function confirmReward({ player, slot }) {
 }
 
 function initRewards(api) {
+  pluginApi = api;
   core = api.core;
 }
 

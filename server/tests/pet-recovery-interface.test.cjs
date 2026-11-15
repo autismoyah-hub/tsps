@@ -25,7 +25,14 @@ function open(f){PM.emitCustomEvent("npc-dialogue:action",{player:f.p,npc:f.npc,
 async function click(f,child,slot=0,op=1){await f.c.dispatch([{type:"widget_action",widgetId:(148<<16)|child,groupId:148,childId:child,slot,buttonNum:op}]);f.c.processTurnPackets();}
 const row=index=>6+5*index;
 test("Probita's native Check option opens the same recovery screen",async t=>{
-  const f=actor(t);await f.c.dispatch([{type:"npc_option",index:f.npc.getIndex(),clickType:3}]);f.c.processTurnPackets();f.p.getMovementQueue().process();core.TaskManager.process();core.TaskManager.process();assert.equal(f.p.getInterfaceId(),148);assert.equal(f.p.getInventory().getAmount(13247),0);
+  const f=actor(t),tasks=[];const emit=PM.emitCustomEvent.bind(PM);t.mock.method(PM,"emitCustomEvent",(name,event)=>{if(name==="diary:task")tasks.push(event);return emit(name,event);});
+  await f.c.dispatch([{type:"npc_option",index:f.npc.getIndex(),clickType:3}]);f.c.processTurnPackets();f.p.getMovementQueue().process();core.TaskManager.process();core.TaskManager.process();assert.equal(f.p.getInterfaceId(),148);assert.equal(f.p.getInventory().getAmount(13247),0);
+  assert.deepEqual(tasks.map(({diary,task})=>({diary,task})),[{diary:"ardougne",task:"check-what-pets-you-have-insured-with-probita-in"}]);
+});
+test("the public Probita dialogue action credits only after the recovery interface opens",t=>{
+  const f=actor(t),tasks=[];const emit=PM.emitCustomEvent.bind(PM);t.mock.method(PM,"emitCustomEvent",(name,event)=>{if(name==="diary:task")tasks.push(event);return emit(name,event);});
+  open(f);assert.equal(f.p.getInterfaceId(),148);assert.equal(tasks.length,1);
+  assert.equal(tasks[0].player,f.p);assert.equal(tasks[0].diary,"ardougne");assert.equal(tasks[0].task,"check-what-pets-you-have-insured-with-probita-in");
 });
 test("native Probita screen opens without reclaiming; one row and Confirm reclaim once for free",async t=>{
   const f=actor(t);open(f);assert.equal(f.p.getInterfaceId(),148);assert.equal(f.p.getInventory().getAmount(13247),0);
@@ -58,9 +65,9 @@ test("live family possession appearing between selection and Confirm prevents du
 });
 test("empty and cat-only ownership opens an empty screen without creating a cat",t=>{for(const owned of [[],[1555]]){const f=actor(t,owned);open(f);assert.equal(f.p.getInterfaceId(),148);assert.equal(f.p.getInventory().getValidItems().length,0);}});
 test("PIN guard prevents opening and its stale resume cannot reopen after leaving Probita",t=>{
-  const f=actor(t);let resume;const emit=PM.emitCustomEvent.bind(PM);
-  t.mock.method(PM,"emitCustomEvent",(name,r)=>{if(name==="bank-pin:guard"){r.locked=true;resume=r.resume;return;}return emit(name,r);});
-  open(f);assert.notEqual(f.p.getInterfaceId(),148);assert.equal(typeof resume,"function");f.p.setLocation(new core.Location(3000,3000,0));resume();assert.notEqual(f.p.getInterfaceId(),148);
+  const f=actor(t);let resume;const tasks=[],emit=PM.emitCustomEvent.bind(PM);
+  t.mock.method(PM,"emitCustomEvent",(name,r)=>{if(name==="bank-pin:guard"){r.locked=true;resume=r.resume;return;}if(name==="diary:task")tasks.push(r);return emit(name,r);});
+  open(f);assert.notEqual(f.p.getInterfaceId(),148);assert.equal(typeof resume,"function");assert.equal(tasks.length,0);f.p.setLocation(new core.Location(3000,3000,0));resume();assert.notEqual(f.p.getInterfaceId(),148);assert.equal(tasks.length,0);
 });
 test("the real Bank PIN service locks contents and resumes after native PIN submission",async t=>{
   const f=actor(t),pin=require("../plugins/interface/bankpin/Common.BankPin");
@@ -87,4 +94,20 @@ test("cache masks and location packs distinguish inventory, bank and active foll
   const pet=core.NPC.create(core.CacheDefinitions.getNpcId("snake_pet_green"),f.p.getLocation().clone());pet.setOwner(f.p);pet.setPet(true);core.World.getNpcs().add(pet);f.p.setAttribute("pets:current",pet);t.after(()=>core.World.getNpcs().remove(pet));
   open(f);const args=f.scripts.find(s=>s[0]===6126).slice(1);assert.equal(args.length,15);
   for(const [index,location]of [[22,2],[29,1],[15,3]]){assert.ok(args[Math.floor(index/31)]&(1<<(index%31)));assert.ok(args[3+Math.floor(index/31)]&(1<<(index%31)));assert.equal((args[6+Math.floor(index/8)]>>>((index%8)*4))&15,location);}
+});
+test("a pet an item-retrieval NPC keeps isn't reclaimed as a second one",async t=>{
+  const f=actor(t);let answer=true;
+  PM.createApi("PetInRetrieval").onCustomEvent("item-retrieval:items",r=>{if(answer&&r.player===f.p)r.items.push({itemId:13247,amount:1});});
+  t.after(()=>{answer=false;});
+  open(f);await click(f,11,row(22));await click(f,37);
+  assert.equal(f.p.getInventory().getAmount(13247),0,"not handed over while a retrieval NPC holds it");
+});
+test("a pet lying in its owner's grave or with Death isn't reclaimed as a second one",async t=>{
+  for(const place of ["grave","office"]){
+    const f=actor(t);let answer=true;
+    PM.createApi("PetInGrave"+place).onCustomEvent("gravestones:state",s=>{if(!answer||s.player!==f.p)return;if(place==="grave")s.grave={items:[{id:13247,amount:1}]};else s.office=[{id:13247,amount:1}];});
+    t.after(()=>{answer=false;});
+    open(f);await click(f,11,row(22));await click(f,37);
+    assert.equal(f.p.getInventory().getAmount(13247),0,place+": not handed over while it waits to be collected");
+  }
 });

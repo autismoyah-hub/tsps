@@ -16,7 +16,7 @@
  * - The loot itself was never seen. It follows the Wiki's chest table (data
  *   fractured-archive.json): three standard rolls (1/51 for five times as much) when no unique,
  *   and tertiaries.
- * Estimates: the unique chance and weights, the pet's rate, the unique chest's tile, a player
+ * Estimates: the unique chance and weights, the unique chest's tile, a player
  * opening only their own chest, the chest's item options (as the Tombs of Amascut's), and
  * leftovers going to the bank when a player leaves (the Wiki says the lobby's Loot Wheelbarrow
  * keeps them).
@@ -109,10 +109,7 @@ class VaultRoom extends Raid.Room {
 
   /** The reward chest: its items, with their options, and the loot's collection log entries once. */
   openChest(player, loot) {
-    if (!loot.logged) {
-      loot.logged = true;
-      for (const { id, amount } of loot.entries) Shared.api().emitCustomEvent("collection-log:obtain", { player, itemId: id, amount });
-    }
+    logLoot(player, loot);
     const sender = player.getPacketSender();
     this.sendChest(player, loot);
     sender.sendInterface(Shared.id("iface", "CHESTS"));
@@ -178,13 +175,10 @@ class VaultRoom extends Raid.Room {
   bankUnclaimed(player) {
     const loot = this.loot.get(player.getUsername());
     if (!loot) return;
-    if (!loot.logged) {
-      loot.logged = true;
-      for (const { id, amount } of loot.entries) Shared.api().emitCustomEvent("collection-log:obtain", { player, itemId: id, amount });
-    }
-    for (const entry of loot.entries) move(player, entry, entry.amount, "bank");
+    logLoot(player, loot);
+    const result = deliver(player, [...held(player), ...loot.entries]);
     this.loot.delete(player.getUsername());
-    player.sendMessage("Your unclaimed rewards from the Archive have been sent to your bank.");
+    player.sendMessage(deliveredMessage(result));
   }
 }
 
@@ -216,8 +210,7 @@ function rollLoot() {
   }
   for (const [name, oneIn] of LOOT.tertiary) if (Math.random() < 1 / oneIn) items.push([name, 1]);
   const [pet, petOneIn] = LOOT.pet;
-  if (Math.random() < 1 / petOneIn) items.push([pet, 1]);
-  return { unique, items };
+  return { unique, items, pet: Math.random() < 1 / petOneIn ? pet : null };
 }
 
 /** An item by its gameval name (or an ItemIdentifiers constant, for the elite clue). */
@@ -227,30 +220,133 @@ function itemId(name) {
   return named("obj", name);
 }
 
-/** A player's loot as chest entries (items by id). */
+/** A player's loot as chest entries (items by id), with the pet kept apart for the follower path. */
 function toEntries(loot) {
-  return { unique: loot.unique, entries: loot.items.map(([name, amount]) => ({ id: itemId(name), amount })), logged: false };
+  return {
+    unique: loot.unique,
+    entries: loot.items.map(([name, amount]) => ({ id: itemId(name), amount })),
+    pet: loot.pet ? itemId(loot.pet) : null,
+    logged: false,
+  };
+}
+
+/** The pet goes through Pets; if that consumer refuses or is absent, the item still reaches the player. */
+function awardPet(player, loot) {
+  if (!Number.isInteger(loot.pet)) return;
+  const request = { player, itemId: loot.pet, source: "fractured-archive" };
+  Shared.api().emitCustomEvent("pets:award", request);
+  if (request.awarded === true) {
+    loot.pet = null;
+    return;
+  }
+  // A refused award is the owned-pet "would have been followed" policy; a missing consumer is not.
+  const owns = { player, itemId: loot.pet, owns: false };
+  Shared.api().emitCustomEvent("pets:owns", owns);
+  if (owns.owns) {
+    loot.pet = null;
+    return;
+  }
+  giveItem(player, loot.pet, 1);
+  logItem(player, loot.pet, 1);
+  loot.pet = null;
+}
+
+/** Into the inventory, or on the floor under the player when it is full. */
+function giveItem(player, itemId, amount) {
+  const { Item, ItemOnGroundManager } = Shared.core();
+  if (player.getInventory().getFreeSlots() > 0) {
+    player.getInventory().adds(itemId, amount);
+    return;
+  }
+  ItemOnGroundManager.registerLocation(player, new Item(itemId, amount), player.getLocation().clone());
+}
+
+/** Log an item only when it was actually granted; a prior log entry is not incremented again. */
+function logItem(player, itemId, amount) {
+  const query = { player, itemId, count: 0 };
+  Shared.api().emitCustomEvent("collection-log:obtained", query);
+  if (!query.count) Shared.api().emitCustomEvent("collection-log:obtain", { player, itemId, amount });
+}
+
+/** Each chest entry reaches the log once, and the pet once through its own award path. */
+function logLoot(player, loot) {
+  awardPet(player, loot);
+  if (loot.logged) return;
+  loot.logged = true;
+  for (const { id, amount } of loot.entries) Shared.api().emitCustomEvent("collection-log:obtain", { player, itemId: id, amount });
 }
 
 /**
  * Up to `amount` of an entry into the inventory (bulky drops noted, as the other raids' chests
  * give them) or the bank (unnoted); how many moved.
  */
-function move(player, entry, amount, destination) {
+/** Unclaimed loot neither the bank nor the inventory could take, kept for the next login rather than deleted. */
+const HELD_ATTRIBUTE = "tfa:unclaimed-held";
+/** Not captured (inferred). */
+const MESSAGE_HELD = "Your bank couldn't hold all of your unclaimed rewards from the Archive; the rest will be given to you when you have space.";
+
+/**
+ * Banks what it can of `entries`, puts what's left in the inventory, and keeps the rest in HELD_ATTRIBUTE
+ * (saved with the player). Returns what is kept.
+ */
+function deliver(player, entries) {
+  const kept = [];
+  let carried = false;
+  for (const entry of entries) {
+    let left = entry.amount - move(player, entry, entry.amount, "bank", true);
+    if (left > 0) {
+      const moved = move(player, { ...entry, amount: left }, left, "inventory", true);
+      carried ||= moved > 0;
+      left -= moved;
+    }
+    if (left > 0) kept.push({ id: entry.id, amount: left });
+  }
+  player.setAttribute(HELD_ATTRIBUTE, kept.length > 0 ? kept : null);
+  return { kept, carried };
+}
+
+/** What became of the rewards (the inventory and held lines are not captured). */
+function deliveredMessage({ kept, carried }) {
+  if (kept.length > 0) return MESSAGE_HELD;
+  return carried
+    ? "Your bank couldn't hold all of your unclaimed rewards from the Archive; the rest are in your inventory."
+    : "Your unclaimed rewards from the Archive have been sent to your bank.";
+}
+
+function held(player) {
+  const value = player.getAttribute(HELD_ATTRIBUTE);
+  return Array.isArray(value) ? value : [];
+}
+
+/** Each login tries the held rewards again. */
+function deliverHeld({ player }) {
+  if (held(player).length === 0) return;
+  const result = deliver(player, held(player));
+  player.sendMessage(result.kept.length > 0
+    ? "You still have unclaimed rewards from the Archive waiting for bank or inventory space."
+    : deliveredMessage(result));
+}
+
+function move(player, entry, amount, destination, quiet = false) {
   const { Item, ItemDefinition, Bank } = Shared.core();
   const wanted = Math.max(0, Math.min(entry.amount, amount));
   if (wanted === 0) return 0;
   if (destination === "bank") {
-    player.getBank(Bank.getTabForItem(player, entry.id)).add(new Item(entry.id, wanted), false);
-    return wanted;
+    const bank = player.getBank(Bank.getTabForItem(player, entry.id));
+    const banked = bank.getAddableAmount(new Item(entry.id, wanted));
+    if (banked <= 0) {
+      if (!quiet) player.sendMessage("You need more space in your bank.");
+      return 0;
+    }
+    bank.add(new Item(entry.id, banked), false);
+    return banked;
   }
   const inventory = player.getInventory();
   const definition = ItemDefinition.forId(entry.id);
   const id = !definition.isStackable() && wanted > 1 && definition.getNoteId() >= 0 ? definition.getNoteId() : entry.id;
-  const stackable = ItemDefinition.forId(id).isStackable();
-  const moved = stackable ? (inventory.contains(id) || inventory.getFreeSlots() > 0 ? wanted : 0) : Math.min(wanted, inventory.getFreeSlots());
+  const moved = inventory.getAddableAmount(new Item(id, wanted));
   if (moved <= 0) {
-    player.sendMessage("You don't have enough inventory space.");
+    if (!quiet) player.sendMessage("You don't have enough inventory space.");
     return 0;
   }
   inventory.add(new Item(id, moved), false);
@@ -329,6 +425,8 @@ module.exports = function registerVault(api) {
   api.onNpcInteraction("<col=00ffff>Rift</col>", { Search: searchChest, Leave: leaveVault, "Quick-leave": leaveVault });
   api.onObjectInteraction("Merit scroll", { Read: readMerits });
   api.onInterfaceActionClick(chestClick);
+  api.persistAttribute(HELD_ATTRIBUTE, null);
+  api.onPlayerLogin(deliverHeld);
 };
 
-Object.assign(module.exports, { VaultRoom, LAYOUT, rollLoot });
+Object.assign(module.exports, { VaultRoom, LAYOUT, rollLoot, toEntries, awardPet, logLoot, HELD_ATTRIBUTE, deliverHeld });

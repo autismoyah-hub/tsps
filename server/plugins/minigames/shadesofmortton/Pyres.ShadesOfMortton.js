@@ -6,7 +6,8 @@
  * - Light: "You attempt to light the funeral pyre."; 3 ticks on the fire, the Prayer and
  *   Firemaking experience; 2 ticks later the Shade Spirit rises; 4 ticks after that the reward on
  *   the stone stand (private, gone after 500 ticks) with a puff of smoke, and the pyre is empty;
- * - Wiki: the Firemaking level each wood needs and gives, the wood each remains needs, 21% coins or
+ * - Wiki: the Prayer experience by remains and wood, +50% Prayer (Morytania Hard) and +50% Firemaking
+ *   (Morytania Elite), the Firemaking level each wood needs and gives, the wood each remains needs, 21% coins or
  *   else a key (the remains decide which).
  * The quest (quests/quests/ShadesOfMortton.Quest.js) hears "shades-of-mortton:pyre-logs" and
  * "shades-of-mortton:cremated" for its stages.
@@ -18,6 +19,11 @@ const TINDERBOX = "tinderbox";
 const EMPTY_PYRE = "temple_pyre";
 /** Each pyre in use: its tile key -> the player and what is on it. */
 const pyres = new Map();
+/**
+ * How far a burner may go from an unlit pyre (ours: Mort'ton's streets and the temple, but not the catacombs, a
+ * respawn point or a teleport's end) before it is given up.
+ */
+const LEFT_DISTANCE = 64;
 
 const p = () => Common.data.pyres;
 const tileKey = (object) => `${object.getLocation().getX()},${object.getLocation().getY()},${object.getLocation().getZ()}`;
@@ -44,6 +50,13 @@ function remainsOf(itemId) {
     if (Common.objId(name) === itemId) return { name, ...remains, itemId };
   }
   return null;
+}
+
+/** Morytania diary tier done (Hard: Prayer +50%, Elite: Firemaking +50% from cremating; Wiki). */
+function diaryDone(player, tier) {
+  const request = { player, diary: "morytania", tier, complete: false };
+  Common.api.emitCustomEvent("diary:is-complete", request);
+  return request.complete === true;
 }
 
 function questStage(player) {
@@ -83,8 +96,31 @@ function putLogs(player, object, wood) {
   player.getInventory().refreshItems?.();
   player.performAnimation?.(new Common.core.Animation(p().anims.place));
   player.sendMessage(Common.message("logsOn"));
-  pyres.set(tileKey(object), { player, wood, remains: null, burning: false, object: swap(object, wood.pyre) });
+  const use = { player, wood, remains: null, burning: false, object: swap(object, wood.pyre) };
+  pyres.set(tileKey(object), use);
+  watchUnlit(tileKey(object), use);
   Common.api.emitCustomEvent("shades-of-mortton:pyre-logs", { player });
+}
+
+function awayFrom(player, location) {
+  if (player.isRegistered?.() === false) return true;
+  const at = player.getLocation?.();
+  return !at || at.getZ() !== location.getZ() || at.getDistance(location) > LEFT_DISTANCE;
+}
+
+/**
+ * An unlit pyre whose burner has gone (died, teleported or walked off) is emptied for the next player, as on
+ * logout (forget): its logs and remains are lost, as unlit remains despawn (Wiki: Funeral Pyre). A lit one
+ * finishes its burn on its own.
+ */
+function watchUnlit(key, use) {
+  Common.every(() => {
+    if (pyres.get(key) !== use || use.burning) return false;
+    if (!awayFrom(use.player, use.object.getLocation())) return true;
+    pyres.delete(key);
+    swap(use.object, Common.locId(EMPTY_PYRE));
+    return false;
+  });
 }
 
 function putRemains(player, object, remains) {
@@ -202,11 +238,20 @@ function light({ player, object }) {
   // Each step is this burn's own: a pyre given up on logout is no longer it.
   const key = tileKey(object);
   const current = () => pyres.get(key) === use;
+  // Paid once: at the fire, or when the burner leaves before it (forget).
+  use.payExperience = () => {
+    if (use.experienced) return;
+    use.experienced = true;
+    // The experience is added in tenths (the skill manager drops the rest).
+    const prayer = remains.prayer[wood.wood] * (diaryDone(player, "hard") ? p().diaryBonus : 1);
+    const firemaking = wood.xp * (diaryDone(player, "elite") ? p().diaryBonus : 1);
+    skills.addExperience(Common.core.Skill.PRAYER, prayer);
+    skills.addExperience(Common.core.Skill.FIREMAKING, firemaking);
+  };
   Common.later(p().fireTicks, () => {
     if (!current()) return;
     graphicAt(p().graphics.fire, at, nearbyPlayers(at));
-    skills.addExperience(Common.core.Skill.PRAYER, remains.prayer);
-    skills.addExperience(Common.core.Skill.FIREMAKING, wood.xp);
+    use.payExperience();
   });
   Common.later(p().fireTicks + p().spiritTicks, () => {
     if (!current()) return;
@@ -219,22 +264,33 @@ function light({ player, object }) {
     if (!current()) return;
     const stand = standNear(object);
     const reward = rewardFor(remains);
-    // Recorded: the burner's alone, never public.
-    Common.core.ItemOnGroundManager.registerNonGlobals(player, new Common.core.Item(reward.id, reward.amount), stand);
+    // Cremation rewards remain private to the burner for five minutes (500 game cycles).
+    Common.core.ItemOnGroundManager.registerLocation(player, new Common.core.Item(reward.id, reward.amount),
+      stand, player.getPrivateArea(), { goesGlobal: false, despawnDelay: p().rewardDespawnTicks });
     graphicAt(p().graphics.smoke, stand, nearbyPlayers(stand));
     pyres.delete(key);
     swap(object, Common.locId(EMPTY_PYRE));
-    Common.api.emitCustomEvent("shades-of-mortton:cremated", { player, remains: remains.itemId, reward });
+    Common.api.emitCustomEvent("shades-of-mortton:cremated", { player, remains: remains.itemId, wood: use.wood.wood, reward });
   });
   return true;
 }
 
-/** A pyre its burner leaves is emptied for the next player. */
+/**
+ * A pyre its burner leaves is emptied for the next player. An unlit one's logs and remains are lost, as unlit
+ * remains despawn (Wiki: Funeral Pyre). A lit one has already used them, so its burn is finished at once: the
+ * experience if not yet paid, the reward into the pack, and the cremation for the quest and diary (logout saves
+ * after this hook).
+ */
 function forget({ player }) {
   for (const [key, use] of pyres) {
     if (use.player !== player) continue;
     pyres.delete(key);
     swap(use.object, Common.locId(EMPTY_PYRE));
+    if (!use.burning || !use.remains) continue;
+    use.payExperience?.();
+    const reward = rewardFor(use.remains);
+    player.getInventory().forceAdd(player, new Common.core.Item(reward.id, reward.amount));
+    Common.api.emitCustomEvent("shades-of-mortton:cremated", { player, remains: use.remains.itemId, wood: use.wood.wood, reward });
   }
 }
 

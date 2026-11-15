@@ -15,12 +15,13 @@ const { TaskManager } = require('../dist/game/task/TaskManager');
 const { Location } = require('../dist/game/model/Location');
 
 let Common, Run, hooks;
+const collectionObtains = [];
 
 /** Whether the test player has done Sins of the Father (the Sepulchre's quest). */
 let questDone = true;
 
-before(() => {
-  CachePipeline.initialize();
+before(async () => {
+  await CachePipeline.initialize();
   RegionManager.init();
   hooks = { objects: new Map(), npcs: new Map(), items: {}, login: [], prompts: [], spawned: [], removed: [] };
   const key = (ids, click) => (Array.isArray(ids) ? ids : [ids]).map((id) => `${id}:${click}`);
@@ -36,6 +37,7 @@ before(() => {
     sendMultiChatboxPrompt: (player, title, ...args) => hooks.prompts.push({ player, title, args }),
     emitCustomEvent: (name, request) => {
       if (name === 'quest:is-complete' && request.key === 'sins_of_the_father') request.complete = questDone;
+      if (name === 'collection-log:obtain') collectionObtains.push(request);
     },
     spawnNpc: ({ id, x, y, z }) => fakeNpc(id, new Location(x, y, z)),
     removeNpc: (npc) => { npc.registered = false; hooks.removed.push(npc); },
@@ -49,6 +51,7 @@ let random;
 beforeEach(() => {
   random = Math.random;
   hooks.prompts.length = 0;
+  collectionObtains.length = 0;
 });
 
 /** A trap NPC: where it is, its glides and seqs. */
@@ -80,7 +83,8 @@ function container() {
 }
 
 function fakePlayer({ agility = 99, thieving = 99, ring = null } = {}) {
-  const attributes = new Map();
+  // A fake can't be snapshotted; a real reward's save request (e.g. a new Collection Log item) skips it, as for bots.
+  const attributes = new Map([['bot-skip-persistence', true]]);
   const p = {
     location: new Location(2387, 5982, 0), area: null, messages: [], spam: [], boxes: [], anims: [], graphics: [],
     varbits: new Map(), scripts: [], subs: [], xp: {}, songs: [], forced: [], registered: true,
@@ -101,9 +105,17 @@ function fakePlayer({ agility = 99, thieving = 99, ring = null } = {}) {
     sendMessage: (m) => p.messages.push(m),
     performAnimation: (a) => p.anims.push(a.getId()),
     performGraphic: (g) => p.graphics.push(g.getId()),
-    setRunEnergy() {},
+    energy: 30, energySent: [],
+    setRunEnergy(value) { p.energy = value; },
     hits: [], decrements: [], blocked: false,
-    getMovementQueue: () => ({ reset() {}, setBlockMovement(v) { p.blocked = v; } }),
+    dying: false,
+    isDyingReturn: () => p.dying,
+    blockGeneration: 0,
+    getMovementQueue: () => ({
+      reset() {},
+      setBlockMovement(v) { p.blocked = v; p.blockGeneration++; },
+      getBlockMovementGeneration: () => p.blockGeneration,
+    }),
     getCombat: () => ({ reset() {} }),
     decrementHealth: (hit) => { p.decrements.push(hit.getDamage()); return hit; },
     addTickHit: (hit) => p.hits.push(hit.getDamage()),
@@ -117,16 +129,34 @@ function fakePlayer({ agility = 99, thieving = 99, ring = null } = {}) {
     getPacketSender() {
       const sender = {
         sendVarbit: (id, value) => { p.varbits.set(id, value); return sender; },
+        sendConfig: (id, value) => { (p.varps ??= new Map()).set(id, value | 0); return sender; },
+        getVarp: (id) => p.varps?.get(id) ?? 0,
         sendClientScript: (id, ...args) => { p.scripts.push([id, ...args]); return sender; },
-        sendSubInterface: (uid, id) => { p.subs.push(id); return sender; },
-        closeSubInterface: (uid) => { p.subs.push(-uid); return sender; },
+        // Mounts tracked by target as PacketSender does, so a stale owner can't close a replacement.
+        mountSubInterface: (uid, id, type = 1) => {
+          const mount = Object.freeze({ targetUid: uid, groupId: id, type });
+          (p.mounts ??= new Map()).set(uid, mount);
+          p.subs.push(id);
+          return mount;
+        },
+        sendSubInterface: (uid, id, type) => { sender.mountSubInterface(uid, id, type); return sender; },
+        getSubInterfaceAt: (uid) => p.mounts?.get(uid),
+        closeSubInterface: (uid) => { p.mounts?.delete(uid); p.subs.push(-uid); return sender; },
+        closeSubInterfaceMount: (mount) => {
+          if (p.mounts?.get(mount.targetUid) !== mount) return false;
+          sender.closeSubInterface(mount.targetUid);
+          return true;
+        },
         sendTypedMessage: (type, text) => { p.spam.push(text); return sender; },
         sendSong: (id) => { p.songs.push(id); return sender; },
         sendJingle: () => sender,
         sendSound: () => sender,
+        sendSoundEffect: () => sender,
+        sendInterfaceScript: () => sender,
         sendObjectAnimation: (object, anim) => { (p.locAnims ??= []).push([object.getId(), anim.getId()]); return sender; },
         sendGraphic: (graphic, location) => { (p.tileGraphics ??= []).push([graphic.id, location]); return sender; },
         sendInterfaceRemoval: () => sender,
+        sendRunEnergy: () => { p.energySent.push(p.energy); return sender; },
       };
       return sender;
     },
@@ -189,6 +219,147 @@ test('the stairs: the Stranger first, then the recorded warning box and its menu
   assert.equal(varbit(p, 'hallowed_entry_check'), 1, "don't ask again is saved");
   assert.ok(Run.runOf(p));
   Run.runOf(p).finish();
+});
+
+/** Per tick from now: [tick, what changed] for the fade subs and the player's tile. */
+function timeline(p, count) {
+  const events = [];
+  let subs = p.subs.length;
+  let at = p.location;
+  for (let t = 1; t <= count; t++) {
+    ticks(1);
+    for (const sub of p.subs.slice(subs)) events.push([t, sub < 0 ? 'close' : 'fade']);
+    subs = p.subs.length;
+    if (p.location !== at) events.push([t, `${p.location.getX()},${p.location.getY()},${p.location.getZ()}`]);
+    at = p.location;
+  }
+  return events;
+}
+
+test('the Mausoleum Door in Darkmeyer: +2 fade, +4 into the lobby, +5 fade in, +7 closed (rsprox.net 3050)', () => {
+  const p = fakePlayer();
+  p.location = new Location(3654, 3385, 0);
+  assert.equal(click(p, Common.data.mausoleum.door, 1), true);
+  assert.equal(p.blocked, true, 'held in place while it plays');
+  assert.equal(click(p, Common.data.mausoleum.door, 1), true, 'a second click is swallowed');
+  const events = timeline(p, 8);
+  const fade = Common.data.interfaces.fade;
+  assert.equal(p.subs.filter((id) => id === fade).length, 2, 'one fade out and one in, not one per click');
+  assert.deepEqual(events, [[2, 'fade'], [4, '2400,5969,0'], [5, 'fade'], [7, 'close']]);
+  assert.equal(p.blocked, false);
+  assert.equal(Run.runOf(p), null, 'the door only reaches the lobby; the stairs down start a run');
+});
+
+test("the lobby's stairs up: +2 fade, +4 out by the Mausoleum Door, +6 fade in, +8 closed (rsprox.net 3050)", () => {
+  const p = fakePlayer();
+  p.location = new Location(2400, 5970, 0);
+  assert.equal(click(p, Common.data.mausoleum.stairs, 1), true);
+  assert.deepEqual(timeline(p, 9), [[2, 'fade'], [4, '3654,3384,0'], [6, 'fade'], [8, 'close']]);
+});
+
+test('teleporting away before the Mausoleum Door moves you leaves you there, the fade cleared', () => {
+  const p = fakePlayer();
+  p.location = new Location(3654, 3385, 0);
+  click(p, Common.data.mausoleum.door, 1);
+  ticks(3);
+  // As TeleportHandler: it holds movement itself and gives it back as it lands.
+  p.getMovementQueue().setBlockMovement(true);
+  p.location = new Location(3222, 3218, 0);
+  p.getMovementQueue().setBlockMovement(false);
+  const events = timeline(p, 6);
+  assert.equal(p.location.getX(), 3222, 'not pulled into the lobby');
+  assert.deepEqual(events, [[1, 'close']]);
+  assert.equal(p.blocked, false);
+});
+
+test('a player who dies while the Mausoleum Door fades is not moved, and the death keeps its hold', () => {
+  const p = fakePlayer();
+  p.location = new Location(3654, 3385, 0);
+  click(p, Common.data.mausoleum.door, 1);
+  ticks(3);
+  p.dying = true;
+  p.getMovementQueue().setBlockMovement(true); // as PlayerDeath
+  const events = timeline(p, 6);
+  assert.equal(p.location.getX(), 3654, 'the death is processed where they fell');
+  assert.deepEqual(events, [[1, 'close']]);
+  assert.equal(p.blocked, true, 'PlayerDeath releases its own hold');
+});
+
+test('moved away by something that leaves the hold alone (a ::tele) gives the hold back', () => {
+  const p = fakePlayer();
+  p.location = new Location(3654, 3385, 0);
+  click(p, Common.data.mausoleum.door, 1);
+  ticks(2);
+  p.location = new Location(3650, 3380, 0);
+  ticks(6);
+  assert.equal(p.blocked, false, 'free to walk where they landed');
+  assert.equal(p.location.getX(), 3650);
+});
+
+test("a newer movement hold after a teleport away isn't released by the abandoned passage", () => {
+  const p = fakePlayer();
+  p.location = new Location(3654, 3385, 0);
+  click(p, Common.data.mausoleum.door, 1);
+  ticks(2);
+  p.location = new Location(3222, 3218, 0);
+  p.getMovementQueue().setBlockMovement(true); // a cutscene's controls(player, true) where they landed
+  ticks(6);
+  assert.equal(p.blocked, true);
+  assert.equal(p.location.getX(), 3222);
+});
+
+test('walking off as the stairs land still plays the fade in and its close', () => {
+  const p = fakePlayer();
+  p.location = new Location(2400, 5970, 0);
+  click(p, Common.data.mausoleum.stairs, 1);
+  ticks(4);
+  p.location = new Location(3656, 3382, 0); // a run step from the landing
+  assert.deepEqual(timeline(p, 5), [[2, 'fade'], [4, 'close']]);
+});
+
+test('teleported away after landing: the fade out closes and nothing follows', () => {
+  const p = fakePlayer();
+  p.location = new Location(2400, 5970, 0);
+  click(p, Common.data.mausoleum.stairs, 1);
+  ticks(4);
+  p.location = new Location(3222, 3218, 0);
+  assert.deepEqual(timeline(p, 5), [[1, 'close']]);
+});
+
+test("a fade or overlay opened over the passage's after landing is neither overwritten nor closed", () => {
+  const fade = Common.data.interfaces.fade;
+  for (const at of [Common.data.mausoleum.moveAt, Common.data.mausoleum.doorFadeInAt]) {
+    const p = fakePlayer();
+    p.location = new Location(3654, 3385, 0);
+    click(p, Common.data.mausoleum.door, 1);
+    ticks(at);
+    const other = p.getPacketSender().mountSubInterface((161 << 16) | 1, fade, 1);
+    const subs = p.subs.length;
+    ticks(6);
+    assert.deepEqual(p.subs.slice(subs), [], `nothing sent over the replacement (opened at +${at})`);
+    assert.equal(p.mounts.get((161 << 16) | 1), other);
+  }
+});
+
+test('logging out mid-passage cancels it with the player\'s tasks', () => {
+  const p = fakePlayer();
+  p.location = new Location(3654, 3385, 0);
+  click(p, Common.data.mausoleum.door, 1);
+  ticks(1);
+  TaskManager.cancelTasks(p);
+  ticks(8);
+  assert.equal(p.location.getX(), 3654, 'not moved after the cancel');
+  assert.equal(p.blocked, false);
+  assert.equal(click(p, Common.data.mausoleum.door, 1), true, 'the door works again');
+  ticks(8);
+  assert.equal(p.location.getX(), 2400);
+});
+
+test("the lobby's stairs up are not this plugin's while a run is on", () => {
+  const p = startRun(fakePlayer());
+  const player = p.player;
+  assert.equal(click(player, Common.data.mausoleum.stairs, 1), false);
+  p.finish();
 });
 
 test('without Sins of the Father neither the stairs nor a shard lets you in', () => {
@@ -266,6 +437,50 @@ test('a drop: the jump-down, the landing a plane lower the next tick, 25 Agility
   run.finish();
 });
 
+test('run energy does not recover while a Sepulchre Agility obstacle plays, and does again after (Wiki: Energy)', () => {
+  const ObstacleRunner = require('../plugins/skills/agility/ObstacleRunner.Agility');
+  const { World } = Common.core;
+  const cycle = World.processCycle;
+  try {
+    const p = fakePlayer();
+    const run = startRun(p, 0);
+    const crossing = () => ObstacleRunner.isCrossingAgilityObstacle(p, World.getProcessCycle());
+    assert.equal(crossing(), false);
+    // The drop takes 3 ticks (the jump, the landing, the XP).
+    click(p, 38462, 1, locOf(run, 38462, [2281, 5988, 2]));
+    for (let i = 0; i < 3; i++) {
+      assert.equal(crossing(), true, `tick ${i} of the drop`);
+      World.processCycle++;
+      ticks(1);
+    }
+    assert.equal(crossing(), false, 'over once the drop has played');
+    run.finish();
+  } finally {
+    World.processCycle = cycle;
+  }
+});
+
+test('a run that ends mid-drop (a teleport) stops holding run energy at once', () => {
+  const ObstacleRunner = require('../plugins/skills/agility/ObstacleRunner.Agility');
+  const { World } = Common.core;
+  const cycle = World.processCycle;
+  try {
+    const p = fakePlayer();
+    const run = startRun(p, 0);
+    const crossing = () => ObstacleRunner.isCrossingAgilityObstacle(p, World.getProcessCycle());
+    click(p, 38462, 1, locOf(run, 38462, [2281, 5988, 2]));
+    assert.equal(crossing(), true, 'the drop is being crossed');
+    run.finish();
+    for (let i = 0; i < 4; i++) {
+      assert.equal(crossing(), false, `cycle ${i} after the run ended`);
+      World.processCycle++;
+      ticks(1);
+    }
+  } finally {
+    World.processCycle = cycle;
+  }
+});
+
 test('a platform: two hops two ticks apart, the line and the timer stopped; back is refused', () => {
   const p = fakePlayer();
   const run = startRun(p, 0);
@@ -309,6 +524,18 @@ test('the floor stairs: the completion, time and PB lines, the XP, and floor 2 w
   run.finish();
 });
 
+test('the obelisk: Activate restores full energy and sends it to the orb', () => {
+  const p = fakePlayer();
+  const run = startRun(p, 0);
+  run.pause();
+  click(p, 38451, 1, locOf(run, 38451, [2277, 5982, 1]));
+  ticks(3);
+  assert.equal(p.energy, 100);
+  assert.deepEqual(p.energySent, [100], 'the full orb is sent; the tick only sends below full');
+  assert.match(p.messages.at(-1), /fully restores your energy/);
+  run.finish();
+});
+
 test('the obelisk: Exit asks, credits a finished floor and resets to the lobby', () => {
   const p = fakePlayer();
   const run = startRun(p, 0);
@@ -339,6 +566,8 @@ test('a coffin: the picklock, the disarm with Thieving XP, the lid, then the Wik
   ticks(2);
   Math.random = random;
   assert.equal(p.inventory.getAmount(24711), 1, 'floor 1: one Hallowed mark');
+  assert.ok(collectionObtains.some((event) => event.player === p && event.itemId === 24711 && event.amount === 1),
+    'the mark is credited to the collection log');
   assert.ok(p.messages.includes('<col=005f00>Tester received a drop: Hallowed mark</col>'));
   assert.equal(varbit(p, 'hallowed_current_floor_looted'), 1);
   click(p, 39544, 1, coffin);
@@ -569,23 +798,25 @@ test('fire: standing in a blast on its first tick is a hit; then the death, the 
   ticks(2);
   assert.equal(p.anims.at(-1), Common.seq('human_death'));
   ticks(2);
-  assert.deepEqual(run.area.templateOf(p.getLocation()), [2282, 6000, 2], 'recorded respawn (1862 T19070)');
+  assert.deepEqual(run.area.templateOf(p.getLocation()), [2282, 6000, 2], 'recorded respawn (1862 T19074, hit T19070)');
   run.finish();
 });
 
-test('the Hallowed ring negates trap damage but still sends the player back to the checkpoint', () => {
+test('the Hallowed ring negates damage and skips normal recovery at the checkpoint', () => {
   for (const ring of [Common.core.ItemIdentifiers.HALLOWED_RING, Common.core.ItemIdentifiers.HALLOWED_RING_2]) {
     const { p, run } = trapFloor(1, 0, [2282, 5992, 2], ring);
-    trapsTo(run, 3);
-    Traps.tick(run);
-    assert.equal(p.decrements.length, 0, `no damage with ring ${ring}`);
-    assert.equal(p.hits.length, 0, `no hitsplat with ring ${ring}`);
-    assert.equal(run.traps.recovering, true, 'the hit still plays out');
-    ticks(2);
-    assert.equal(p.anims.at(-1), Common.seq('human_death'));
-    ticks(2);
-    assert.deepEqual(run.area.templateOf(p.getLocation()), [2282, 6000, 2], 'still back at the checkpoint');
-    run.finish();
+    try {
+      trapsTo(run, 3);
+      Traps.tick(run);
+      assert.equal(p.decrements.length, 0, `no damage with ring ${ring}`);
+      assert.equal(p.hits.length, 0, `no hitsplat with ring ${ring}`);
+      assert.deepEqual(run.area.templateOf(p.getLocation()), [2282, 6000, 2], 'returns to the modeled checkpoint');
+      assert.equal(run.traps.recovering, false, 'the ordinary recovery hold is skipped');
+      assert.equal(p.blocked, false, 'movement is available without a separate stun');
+      assert.ok(!p.anims.includes(Common.seq('human_death')), 'the normal death animation is skipped');
+    } finally {
+      run.finish();
+    }
   }
 });
 
@@ -641,6 +872,30 @@ test('lightning: the recorded floor 4 patch in front of (2496,5837) and a 2-tick
   run.finish();
 });
 
+test('a ring recovery does not clear an independently active lightning stun', () => {
+  const { p, run } = trapFloor(4, 0, [2502, 5838, 2], Common.core.ItemIdentifiers.HALLOWED_RING);
+  try {
+    const statue = run.traps.lightning.find((l) => l.at.join() === '2496,5837,2');
+    assert.ok(statue, 'the cache-backed lightning producer exists');
+    trapsTo(run, statue.start + 2);
+    assert.equal(run.traps.stunned, true, 'the actual lightning producer stuns');
+    assert.equal(p.blocked, true);
+    const stunAnimation = p.anims.at(-1);
+    // Model a coincident environmental hit at the shared pending-hit consumer.
+    run.traps.pendingHit = [1, [2502, 5838, 2]];
+    Traps.tick(run);
+    assert.equal(run.traps.recovering, false, 'ring recovery completes');
+    assert.equal(run.traps.stunned, true, 'the independent stun remains active');
+    assert.equal(p.blocked, true, 'the independent stun still blocks movement');
+    assert.equal(p.anims.at(-1), stunAnimation, 'the stun animation is not reset');
+    for (let i = 0; i < Common.data.traps.lightning.stunTicks + 1; i++) TaskManager.process();
+    assert.equal(run.traps.stunned, false, 'the real scheduled stun release runs');
+    assert.equal(p.blocked, false, 'movement releases after the independent stun');
+  } finally {
+    run.finish();
+  }
+});
+
 test('pads: a forward pad pushes the player on the way they were going, a backward one back', () => {
   const { p, run } = trapFloor(2, 0, [2532, 5984, 2]);
   const pad = run.traps.pads.find((x) => x.forward);
@@ -665,6 +920,41 @@ test('pads: a forward pad pushes the player on the way they were going, a backwa
   }
   Math.random = random;
   assert.fail('no direction let the pad push');
+});
+
+// Wiki (Strange Tile): "temporarily immune to attacks for a few seconds after being teleported" (5 ticks assumed).
+test('pads: after a push the player is immune to trap hits for 5 ticks', () => {
+  const { p, run } = trapFloor(2, 0, [2532, 5984, 2]);
+  const pad = run.traps.pads.find((x) => x.forward);
+  run.traps.lastMove = [0, 0];
+  const random = Math.random;
+  Math.random = () => 0.99;
+  try {
+    let pushed = false;
+    for (const [dx, dy] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+      run.traps.prev = [pad.tile[0] - dx, pad.tile[1] - dy, pad.tile[2]];
+      p.moveTo(run.area.at(pad.tile));
+      run.traps.pendingPad = null;
+      pad.last = run.traps.tick + 1;
+      Traps.tick(run);
+      Traps.tick(run);
+      if (run.area.templateOf(p.getLocation()).join() !== pad.tile.join()) { pushed = true; break; }
+    }
+    assert.ok(pushed, 'a pad pushed the player');
+    const here = run.area.templateOf(p.getLocation());
+    const hitsBefore = p.hits.length;
+    run.traps.pendingHit = [1, here];
+    Traps.tick(run);
+    assert.equal(p.hits.length, hitsBefore, 'no hit during the immunity');
+    assert.equal(run.traps.pendingHit, null, 'the hit on its way is dropped');
+    while (run.traps.tick < run.traps.immuneUntil) Traps.tick(run);
+    run.traps.pendingHit = [1, here];
+    Traps.tick(run);
+    assert.ok(p.hits.length > hitsBefore, 'hits land again once it ends');
+  } finally {
+    Math.random = random;
+    run.finish();
+  }
 });
 
 test('a hit picks the nearest recorded zone, and floor 3 layout B uses the west landing', () => {
@@ -704,4 +994,312 @@ test("a trap's hold never carries to the next floor", () => {
   assert.equal(p.blocked, false);
   assert.equal(run.traps, null, "the old floor's traps are gone");
   run.finish();
+});
+
+test('native environmental recovery is faster with the equipped Hallowed ring', async (t) => {
+  const path = require('node:path');
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const { SkillManager } = require('../dist/game/content/skill/SkillManager');
+  const core = PluginManager.getCoreApi();
+  const oldBots = process.env.DISABLE_PLAYER_BOTS, oldSubmit = core.TaskManager.submit, oldError = console.error;
+  const tasks = new Set(), actors = [], ownedRuns = [], ownedAreas = [], ownedNpcs = new Set(), errors = [];
+  let started = false;
+  process.env.DISABLE_PLAYER_BOTS = '1';
+  function observeOwned() {
+    for (const run of ownedRuns) if (run.area) {
+      for (const npc of run.area.spawned) ownedNpcs.add(npc);
+      for (const npc of run.area.getNpcs()) ownedNpcs.add(npc);
+    }
+  }
+  function closeRun(run) {
+    if (!run || run.ended) return;
+    const area = run.area, player = run.player;
+    observeOwned();
+    if (area && player.getArea() === area) {
+      run.moving = true;
+      try {
+        if (area.hasMember(player)) area.leave(player, false);
+        player.moveTo(Common.toLocation(Common.data.lobby.exitTile));
+      } finally { run.moving = false; }
+    }
+    run.finish();
+  }
+  t.after(() => {
+    try {
+      for (const player of actors) {
+        const run = Run.runOf(player);
+        if (run && !ownedRuns.includes(run)) ownedRuns.push(run);
+        if (run?.area && !ownedAreas.includes(run.area)) ownedAreas.push(run.area);
+      }
+      observeOwned();
+      for (const run of ownedRuns) closeRun(run);
+      for (const player of actors) if (player.isRegistered()) core.World.getPlayers().removes(player);
+      if (started) PluginManager.emitServerShutdown({});
+      for (const task of tasks) if (task.isRunning()) task.stop();
+      core.World.process();
+      assert.ok(ownedRuns.every((run) => run.ended), 'fixture runs ended');
+      assert.ok(ownedAreas.every((area) => area.isDestroyed()), 'fixture floor instances destroyed');
+      assert.ok([...ownedNpcs].every((npc) => !npc.isRegistered() && !core.World.getAddNPCQueue().includes(npc)), 'fixture trap NPCs removed');
+      assert.ok([...tasks].every((task) => !task.isRunning()), 'fixture tasks stopped');
+      assert.deepEqual(errors, [], 'native execution and teardown have no hidden errors');
+    } finally {
+      core.TaskManager.submit = oldSubmit; console.error = oldError;
+      if (oldBots === undefined) delete process.env.DISABLE_PLAYER_BOTS; else process.env.DISABLE_PLAYER_BOTS = oldBots;
+    }
+  });
+  core.TaskManager.submit = function (...args) { if (args[0]) tasks.add(args[0]); return oldSubmit.apply(this, args); };
+  console.error = (...args) => { errors.push(args.map(String).join(' ')); return oldError.apply(console, args); };
+  const earlierFakeApi = Common.api;
+  PluginManager.loadFromDirectory(path.resolve(__dirname, '../plugins'));
+  assert.notEqual(Common.api, earlierFakeApi, 'real Hallowed plugin registration replaced the legacy fake API');
+  PluginManager.emitServerStartup({}); started = true;
+  const { World, Item, ItemIdentifiers: I, Equipment, Skill } = core;
+  const channel = () => ({ kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true,
+    send: () => true, close() {}, onData() {}, onError() {}, onClose() {} });
+  function tick() { World.process(); observeOwned(); }
+  function actor(name, mode) {
+    assert.match(name, /^[a-z0-9]{1,12}$/, 'fixture actor has a legal username');
+    const player = new Player(new PlayerSession(channel())); actors.push(player);
+    player.setUsername(name); player.setLongUsername(core.Misc.stringToLongBigInt(name));
+    player.setAttribute('bot-skip-persistence', true);
+    player.setLocation(Common.toLocation(Common.data.lobby.exitTile));
+    assert.equal(World.getPlayers().add(player), true, 'real player joins World'); player.needsPlacement = false;
+    const agility = Common.data.floors[0].agility, skills = player.getSkillManager();
+    skills.setExperience(Skill.AGILITY, SkillManager.getExperienceForLevel(agility));
+    skills.setMaxLevel(Skill.AGILITY, agility); skills.setCurrentLevel(Skill.AGILITY, agility, true);
+    assert.equal(skills.getCurrentLevel(Skill.AGILITY), agility, 'actor meets the actual floor requirement');
+    if (mode === 'equipped') player.getEquipment().setItem(Equipment.RING_SLOT, new Item(I.HALLOWED_RING, 1));
+    if (mode === 'inventory') player.getInventory().add(new Item(I.HALLOWED_RING, 1), true);
+    if (mode === 'equipped') {
+      assert.equal(player.getEquipment().getItems()[Equipment.RING_SLOT].getId(), I.HALLOWED_RING);
+      const definition = core.CacheDefinitions.getItem(I.HALLOWED_RING);
+      assert.equal(definition.wearPos, Equipment.RING_SLOT, 'active cache assigns the ring slot');
+      assert.ok(definition.inventoryActions.includes('Wear'), 'active cache offers Wear');
+      assert.equal(definition.placeholderTemplate, -1, 'the native test uses the wearable item');
+    }
+    return player;
+  }
+  function trial(name, mode, hp, watchTicks = 0) {
+    const player = actor(name, mode);
+    player.setHitpoints(hp);
+    assert.equal(player.getHitpoints(), hp, 'fixture starts at the intended hitpoints');
+    // Direct run start is fixture setup; actual scheduled descent, instance and trap ticks follow.
+    const run = Run.start(player, 0); ownedRuns.push(run);
+    for (let i = 0; i < 24 && !(run.running && run.traps && run.area); i++) tick();
+    assert.ok(run.running && run.traps && run.area, 'real floor and timer start');
+    const area = run.area; ownedAreas.push(area);
+    assert.equal(run.floorNumber, 1);
+    const fire = run.traps.fires.find((entry) => entry.at.join() === '2279,5992,2');
+    assert.ok(fire, 'active cache contains the recorded fire statue');
+    assert.deepEqual(fire.tiles, [[2281, 5992, 2], [2282, 5992, 2], [2283, 5992, 2]]);
+    const animations = [], fadeOpens = [], perform = player.performAnimation.bind(player);
+    player.performAnimation = (animation, ...args) => { animations.push(animation.getId()); return perform(animation, ...args); };
+    const sender = player.getPacketSender(), sendSub = sender.sendSubInterface.bind(sender);
+    sender.sendSubInterface = (...args) => {
+      if (args[1] === Common.data.interfaces.fade) fadeOpens.push(args);
+      return sendSub(...args);
+    };
+    const fireTile = [2282, 5992, 2], checkpoint = [2282, 6000, 2];
+    player.moveTo(area.at(fireTile));
+    const initialRemaining = run.remaining;
+    let hit = false;
+    for (let i = 0; i < 24; i++) {
+      tick();
+      if (run.traps.recovering || area.templateOf(player.getLocation()).join() !== fireTile.join()) { hit = true; break; }
+    }
+    assert.equal(hit, true, 'the real fire producer reaches an environmental hit');
+    assert.ok(run.remaining < initialRemaining, 'the real floor timer continues');
+    const tookDamage = player.getHitpoints() < hp;
+    const recoveryRemaining = run.remaining;
+    let releaseTicks = 0;
+    while (run.traps.recovering && releaseTicks < 20) { tick(); releaseTicks++; }
+    assert.equal(run.traps.recovering, false, 'the recovery hold ends');
+    if (releaseTicks) assert.ok(run.remaining < recoveryRemaining, 'timer continues during ordinary recovery');
+    assert.equal(player.getMovementQueue().isMovementBlocked(), false, 'the player can move after recovery');
+    assert.deepEqual(area.templateOf(player.getLocation()), checkpoint, 'the modeled recorded corridor checkpoint is used');
+    assert.equal(run.traps.pendingHit, null); assert.equal(run.traps.pendingPad, null);
+    const watchRemaining = run.remaining;
+    for (let i = 0; i < watchTicks; i++) tick();
+    if (watchTicks) {
+      assert.ok(run.remaining < watchRemaining, 'timer continues after the ring return');
+      assert.equal(player.getHitpoints(), hp, 'no delayed damage after the ring return');
+      assert.deepEqual(area.templateOf(player.getLocation()), checkpoint, 'no stale recovery moves the player');
+      assert.equal(player.getMovementQueue().isMovementBlocked(), false, 'no stale recovery blocks movement');
+    }
+    const result = { tookDamage, hp: player.getHitpoints(), releaseTicks, animations, fadeOpens, remaining: run.remaining };
+    closeRun(run);
+    return result;
+  }
+  const normal = trial('hsnormal', 'none', 10);
+  assert.equal(normal.tookDamage, true, 'control: an unprotected fire hit deals damage');
+  assert.ok(normal.releaseTicks > 0, 'control: ordinary recovery holds movement');
+  assert.ok(normal.animations.includes(Common.seq('human_death')), 'control: ordinary recovery uses the death animation');
+  assert.ok(normal.fadeOpens.length > 0, 'control: ordinary recovery opens the recorded fade');
+  const bag = trial('hsbag', 'inventory', 10);
+  assert.equal(bag.tookDamage, true, 'a ring in inventory alone does not protect');
+  assert.equal(bag.releaseTicks, normal.releaseTicks, 'inventory-only recovery uses the ordinary sequence');
+  const ring = trial('hsring', 'equipped', 1, normal.releaseTicks + 2);
+  assert.equal(ring.tookDamage, false, 'equipped ring prevents the hit');
+  assert.equal(ring.hp, 1, 'one-hitpoint player survives and returns');
+  assert.ok(ring.releaseTicks < normal.releaseTicks, 'equipped ring releases control sooner');
+  assert.ok(!ring.animations.includes(Common.seq('human_death')), 'ring recovery does not run the ordinary death animation');
+  assert.equal(ring.fadeOpens.length, 0, 'no delayed normal recovery fade opens');
+  assert.deepEqual(errors, [], 'real run and trap callbacks do not report hidden errors');
+  // Each case seeds its floor; it does not exercise the stairs or packet routing.
+  const coffinAdmissionCases = [
+  ['thieving requirement', 87, 87, 84, 84, true],
+  ['below both requirements', 87, 87, 83, 83, false],
+  ['already looted', 92, 92, 84, 84, false, 'looted'],
+  ['agility requirement', 92, 92, 66, 66, true],
+  // Wiki (Grand Hallowed Coffin): the Agility route still needs the ordinary coffins' 66 Thieving.
+  ['agility requirement below ordinary thieving level', 92, 92, 65, 65, false],
+  ['agility requirement with boosted thieving', 92, 92, 64, 66, true],
+  ['ordinary coffin below thieving requirement', 92, 92, 65, 65, false, 'normal'],
+  ['boosted agility', 90, 92, 83, 83, true],
+  ['drained agility', 92, 91, 83, 83, false],
+  ['boosted thieving', 87, 87, 83, 84, true],
+  ['drained thieving', 87, 87, 84, 83, false],
+  ['expired run', 92, 92, 84, 84, false, 'expired'],
+  ['transitioning run', 92, 92, 84, 84, false, 'transitioning'],
+  ['busy run', 92, 92, 84, 84, false, 'busy'],
+  ['held run', 92, 92, 84, 84, false, 'held'],
+  ['ordinary coffin', 87, 87, 66, 66, true, 'normal'],
+];
+  const quest = require('../plugins/quests/QuestRuntime').getRegisteredQuests().find((q) => q.key === Common.data.quest);
+  assert.ok(quest);
+  function coffinTrial(name, agilityBase, agilityCurrent, thievingBase, thievingCurrent, accepted, state) {
+    const id = state === 'normal' ? Number(Object.keys(Common.data.coffins)[0]) : Common.data.finalChest;
+    const player = new Player(new PlayerSession(channel())); actors.push(player);
+    player.setUsername(name); player.setLongUsername(core.Misc.stringToLongBigInt(name));
+    player.setAttribute('bot-skip-persistence', true);
+    player.setLocation(Common.toLocation(Common.data.lobby.exitTile));
+    assert.equal(World.getPlayers().add(player), true); player.needsPlacement = false;
+    quest.setStage(player, quest.completionValue);
+    assert.equal(quest.isComplete(player), true);
+    const query = { player, key: Common.data.quest, complete: null };
+    Common.api.emitCustomEvent('quest:is-complete', query);
+    assert.equal(query.complete, true);
+    player.setAttribute(Common.data.attributes.tutorial, true);
+    assert.equal(player.getAttribute(Common.data.attributes.tutorial), true);
+    const skills = player.getSkillManager();
+    for (const [skill, base, current] of [[Skill.AGILITY, agilityBase, agilityCurrent], [Skill.THIEVING, thievingBase, thievingCurrent]]) {
+      skills.setExperience(skill, SkillManager.getExperienceForLevel(base));
+      skills.setMaxLevel(skill, base); skills.setCurrentLevel(skill, current, true);
+      assert.equal(skills.getMaxLevel(skill), base); assert.equal(skills.getCurrentLevel(skill), current);
+    }
+    const run = Run.start(player, 0); ownedRuns.push(run);
+    for (let i = 0; i < 24 && !(run.running && run.area); i++) World.process();
+    assert.ok(run.running && run.area);
+    ownedAreas.push(run.area);
+    // Seed a handler checkpoint, not a traversal through the stairs.
+    observeOwned();
+    const floor = Common.data.floors.find((entry) => entry.floor === (state === 'normal' ? 1 : 5));
+    // Capture a partially constructed instance before its first template copy.
+    const prototype = core.TemplatedInstanceArea.prototype, copySquare = prototype.copySquare;
+    prototype.copySquare = function (...args) {
+      if (!ownedAreas.includes(this)) ownedAreas.push(this);
+      return copySquare.apply(this, args);
+    };
+    try { run.move(floor, floor.variants[0]); }
+    finally { prototype.copySquare = copySquare; }
+    if (!ownedAreas.includes(run.area)) ownedAreas.push(run.area);
+    const area = run.area;
+    assert.equal(player.getArea(), area); assert.equal(run.floorNumber, state === 'normal' ? 1 : 5);
+    assert.ok(player.isRegistered() && run.running && !run.expired && run.remaining > 1);
+    assert.equal(run.transitioning, false); assert.ok(run.ticks >= run.busyUntil);
+    assert.equal(require('../plugins/minigames/hallowedsepulchre/Traps.HallowedSepulchre').holding(run), false);
+    const objects = [];
+    for (let z = 0; z < 4; z++) for (let x = 0; x < 12; x++) for (let y = 0; y < 12; y++) {
+      objects.push(...area.getChunkObjects(z, x, y).filter((object) => object.getId() === id));
+    }
+    assert.ok(objects.length > 0, 'active instance contains the cache object');
+    const object = objects[0];
+    assert.ok(area.getTemplateObjects(object.getLocation()).includes(object));
+    const { ObjectDefinition } = require('../dist/game/definition/ObjectDefinition');
+    Common.varbit(player, 'hallowed_final_chest_looted', 0);
+    const definition = ObjectDefinition.forPlayer(object.getId(), player);
+    assert.ok(definition, 'active cache resolves the player-visible object');
+    const option = definition.getInteractions()?.[0]?.toLowerCase();
+    assert.equal(option, 'search-for-traps', 'active cache player-visible coffin option');
+    player.moveTo(object.getLocation());
+    const slot = id === Common.data.finalChest ? 'grand' : Common.data.coffins[String(id)];
+    if (state === 'looted') run.looted.add(slot);
+    else assert.equal(run.looted.has(slot), false);
+    if (state === 'expired') run.expired = true;
+    if (state === 'transitioning') run.transitioning = true;
+    if (state === 'busy') run.busyUntil = run.ticks + 10;
+    if (state === 'held') run.traps = { recovering: true, bolts: [], swords: [] };
+    const prior = run.busyUntil, taskCount = tasks.size;
+    assert.equal(skills.getCurrentLevel(Skill.AGILITY), agilityCurrent);
+    assert.equal(skills.getCurrentLevel(Skill.THIEVING), thievingCurrent);
+    // Shaped as ObjectActionPacketListener sends it: the loc tile and the tile the player clicked from.
+    const at = object.getLocation(), from = player.getLocation();
+    assert.equal(PluginManager.emitObjectInteraction({
+      player, object, definition, objectId: id, clickType: 1, option,
+      location: { x: at.getX(), y: at.getY(), z: at.getZ() },
+      sourceLocation: { x: from.getX(), y: from.getY(), z: from.getZ() },
+      handled: false,
+    }), true);
+    assert.equal(run.busyUntil, accepted ? run.ticks + 8 : prior, name);
+    if (!accepted) assert.equal(tasks.size, taskCount, 'refusal schedules no action');
+    if (state === 'held') run.traps = null;
+    observeOwned();
+    run.moving = true;
+    try {
+      if (area.hasMember(player)) area.leave(player, false);
+      player.moveTo(Common.toLocation(Common.data.lobby.exitTile));
+    } finally { run.moving = false; }
+    run.finish();
+  }
+  for (const spec of coffinAdmissionCases) {
+    await t.test(spec[0], () => {
+      try { coffinTrial('hscoffin', ...spec.slice(1)); }
+      finally {
+        for (const player of actors) {
+          const run = Run.runOf(player);
+          if (run && !ownedRuns.includes(run)) ownedRuns.push(run);
+          if (run?.area && !ownedAreas.includes(run.area)) ownedAreas.push(run.area);
+        }
+        observeOwned();
+        for (const run of ownedRuns) closeRun(run);
+        for (const area of ownedAreas) {
+          if (area.isDestroyed()) continue;
+          for (const npc of area.spawned) ownedNpcs.add(npc);
+          for (const npc of area.getNpcs()) ownedNpcs.add(npc);
+          for (const player of actors) if (player.getArea() === area && area.hasMember(player)) area.leave(player, false);
+          if (!area.isDestroyed()) area.destroy();
+        }
+        for (const player of actors) if (player.isRegistered()) World.getPlayers().removes(player);
+      }
+    });
+  }
+
+});
+
+
+test('coffin runes go to the rune pouch first, still announced and logged (Wiki: Rune pouch)', () => {
+  const Coffins = require('../plugins/minigames/hallowedsepulchre/Coffins.HallowedSepulchre');
+  const p = fakePlayer();
+  const api = Common.api;
+  const previous = api.emitCustomEvent;
+  const logged = [];
+  let pouchTakes = true;
+  api.emitCustomEvent = function (name, request) {
+    if (name === 'rune-pouch:gather' && pouchTakes && request.itemId === 565) request.stored = request.amount;
+    if (name === 'collection-log:obtain') logged.push(request);
+    return previous.call(this, name, request);
+  };
+  try {
+    Coffins.give(p, [[565, 20], [24711, 3]]);
+    assert.equal(p.inventory.getAmount(565), 0, 'the blood runes went into the pouch');
+    assert.equal(p.inventory.getAmount(24711), 3, 'the marks to the inventory');
+    assert.ok(p.messages.includes('<col=005f00>Tester received a drop: 20 x Blood rune</col>'));
+    assert.ok(logged.some((event) => event.itemId === 565 && event.amount === 20));
+    pouchTakes = false;
+    Coffins.give(p, [[565, 20]]);
+    assert.equal(p.inventory.getAmount(565), 20, 'no pouch room: the inventory');
+  } finally {
+    api.emitCustomEvent = previous;
+  }
 });

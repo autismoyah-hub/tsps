@@ -15,6 +15,7 @@ const { ItemIdentifiers } = require("../dist/util/ItemIdentifiers");
 const { ItemDefinition } = require("../dist/game/definition/ItemDefinition");
 const Avarice = require("../plugins/npcs/revenants/Avarice.Revenants");
 const CapeOfSkulls = require("../plugins/items/CapeOfSkulls.plugin");
+const SkullPrevention = require("../plugins/combat/SkullPrevention.plugin");
 
 const PVP_TICKS = 3000; // 30 minutes
 const ITEM_TICKS = 2000; // 20 minutes
@@ -25,8 +26,10 @@ const CAPE_SLOT = 1;
 before(async () => {
   await CachePipeline.initialize();
   const core = PluginManager.getCoreApi();
-  Avarice({ core, persistAttribute() {}, onPlayerProcess() {}, ...modifierStubs() });
+  // Avarice listens for custom events since #3700.
+  Avarice({ core, persistAttribute() {}, onPlayerProcess() {}, onCustomEvent() {}, ...modifierStubs() });
   CapeOfSkulls.register({ core, onCanEquip() {}, onCustomEvent() {}, onPlayerLogin() {} });
+  SkullPrevention.register({ core: { CombatFactory }, onCanAttack() {} });
 });
 
 function modifierStubs() {
@@ -38,9 +41,15 @@ function modifierStubs() {
   return stubs;
 }
 
+let nextName = 0;
 function player({ at = WILDERNESS, timer = 0, type = SkullType.WHITE_SKULL } = {}) {
   const equipment = [];
+  const attributes = new Map();
+  const username = `skuller${nextName++}`;
   const p = {
+    getUsername: () => username,
+    getAttribute: (key) => attributes.get(key),
+    setAttribute: (key, value) => attributes.set(key, value),
     skullTimer: timer,
     skullType: type,
     messages: [],
@@ -57,6 +66,11 @@ function player({ at = WILDERNESS, timer = 0, type = SkullType.WHITE_SKULL } = {
     setSkullType: (skullType) => { p.skullType = skullType; },
     getUpdateFlag: () => ({ flag: () => { p.appearanceFlags++; } }),
     sendMessage: (message) => p.messages.push(message),
+    getPacketSender: () => ({
+      getVarbit: (id) => p.varbits.get(id) ?? 0,
+      sendMessage: (message) => p.messages.push(message),
+    }),
+    varbits: new Map(),
     getCombat: () => ({ getAttacker: () => p.attacker, damageMapContains: (other) => p.damaged.has(other) }),
     getEquipment: () => ({ getItems: () => equipment, get: (slot) => equipment[slot] ?? null }),
   };
@@ -98,6 +112,42 @@ test("retaliating does not skull, and nothing changes outside the Wilderness", (
   const skulled = player({ at: new Location(3222, 3218, 0), timer: 100 });
   CombatFactory.handleSkull(skulled, player({ at: new Location(3222, 3219, 0) }));
   assert.equal(skulled.skullTimer, 100);
+});
+
+// #1284 review: the already-skulled branch extended the skull on every hit, before any retaliation check, so a skulled
+// player who only fought back got a fresh 30 minutes. Wiki (Skull (status)): only initiating combat resets it.
+test("a skulled player who only hits back keeps the skull's time; attacking someone new restarts it", () => {
+  const pker = player();
+  const victim = player({ timer: 600 });
+  CombatFactory.handleSkull(pker, victim);
+  victim.attacker = pker;
+  CombatFactory.handleSkull(victim, pker);
+  assert.equal(victim.skullTimer, 600, "retaliation leaves the timer");
+
+  // Hitting back before the attacker is set (a splash): the attacked-by record says it is retaliation too.
+  const caster = player();
+  const splashed = player({ timer: 600 });
+  CombatFactory.handleSkull(caster, splashed);
+  CombatFactory.handleSkull(splashed, caster);
+  assert.equal(splashed.skullTimer, 600);
+
+  // Control: the same skulled player picking a fight with a third player restarts the 30 minutes.
+  CombatFactory.handleSkull(victim, player());
+  assert.equal(victim.skullTimer, PVP_TICKS);
+});
+
+test("hitting back after a splash, or before the first hit lands, does not skull (Wiki: attacked, not damaged)", () => {
+  // The attack is queued and splashes (or is still in flight): no damage map entry and no attacker set on impact.
+  const aggressor = player();
+  const victim = player();
+  CombatFactory.handleSkull(aggressor, victim);
+  assert.ok(aggressor.skullTimer > 0, "the aggressor is skulled for attacking first");
+  CombatFactory.handleSkull(victim, aggressor);
+  assert.equal(victim.skullTimer, 0, "the victim hits back unskulled");
+  // A third player the victim never attacked: attacking them still skulls.
+  const bystander = player();
+  CombatFactory.handleSkull(victim, bystander);
+  assert.ok(victim.skullTimer > 0, "attacking someone who didn't attack first still skulls");
 });
 
 test("the skull icon is redrawn on the tick the skull runs out", () => {
@@ -212,4 +262,47 @@ test("putting the cape of skulls on warns first; No changes nothing, Yes equips 
   answer(dropped, 1);
   assert.equal(dropped.getEquipment().getItems()[CAPE_SLOT].getId(), -1, "Yes after the cape left the inventory does nothing");
   assert.equal(dropped.isSkulled(), false);
+});
+
+test("skull prevention blocks an attack that would skull and says why", () => {
+  const message = "You cannot attack this target as it would result in you getting skulled.";
+  const blocked = { attacker: player(), target: player(), method: {}, allow: null };
+  blocked.attacker.varbits.set(13131, 1);
+  SkullPrevention._test.blockSkullAttack(blocked);
+  assert.equal(blocked.allow, false);
+  assert.deepEqual(blocked.attacker.messages, [message]);
+
+  const bystander = { attacker: player(), target: player(), allow: null };
+  bystander.attacker.varbits.set(13131, 1);
+  SkullPrevention._test.blockSkullAttack(bystander);
+  SkullPrevention._test.blockSkullAttack(bystander);
+  assert.equal(bystander.allow, false, "an area attack still spares a bystander it would skull for");
+  assert.deepEqual(bystander.attacker.messages, [], "but says nothing for each one");
+
+  const off = { attacker: player(), target: player(), method: {}, allow: null };
+  SkullPrevention._test.blockSkullAttack(off);
+  assert.equal(off.allow, null, "the setting is off");
+  assert.deepEqual(off.attacker.messages, []);
+
+  const skulled = { attacker: player({ timer: 100 }), target: player(), allow: null };
+  skulled.attacker.varbits.set(13131, 1);
+  SkullPrevention._test.blockSkullAttack(skulled);
+  assert.equal(skulled.allow, null, "an existing skull is only prolonged");
+
+  const retaliating = { attacker: player(), target: player(), allow: null };
+  retaliating.target.attacker = retaliating.attacker;
+  retaliating.attacker.varbits.set(13131, 1);
+  SkullPrevention._test.blockSkullAttack(retaliating);
+  assert.equal(retaliating.allow, null, "a fight already underway does not skull");
+
+  const struckBack = { attacker: player(), target: player(), method: {}, allow: null };
+  struckBack.attacker.attacker = struckBack.target;
+  struckBack.attacker.varbits.set(13131, 1);
+  SkullPrevention._test.blockSkullAttack(struckBack);
+  assert.equal(struckBack.allow, null, "retaliation does not skull");
+
+  const outside = { attacker: player({ at: new Location(3222, 3218, 0) }), target: player(), allow: null };
+  outside.attacker.varbits.set(13131, 1);
+  SkullPrevention._test.blockSkullAttack(outside);
+  assert.equal(outside.allow, null, "nothing skulls outside the Wilderness");
 });

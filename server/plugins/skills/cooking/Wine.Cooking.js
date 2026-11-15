@@ -59,6 +59,7 @@ function makeWine(event) {
   event.handled = true;
   Recipes.offer(player, wineRecipe(wine), {
     cycle: () => playMakeWine(player),
+    canMake: () => wine.pendingLimit == null || pendingWine(player, wine) < wine.pendingLimit,
     made: () => queueFerment(player),
     done: () => Common.spam(player, FERMENT_MESSAGE),
   });
@@ -70,6 +71,12 @@ function successChance(player, wine) {
   const [low, high] = wine.chance;
   const value = Math.floor((low * (99 - level)) / 98 + (high * (level - 1)) / 98 + 0.5) + 1;
   return Math.max(0, Math.min(1, value / 256));
+}
+
+/** Count real bank tabs and carried jugs together; a queued batch must recheck before every jug. */
+function pendingWine(player, wine) {
+  return player.getInventory().getAmount(wine.unfermentedId)
+    + bankTabs(player).reduce((sum, tab) => sum + tab.getAmount(wine.unfermentedId), 0);
 }
 
 /** How many of `count` jugs ferment into wine: FERMENT_BATCHES rolls for equal batches, and one for each jug left over. */
@@ -104,6 +111,12 @@ function bankedStacks(tabs, itemId) {
 function bankFits(player, tabs, wine, good, bad) {
   const holds = (id) => bankedStacks(tabs, id).length > 0;
   const newStacks = (good > 0 && !holds(wine.wineId) ? 1 : 0) + (bad > 0 && !holds(wine.badId) ? 1 : 0);
+  // An existing output stack still needs room for the entire banked result.
+  for (const [id, amount] of [[wine.wineId, good], [wine.badId, bad]]) {
+    if (amount <= 0) continue;
+    const [held] = bankedStacks(tabs, id);
+    if (held && held.tab.getAddableAmount(new Common.core.Item(id, amount)) < amount) return false;
+  }
   return newStacks <= bankedStacks(tabs, wine.unfermentedId).length + Common.core.Bank.freeSlots(player);
 }
 

@@ -227,7 +227,7 @@ test('retreat blocks southbound ditch crossings, including queued crossings, but
   assert.equal(crossings, 1, 'returning to the Wilderness is allowed');
 });
 
-test('PvP worlds add 15 to the shared Wilderness level for players and bots', () => {
+test('PvP worlds allow a configurable unlevelled range and keep the +15 Wilderness bonus', () => {
   let globalPvp = false;
   const coreFile = path.resolve(__dirname, '../dist/game/content/wilderness/Wilderness.js');
   const core = { exports: {} }, coreRequire = createRequire(coreFile);
@@ -250,6 +250,7 @@ test('PvP worlds add 15 to the shared Wilderness level for players and bots', ()
         isInSafeBuilding: () => false, isMulti: () => false,
       } };
       if (name.endsWith('/ferox/Bounds.FeroxEnclave')) return { isSafeLocation: () => false };
+      if (name.startsWith('./wilderness/')) return () => {};
       return local(name);
     },
   }, { filename: file });
@@ -264,6 +265,11 @@ test('PvP worlds add 15 to the shared Wilderness level for players and bots', ()
   assert.equal(levelAt(3200, 3200), 0);
   assert.equal(wildernessAttackRange(player(80, 3520), player(81, 3528)), 1);
   assert.equal(canAttackByWildernessLevel(player(80, 3520), player(82, 3528)), false);
+  // #2146: a deeper attacker does not widen the bracket. In level 5 vs level 1 the range
+  // is 1, so a 5-level gap is out of range in both directions.
+  assert.equal(wildernessAttackRange(player(105, 3552), player(100, 3520)), 1);
+  assert.equal(canAttackByWildernessLevel(player(105, 3552), player(100, 3520)), false);
+  assert.equal(canAttackByWildernessLevel(player(100, 3520), player(105, 3552)), false);
   globalPvp = true;
   for (const [y, range] of [[3200, 15], [3520, 16], [3528, 17], [9920, 16]]) {
     assert.equal(wildernessAttackRange(player(80, y), player(80 + range, y)), range);
@@ -275,9 +281,102 @@ test('PvP worlds add 15 to the shared Wilderness level for players and bots', ()
   assert.equal(wildernessAttackRange(player(80, 3520), player(97, 3528)), 16);
   assert.equal(canAttackByWildernessLevel(player(80, 3520), player(97, 3528)), false);
   assert.equal(wildernessAttackRange(player(80, 3200), player(96, 3528)), 15);
-  // The attacker's own depth sets the range; a shallower target must not shrink it,
-  // or leaving the levelled strip would silently re-tighten the bracket.
-  assert.equal(wildernessAttackRange(player(80, 3528), player(80, 3200)), 17);
-  assert.equal(canAttackByWildernessLevel(player(80, 3528), player(97, 3200)), true);
-  assert.equal(canAttackByWildernessLevel(player(80, 3528), player(98, 3200)), false);
+  // Both levels cap the range, so the shallower side sets it in either direction.
+  assert.equal(wildernessAttackRange(player(80, 3528), player(80, 3200)), 15);
+  assert.equal(wildernessAttackRange(player(80, 3200), player(80, 3528)), 15);
+  assert.equal(canAttackByWildernessLevel(player(80, 3528), player(97, 3200)), false);
+  assert.equal(canAttackByWildernessLevel(player(80, 3200), player(97, 3528)), false);
+
+  for (const difference of [8, 25, 0]) {
+    module.exports.register(new Proxy({
+      getPluginConfig(key) {
+        assert.equal(key, 'Wilderness:pvpWorldLevelDifference');
+        return difference;
+      },
+    }, { get: (target, key) => target[key] ?? (() => {}) }));
+
+    const unlevelled = player(80, 3200);
+    assert.equal(wildernessAttackRange(unlevelled, player(80, 3200)), difference);
+    assert.equal(canAttackByWildernessLevel(unlevelled, player(80 + difference, 3200)), true);
+    assert.equal(canAttackByWildernessLevel(unlevelled, player(81 + difference, 3200)), false);
+
+    const levelOne = player(80, 3520);
+    const levelTwo = player(80, 3528);
+    assert.equal(wildernessAttackRange(levelOne, levelTwo), 16);
+    assert.equal(wildernessAttackRange(unlevelled, levelOne), Math.min(difference, 16));
+    assert.equal(wildernessAttackRange(levelOne, unlevelled), Math.min(difference, 16));
+  }
+
+  globalPvp = false;
+  assert.equal(canAttackByWildernessLevel(player(80, 3200), player(110, 3200)), true);
+  assert.equal(wildernessAttackRange(player(80, 3200), player(80, 3520)), 1);
+});
+
+test('a reachable unlevelled PvP border does not remove the levelled player\'s combat cap', () => {
+  const { AreaManager } = require('../dist/game/model/areas/AreaManager');
+  const { RegionManager } = require('../dist/game/collision/RegionManager');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const { Skill } = require('../dist/game/model/Skill');
+  const { CombatFactory, CanAttackResponse } = require('../dist/game/content/combat/CombatFactory');
+  const { hasGlobalWorldTag, WORLD_ZONE_BOUNDARIES } = require('../dist/game/definition/WorldDefinition');
+  const { Boundary } = require('../dist/game/model/Boundary');
+  const wild = require('../plugins/areas/Wilderness.plugin');
+  const api = PluginManager.createApi('Wilderness');
+  const startup = [];
+  const areaCount = AreaManager.areas.length;
+  // An unlevelled PvP column beside the levelled strip (a custom zone: world.json's surface box ends at 3391).
+  const border = new Boundary(3392, 3392, 3525, 3968, 0);
+  WORLD_ZONE_BOUNDARIES.pvp.push(border);
+  wild.register({ ...api, onServerStartup: (handler) => startup.push(handler) });
+  startup.forEach((handler) => handler());
+  RegionManager.init();
+  const player = (name, index, x, level) => {
+    const session = new PlayerSession({ readyState: 1, send() {} });
+    const actor = new Player(session, new Location(x, 3595, 0));
+    session.setPlayer(actor);
+    actor.setUsername(name).setIndex(index);
+    actor.setRegistered(true);
+    for (const skill of [Skill.ATTACK, Skill.DEFENCE, Skill.STRENGTH, Skill.HITPOINTS]) {
+      actor.getSkillManager().setCurrentLevel(skill, level, false).setMaxLevels(skill, level, false);
+    }
+    actor.setHitpoints(level);
+    actor.setArea(AreaManager.get(actor.getLocation()));
+    return actor;
+  };
+  try {
+    // The PvP column at x=3392 is unlevelled; the cache's levelled strip stops at 3391.
+    // These are adjacent, walkable tiles, not a fixture-only location across a wall or water.
+    const high = player('BorderHigh', 880, 3391, 80);
+    const low = player('BorderLow', 881, 3392, 10);
+    assert.equal(hasGlobalWorldTag('pvp'), false);
+    assert.equal(RegionManager.getRegion(3392, 3595).getClip(3392, 3595, 0), 0);
+    assert.equal(RegionManager.canMove(3391, 3595, 3392, 3595, 0, 1, 1, null), true);
+    assert.equal(Wilderness.isInLocation(high.getLocation()), true);
+    assert.equal(Wilderness.isInLocation(low.getLocation()), true);
+    assert.deepEqual([Wilderness.levelAt(3391, 3595), Wilderness.levelAt(3392, 3595)], [10, 0]);
+    assert.ok(CombatFactory.validTarget(high, low));
+    for (const [attacker, target] of [[high, low], [low, high]]) {
+      assert.equal(wild.wildernessAttackRange(attacker, target), 10);
+      assert.equal(CombatFactory.canAttackPermission(attacker, target, false, CombatFactory.MELEE_COMBAT),
+        CanAttackResponse.CANT_ATTACK_IN_AREA);
+      attacker.getCombat().attack(target);
+      assert.equal(attacker.getCombat().performNewAttack(true), false);
+      assert.equal(target.getCombat().getHitQueue().hasPendingWork(), false);
+    }
+    // Zero keeps its existing "no levelled constraint" meaning when neither side has a level.
+    const unlevelled = player('BorderOther', 882, 3392, 80);
+    assert.equal(wild.wildernessAttackRange(unlevelled, low), 0);
+    assert.equal(wild.canAttackByWildernessLevel(unlevelled, low), true);
+  } finally {
+    AreaManager.areas.splice(areaCount);
+    WORLD_ZONE_BOUNDARIES.pvp.splice(WORLD_ZONE_BOUNDARIES.pvp.indexOf(border), 1);
+  }
+});
+
+test('the surface Wilderness PvP box covers exactly the cache levelled columns, x 2944-3391', () => {
+  for (const [x, inside] of [[2943, false], [2944, true], [3391, true], [3392, false]]) {
+    const tile = new Location(x, 3600, 0);
+    assert.equal(Wilderness.isInLocation(tile), inside, `x ${x}`);
+    assert.equal(Wilderness.levelAt(x, 3600) > 0, inside, `x ${x} level`);
+  }
 });

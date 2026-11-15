@@ -1,9 +1,11 @@
+import { replaceCustomDefinitions } from "../../../custom/definitions/CustomDefinitionStore";
 import { PlayerSyncContext } from "../../../game/sync/PlayerSyncContext";
 import { PlayerUpdateDecoder } from "../../../game/sync/PlayerUpdateDecoder";
 import { setPacketSocket } from "../../packet";
 import {
     DEFAULT_URL,
     KEEPALIVE_INTERVAL_MS,
+    RECONNECT_DELAY_INITIAL_MS,
     WS_GLOBAL_KEY,
     WS_SUPPRESS_RECONNECT_KEY,
     getEnv,
@@ -49,6 +51,7 @@ export function initServerConnection(url: string = DEFAULT_URL): void {
         CustomItemRegistry.clear();
         CustomModelRegistry.clear();
         replaceDefinitionArchives([]);
+        replaceCustomDefinitions([]);
         clearWorldOverlays();
         const client = (globalThis as any).__osrsClient;
         client?.objTypeLoader?.clearCache();
@@ -57,7 +60,7 @@ export function initServerConnection(url: string = DEFAULT_URL): void {
         client?.locTypeLoader?.clearCache();
         client?.renderer?.invalidateDefinitionCaches();
         void client?.workerPool?.runAll((worker: any) => worker.setCustomContent({
-            gamemodeId: "connection-reset", datasets: [{ key: "definitionArchives", rows: [] }],
+            gamemodeId: "connection-reset", datasets: [{ key: "customItems", rows: [] }, { key: "customModels", rows: [] }, { key: "definitionArchives", rows: [] }, { key: "customDefinitions", rows: [] }],
         })).catch((error: unknown) => console.error("Archived worker reset failed", error));
         state.playerSyncContext = new PlayerSyncContext();
         state.playerUpdateDecoder = new PlayerUpdateDecoder();
@@ -65,6 +68,9 @@ export function initServerConnection(url: string = DEFAULT_URL): void {
             ? new WebRtcGameSocket(state.webRtcConfig)
             : new WebSocket(url);
         const ws = state.socket;
+        state.lastWelcome = undefined;
+        state.loginExtension?.resetConnection();
+        state.loginOnWelcome = null;
         try {
             ws.binaryType = "arraybuffer";
         } catch {}
@@ -79,7 +85,7 @@ export function initServerConnection(url: string = DEFAULT_URL): void {
                 if (state.reconnectTimer) clearTimeout(state.reconnectTimer);
             } catch {}
             state.reconnectTimer = null;
-            state.reconnectDelayMs = 250;
+            state.reconnectDelayMs = RECONNECT_DELAY_INITIAL_MS;
             state.reconnectAttempts = 0;
             state.isReconnecting = false;
             clearLoginConnectRetryTimer();

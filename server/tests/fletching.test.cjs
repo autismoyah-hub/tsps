@@ -50,6 +50,9 @@ function player({ level = 99, items = {}, at = [3000, 3000] } = {}) {
     deleteNumber(id, n) { const left = (counts.get(id) ?? 0) - n; if (left > 0) counts.set(id, left); else counts.delete(id); },
     addItem(item) { counts.set(item.getId(), (counts.get(item.getId()) ?? 0) + item.getAmount()); },
     getFreeSlots: () => 28 - counts.size,
+    getAddableAmount: (item) => item.getAmount(),
+    getItems: () => [...counts].map(([id, n]) => new core.Item(id, n)),
+    deleteAtSlot(slot, n) { inventory.deleteNumber([...counts.keys()][slot], n); },
   };
   const sender = new Proxy({
     sendCreationMenu(value) { menu = value; return sender; },
@@ -112,7 +115,7 @@ beforeEach(() => {
 test("every recipe resolves to cache items, animations and varbits", () => {
   for (const recipe of Shared.getRecipes()) {
     assert.ok(CacheDefinitions.getItem(recipe.outputId), `output ${recipe.outputId}`);
-    assert.ok(Shared.animationOf(recipe).getId() >= 0);
+    if (recipe.animationName != null) assert.ok(Shared.animationOf(recipe).getId() >= 0);
     if (recipe.instantVarbit) assert.ok(Shared.varbitId(recipe.instantVarbit) > 0);
   }
   assert.equal(Shared.getRecipes().length, DATA.recipes.length);
@@ -168,6 +171,43 @@ test("darts: one set per click while Make-X is off, a menu of up to 10 sets whil
   p.menu().execute(I.RUNE_DART, 28);
   runTask();
   assert.equal(p.count("RUNE_DART"), 30);
+});
+
+test("fewer than a set fletches as many as are held (live: 7 unfinished bolts, \"You fletch 7 bolts.\")", () => {
+  const p = player({ items: { RUNITE_BOLTS_UNF_: 7, FEATHER: 30 } });
+  assert.equal(use(p, "FEATHER", "RUNITE_BOLTS_UNF_"), true);
+  assert.equal(p.count("RUNITE_BOLTS"), 7);
+  assert.equal(p.count("RUNITE_BOLTS_UNF_"), 0);
+  assert.equal(p.count("FEATHER"), 23, "seven feathers, not ten");
+  assert.equal(p.xp(), 70, "the set's 100 XP for ten, pro rata");
+  assert.ok(p.spam.includes("You fletch 7 bolts."), p.spam.join(" | "));
+  const darts = player({ items: { RUNE_DART_TIP: 17, FEATHER: 17 } });
+  use(darts, "RUNE_DART_TIP", "FEATHER");
+  use(darts, "RUNE_DART_TIP", "FEATHER");
+  assert.equal(darts.count("RUNE_DART"), 17, "a full set, then the last seven");
+  assert.equal(darts.count("RUNE_DART_TIP"), 0);
+});
+
+test("Make-All past full sets finishes with the last partial set (live: 15, 15, 15, 15, then 14)", () => {
+  // rsprox_transcripts/227/01756.txt: one Make-All attaches dragon arrowtips to 15 four times, then to 14.
+  const p = player({ items: { HEADLESS_ARROW: 37, BRONZE_ARROWTIPS: 40 } });
+  assert.equal(use(p, "BRONZE_ARROWTIPS", "HEADLESS_ARROW"), true);
+  p.menu().execute(I.BRONZE_ARROW, 28);
+  runTask();
+  assert.equal(p.count("BRONZE_ARROW"), 37);
+  assert.equal(p.count("HEADLESS_ARROW"), 0);
+  assert.equal(p.count("BRONZE_ARROWTIPS"), 3);
+  assert.deepEqual(p.spam.filter((line) => line.startsWith("You attach")), [
+    "You attach bronze arrowtips to 15 headless arrows.",
+    "You attach bronze arrowtips to 15 headless arrows.",
+    "You attach bronze arrowtips to 7 headless arrows.",
+  ]);
+  const x = player({ items: { ARROW_SHAFT: 20, FEATHER: 20 } });
+  use(x, "FEATHER", "ARROW_SHAFT");
+  x.menu().execute(I.HEADLESS_ARROW, 2);
+  runTask();
+  assert.equal(x.count("HEADLESS_ARROW"), 20, "Make-2 covers a set and the last five");
+  assert.equal(x.count("ARROW_SHAFT"), 0);
 });
 
 // Wiki: Gryphon_feather, Stymphike_feather and Feather, retrieved 2026-10-27.
@@ -259,6 +299,70 @@ test("broad ammunition needs the Broader Fletching unlock", () => {
   assert.equal(p.count("BROAD_BOLTS"), 10);
 });
 
+// Wiki: Topaz_dragon_bolts and Topaz_bolts, 3.9 Fletching XP per bolt.
+test("topaz dragon bolts grant the same 3.9 XP per bolt as topaz bolts", () => {
+  const ordinary = player({ items: { STEEL_BOLTS: 10, TOPAZ_BOLT_TIPS: 10 } });
+  assert.equal(use(ordinary, "TOPAZ_BOLT_TIPS", "STEEL_BOLTS"), true);
+  runTask();
+  assert.equal(ordinary.count("TOPAZ_BOLTS"), 10);
+  assert.equal(ordinary.count("STEEL_BOLTS"), 0);
+  assert.equal(ordinary.count("TOPAZ_BOLT_TIPS"), 0);
+  assert.equal(ordinary.xp(), 39);
+
+  const underlevel = player({ level: 83, items: { DRAGON_BOLTS_2: 10, TOPAZ_BOLT_TIPS: 10 } });
+  const tasksBefore = hooks.tasks.length;
+  assert.equal(use(underlevel, "TOPAZ_BOLT_TIPS", "DRAGON_BOLTS_2"), true);
+  assert.equal(hooks.tasks.length, tasksBefore);
+  assert.equal(underlevel.count("DRAGON_BOLTS_2"), 10);
+  assert.equal(underlevel.count("TOPAZ_BOLT_TIPS"), 10);
+  assert.equal(underlevel.count("TOPAZ_DRAGON_BOLTS"), 0);
+  assert.equal(underlevel.xp(), 0);
+  assert.deepEqual(underlevel.messages, ["You need a Fletching level of at least 84 to do this."]);
+
+  const full = player({ level: 84, items: { DRAGON_BOLTS_2: 20, TOPAZ_BOLT_TIPS: 20 } });
+  assert.equal(use(full, "DRAGON_BOLTS_2", "TOPAZ_BOLT_TIPS"), true);
+  assert.deepEqual(full.menu().getItems(), [I.TOPAZ_DRAGON_BOLTS]);
+  assert.equal(full.count("TOPAZ_DRAGON_BOLTS"), 0);
+  full.menu().execute(I.TOPAZ_DRAGON_BOLTS, 28);
+  runTask();
+  assert.equal(full.count("TOPAZ_DRAGON_BOLTS"), 20);
+  assert.equal(full.count("DRAGON_BOLTS_2"), 0);
+  assert.equal(full.count("TOPAZ_BOLT_TIPS"), 0);
+  assert.equal(full.xp(), 78);
+
+  const partial = player({ level: 84, items: { DRAGON_BOLTS_2: 5, TOPAZ_BOLT_TIPS: 5 } });
+  assert.equal(use(partial, "TOPAZ_BOLT_TIPS", "DRAGON_BOLTS_2"), true);
+  runTask();
+  assert.equal(partial.count("TOPAZ_DRAGON_BOLTS"), 5);
+  assert.equal(partial.count("DRAGON_BOLTS_2"), 0);
+  assert.equal(partial.count("TOPAZ_BOLT_TIPS"), 0);
+  assert.equal(partial.xp(), 19.5);
+});
+
+// Wiki (Ogre arrow shaft): "1.6 Fletching experience is gained per shaft made"; (Wolfbone arrowtips) 2.5 per tip, "Between
+// 2 and 6 arrowtips are carved out of each wolf bone". Both paid their 4-item table figure (6.4, 10) whatever the roll.
+test("ogre arrow shafts and wolfbone arrowtips pay per item made", () => {
+  answers.started.add("big_chompy_bird_hunting");
+  const random = Math.random;
+  try {
+    for (const [roll, made] of [[0, 2], [0.99, 6]]) {
+      Math.random = () => roll;
+      const logs = player({ items: { KNIFE: 1, ACHEY_TREE_LOGS: 1 } });
+      use(logs, "KNIFE", "ACHEY_TREE_LOGS");
+      runTask();
+      assert.equal(logs.count("OGRE_ARROW_SHAFT"), made);
+      assert.ok(Math.abs(logs.xp() - 1.6 * made) < 1e-9, `${made} shafts: ${logs.xp()}`);
+      const bones = player({ items: { CHISEL: 1, WOLF_BONES: 1 } });
+      use(bones, "CHISEL", "WOLF_BONES");
+      runTask();
+      assert.equal(bones.count("WOLFBONE_ARROWTIPS"), made);
+      assert.ok(Math.abs(bones.xp() - 2.5 * made) < 1e-9, `${made} tips: ${bones.xp()}`);
+    }
+  } finally {
+    Math.random = random;
+  }
+});
+
 test("ogre arrows need Big Chompy Bird Hunting started; brutal arrows need a hammer", () => {
   const p = player({ items: { KNIFE: 1, ACHEY_TREE_LOGS: 1 } });
   use(p, "KNIFE", "ACHEY_TREE_LOGS");
@@ -318,6 +422,26 @@ test("a fletching knife takes a tick off each log after the first", () => {
   ticks = 0;
   while (quick.isRunning()) { quick.execute(); ticks++; }
   assert.equal(ticks, 2 + 2 + 2);
+});
+
+// Wiki (Fletching knife): it "cannot fletch wooden blowpipes"; (Camphor blowpipe) "It is currently impossible to use
+// only a fletching knife to fletch a blowpipe", though carrying both knives speeds it up by a tick.
+test("a fletching knife alone makes no wooden blowpipe; with a plain knife it does", () => {
+  const only = player({ items: { FLETCHING_KNIFE: 1, CAMPHOR_LOGS: 2, SQUID_BEAK: 1 } });
+  use(only, "FLETCHING_KNIFE", "CAMPHOR_LOGS");
+  assert.ok(!(only.menu()?.getItems() ?? []).includes(I.CAMPHOR_BLOWPIPE_EMPTY_), "no blowpipe on the fletching knife's menu");
+  // On its own, a single recipe would start at once with no menu: run whatever was started.
+  if (only.menu()) only.menu().execute(I.CAMPHOR_BLOWPIPE_EMPTY_, 1);
+  const started = hooks.tasks.at(-1);
+  if (started) while (started.isRunning()) started.execute();
+  assert.equal(only.count("CAMPHOR_BLOWPIPE_EMPTY_"), 0, "and none is made");
+  assert.equal(only.count("CAMPHOR_LOGS"), 2);
+  const both = player({ items: { KNIFE: 1, FLETCHING_KNIFE: 1, CAMPHOR_LOGS: 2, SQUID_BEAK: 1 } });
+  use(both, "KNIFE", "CAMPHOR_LOGS");
+  // The only camphor recipe on a plain knife, so it may start without a menu.
+  if (both.menu()) both.menu().execute(I.CAMPHOR_BLOWPIPE_EMPTY_, 1);
+  runTask();
+  assert.equal(both.count("CAMPHOR_BLOWPIPE_EMPTY_"), 1);
 });
 
 test("the Gnome Stronghold diary task counts stringing an oak shortbow there, not cutting it", () => {
@@ -443,4 +567,32 @@ test("tipping bolts: sound 2605 and \"You fletch 10 bolts.\"; javelins use their
   const j = player({ items: { JAVELIN_SHAFT: 30, DRAGON_JAVELIN_TIPS: 30 } });
   use(j, "DRAGON_JAVELIN_TIPS", "JAVELIN_SHAFT");
   assert.equal(j.menu().getTitle(), "How many sets of 15 do you wish to make?");
+});
+
+// rsprox.net recording 801 (rev 234, an event world with 15x XP): the tip on a mithril bolt at tick 594 gives the
+// grapple, human_fletching_add_bolt_tips_mithril, sound 2605, "You add a grapple tip to a mithril bolt." and 165 XP
+// (11 x 15) at 595; a rope on it at 617 gives the roped grapple, sound 2605 and "You attach a rope to the mithril
+// grapple." at 618, with no animation and no XP.
+test("mith grapple: tip on a mithril bolt, then a rope, with the recorded lines, sound and animation", () => {
+  const p = player({ items: { MITH_GRAPPLE_TIP: 1, MITHRIL_BOLTS: 10, ROPE: 1 } });
+  use(p, "MITH_GRAPPLE_TIP", "MITHRIL_BOLTS");
+  assert.equal(p.menu(), null, "one tip is fitted without a menu");
+  assert.deepEqual(p.animations, [], "nothing plays on the click's own tick");
+  assert.deepEqual(ticksOf(p, "MITH_GRAPPLE"), [1]);
+  assert.deepEqual(p.animations, [CacheDefinitions.getSeqId("human_fletching_add_bolt_tips_mithril")]);
+  assert.deepEqual(p.sounds, [2605]);
+  assert.deepEqual(p.spam, ["You add a grapple tip to a mithril bolt."]);
+  assert.equal(p.xp(), 11);
+  assert.equal(p.count("MITHRIL_BOLTS"), 9);
+  assert.equal(p.count("MITH_GRAPPLE_TIP"), 0);
+
+  use(p, "ROPE", "MITH_GRAPPLE");
+  assert.equal(p.menu(), null);
+  assert.deepEqual(ticksOf(p, "MITH_GRAPPLE_2"), [1]);
+  assert.equal(p.animations.length, 1, "attaching the rope plays no animation");
+  assert.deepEqual(p.sounds, [2605, 2605]);
+  assert.deepEqual(p.spam, ["You add a grapple tip to a mithril bolt.", "You attach a rope to the mithril grapple."]);
+  assert.equal(p.xp(), 11, "the rope gives no XP");
+  assert.equal(p.count("MITH_GRAPPLE"), 0);
+  assert.equal(p.count("ROPE"), 0);
 });

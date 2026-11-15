@@ -20,6 +20,7 @@ const Enemies = require('../plugins/minigames/colosseum/Enemies.Colosseum');
 const Effects = require('../plugins/minigames/colosseum/ModifierEffects.Colosseum');
 const Hazards = require('../plugins/minigames/colosseum/Hazards.Colosseum');
 const Sol = require('../plugins/minigames/colosseum/SolHeredit.Colosseum');
+const CombatAchievements = require('../plugins/minigames/colosseum/CombatAchievements.Colosseum');
 const Patterns = require('../plugins/minigames/colosseum/SolPatterns.Colosseum');
 const Scoreboard = require('../plugins/minigames/colosseum/Scoreboard.Colosseum');
 
@@ -77,6 +78,7 @@ function fakeApi() {
     core: PluginManager.getCoreApi(),
     persistAttribute() {},
     onObjectInteraction: (name, actions) => { hooks.objects[name] = { ...(hooks.objects[name] ?? {}), ...actions }; },
+    onBeforeObjectInteraction: (handler) => (hooks.beforeObject ??= []).push(handler),
     onNpcInteraction: (name, actions) => { hooks.npcs[name] = actions; },
     onNpcRoute: (handler) => (hooks.npcRoute ??= []).push(handler),
     onCombatHitRoll: () => {},
@@ -153,7 +155,7 @@ function fakePlayer(name = 'Gladiator') {
     isPoisoned: () => true,
     getPoisonDamage: () => p.poison.at(-1) ?? 0,
     setPoisonDamage(value) { p.poison.push(value); },
-    location: new Location(1805, 9506, 0), area: null, messages: [], scripts: [], interfaces: [], statements: [],
+    location: new Location(1805, 9506, 0), area: null, messages: [], scripts: [], interfaces: [], statements: [], flags: [],
     getUsername: () => name,
     getIndex: () => 7,
     isPlayer: () => true,
@@ -166,6 +168,9 @@ function fakePlayer(name = 'Gladiator') {
     setArea(area) { p.area = area; },
     getAttribute: (key) => attributes.get(key),
     setAttribute: (key, value) => attributes.set(key, value),
+    getInterfaceId: () => p.interfaceId ?? -1,
+    getEnteredAmountAction: () => p.amountAction,
+    setEnteredAmountAction: (action) => { p.amountAction = action; },
     sendMessage: (message) => p.messages.push(message),
     getDialogueManager: () => ({ startDialogues: (chain) => p.statements.push(chain) }),
     getPacketSender() {
@@ -174,10 +179,12 @@ function fakePlayer(name = 'Gladiator') {
         getVarbit: (id) => varbits.get(id) ?? 0,
         sendConfig: (id, value) => { varbits.set(`varp${id}`, value); return sender; },
         sendSubInterface: (uid, id) => { p.interfaces.push(id); return sender; },
-        sendInterface: (id) => { p.interfaces.push(id); return sender; },
-        sendInterfaceRemoval: () => { p.interfaces.push(-1); return sender; },
+        sendInterface: (id) => { p.interfaceId = id; p.interfaces.push(id); return sender; },
+        sendInterfaceRemoval: () => { p.interfaceId = -1; p.interfaces.push(-1); return sender; },
+        sendEnterAmountPrompt: (text) => { p.amountPrompt = text; return sender; },
         sendClientScript: (id, ...args) => { p.scripts.push([id, ...args]); return sender; },
-        sendInterfaceFlagsRange: () => sender,
+        sendInterfaceScript: (id, args) => { p.scripts.push([id, ...args]); return sender; },
+        sendInterfaceFlagsRange: (...args) => { p.flags.push(args); return sender; },
         sendGraphic: () => sender,
         sendProjectile: () => sender,
         sendPoisonType: () => sender,
@@ -196,11 +203,12 @@ function ticks(count) {
   for (let i = 0; i < count; i++) TaskManager.process();
 }
 
+const realCalculateWalkRoute = PluginManager.getCoreApi().PathFinder.calculateWalkRoute;
 const SCOREBOARD_FILE = require('node:path').join(require('node:os').tmpdir(), `colosseum-scoreboard-${process.pid}.json`);
 after(() => require('node:fs').rmSync(SCOREBOARD_FILE, { force: true }));
 
-before(() => {
-  CachePipeline.initialize();
+before(async () => {
+  await CachePipeline.initialize();
   RegionManager.init();
   // The scoreboard's world records go to a scratch file, never the server's saves.
   Scoreboard._useFile(SCOREBOARD_FILE);
@@ -209,6 +217,7 @@ before(() => {
   const api = fakeApi();
   Lobby(api);
   Arena(api);
+  Rewards(api);
 });
 
 beforeEach(() => {
@@ -472,7 +481,7 @@ test('the Manticore throws magic and ranged in either order, then melee, a tick 
   assert.deepEqual([...seen].sort(), ['MAGIC-RANGED', 'RANGED-MAGIC']);
 });
 
-test('a Minotaur away from the player heals damaged enemies within 6 tiles to full', () => {
+test('a Minotaur away from the player heals an eligible nearby enemy to full', () => {
   const I = Waves.ids();
   const minotaur = fakeNpc(I.minotaur, 1820, 3100);
   const near = fakeNpc(I.javelin, 1824, 3102);
@@ -645,10 +654,10 @@ test('Solarflare circles a pillar on its 16 open tiles', () => {
     assert.equal(path.length, 16);
     assert.equal(path.filter((tile) => tile.corner).length, 4);
     for (const tile of path) {
-      assert.equal(RegionManager.getClipping(tile.x, tile.y, 0) & 0x1280100, 0, `${tile.x},${tile.y} is open`);
+      assert.equal(RegionManager.getClipping(tile.x, tile.y, 0) & RegionManager.BLOCKED_MASK, 0, `${tile.x},${tile.y} is open`);
     }
     for (let x = pillar.x; x < pillar.x + 3; x++) {
-      assert.notEqual(RegionManager.getClipping(x, pillar.y + 1, 0) & 0x1280100, 0, 'the pillar blocks');
+      assert.notEqual(RegionManager.getClipping(x, pillar.y + 1, 0) & RegionManager.BLOCKED_MASK, 0, 'the pillar blocks');
     }
   }
 });
@@ -767,7 +776,7 @@ test("Sol's patterns: Spear 1 is 5x6 and two lines of 4; the Shields leave one s
 test('the barricade closes the gaps between the four pillars', () => {
   const tiles = Patterns.barricade();
   const blocked = (x, y) => tiles.some((tile) => tile.x === x && tile.y === y) ||
-    (RegionManager.getClipping(x, y, 0) & 0x1280100) !== 0;
+    (RegionManager.getClipping(x, y, 0) & RegionManager.BLOCKED_MASK) !== 0;
   const { minX, maxX, minY, maxY } = Patterns.BARRICADE;
   for (let x = minX; x <= maxX; x++) assert.ok(blocked(x, minY) && blocked(x, maxY), `x ${x}`);
   for (let y = minY; y <= maxY; y++) assert.ok(blocked(minX, y) && blocked(maxX, y), `y ${y}`);
@@ -786,6 +795,27 @@ function solRun(name = 'Challenger') {
   sol.hp = 1500;
   return { player, run, fight: run.solFight, sol };
 }
+
+test("Sol's weapon and footwork achievements track attacks and actual run steps", () => {
+  const { Equipment, ItemIdentifiers } = Shared.core();
+  const { player, run, fight, sol } = solRun();
+  const weaponSlot = Equipment.WEAPON_SLOT;
+  player.equipment[weaponSlot] = { getId: () => ItemIdentifiers.BRONZE_SPEAR };
+  CombatAchievements.solAttack({ player, target: sol });
+  assert.equal(fight.achievements.onlyAllowedWeapons, true, 'a spear is allowed');
+  player.equipment[weaponSlot] = { getId: () => ItemIdentifiers.BRONZE_SCIMITAR };
+  CombatAchievements.solAttack({ player, target: sol });
+  assert.equal(fight.achievements.onlyAllowedWeapons, false, 'an unlisted weapon fails the restriction');
+
+  let ranThisCycle = false;
+  player.getMovementQueue = () => ({ didRunThisCycle: () => ranThisCycle });
+  CombatAchievements.solTick(run);
+  assert.equal(fight.achievements.ran, false, 'walking does not count as running');
+  ranThisCycle = true;
+  CombatAchievements.solTick(run);
+  assert.equal(fight.achievements.ran, true, 'an actual run step fails the no-running task');
+  run.end('left');
+});
 
 test('wave 12: Sol greets by attempt, lands behind the barricade, and his death brings out the chest', () => {
   const player = fakePlayer('Twelve');
@@ -875,11 +905,13 @@ test('the triple attack: Protect from Melee too early is turned off and the blow
     player.prayers[melee] = true;
     ticks(1);
     assert.equal(player.damage.length, 0, 'prayed on the tick: blocked');
+    assert.equal(fight.achievements.perfectFootwork, true, 'a blocked hit does not fail the task');
     ticks(1);
     assert.equal(player.prayers[melee], false, 'still on before the next one: turned off');
     assert.ok(player.messages.includes("Sol Heredit doesn't take kindly to your eager prayer."));
     ticks(2);
     assert.deepEqual(player.damage, [25], 'the second blow lands');
+    assert.equal(fight.achievements.perfectFootwork, false, 'damage from Sol fails the task');
     run.end('left');
   } finally {
     PrayerHandler.deactivatePrayer = original;
@@ -903,6 +935,7 @@ test('the grapple: defending in time blocks it, on the last tick it is a perfect
   const roll = { attacker: player, target: sol, forceAccurate: false, forceMaxHit: false };
   Sol.parried(roll);
   assert.deepEqual([roll.forceAccurate, roll.forceMaxHit], [true, true]);
+  assert.equal(fight.achievements.perfectFootwork, true, 'a perfect parry takes no damage');
   const again = { attacker: player, target: sol, forceAccurate: false, forceMaxHit: false };
   Sol.parried(again);
   assert.equal(again.forceMaxHit, false, 'only the next blow');
@@ -915,6 +948,7 @@ test('the grapple: defending in time blocks it, on the last tick it is a perfect
   ticks(4);
   assert.equal(player.damage.length, 1);
   assert.ok(player.damage[0] >= 20 && player.damage[0] <= 45);
+  assert.equal(fight.achievements.perfectFootwork, false, 'a failed grapple parry takes damage');
   assert.match(player.messages.at(-1), /^Sol Heredit grabs hold of your \w+ and deals massive damage!$/);
   assert.ok(World.getProcessCycle() >= 0);
   run.end('left');
@@ -965,7 +999,10 @@ test('forfeiting between waves brings out the chest; teleporting out loses it al
   run.finish();
   assert.equal(run.stage, 'finished');
   assert.equal(Rewards.openChest({ player }), true);
-  assert.ok(player.interfaces.includes(246));
+  assert.ok(player.interfaces.includes(864), 'the rewards modal from rsprox 1227');
+  assert.ok(player.scripts.some((script) => script[0] === 4923), 'initializes the rewards modal');
+  assert.ok(player.scripts.some((script) => script[0] === 4929 && typeof script[1] === 'bigint'), 'sends the rewards value as a long');
+  assert.ok(player.flags.some(([uid, start, end]) => uid === ((864 << 16) | 17) && start === 0 && end === 30), 'enables the captured reward slots');
   assert.deepEqual(player.inventories[843], [[28924, 80]]);
   assert.equal(player.texts[(246 << 16) | 3], `Total Value: ${Rewards.valueOf(run.loot.rewards).toLocaleString('en-US')}`);
   run.end('left');
@@ -977,6 +1014,169 @@ test('forfeiting between waves brings out the chest; teleporting out loses it al
   ticks(3);
   assert.equal(away.player.location, before, 'not pulled back to the lobby');
   assert.equal(Shared.gloryOf(away.player), 0, 'no Glory for a teleport');
+});
+
+test('rewards chest supports captured item withdrawals and bank-all (rsprox 4117 and 1227)', () => {
+  const { player, run } = runWith({}, 'Rewards');
+  run.completeWave();
+  run.finish();
+  Rewards.openChest({ player });
+  const received = [];
+  player.getInventory = () => ({
+    getAddableAmount: (item) => item.getAmount(),
+    add: (item) => received.push(item.getAmount()),
+    refreshItems() {},
+  });
+  const banked = [];
+  player.getBank = () => ({ contains: () => true, getAddableAmount: (item) => item.getAmount(), add: (item) => banked.push(item.getAmount()) });
+  const click = (child, opId, slot = 0) => {
+    const buttonId = (864 << 16) | child;
+    const hook = hooks.buttons.find((entry) => entry.ids.includes(buttonId));
+    assert.ok(hook, `handler for ${child}`);
+    hook.handler({ player, buttonId, slot, opId, itemId: 28924 });
+  };
+  click(17, 1);
+  assert.deepEqual(received, [1]);
+  assert.equal(run.loot.rewards[0].amount, 79);
+  click(17, 4);
+  assert.equal(player.amountPrompt, 'Enter amount:');
+  player.amountAction.execute(2);
+  assert.deepEqual(received, [1, 2]);
+  assert.equal(run.loot.rewards[0].amount, 77);
+  click(15, 6);
+  assert.deepEqual(banked, [77]);
+  assert.deepEqual(run.loot.rewards, []);
+  assert.ok(player.scripts.some((script) => script[0] === 4929 && script[1] === 0n));
+  assert.equal(Rewards.openChest({ player }), true);
+  assert.equal(player.messages.at(-1), 'The chest appears to be empty.');
+  run.end('left');
+  assert.equal(player.varbits.get(9802), 0, 'leaving clears the loot-opened state');
+});
+
+test('reward quantities are bounded to the available stack and stale prompts cannot withdraw', () => {
+  const { player, run } = runWith({}, 'Quantity');
+  run.completeWave();
+  run.finish();
+  Rewards.openChest({ player });
+  const received = [];
+  player.getInventory = () => ({ getAddableAmount: (item) => item.getAmount(), add: (item) => received.push(item.getAmount()), refreshItems() {} });
+  const buttonId = (864 << 16) | 17;
+  const handler = hooks.buttons.find((entry) => entry.ids.includes(buttonId)).handler;
+  const click = (opId) => handler({ player, buttonId, slot: 0, itemId: 28924, opId });
+  click(2);
+  assert.deepEqual(received, [5]);
+  click(4);
+  const stale = player.amountAction;
+  player.setEnteredAmountAction(null);
+  stale.execute(20);
+  assert.equal(run.loot.rewards[0].amount, 75);
+  click(3);
+  assert.deepEqual(received, [5, 75]);
+  assert.deepEqual(run.loot.rewards, []);
+  run.end('left');
+});
+
+test('the rewards value retains amounts above a signed 32-bit integer', () => {
+  const { player, run } = runWith({}, 'Value');
+  run.completeWave();
+  run.finish();
+  run.loot.rewards[0].amount = 2147483647;
+  Rewards.openChest({ player });
+  const script = player.scripts.find(([id]) => id === 4929);
+  assert.equal(script[1], BigInt(Rewards.valueOf(run.loot.rewards)));
+  assert.ok(script[1] > 2147483647n);
+  run.end('left');
+});
+
+test('reward clicks reject stale items and leave what does not fit in the chest', () => {
+  const { player, run } = runWith({}, 'Capacity');
+  run.completeWave();
+  run.finish();
+  Rewards.openChest({ player });
+  const received = [];
+  player.getInventory = () => ({ getAddableAmount: () => 2, add: (item) => received.push(item.getAmount()), refreshItems() {} });
+  const buttonId = (864 << 16) | 17;
+  const handler = hooks.buttons.find((entry) => entry.ids.includes(buttonId)).handler;
+  handler({ player, buttonId, slot: 0, itemId: 995, opId: 3 });
+  assert.deepEqual(received, []);
+  handler({ player, buttonId, slot: 0, itemId: 28924, opId: 3 });
+  assert.deepEqual(received, [2]);
+  assert.equal(run.loot.rewards[0].amount, 78);
+  player.getPacketSender().sendInterfaceRemoval();
+  handler({ player, buttonId, slot: 0, itemId: 28924, opId: 3 });
+  assert.deepEqual(received, [2]);
+  run.end('left');
+});
+
+test('a full bank or inventory gives one refusal line and the chest keeps its rewards (rsprox 1193, 1194)', () => {
+  const { player, run } = runWith({}, 'Refusals');
+  run.completeWave();
+  run.finish();
+  run.loot.rewards.push({ id: 1201, amount: 4 });
+  Rewards.openChest({ player });
+  let space = 0;
+  const received = [];
+  player.getInventory = () => ({ getAddableAmount: (item) => Math.min(space, item.getAmount()), add: (item) => received.push([item.getId(), item.getAmount()]), refreshItems() {} });
+  let bankSpace = 0;
+  const banked = [];
+  player.getBank = () => ({ contains: () => bankSpace > 0, getFreeSlots: () => bankSpace, getAddableAmount: (item) => (bankSpace > 0 ? item.getAmount() : 0), add: (item) => banked.push([item.getId(), item.getAmount()]) });
+  const handler = (child) => hooks.buttons.find((entry) => entry.ids.includes((864 << 16) | child)).handler;
+  const VALUE = (246 << 16) | 3;
+  const before = player.texts[VALUE];
+  const lines = () => player.messages.splice(0);
+  lines();
+
+  delete player.texts[VALUE];
+  handler(15)({ player, opId: 6 });
+  assert.deepEqual(lines(), ['Your bank cannot hold your items.'], 'one line for the whole chest');
+  assert.deepEqual(run.loot.rewards, [{ id: 28924, amount: 80 }, { id: 1201, amount: 4 }]);
+  assert.equal(player.texts[VALUE], before, 'the value line is resent');
+
+  handler(14)({ player, opId: 1 });
+  assert.deepEqual(lines(), ["You don't have enough space to take anything."]);
+  assert.deepEqual(received, []);
+
+  handler(17)({ player, buttonId: (864 << 16) | 17, slot: 0, itemId: 28924, opId: 1 });
+  assert.deepEqual(lines(), ["You don't have enough inventory space to take any."]);
+  assert.equal(run.loot.rewards[0].amount, 80);
+
+  space = 1;
+  handler(14)({ player, opId: 1 });
+  assert.deepEqual(lines(), [], 'no line when some of it fits');
+  assert.deepEqual(received, [[28924, 1], [1201, 1]]);
+  assert.deepEqual(run.loot.rewards, [{ id: 28924, amount: 79 }, { id: 1201, amount: 3 }]);
+
+  bankSpace = 1;
+  handler(15)({ player, opId: 6 });
+  assert.deepEqual(lines(), []);
+  assert.deepEqual(banked, [[28924, 79], [1201, 3]]);
+  assert.deepEqual(run.loot.rewards, []);
+  handler(15)({ player, opId: 6 });
+  assert.deepEqual(lines(), ['You have nothing to deposit.']);
+  assert.ok(player.scripts.at(-1)[0] === 4929 && player.scripts.at(-1)[1] === 0n, 'the empty value is resent');
+  run.end('left');
+});
+
+test('discarding the rewards asks for confirmation and cancellation reopens the chest (rsprox 4117)', () => {
+  const { player, run } = runWith({}, 'Discard');
+  run.completeWave();
+  run.finish();
+  Rewards.openChest({ player });
+  const handler = hooks.buttons.find((entry) => entry.ids.includes((864 << 16) | 13)).handler;
+  handler({ player, opId: 6 });
+  let prompt = hooks.prompts.at(-1);
+  assert.equal(prompt.title, "Are you sure? You can't get your discarded rewards back!");
+  assert.equal(prompt.args[0], 'Yes, discard my rewards.');
+  assert.equal(prompt.args[2], 'No, keep my rewards.');
+  prompt.args[3]();
+  assert.equal(player.getInterfaceId(), 864);
+  assert.equal(run.loot.rewards[0].amount, 80);
+  handler({ player, opId: 6 });
+  prompt = hooks.prompts.at(-1);
+  prompt.args[1]();
+  assert.deepEqual(run.loot.rewards, []);
+  assert.ok(player.messages.includes('The chest empties before your eyes...'));
+  run.end('left');
 });
 
 test("a warbander whose tile is under a pillar takes a free side tile, never the player's", () => {
@@ -1021,4 +1221,151 @@ test("reinforcements follow the Wiki's waves, and Sol Heredit's wave has none", 
   assert.deepEqual(Waves.reinforcements(8, none), [I.minotaur]);
   assert.deepEqual(Waves.reinforcements(11, none), [I.shaman, I.minotaur]);
   assert.deepEqual(Waves.reinforcements(12, none), []);
+});
+
+// Controlled Run.tick calls use real registered actors, the private arena and cache clipping.
+// This does not advance the World clock or demonstrate NPC routing or retail timing.
+test('native Minotaur healing uses the arena visibility and eligibility rules', async t => {
+  const core = PluginManager.getCoreApi();
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { NpcDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
+  new NpcDefinitionLoader().load();
+  assert.deepEqual([Waves.ids().minotaur, Waves.ids().minotaurRouting, Waves.ids().javelin], [12812, 12813, 12817]);
+  const oldRoute = core.PathFinder.calculateWalkRoute;
+  core.PathFinder.calculateWalkRoute = realCalculateWalkRoute;
+  t.after(() => { core.PathFinder.calculateWalkRoute = oldRoute; Shared.bind(fakeApi()); });
+  const liveApi = PluginManager.createApi('native-colosseum-minotaur');
+  Shared.bind(liveApi);
+  const tile = (x, y) => new Location(x, y, 0);
+  const center = npc => core.Projectile.centreOf(npc);
+  const sight = (a, b, area) => RegionManager.canProjectileAttackReturn(center(a), center(b), 1, area);
+  let serial = 0;
+
+  function fixture(test, targetId = Waves.ids().javelin) {
+    let player, run;
+    test.after(() => {
+      if (run) {
+        const npcs = [...run.npcs].map(npc => [npc, npc.getIndex()]);
+        for (const [npc] of npcs) npc.getCombat().reset();
+        run.end('logout');
+        assert.equal(Run.runOf(player), null);
+        for (const [npc, index] of npcs) {
+          assert.notEqual(core.World.getNpcs().get(index), npc);
+          assert.equal(npc.isRegistered(), false);
+        }
+        core.TaskManager.cancelTasks(run);
+      }
+      if (player?.isRegistered()) core.World.getPlayers().remove(player);
+      if (player) {
+        core.TaskManager.cancelTasks(player);
+        core.TaskManager.cancelTasks(player.getIndex());
+      }
+      core.World.refreshActiveRegions();
+    });
+    const channel = { kind: 'test', isOpen: () => true, send: () => true, close() {}, onData() {}, onClose() {}, onError() {} };
+    const session = new PlayerSession(channel);
+    player = new Player(session);
+    session.setPlayer(player);
+    player.setUsername(`native-colosseum-${serial++}`);
+    player.setLocation(tile(1830, 3106));
+    test.mock.method(player, 'onAdd', () => {});
+    test.mock.method(player, 'onRemove', () => {});
+    assert.equal(core.World.getPlayers().add(player), true);
+    assert.equal(core.World.getPlayers().get(player.getIndex()), player);
+    run = new Run.ColosseumRun(player);
+    run.area.add(player);
+    run.stage = 'wave';
+    run.reinforced = true;
+    const minotaur = run.spawnEnemy({ id: Waves.ids().minotaur, x: 1815, y: 3110 });
+    const target = run.spawnEnemy({ id: targetId, x: 1815, y: 3116 });
+    assert.ok(minotaur?.isRegistered() && target?.isRegistered());
+    assert.equal(core.World.getNpcs().get(minotaur.getIndex()), minotaur);
+    assert.equal(core.World.getNpcs().get(target.getIndex()), target);
+    assert.ok(run.npcs.has(minotaur) && run.npcs.has(target));
+    assert.equal(minotaur.getPrivateArea(), run.area);
+    assert.equal(target.getPrivateArea(), run.area);
+    assert.equal(minotaur.getSize(), 3);
+    assert.equal(target.getSize(), 3);
+    assert.equal(target.getMaxHitpoints(), targetId === Waves.ids().minotaurRouting ? 225 : 220);
+    target.setHitpoints(Math.floor(target.getMaxHitpoints() / 2));
+    const pulse = () => {
+      for (const actor of [player, minotaur, target]) {
+        const at = actor.getLocation();
+        for (let dx = 0; dx < actor.getSize(); dx++) for (let dy = 0; dy < actor.getSize(); dy++) {
+          assert.equal(RegionManager.getClipping(at.getX() + dx, at.getY() + dy, at.getZ(), run.area) & RegionManager.BLOCKED_MASK, 0, 'actor occupies an open cache tile');
+        }
+      }
+      run.waveTicks = 4;
+      assert.equal(run.tick(), true);
+    };
+    return { player, run, minotaur, target, pulse };
+  }
+
+  await t.test('the same pair is blocked behind the actual pillar, heals in the open, and is blocked again', test => {
+    const f = fixture(test);
+    const { run, minotaur, target, pulse } = f;
+    assert.equal(target.getSize(), 3);
+    assert.equal(target.getMaxHitpoints(), 220);
+    assert.notEqual(RegionManager.getClipping(1816, 3114, 0, run.area) & RegionManager.BLOCKED_MASK, 0);
+    assert.equal(center(minotaur).getDistance(center(target)), 6);
+    assert.equal(sight(minotaur, target, run.area), false, 'centre ray hits the cache pillar');
+    assert.equal(RegionManager.canProjectileAttackBounds(minotaur.getLocation(), target.getLocation(), 3, 3, 3, 3, run.area), true, 'closest footprint edge is open');
+    pulse();
+    assert.equal(target.getHitpoints(), 110, 'pillar blocks the heal');
+    target.setLocation(tile(1812, 3116));
+    assert.equal(sight(minotaur, target, run.area), true, 'moved clear of the same pillar');
+    pulse();
+    assert.equal(target.getHitpoints(), 220);
+    target.setHitpoints(110).setLocation(tile(1815, 3116));
+    assert.equal(sight(minotaur, target, run.area), false);
+    pulse();
+    assert.equal(target.getHitpoints(), 110);
+  });
+
+  for (const [label, hp, expected] of [['below 75%', 164, 220], ['at 75%', 165, 165], ['above 75%', 166, 166]]) {
+    await t.test(`health ${label}`, test => {
+      const { run, minotaur, target, pulse } = fixture(test);
+      target.setLocation(tile(1812, 3116)).setHitpoints(hp);
+      assert.equal(sight(minotaur, target, run.area), true);
+      assert.ok(center(minotaur).getDistance(center(target)) <= 7);
+      pulse();
+      assert.equal(target.getHitpoints(), expected);
+    });
+  }
+
+  for (const [distance, expected] of [[7, 220], [8, 110]]) {
+    await t.test(`centre distance ${distance}`, test => {
+      const { run, minotaur, target, pulse } = fixture(test);
+      minotaur.setLocation(tile(1819, 3103));
+      target.setLocation(tile(1819 + distance, 3103));
+      assert.equal(center(minotaur).getDistance(center(target)), distance);
+      assert.equal(sight(minotaur, target, run.area), true);
+      pulse();
+      assert.equal(target.getHitpoints(), expected);
+    });
+  }
+
+  await t.test('another Minotaur is not an eligible target', test => {
+    const { run, minotaur, target, pulse } = fixture(test, Waves.ids().minotaurRouting);
+    target.setLocation(tile(1812, 3116));
+    assert.equal(sight(minotaur, target, run.area), true);
+    assert.ok(center(minotaur).getDistance(center(target)) <= 7);
+    pulse();
+    assert.equal(target.getMaxHitpoints(), 225);
+    assert.equal(target.getHitpoints(), 112);
+  });
+
+  await t.test('the player at the south-east diagonal of the footprint has melee priority', test => {
+    const { player, run, minotaur, target, pulse } = fixture(test);
+    target.setLocation(tile(1812, 3116));
+    player.setLocation(tile(1818, 3109));
+    assert.equal(core.CombatRange.footprintDistance(minotaur.getLocation(), 3, player.getLocation()), 1);
+    assert.equal(sight(minotaur, target, run.area), true);
+    pulse();
+    assert.equal(target.getHitpoints(), 110);
+    player.setLocation(tile(1830, 3106));
+    pulse();
+    assert.equal(target.getHitpoints(), 220);
+  });
 });

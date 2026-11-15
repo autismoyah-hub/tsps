@@ -20,6 +20,7 @@ const events = [];
 let dialogue;
 let commands;
 let buttons;
+const customEvents = new Map();
 
 class OptionDialogue {
   constructor(_id, handler, ...options) { this.handler = handler; this.options = options; }
@@ -42,10 +43,12 @@ before(async () => {
     registerCustomInterface() {},
     persistAttribute() {},
     registerCommand: (name, handler) => commands.set(name, handler),
+    onCustomEvent: (name, handler) => customEvents.set(name, handler),
     onInterfaceActionButton: (ids, handler) => ids.forEach((id) => buttons.set(id, handler)),
     emitCustomEvent: (name, request) => {
       if (name === "combat-achievements:count") request.total = request.monster === "Zulrah" ? 12 : 0;
       if (liveTiles.has(name)) request.tile = liveTiles.get(name);
+      if (name === "entrana:check-items" && !request.player.noEntranaRule) Object.assign(request, { handled: true, allowed: !request.player.armed });
       events.push(name);
     },
   });
@@ -78,6 +81,12 @@ function player() {
   };
 }
 
+test("the summary shortcut opens the same teleport interface without command text", () => {
+  const p = player();
+  customEvents.get("teleports:open")({ player: p });
+  assert.equal(p.getInterfaceId(), TeleportInterface._test.GROUP_ID);
+});
+
 const run = (p, ...parts) => commands.get("teleports")({ player: p, parts: ["teleports", ...parts] });
 const { DATA_PART_COMPONENTS } = require("../plugins/interface/teleportinterface/Layout.TeleportInterface");
 const catalog = (p) => DATA_PART_COMPONENTS.flatMap((component) => JSON.parse(p.texts.get(uid(component))));
@@ -100,6 +109,46 @@ test('Grand Exchange teleport list agrees with the ring of wealth landing on the
   assert.deepEqual([tile.getX(), tile.getY(), tile.getZ()], [3163, 3478, 0]);
 });
 
+test("Corp live destination falls back when unanswered and respects an explicit refusal", (t) => {
+  const p = player(), event = "corporeal:teleport-destination";
+  t.after(() => liveTiles.delete(event));
+  liveTiles.delete(event);
+  teleports.length = 0;
+  run(p);
+  clickRow(p, "corporeal-beast", OP.TELEPORT);
+  assert.deepEqual([teleports[0].location.getX(), teleports[0].location.getY(), teleports[0].location.getZ()], [2966, 4252, 2]);
+  liveTiles.set(event, null);
+  run(p);
+  clickRow(p, "corporeal-beast", OP.TELEPORT);
+  assert.equal(teleports.length, 1);
+  assert.equal(p.messages.at(-1), "The Corporeal Beast's cave is unavailable.");
+});
+
+test("the Entrana port asks Entrana's item rule: no weapons or armour by ::teleports either", () => {
+  const p = player();
+  teleports.length = 0;
+  p.armed = true;
+  run(p);
+  clickRow(p, "port-entrana", OP.TELEPORT);
+  assert.equal(teleports.length, 0, "armed: refused");
+  assert.equal(p.messages.at(-1), "You cannot take weapons, armour or other forbidden items to Entrana.");
+  p.armed = false;
+  run(p);
+  clickRow(p, "port-entrana", OP.TELEPORT);
+  assert.equal(teleports.length, 1, "unarmed: teleported");
+});
+
+test("the Entrana port refuses when nothing answers Entrana's item rule (its plugin off, a free-to-play world)", () => {
+  const p = player();
+  teleports.length = 0;
+  p.noEntranaRule = true;
+  run(p);
+  clickRow(p, "port-entrana", OP.TELEPORT);
+  assert.equal(teleports.length, 0, "unchecked: refused");
+  assert.equal(p.messages.at(-1), "You can't go there right now.");
+  assert.ok(!(p.getAttribute("teleports:recent") ?? []).includes("port-entrana"), "not remembered");
+});
+
 test("every destination lands on a free tile, with a known icon, type and tab", () => {
   const { DESTINATIONS, TAB_ORDER } = Destinations;
   const keys = new Set();
@@ -113,7 +162,8 @@ test("every destination lands on a free tile, with a known icon, type and tab", 
     assert.ok(entry.tabs.every((tab) => TAB_ORDER.includes(tab) && tab !== TAB.SAVED && tab !== TAB.ALL), `${entry.key}: bad tab`);
     assert.ok(entry.description, `${entry.key}: no description`);
     if (entry.live) {
-      assert.ok(!entry.tile && entry.unavailable, `${entry.key}: a live destination has no tile but says when it's unavailable`);
+      assert.ok(entry.unavailable, `${entry.key}: a live destination says when it's unavailable`);
+      if (entry.tile) assert.equal(RegionManager.blocked(Destinations.location(entry.tile), null), false, `${entry.key}: fallback is walkable`);
       continue;
     }
     if (RegionManager.blocked(Destinations.location(entry.tile), null)) blocked.push(`${entry.key} ${entry.tile}`);

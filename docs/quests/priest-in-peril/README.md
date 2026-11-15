@@ -18,16 +18,123 @@ mausoleum half (monuments, key swap, well, cell gate, blessing, coffin) did not 
 this run and was added from the Wiki transcripts. Varp 302 now carries live OSRS's values,
 and the run checked them after every step. Follow-up runs on fresh accounts checked the
 before-quest rules, the gate, the guardian and the fixes made after the first run. What stays
-open is outside the quest's code or has no source to settle it.
+open is outside the quest's code or has no source to settle it. The 2026-11-06 entry under
+Runs is a focused check of unmerged changes, not a quest run, so the status block above still
+records the 2026-11-01 run; the quest needs a whole run on the merged code.
 
 ## Findings
 
 Newest first.
 
+- **fixed (live capture)** Five gaps against rev 241 recording 2026-11-02 (rsprox captures), found
+  while comparing with another server's Priest in Peril:
+  - The iron key stayed in the inventory after unlocking the cell. Live uses it up: tick 11429
+    clears its slot along with "You use the key to unlock the cell gate." and synth 2419.
+  - Drezel's blessings showed nothing. Live plays heal_casting (84) on the player at height
+    120, Drezel's human_castentangle (710) and synth 166. That happens for the water (tick 11453)
+    and for the player (tick 13629).
+  - Filling a bucket at the well now plays human_pickuptable (832) and synth 2615 (tick 11068).
+  - Blessed water on the coffin now plays throw_bucketofwater (1077), and
+    priestperil_coffin_spell (272) on 3413,3486,2 and 3413,3487,2 with delay 34. It also plays
+    synth 1733 with delay 30 (tick 11568).
+  - Varp 302 went straight to 61, and the hand-in capped at 59. Live climbs to 60 with the
+    last essence (tick 13457), stays at 60 through "Quest complete!", and goes to 61 when
+    Drezel's "Drezel blesses you..." message plays later in the same conversation (tick 13629).
+    The gap after completion is kept in `priest-in-peril:awaiting-blessing`. Saves completed
+    before this have no such flag and stay at 61.
+    **Ours:** someone who walks off in that gap gets the final conversation back from the step
+    after "Quest complete!" when they next talk to the mausoleum Drezel. The Holy barrier still
+    opens on completion. Neither case is captured.
+  - A lost Wolfbane could not be had back. Drezel's post-quest page (Transcript:Drezel) starts
+    with "If the player has lost their wolfbane dagger:", but once the quest is done Nature
+    Spirit's variants answer his Talk-to, so that page never played. **Ours (entry point):**
+    with the dagger lost, the Talk-to now plays his page. Its lost-dagger branch is answered
+    from the inventory, equipment and banks (both Wolfbane ids), along with its inventory-full
+    pair, and its "receive" step gives one dagger back.
+  - Still not matching live: "Drezel inspects the water..." and "Drezel blesses you..." show
+    as chat messages, where live shows them in a messagebox. That is how the dialogue runtime
+    plays every message step without a box. On a fresh account, the Prayer level-up box at
+    "Quest complete!" ends the conversation before the blessing, so the resume above is what
+    reaches varp 61 there.
+  Covered by `tests/priest-in-peril.test.cjs`; checked in game on a headless account, worktree
+  slot 40. That covered the well, the unlock (key gone, varp 6), the water blessing, the coffin
+  (both 272 graphics, varp 7), the hand-in (60, then 61 after talking again), a relog at 61,
+  and getting a dropped Wolfbane back.
+
+- **fixed (live capture, issue 4130)** The temple's large doors and Drezel's cell gate teleported
+  the player across. Live opens them like doors (rev 241 recording 2026-11-02 ticks 10840-10847 in
+  and 10980-10982 out; for the cell, recording 2026-10-17 ticks 1311-1317 and rsprox.net #365):
+  `inviswall`
+  (38848) goes on the doorway tile(s), the open leaves (3491/3492 east of the large doors, 3464
+  east of the cell gate) on the tiles beyond, sound 62 (doors) or 71 (gate), the player walks one
+  tile across in the same tick and the closed locs are back two ticks later. Both are now Doors
+  `PASS_THROUGH_GATES`; the quest still decides who may open the large doors. The locked cell gate's
+  Open is how the player talks to Drezel (tick 11162-11168: "Hello." and his first line, no Talk-to),
+  so it now plays Drezel's conversation for the stage. With the iron key held, Open unlocks it with
+  sound 2419 and the player stays outside (2026-11-02 tick 11429). Using the iron key on the unlocked gate opens
+  it like Open (ours: not captured). The issue asked for a "Talk-through" option; the rev 242 cache's
+  only option on the gate is Open, and live talks through it. Covered by
+  `tests/priest-in-peril-doors.test.cjs`; checked in-game on a headless account (both doors, the
+  meeting, the unlock and the cell both ways).
+- **fixed (live capture)** The temple's Monks of Zamorak only punched. Two rev 241 RSProx
+  recordings (2026-10-17 and 2026-11-02) show them casting too: 3484 Weaken and Curse, 3485
+  Weaken and Confuse, 3486 Fire Bolt (a small sample: 3, 5 and 2 casts), with casts
+  11426/11424/11428 or 9144, projectiles 106/103/109/127 launched at cycle 44/61/51/51, cast
+  graphics at height 92 and impacts at 124. Every cast was from the next tile: Weaken's
+  projectile ends at cycle 60 and lands 2 ticks after the cast, Confuse, Curse and Fire Bolt end
+  at 90 and land after 3. A splash and a landed Weaken/Confuse/Curse show no hitsplat. A landed
+  one says "You feel weakened." and drains 5% plus 1 (strength 63 to 59 and 28 to 26, attack 27
+  to 25, defence 1 to 0; rounding 5% up fits the same numbers). The quest registers a combat
+  method for the six monk ids that mixes punches and these casts, with all of the above. Fire
+  Bolt hits up to 5, the Monk of Zamorak (Paterdomus) infobox's max hit (one captured hit, 4).
+  **Not from the captures:** the cast share is the captured share of swings (3 of 26, 5 of 20,
+  2 of 4), a small sample, not a measured rate; a monk picks evenly between its two spells; an
+  already lowered skill is left alone, as the standard curses do (every captured drain started
+  from a full level). Only Weaken landing was seen in a headless run (on the first version of
+  this change); the timing, splat and Fire Bolt changes are unit-tested only.
+- **fixed (live capture)** The hooded monk's golden-key drop tells the killer
+  "Untradeable drop: Golden key", as live does.
+- **checked, unchanged (live capture)** Varp 302 (1-8, 10, 11-60, 61), the knock, trapdoor,
+  key swap, well, cell gate, coffin, essence hand-ins and closing dialogue match both
+  recordings. "Mysterious Voice 2" and "Drevil" come from the Wiki transcript's own speakers.
+- **fixed (live capture)** Mausoleum gates 3444 and 3445 now swing in the inactive leaf 3446
+  on the tile beyond (3405,9894 and 3432,9897), let the player through and are back two ticks
+  later with sound 69 on opening, as in both recordings (2026-10-17 tick 1117, 2026-11-02 ticks
+  11016, 11664 and 11708-11710). The quest's golden-key rule still runs first and keeps the
+  first gate shut without the key. Covered by `tests/wooden-gate.test.cjs`. Checked in-game from
+  the monument side for 3444 only, before the blocker below was added.
+- **fixed (live capture)** While a mausoleum gate stands open, live replaces the gate leaf with
+  `inviswall` (38848) on the gate tile, yet the opener crosses with an ordinary walk (no
+  exactmove in either recording). Doors now does the same: the blocker goes up with the leaf, and
+  the opener's one step walks over it (the movement ignore-clipping flag, held until they are
+  across and never past two ticks). Nobody else can walk through behind them; without the
+  blocker, a player with no golden key could follow someone through the first gate. Unit-tested
+  against the real map collision; not seen in-game.
+- **fixed (live capture)** The two voices behind the temple door now wear the monks' chat heads
+  the recording shows: "Mysterious Voice" 3484, "Mysterious Voice 2" 3486 (the plugin used one
+  head, 12240, for both). Unit-tested; the head itself was not seen in a client.
+- **checked, no change (travel_to)** `travel_to` climbs the temple's stairs: it finds the real
+  stairs by name (61189 up at 3417,3492 landing 3416,3493,1; 61190 at the south stairs landing
+  3416,3484,1; the click note says the data's id 16671 differs). The captured landings match.
+  `transports.json` is generated from Shortest Path and stays unedited.
+
+- **fixed (bounded inference)** During the quest, monument Study now opens the cache's
+  quest-specific `priestperil_gravemonument` window (group 272, title "Grave Monument") and
+  writes the existing inscription to 272:7, instead of the 229 messagebox. The emblem on
+  272:8 is set with the canonical item through IF_SETITEM (golden souvenir; iron key for the
+  key monument), so it uses the item's own mesh and cache camera. The cache supplies the
+  window, text target, item target and close path (scripts 227/228/29 and the global IF_CLOSE
+  close); no raw model id, camera, animation or timing is invented. The after-quest Study
+  text and the Take-from refusal stay in the 229 messagebox, matching primary capture #365.
+  There is no live in-quest packet capture, and `Transcript:Monument` uses the Wiki's `tbox` (documented
+  as the chatbox template), so this is a cache + user-report inference for the reported wrong
+  window, not full OSRS parity. The live 272 artwork, post-swap emblem and item camera angles
+  remain unverified. References #2207.
 - **fixed** The temple's large doors stayed open after a quester used them (Doors keeps
   them open), so a player who hadn't started the quest could walk in. Live swings them shut
-  two ticks later (rsprox.net #365). The quest walks the player through instead: from stage 30, or
-  from inside at any stage. Fixed in #1817.
+  two ticks later (rsprox.net #365). The quest walked the player through instead: from stage 30, or
+  from inside at any stage. Fixed in #1817; the walk-through became a teleport, replaced for
+  issue 4130 (above).
 - **fixed** The guardian could be attacked before the quest and was not immune to magic.
   An Area over the ladder room refuses both with the transcript's "You have no reason to do
   that!" and "Your spells do not seem to affect it.". Fixed in #1817.
@@ -67,19 +174,47 @@ Newest first.
   say south, but the Monument infobox and all six golden item pages put the needle south and
   the key north-east (3497). This plugin follows the seven. No capture uses a key on a
   monument, and the cache has no item decoration on them to tell.
-- **open (minor)** Mysterious Voice 2's lines show under Mysterious Voice's name: the plugin
-  speaks through 12240, and no capture records the live door conversation's speakers.
-- **open (Doors)** Gate 3444 opens into loc 3445 (the other mausoleum gate, still "Open") at
-  3405,9894. Live adds the inactive leaf 3446 and an invisible wall (rsprox.net #365, #4288).
+- **resolved (2026-11-06)** The earlier note that Mysterious Voice 2's lines show under
+  Mysterious Voice's name no longer holds: the transcript's speaker names are used and the
+  2026-11-02 recording gave the speakers and heads (see the chat-head finding above).
 - **open (data)** `monk_of_zamorak_paterdomus` is shared by all six monk ids (17/22/30) and its golden-key row
   carries no quest condition. Needs an osrsreboxed-db dumper fix.
-- **open (travel_to)** `transports.json` has the temple's old stairs (16671 at 3418,3486 up,
-  landing 3417,3486 down). Rev 241 has `PATERDOMUS_SPIRALSTAIRS_M` (61190, 2x2 at 3417,3484) up
-  and 16673 at 3417,3493,1 down, which lands at 3416,3493; no capture confirms that landing.
 
 ## Runs
 
 Newest first. A rerun adds an entry; it never rewrites an older one.
+
+### 2026-11-06 · agent · claude-sonnet-5-5
+
+- **Start:** a focused check of this branch's unmerged changes, not a whole-quest run, so the
+  status block keeps the 2026-11-01 run.
+  Two fresh headless accounts; neither had the quest started at the time of the monk fights
+  (varp 302 = 0), which is enough for the monks to attack. Placement used `::tele` to the
+  temple yard (3411,3488) and, for the knock, beside the large door.
+  Declared aids: `::master` (all 99s), `::heal`, `::setlevel` to lower Magic and Defence to 1
+  and Strength to 28 so the drain showed, and a worktree server started with a non-default
+  agent MCP port (39818). The monk fights used the real combat path.
+- **Source:** the two rev 241 RSProx recordings of the quest (2026-10-17 and 2026-11-02),
+  decoded with RSProx's transcriber and compared by hand and with grep against the plugin.
+- **Route:** repeatedly attacked the Monks of Zamorak in the yard; knocked on the large door
+  at stage 0.
+- **Result:** monks 3484, 3485 and 3486 each cast (server log counts), Weaken drained
+  Strength with "You feel weakened." once seen over several fights. The knock at stage 0
+  gave "You knock at the door..." then "Doesn't seem like anyone's home.". The plugin test
+  file passes (17 tests), including new ones for the monk spells, the 5% plus 1 drain and the
+  key-drop message.
+- **Also checked:** gate 3444 from the monument side (opened, player crossed to 3405,9895,
+  the gate returned); `travel_to` up both temple stairs (see Findings). A third account was
+  put at stage 10 with `::quest priest in peril 10` (a declared aid) to play the door
+  conversation; the MCP reader names speakers from the NPC definition, so it cannot show the
+  chat-head fix, which is covered by a unit test only.
+- **Not checked:** Confuse and Curse landing in-game (only unit-tested), Fire Bolt damage
+  numbers, the cast share against live (estimated), the key-drop message in-game, a relog, the
+  chat heads in a client, gate 3445 in-game (unit-tested only).
+- **Changed after this run:** a review against the recordings found the monks' Confuse, Curse
+  and Fire Bolt landing a tick early, invented projectile end cycles, 0 hitsplats on splashes
+  and curses, Fire Bolt's 12 max hit and a 1 in 5 cast share; these were fixed from the
+  captures and the Wiki (see Findings) and are unit-tested only. Nothing in this run covers them.
 
 ### 2026-11-01 (second follow-up) · agent · claude-opus-5-5
 

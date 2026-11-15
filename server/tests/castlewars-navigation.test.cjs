@@ -100,6 +100,41 @@ test('insufficient room leaves both hands and the standard unchanged', () => {
   assert.match(p.messages.at(-1), /one free inventory space/);
 });
 
+test('a worn thrown-weapon stack joins its inventory stack, so a full inventory still takes the standard', () => {
+  const p = player();
+  p.getEquipment().setItem(core.Equipment.WEAPON_SLOT, new core.Item(core.ItemIdentifiers.RUNE_KNIFE, 50));
+  p.getInventory().setItem(0, new core.Item(core.ItemIdentifiers.RUNE_KNIFE, 100));
+  for (let i = 1; i < 28; i++) p.getInventory().setItem(i, new core.Item(core.ItemIdentifiers.BANDAGES, 1));
+  clickFlag(p, game.TEAM.ZAMORAK);
+  assert.equal(game.getCarriedFlagTeam(p), game.TEAM.ZAMORAK, 'the standard is taken');
+  assert.equal(p.getInventory().getAmount(core.ItemIdentifiers.RUNE_KNIFE), 150, 'the knives joined the stack');
+  assert.equal(p.getInventory().getFreeSlots(), 0);
+
+  // A stack at the cap has no room: nothing moves.
+  const capped = player();
+  capped.getEquipment().setItem(core.Equipment.WEAPON_SLOT, new core.Item(core.ItemIdentifiers.RUNE_KNIFE, 50));
+  capped.getInventory().setItem(0, new core.Item(core.ItemIdentifiers.RUNE_KNIFE, 0x7fffffff));
+  for (let i = 1; i < 28; i++) capped.getInventory().setItem(i, new core.Item(core.ItemIdentifiers.BANDAGES, 1));
+  game.restoreFlagToBase(game.TEAM.ZAMORAK);
+  clickFlag(capped, game.TEAM.ZAMORAK);
+  assert.equal(game.getCarriedFlagTeam(capped), null, 'no standard over a capped stack');
+  assert.equal(game.flagStatus[game.TEAM.ZAMORAK], 0);
+  assert.equal(capped.getEquipment().getItems()[core.Equipment.WEAPON_SLOT].getAmount(), 50, 'the knives stay worn');
+});
+
+test('stowing gear for the standard runs the normal unequip, so a can-unequip veto keeps the gear and the stand', (t) => {
+  const p = player();
+  p.getEquipment().setItem(core.Equipment.WEAPON_SLOT, new core.Item(core.ItemIdentifiers.RUNE_SCIMITAR, 1));
+  const vetoed = [];
+  t.mock.method(PluginManager, 'emitCanUnequip', (who, slot) => { vetoed.push(slot); return false; });
+  clickFlag(p, game.TEAM.ZAMORAK);
+  assert.deepEqual(vetoed, [core.Equipment.WEAPON_SLOT], 'the unequip hooks were asked');
+  assert.equal(game.flagStatus[game.TEAM.ZAMORAK], 0, 'the standard stays on its stand');
+  assert.equal(game.getCarriedFlagTeam(p), null);
+  assert.equal(p.getEquipment().getSlot(core.Equipment.WEAPON_SLOT), core.ItemIdentifiers.RUNE_SCIMITAR);
+  assert.equal(p.getInventory().getAmount(core.ItemIdentifiers.RUNE_SCIMITAR), 0);
+});
+
 test('the own standard returns immediately inside either castle, including a tunnel landing', () => {
   for (const [team, outside, inside] of [
     [game.TEAM.SARADOMIN, [2426, 3088, 0], [2426, 3087, 0]],
@@ -286,6 +321,43 @@ test('both open large and side doors route to the original threshold on the play
   }
 });
 
+for (const state of ['open', 'closed']) {
+  test(`plane changes resync both castles' ${state} large doors on the ground floor`, (t) => {
+    attachDoors(registry, game);
+    const O = core.ObjectIdentifiers;
+    const closed = [
+      [O.LARGE_DOOR_24, 2426, 3088, 3], [O.LARGE_DOOR_25, 2427, 3088, 3],
+      [O.LARGE_DOOR_28, 2373, 3119, 1], [O.LARGE_DOOR_29, 2372, 3119, 1],
+    ];
+    const opened = [
+      [O.LARGE_DOOR_26, 2426, 3087, 0], [O.LARGE_DOOR_27, 2427, 3087, 0],
+      [O.LARGE_DOOR_30, 2373, 3120, 0], [O.LARGE_DOOR_31, 2372, 3120, 0],
+    ];
+    const objects = rows => rows.map(([id, x, y, face]) =>
+      new core.GameObject(id, new core.Location(x, y, 0), 0, face, null));
+    const standing = objects(state === 'open' ? opened : closed);
+    const absent = state === 'open' ? closed : opened;
+    t.mock.method(core.MapObjects, 'get', (id, location) =>
+      standing.find(object => object.getId() === id && object.getLocation().equals(location)) ?? null);
+    const p = player(game.TEAM.ZAMORAK, [2372, 3121, 2]);
+    const spawned = [], removed = [];
+    t.mock.method(p.getPacketSender(), 'sendObject', object => spawned.push(object));
+    t.mock.method(p.getPacketSender(), 'sendObjectRemoval', object => removed.push(object));
+    const process = () => game.inGameProcessors.forEach(handler => handler(p));
+    process();
+    assert.equal(spawned.length + removed.length, 0, 'the initial observation does not resend');
+
+    p.setLocation(new core.Location(2372, 3121, 0));
+    process();
+    assert.deepEqual(spawned, standing, 'resend the real world leaves, retaining their rotations');
+    assert.deepEqual(removed.map(object => [object.getId(), object.getLocation().getX(),
+      object.getLocation().getY(), object.getLocation().getZ(), object.getType()]),
+    absent.map(([id, x, y]) => [id, x, y, 0, 0]), 'remove stale leaves on plane zero, without touching upper walls');
+    process();
+    assert.equal(spawned.length + removed.length, 8, 'remaining on the same floor sends no duplicate update');
+  });
+}
+
 test('both starting-room trapdoors intercept generic door handling and descend immediately', () => {
   attachNavigation(registry, game);
   for (const [team, id, from, to] of [
@@ -302,7 +374,7 @@ test('both starting-room trapdoors intercept generic door handling and descend i
 
 test('leaving either respawn room by ladder renews the idle allowance on return', (t) => {
   attachAreas({
-    ...registry, registerArea() {}, onPlayerLogin() {}, onPlayerDeath() {}, onShouldDropItemsOnDeath() {},
+    ...registry, registerArea() {}, onPlayerLogin() {}, onPlayerDeath() {}, onShouldDropItemsOnDeath() {}, onPlayerBeforeDeath() {},
   }, game);
   attachNavigation(registry, game);
   const ejected = [];

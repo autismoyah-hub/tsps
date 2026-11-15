@@ -219,7 +219,6 @@ Scope is the pass `renderOpaquePass` + `renderTransparentPass` covers for terrai
   2048px shadow map, lights via `collectHdLights`, environment via
   `resolveHdEnvironmentForRegion`). The shadow map is read with v = 1 - y: WebGPU texture rows
   start at NDC y = +1, so a GL-style lookup mirrors every shadow.
-- Weather (the other plugin with WebGL render hooks) is not ported.
 
 ### Stage 5.6 — world entity decks (boats) (done)
 
@@ -233,6 +232,8 @@ Scope is the pass `renderOpaquePass` + `renderTransparentPass` covers for terrai
   MapUniforms entry, so the deck draws at the boat as WebGL does.
 - The actor uniforms take the same matrix and the world-entity fog bypass; deck players and NPCs
   are packed from the ECS `worldViewId` (`WebGPUActors.packDeckActors`).
+- Ground items on a deck are grouped on the deck's square, as in WebGL, and their mesh entries
+  take the same matrix each frame (`GroundItemMeshes.placeDeckItems`).
 - `updateFollowCamera` projects the controlled player's deck coordinates to the boat
   (`projectDeckToWorld`), and `OverlayHost` exposes the animator so deck overhead text, the
   click cross and terrain picks (`getWorldEntityAdjustedTerrainRay`) anchor at the drawn deck.

@@ -12,7 +12,7 @@
  *   remaining." with each cast.
  */
 const Common = require("./Common.RatBoneWeapons");
-const { definePoweredStaff } = require("../PoweredStaff");
+const { definePoweredStaff, restricted, plainAmount, takePlain, PRESET_TEXT } = require("../PoweredStaff");
 
 const MAX_CHARGES = 20000;
 const CHARGES_META_KEY = "bone-staff-charges";
@@ -44,7 +44,7 @@ function maxHit(player) {
 }
 
 function flightCycles(from, to) {
-  return PROJECTILE.start + Math.max(1, from.getLocation().getDistance(to.getLocation())) * PROJECTILE.perTile;
+  return PROJECTILE.start + Math.max(1, core.CombatPosition.projectileDistance(from, to)) * PROJECTILE.perTile;
 }
 
 function look({ Animation, Graphic, Projectile }) {
@@ -114,21 +114,26 @@ function charge(event) {
   if (!ids.includes(I.BONE_STAFF) || !ids.includes(I.CHAOS_RUNE)) return;
   event.handled = true;
   const held = isStaff(event.usedItem) ? event.usedItem : event.usedWithItem;
+  // Preset chaos runes never charge it: Uncharge refunds plain runes.
+  if (restricted(held === event.usedItem ? event.usedWithItem : event.usedItem)) {
+    player.sendMessage(PRESET_TEXT);
+    return;
+  }
   const room = MAX_CHARGES - chargesOf(held);
   if (room <= 0) {
     player.sendMessage("Your Bone staff is already fully charged.");
     return;
   }
-  const most = Math.min(room, player.getInventory().getAmount(I.CHAOS_RUNE));
+  const most = Math.min(room, plainAmount(player.getInventory(), I.CHAOS_RUNE));
   const sender = player.getPacketSender();
   sender.sendVarbit(BUSY_VARBIT, 1);
   player.setEnteredAmountAction({
     acceptsZero: true,
     execute: (amount) => {
       sender.sendVarbit(BUSY_VARBIT, 0);
-      const runes = Math.min(Math.max(0, Math.floor(Number(amount) || 0)), MAX_CHARGES - chargesOf(held), player.getInventory().getAmount(I.CHAOS_RUNE));
+      const runes = Math.min(Math.max(0, Math.floor(Number(amount) || 0)), MAX_CHARGES - chargesOf(held), plainAmount(player.getInventory(), I.CHAOS_RUNE));
       if (runes <= 0 || !player.getInventory().getItems().includes(held)) return;
-      player.getInventory().deleteNumber(I.CHAOS_RUNE, runes);
+      takePlain(player.getInventory(), I.CHAOS_RUNE, runes);
       setCharges(held, chargesOf(held) + runes);
       player.getInventory().refreshItems();
     },
@@ -149,11 +154,12 @@ function uncharge({ player, item }) {
   }
   const inventory = player.getInventory();
   const runeId = core.ItemIdentifiers.CHAOS_RUNE;
-  if (!inventory.contains(runeId) && inventory.getFreeSlots() < 1) {
+  const refund = new core.Item(runeId, charges);
+  if (inventory.getAddableAmount(refund) < charges) {
     player.sendMessage("Your inventory is too full to hold the chaos runes.");
     return true;
   }
-  inventory.addItem(new core.Item(runeId, charges));
+  inventory.addItem(refund);
   setCharges(item, 0);
   inventory.refreshItems();
   const { DialogueChainBuilder, ItemStatementDialogue } = core;
@@ -168,6 +174,7 @@ function attach(pluginApi) {
   api.onItemAction("Bone staff", { Check: check, Uncharge: uncharge });
   api.onItemOnItem(charge, { noted: false });
   api.registerCombatMethodResolver(staff.resolver);
+  api.onCustomEvent("item:fill-charges", staff.fillCharges);
   api.onCombatHitResolved(onHitResolved);
 }
 

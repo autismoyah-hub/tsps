@@ -33,6 +33,11 @@ function end(player) {
   trips.delete(player);
 }
 
+/** A trip has landed: the route name, after the move (diary/content listeners). */
+function arrived(player, routeName) {
+  if (api) api.emitCustomEvent("ferries:arrived", { player, route: routeName });
+}
+
 function toLocation([x, y, z]) {
   return new core.Location(x, y, z ?? 0);
 }
@@ -64,6 +69,9 @@ function questState(player, key) {
 function passes(player, gateName) {
   const gate = gateName ? data.gates[gateName] : null;
   if (!gate) return true;
+  // `orAttribute`: a quest's own flag that also lets the player through (Jardric's rowboat once
+  // Dragon Slayer II has landed the player on Lithkren).
+  if (gate.orAttribute && player.getAttribute?.(gate.orAttribute)) return true;
   const state = questState(player, gate.quest);
   return gate.complete ? state.complete : state.started;
 }
@@ -104,7 +112,7 @@ function conditionSteps(steps, text) {
 }
 
 module.exports = {
-  init, route, travelling, begin, end, toLocation, later, passes, npcGameval, locGameval, speaker, playTranscript,
+  init, route, travelling, begin, end, arrived, toLocation, later, passes, npcGameval, locGameval, speaker, playTranscript,
   conditionSteps, trips,
   get api() { return api; },
   get core() { return core; },

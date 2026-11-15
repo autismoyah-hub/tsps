@@ -9,6 +9,15 @@ const Tools = require("./Tools.Farming");
 const GARDENER_RANGE = 10;
 // Cache OC_ITEM_OP1; equipment op1 removes, op2 starts the item's worn options.
 const WORN_OPTION_PARAM = 451;
+/** All Settings > Gameplay: "Automatically smash empty plant pots", the same switch Otto toggles. */
+const AUTO_SMASH_POTS_SETTING = 381;
+const AUTO_SMASH_POTS_VARBIT = 9614; // brut_smash_pots_automatically
+const AUTO_SMASH_POTS_LOCKED = "You must complete the Farming portion of Barbarian Training to access this setting.";
+/** All Settings > Warnings: "Farming protection payment confirmation" (on: pay without asking). */
+const PROTECTION_SETTING = 295;
+const PROTECTION_NO_ASK_VARBIT = 98; // settings_warning_confirmation_farming_protection
+const NOTED_TEXT = "The leprechaun exchanges your items for banknotes.";
+const NOTED_ONE_TEXT = "The leprechaun exchanges your item for a banknote.";
 const COMPOST_NAMES = ["", "Compost", "Supercompost", "Ultracompost", "Rotten tomato"];
 const ROTTEN_TOMATO_TIER = 4;
 // Rev 241 gamevals human_push and human_pickuptable, with the sounds captured on the bin (recording 1858).
@@ -265,6 +274,35 @@ function useBottomless(player, patch, id, slot) {
         return true;
     });
 }
+/**
+ * Tree seeds in plant pots, from rsprox captures (127, 2879 and the index's other sowings): the
+ * sow line names the seed as a "<tree> tree seed" for the oak-to-magic trees (yew, maple) and
+ * capitalises "Magic Tree seed" and "Spirit Tree seed"; every other seed keeps its cache name
+ * (palm/papaya/orange/dragonfruit/calquat tree seed, mahogany/teak seed, crystal acorn).
+ * Ours: the oak keeps "acorn" and willow follows the yew/maple rule; neither is captured.
+ */
+function sownSeedNoun(crop) {
+    if (crop.key === "MAGIC") return "Magic Tree seed";
+    if (crop.type === "SPIRIT_TREE") return "Spirit Tree seed";
+    if (crop.type === "TREE" && crop.key !== "OAK") return `${crop.name.toLowerCase()} tree seed`;
+    return core.CacheDefinitions.getItem(crop.seed).name.toLowerCase();
+}
+/**
+ * The watering line keeps the seed's cache name ("yew seed", "maple seed", "palm tree seed",
+ * "crystal acorn"), except "magic tree seed" and "spirit tree seed"; a hardwood seedling is
+ * "the plantpot" (mahogany, teak), as its planting line is. rsprox captures 127, 2879.
+ */
+function wateredSeedNoun(crop) {
+    if (crop.type === "HARDWOOD_TREE") return "plantpot";
+    if (crop.key === "MAGIC") return "magic tree seed";
+    if (crop.type === "SPIRIT_TREE") return "spirit tree seed";
+    return core.CacheDefinitions.getItem(crop.seed).name.toLowerCase();
+}
+/** A seed above the player's level opens the captured message box (rsprox capture 127, magic seed). */
+function seedlingLevelBox(crop) {
+    return player => player.getDialogueManager().startDialogues(new core.DialogueChainBuilder()
+        .add(new core.StatementDialogue(0, `You need level ${crop.level} Farming to plant that.`)));
+}
 function farmingItemPair(event) {
     const { player, usedItemId: a, usedWithItemId: b } = event;
     const inventory = player.getInventory();
@@ -283,10 +321,11 @@ function farmingItemPair(event) {
     if (crop && (a === Data.itemId("Filled plant pot") || b === Data.itemId("Filled plant pot"))) {
         event.handled = true;
         if (!Patches.requireTool(player, "Gardening trowel")) return;
-        if (!Patches.hasLevel(player, crop.level, "seedling")) return;
+        if (!Patches.hasLevel(player, crop.level, "seedling", seedlingLevelBox(crop))) return;
         inventory.deleteNumber(crop.seed, 1);
         inventory.deleteNumber(Data.itemId("Filled plant pot"), 1);
         inventory.addItem(new core.Item(crop.seedling));
+        Patches.spam(player, `You sow ${Patches.article(sownSeedNoun(crop))} in the plantpot.<br>It needs watering before it will grow.`);
         return;
     }
     const seedling = [...Data.CROPS.values()].find(c => c.seedling === a || c.seedling === b);
@@ -295,7 +334,8 @@ function farmingItemPair(event) {
         if (!/^Watering can(?:\([1-8]\))?$|^Magic watering can$|^Gricoller's can$/.test(core.CacheDefinitions.getItem(can).name)) return;
         event.handled = true;
         const canSlot = a === seedling.seedling ? event.usedWithItemSlot : event.usedItemSlot;
-        if (!Patches.water(player, can, canSlot)) return;
+        if (!Patches.water(player, can, canSlot, false)) return;
+        Patches.spam(player, `You water the ${wateredSeedNoun(seedling)}.`);
         const slot = a === seedling.seedling ? event.usedItemSlot : event.usedWithItemSlot;
         const saplingAt = Model.nextGrowth(Date.now(), 5, Patches.farmFor(player).offset);
         inventory.forSlot(slot).setId(seedling.wateredSeedling).setMetaValue("farming:sapling-at", saplingAt);
@@ -444,6 +484,21 @@ function farmingItemOnNpc(event) {
     if (planned.getAddableAmount(noted) < amount) { inventory.full(); return; }
     inventory.deleteNumber(id, amount);
     inventory.addItem(noted);
+    notedBox(player, id, amount);
+}
+/**
+ * rsprox captures (rev 241: potatoes, weeds, tomatoes, grimy guam and strawberries at the
+ * Catherby, Ardougne, Falador, Hosidius and Varlamore leprechauns): on the tick the notes
+ * appear live sends this line as a mesbox chat line and opens the objectbox with the unnoted
+ * item at zoom 400. A single item reads "your item for a banknote" (rsprox.net recording 1851,
+ * rev 227: one coconut).
+ */
+function notedBox(player, itemId, amount) {
+    const text = amount === 1 ? NOTED_ONE_TEXT : NOTED_TEXT;
+    player.getDialogueManager().startDialogues(new core.DialogueChainBuilder().add(new core.ItemStatementDialogue(0, itemId, text)));
+}
+function isGardenerPayment(action) {
+    return /^pay(?:$| \()/i.test(action ?? "");
 }
 function farmingNpc(event) {
     const { player, npc, definition } = event;
@@ -471,8 +526,7 @@ function farmingNpc(event) {
             if (!player.getLocation().isWithinDistance(npc.getLocation(), 5)) return;
             const training = Patches.farmFor(player).barbarian;
             if (!training?.smashing) { player.sendMessage("Learn pot-smashing first."); return; }
-            training.autoSmash = !training.autoSmash;
-            player.getPacketSender().sendVarbit(9614, training.autoSmash ? 1 : 0);
+            setAutoSmashPots(player, training, !training.autoSmash);
             player.sendMessage(`Automatic pot-smashing is ${training.autoSmash ? "enabled" : "disabled"}.`);
         }]]);
         return;
@@ -499,7 +553,7 @@ function farmingNpc(event) {
         Tools.open(player, npc);
         return;
     }
-    if (action !== "pay" && action !== "pay-fare" && action !== "talk-to") return;
+    if (!isGardenerPayment(action) && action !== "pay-fare" && action !== "talk-to") return;
     const pos = npc.getLocation();
     const patches = Data.CACHE.patches.filter(p => p.z === pos.getZ() && Math.abs(p.x - pos.getX()) <= GARDENER_RANGE && Math.abs(p.y - pos.getY()) <= GARDENER_RANGE);
     // A "Pay" option alone does not make an NPC a gardener: Bonzo (contest fee), Saniboch
@@ -512,7 +566,7 @@ function farmingNpc(event) {
         return c && (c.payment.length || Data.WOOD_TREES.has(c.type) || c.type === "FRUIT_TREE");
     });
     // Gardener NPCs advertise Pay; never hijack unrelated NPC conversations near a patch.
-    if (!definition?.getActions()?.some(option => option?.toLowerCase() === "pay")) return;
+    if (!definition?.getActions()?.some(isGardenerPayment)) return;
     event.handled = true;
     if (!relevant.length) {
         // Captured from the tree gardeners; the others keep the server's own line.
@@ -528,6 +582,14 @@ function farmingNpc(event) {
     });
     if (entries.length === 1) entries[0][1]();
     else Patches.choose(player, entries);
+}
+function gardenerProtection(event) {
+    if (event.action !== "farming:gardener-protect" || !event.npc) return;
+    const pay = event.definition?.getActions()?.findIndex(isGardenerPayment);
+    if (!(pay >= 0)) return;
+    const request = { ...event, clickType: pay + 1, handled: false };
+    farmingNpc(request);
+    event.handled = request.handled;
 }
 function gardenerSays(player, npc, text) {
     player.getDialogueManager().startDialogues(new core.DialogueChainBuilder().add(new core.NpcDialogue(0, npc.getId(), text)));
@@ -566,16 +628,49 @@ function askGardener(player, npc, p) {
     if (!canPay(player, crop.payment)) { gardenerSays(player, npc, `I want ${paymentText(crop.payment)} for that.`); return; }
     const farm = Patches.farmFor(player);
     const accept = () => {
-        if (!Patches.nearPatch(player, p) || Patches.stateFor(player, p) !== state || state.protected || !canPay(player, crop.payment)) return;
+        if (!Patches.nearPatch(player, p) || Patches.stateFor(player, p) !== state || (state.status === "grown" || state.status === "dead") || state.protected || !canPay(player, crop.payment)) return;
         pay(player, crop.payment);
         state.protected = true;
         if (state.status === "diseased") { state.status = "growing"; state.nextAt = Model.nextGrowth(Date.now(), Data.stageMinutes(crop, state.stage), farm.offset); }
+        core.PluginManager.emitCustomEvent("farming:protected", { player, npc, patch: p, crop: crop.key });
         Patches.spam(player, `You pay the gardener ${paymentText(crop.payment)} to protect the patch.`);
         gardenerSays(player, npc, `That'll do nicely, ${player.getAppearance().isMale() ? "sir" : "madam"}. Leave it with me - I'll make sure that patch grows for you.`);
     };
-    if (farm.gardenerNoAsk) { accept(); return; }
-    Patches.choose(player, [["Yes.", accept], ["No.", () => {}], ["Yes and don't ask again.", () => { farm.gardenerNoAsk = true; accept(); }]],
+    if (skipsProtectionConfirmation(player)) { accept(); return; }
+    Patches.choose(player, [["Yes.", accept], ["No.", () => {}], ["Yes and don't ask again.", () => { setSkipProtectionConfirmation(player); accept(); }]],
         0, `Pay ${paymentText(crop.payment)}?`);
+}
+function skipsProtectionConfirmation(player) {
+    return player.getPacketSender().getVarbit(PROTECTION_NO_ASK_VARBIT) === 1;
+}
+/** The gardener's "don't ask again" turns the All Settings row on, which the Settings plugin saves. */
+function setSkipProtectionConfirmation(player) {
+    core.PluginManager.emitCustomEvent("settings:set", { player, settingId: PROTECTION_SETTING, value: 1 });
+}
+function setAutoSmashPots(player, training, on) {
+    training.autoSmash = on;
+    player.getPacketSender().sendVarbit(AUTO_SMASH_POTS_VARBIT, on ? 1 : 0);
+}
+function settingClicked(request) {
+    if (request.settingId !== AUTO_SMASH_POTS_SETTING) return;
+    request.handled = true;
+    const { player } = request;
+    const training = Patches.farmFor(player).barbarian;
+    if (training?.smashing !== 3) { player.sendMessage(AUTO_SMASH_POTS_LOCKED); return; }
+    setAutoSmashPots(player, training, !training.autoSmash);
+}
+/**
+ * Login: the pot-smashing switch, and the gardener's old per-player "don't ask again" moved onto the
+ * protection confirmation setting once.
+ */
+function settingsLogin({ player }) {
+    if (player.isPlayerBot?.() === true) return;
+    const farm = Patches.farmFor(player);
+    if (farm.barbarian?.autoSmash) player.getPacketSender().sendVarbit(AUTO_SMASH_POTS_VARBIT, 1);
+    if (farm.gardenerNoAsk !== undefined) {
+        if (farm.gardenerNoAsk) setSkipProtectionConfirmation(player);
+        delete farm.gardenerNoAsk;
+    }
 }
 function canPay(player, payment) {
     const inventory = player.getInventory();
@@ -624,7 +719,7 @@ function farmingItemAction(event) {
         if (!patch) player.sendMessage("Use the amulet on a farming patch to bind it.");
         else {
             // A growth boundary can pass after the scheduled refresh but before this input.
-            Model.advanceFarm(Patches.farmFor(player), Date.now());
+            Patches.advanceFarm(player);
             const state = Patches.stateFor(player, patch);
             player.sendMessage(`Your bound patch: ${state.crop ? `${Data.CROPS.get(state.crop).name}, ${state.status}` : "empty"}.`);
         }
@@ -650,6 +745,8 @@ function farmingItemAction(event) {
         }], ["Keep the compost", () => {}]]);
         return;
     }
+    if (action === "fill" && fillProduceContainer(player, event, item, name)) return;
+    if (action === "remove-one" && removeOneProduce(player, event, item, name)) return;
     for (const [produce, plural, capacity] of CONTAINERS) {
         if (!name.startsWith(`${plural}(`) || action !== "empty") continue;
         event.handled = true;
@@ -661,4 +758,66 @@ function farmingItemAction(event) {
     }
 }
 
-Object.assign(module.exports, { cropRewards, binValue, binAction, useBottomless, farmingItemPair, growSeedlings, waterContainers, humidified, farmingItemOnNpc, farmingNpc, farmingItemAction, storeTool, takeBinStep });
+/** The sack or basket family a container belongs to: capacity, and its fill count (0 when empty), or null. */
+function produceContainer(name) {
+    if (name === "Empty sack") return { capacity: 10, current: 0, rows: CONTAINERS.filter(([, , capacity]) => capacity === 10) };
+    if (name === "Basket") return { capacity: 5, current: 0, rows: CONTAINERS.filter(([, , capacity]) => capacity === 5) };
+    const row = CONTAINERS.find(([, plural]) => name.startsWith(`${plural}(`));
+    const current = row && Number(name.match(/\((\d+)\)$/)?.[1]);
+    return row && current > 0 ? { capacity: row[2], current, rows: [row] } : null;
+}
+/** The container in its own slot becomes `${plural}(count)`, or the empty sack/basket at 0. */
+function setContainerCount(player, item, plural, capacity, count) {
+    item.setId(Data.itemId(count > 0 ? `${plural}(${count})` : capacity === 10 ? "Empty sack" : "Basket"));
+    player.getInventory().refreshItems();
+}
+/** Live's line when an empty sack finds nothing to take (rsprox captures: recording 20261111T230428, tick 26). */
+const EMPTY_SACK_NOTHING_MESSAGE = "You don't have any potatoes, onions or cabbages.";
+/** Ours: the basket's counterpart of that line; no capture or Wiki text has one. */
+const EMPTY_BASKET_NOTHING_MESSAGE = "You don't have any apples, bananas, oranges, strawberries or tomatoes.";
+/**
+ * Fill. An empty sack takes up to 10 of one vegetable from the inventory, cabbages first, then onions, then potatoes
+ * (Wiki, Empty sack; rsprox captures: recording 20261111T230428, ticks 64-79 and 117). An empty basket takes up to five
+ * of one fruit (ticks 133-153). A filled one tops up with its own produce (tick 43). It takes as many as are held, in
+ * the container's own slot, and says nothing. Noted produce doesn't count (tick 26, noted onions held). Draynor Manor
+ * cabbages are excluded (Wiki); Data.itemId resolves the plain Cabbage. A filled one with none of its produce held does
+ * nothing (ticks 69, 77, 81).
+ * Ours: the basket's fruit order (the Wiki gives none), its no-fruit line, and a full one's Fill doing nothing.
+ */
+function fillProduceContainer(player, event, item, name) {
+    const container = produceContainer(name);
+    if (!container) return false;
+    event.handled = true;
+    if (container.current >= container.capacity) return true;
+    const inventory = player.getInventory();
+    const rows = container.capacity === 10 && container.current === 0 ? [...container.rows].reverse() : container.rows;
+    const row = rows.find(([produce]) => inventory.getAmount(Data.itemId(produce)) > 0);
+    if (!row) {
+        if (container.current === 0) player.sendMessage(container.capacity === 10 ? EMPTY_SACK_NOTHING_MESSAGE : EMPTY_BASKET_NOTHING_MESSAGE);
+        return true;
+    }
+    const [produce, plural, capacity] = row;
+    const amount = Math.min(capacity - container.current, inventory.getAmount(Data.itemId(produce)));
+    inventory.deleteNumber(Data.itemId(produce), amount);
+    setContainerCount(player, item, plural, capacity, container.current + amount);
+    return true;
+}
+/**
+ * Remove-one: one piece of produce comes out into a free slot and the container drops a count. The spam line names it,
+ * "You take an onion out of the onion sack." / "a cabbage ... cabbage sack" / "a potato ... potato sack" /
+ * "a banana out of the banana basket." (rsprox captures: recording 20261111T230428, ticks 37, 58, 59, 127).
+ * Ours: the other fruit follow the same pattern, and a full inventory refuses with the usual full message.
+ */
+function removeOneProduce(player, event, item, name) {
+    const container = produceContainer(name);
+    if (!container || container.current === 0) return false;
+    event.handled = true;
+    const [produce, plural, capacity] = container.rows[0];
+    if (!Patches.give(player, Data.itemId(produce))) return true;
+    setContainerCount(player, item, plural, capacity, container.current - 1);
+    const noun = produce.toLowerCase();
+    Patches.spam(player, `You take ${/^[aeiou]/.test(noun) ? "an" : "a"} ${noun} out of the ${noun} ${capacity === 10 ? "sack" : "basket"}.`);
+    return true;
+}
+
+Object.assign(module.exports, { cropRewards, binValue, binAction, useBottomless, farmingItemPair, growSeedlings, waterContainers, humidified, farmingItemOnNpc, farmingNpc, gardenerProtection, farmingItemAction, storeTool, takeBinStep, settingClicked, settingsLogin });

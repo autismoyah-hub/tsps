@@ -16,6 +16,7 @@ import { Misc } from '../util/Misc';
 import { TreeMap } from 'treemap'
 import { PluginManager } from '../plugins/PluginManager';
 import { ServerPerf } from '../util/ServerPerf';
+import { CrossFloor } from "./CrossFloor";
 import { ActiveRegionIndex, ActiveRegionSnapshot } from './ActiveRegionIndex';
 import { ShopManager } from './model/container/shop/ShopManager';
 import { BoatManager } from "./content/sailing/BoatManager";
@@ -308,13 +309,15 @@ export class World {
         nextLocation: Location | null | undefined
     ): void {
         if (!player || !previousLocation || !nextLocation || previousLocation.equals(nextLocation)) return;
+        player.claimTileOccupancy?.();
         World.removePlayerFromTileOccupants(player, previousLocation);
         World.addPlayerToTileOccupants(player, nextLocation);
         if ((previousLocation.getX() >> 6) !== (nextLocation.getX() >> 6)
             || (previousLocation.getY() >> 6) !== (nextLocation.getY() >> 6)
             || previousLocation.getZ() !== nextLocation.getZ()) {
             NpcSpawnDefinitionLoader.activateNear(nextLocation, player.getNpcViewDistance?.());
-            if (player.isPlayerBot?.() !== true) {
+            // A bot an administrator drives wakes the regions around it, as a player does.
+            if ((player.isUnwatchedBot?.() ?? player.isPlayerBot?.()) !== true) {
                 World.refreshActiveRegions();
                 World.activeNpcsForUpdate = World.collectActiveNpcsForUpdate();
             }
@@ -326,14 +329,19 @@ export class World {
         location: Location | null | undefined,
         ignoredPlayer: Player | null = null,
         size = 1,
-        privateArea?: any
+        privateArea?: any,
+        // NPC movement only: a player who has not moved since logging in does not block NPCs yet
+        // (live; LostCity PLAYER_OCC). Other callers (a rolling block, arena placement) still
+        // see every player standing there.
+        blockingNpcsOnly = false
     ): boolean {
         if (!location) return false;
         for (let x = 0; x < Math.max(1, size); x++) {
             for (let y = 0; y < Math.max(1, size); y++) {
                 const key = World.getNpcTileKey(location.getX() + x, location.getY() + y, location.getZ());
                 if (World.playerTileOccupants.get(key)?.some((player) => player && player !== ignoredPlayer &&
-                    (privateArea === undefined || player.getPrivateArea() === privateArea))) {
+                    (privateArea === undefined || player.getPrivateArea() === privateArea) &&
+                    (!blockingNpcsOnly || player.isOccupyingTile?.() !== false))) {
                     return true;
                 }
             }
@@ -438,6 +446,7 @@ export class World {
         }
     }
 
+    /** Pets stay spatially indexed for visibility and lifecycle, but never block another NPC. */
     public static isNpcOccupyingTile(
         location: Location | null | undefined,
         ignoredNpc: NPC | null = null,
@@ -450,7 +459,11 @@ export class World {
         for (let x = 0; x < Math.max(1, size); x++) {
             for (let y = 0; y < Math.max(1, size); y++) {
                 const key = World.getNpcTileKey(location.getX() + x, location.getY() + y, location.getZ());
-                if (World.npcTileOccupants.get(key)?.some((npc) => npc && npc !== ignoredNpc &&
+                // A hidden NPC (setVisible(false): burrowed, vanished, swapped out for another) is out of
+                // the world for players, so it holds no tile: a woken Observatory guard has to walk back
+                // onto the post the hidden sleeping guard keeps.
+                if (World.npcTileOccupants.get(key)?.some((npc) => npc && npc !== ignoredNpc && !npc.isPet() &&
+                    npc.isVisible() &&
                     (privateArea === undefined || npc.getPrivateArea() === privateArea))) {
                     return true;
                 }
@@ -472,12 +485,18 @@ export class World {
             for (let y = 0; y < Math.max(1, size); y++) {
                 const key = World.getNpcTileKey(location.getX() + x, location.getY() + y, location.getZ());
                 if (World.npcTileOccupants.get(key)?.some((npc) => npc && npc.hasFlag(NPC.BLOCKS_PLAYERS_FLAG) &&
+                    npc.isVisible() &&
                     (privateArea === undefined || npc.getPrivateArea() === privateArea))) {
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    public static isProjectileBlockingNpcOnTile(x: number, y: number, z: number, privateArea: any): boolean {
+        return World.npcTileOccupants.get(World.getNpcTileKey(x, y, z))?.some((npc) =>
+            npc.hasFlag(NPC.BLOCKS_PROJECTILES_FLAG) && npc.getPrivateArea() === (privateArea ?? null)) ?? false;
     }
 
     private static addToUpdateBucket<T extends Mobile>(
@@ -591,7 +610,7 @@ export class World {
             }
             if (World.STRESS_BOT_UPDATES && candidate.isPlayerBot?.() === true) {
                 // counted as an observer so LOD strides and bucket sizing match real load
-            } else if (candidate.isPlayerBot?.() === true || !World.isPlayerSessionConnected(candidate)) {
+            } else if ((candidate.isPlayerBot?.() === true && !candidate.getSession().hasNetworkClient()) || !World.isPlayerSessionConnected(candidate)) {
                 return;
             }
             const location = candidate.getLocation?.();
@@ -668,14 +687,17 @@ export class World {
         // collection is a better tie-break than lowest index when the cap bites.
         const viewDistance = player.getViewDistance();
         const privateArea = BoatManager.syncArea(player);
-        return World.collectFromBuckets(
-            World.playerUpdateBuckets,
-            BoatManager.rootLocation(player),
-            Math.max(0, Math.ceil(viewDistance / 8)),
-            World.MAX_LOCAL_PLAYERS + World.MAX_NEW_LOCAL_PLAYERS_PER_CYCLE,
-            (candidate) => World.getPlayers().get(candidate.getIndex()) === candidate
-                && BoatManager.syncArea(candidate) === privateArea
-        );
+        const origin = BoatManager.rootLocation(player);
+        const radius = Math.max(0, Math.ceil(viewDistance / 8));
+        const budget = World.MAX_LOCAL_PLAYERS + World.MAX_NEW_LOCAL_PLAYERS_PER_CYCLE;
+        const found: Player[] = [];
+        const planes = CrossFloor.includesOtherPlanes(origin.getZ()) ? [origin.getZ(), ...[0, 1, 2, 3].filter(z => z !== origin.getZ())] : [origin.getZ()];
+        for (const z of planes) {
+            found.push(...World.collectFromBuckets(World.playerUpdateBuckets,
+                new Location(origin.getX(), origin.getY(), z), radius, budget - found.length,
+                candidate => World.getPlayers().get(candidate.getIndex()) === candidate && BoatManager.syncArea(candidate) === privateArea));
+        }
+        return found;
     }
 
     public static getNearbyPlayersForUpdate(player: Player): Player[] {
@@ -706,15 +728,19 @@ export class World {
 
     public static getNearbyNpcsForUpdate(player: Player): NPC[] {
         const radius = Math.max(World.UPDATE_BUCKET_RADIUS, Math.ceil(World.npcViewDistance(player) / 8));
-        const nearby = World.collectFromBuckets(World.npcUpdateBuckets, BoatManager.rootLocation(player), radius);
-        nearby.sort((a, b) => a.getIndex() - b.getIndex());
+        const origin = BoatManager.rootLocation(player);
+        const planes = CrossFloor.includesOtherPlanes(origin.getZ()) ? [origin.getZ(), ...[0, 1, 2, 3].filter(z => z !== origin.getZ())] : [origin.getZ()];
+        const nearby = planes.flatMap(z => World.collectFromBuckets(World.npcUpdateBuckets, new Location(origin.getX(), origin.getY(), z), radius));
+        nearby.sort((a, b) =>
+            Number(BoatManager.rootLocation(a).getZ() !== origin.getZ()) - Number(BoatManager.rootLocation(b).getZ() !== origin.getZ()) ||
+            a.getIndex() - b.getIndex());
         return nearby;
     }
 
     private static readonly localPlayerScratch = new Set<number>();
     private static readonly MAX_LOCAL_PLAYERS = 255;
     private static readonly MAX_NEW_LOCAL_PLAYERS_PER_CYCLE = 25;
-    private static readonly MAX_LOCAL_NPCS = 255;
+    public static readonly MAX_LOCAL_NPCS = 255;
 
     // Maintains player.getLocalPlayers() - the per-tick sync path (PlayerSession.flushClient)
     // reads this list directly to know who to include in the player's view.
@@ -737,7 +763,7 @@ export class World {
                 local !== player &&
                 !seen.has(local.getIndex()) &&
                 World.getPlayers().get(local.getIndex()) === local &&
-                BoatManager.rootLocation(local).isViewableFromWithin(origin, viewDistance) &&
+                CrossFloor.visible(origin, BoatManager.rootLocation(local), viewDistance) &&
                 !local.isNeedsPlacement() &&
                 BoatManager.syncArea(local) === privateArea &&
                 BoatManager.canSeeAboard(player, local)
@@ -752,7 +778,7 @@ export class World {
         for (const candidate of World.getNearbyPlayersForUpdate(player)) {
             if (localPlayers.length >= World.MAX_LOCAL_PLAYERS || added >= World.MAX_NEW_LOCAL_PLAYERS_PER_CYCLE) break;
             if (!candidate || candidate === player || seen.has(candidate.getIndex())) continue;
-            if (!BoatManager.rootLocation(candidate).isViewableFromWithin(origin, viewDistance)) continue;
+            if (!CrossFloor.visible(origin, BoatManager.rootLocation(candidate), viewDistance)) continue;
             if (BoatManager.syncArea(candidate) !== privateArea) continue;
             if (!BoatManager.canSeeAboard(player, candidate)) continue;
             localPlayers.push(candidate);
@@ -767,11 +793,12 @@ export class World {
     // reads this list directly to know which NPCs to include in the player's view.
     /**
      * A teleported NPC stays in view the tick it moves when that tick's update has to reach the
-     * client with it: an exact move (its glide), or a fade (its fade in where it lands); otherwise
-     * it is dropped and added back the next tick, and the update would be lost.
+     * client with it: an exact move (its glide), a fade (its fade in where it lands) or a telejump
+     * (NPC.telejump: it snaps there in place); otherwise it is dropped and added back the next
+     * tick, and the update would be lost.
      */
     private static staysInViewWhenPlaced(npc: NPC): boolean {
-        return npc.getExactMove?.() != null || npc.getTransparency?.() != null;
+        return npc.getExactMove?.() != null || npc.getTransparency?.() != null || npc.isTelejumping?.() === true;
     }
 
     /** How far the player sees NPCs (15 unless an area widens it). */
@@ -793,7 +820,7 @@ export class World {
                 World.getNpcs().get(npc.getIndex()) === npc &&
                 npc.isRegistered() &&
                 npc.isVisible() &&
-                origin.isViewableFromWithin(BoatManager.rootLocation(npc), viewDistance) &&
+                CrossFloor.visible(origin, BoatManager.rootLocation(npc), viewDistance) &&
                 (!npc.isNeedsPlacement() || World.staysInViewWhenPlaced(npc)) &&
                 BoatManager.syncArea(npc) === privateArea &&
                 BoatManager.canSeeAboard(player, npc) &&
@@ -816,7 +843,7 @@ export class World {
             (!currentPet.isNeedsPlacement() || World.staysInViewWhenPlaced(currentPet)) &&
             BoatManager.syncArea(currentPet) === privateArea &&
             BoatManager.canSeeAboard(player, currentPet) &&
-            BoatManager.rootLocation(currentPet).isViewableFromWithin(origin, viewDistance)) {
+            CrossFloor.visible(origin, BoatManager.rootLocation(currentPet), viewDistance)) {
             if (localNpcs.length === World.MAX_LOCAL_NPCS) {
                 localIndexes.delete(localNpcs.pop()!.getIndex());
             }
@@ -832,7 +859,7 @@ export class World {
             if (BoatManager.syncArea(npc) !== privateArea) continue;
             if (!BoatManager.canSeeAboard(player, npc)) continue;
             if (npc.isOwnerOnly?.() && npc.getOwner?.() !== player) continue;
-            if (!BoatManager.rootLocation(npc).isViewableFromWithin(origin, viewDistance)) continue;
+            if (!CrossFloor.visible(origin, BoatManager.rootLocation(npc), viewDistance)) continue;
             localNpcs.push(npc);
             localIndexes.add(npc.getIndex());
         }
@@ -872,7 +899,8 @@ export class World {
             (player) => World.shouldRunNetworkUpdates(player) || World.removePlayerQueue.includes(player),
             World.processCycle,
             Date.now(),
-            (player) => (BoatManager.getBoatAboard(player) ? BoatManager.rootLocation(player) : undefined)
+            (player) => (BoatManager.getBoatAboard(player) ? BoatManager.rootLocation(player) : undefined),
+            CrossFloor.enabled()
         );
         PluginManager.emitActiveRegionsUpdated(snapshot);
     }
@@ -896,7 +924,7 @@ export class World {
         }
         // Bots have no real client session and do not need to receive world update packets.
         // Keeping them out of update-recipient loops avoids O(players^2) visibility work.
-        if (player.isPlayerBot?.() === true) {
+        if (player.isPlayerBot?.() === true && !player.getSession().hasNetworkClient()) {
             return false;
         }
         if (!World.isPlayerSessionConnected(player)) {
@@ -909,7 +937,7 @@ export class World {
         player: Player,
         cycle: number
     ): boolean {
-        if (!player || player.isPlayerBot?.() !== true) {
+        if (!player || player.isPlayerBot?.() !== true || player.getSession().hasNetworkClient()) {
             return true;
         }
 
@@ -1022,7 +1050,7 @@ export class World {
     }
 
     private static isRealNetworkPlayer(player: Player | null | undefined): boolean {
-        if (!player || player.isPlayerBot?.() === true) {
+        if (!player || (player.isPlayerBot?.() === true && !player.getSession().hasNetworkClient())) {
             return false;
         }
         return World.isPlayerSessionConnected(player);
@@ -1188,9 +1216,11 @@ export class World {
                 // Bots must not be dropped by a host-imposed human player cap: they
                 // share the list but never take a human slot.
                 NpcSpawnDefinitionLoader.activateNear(player.getLocation(), player.getNpcViewDistance());
+                // NPCs walk through a player who has not moved since logging in.
+                player.deferTileOccupancy?.();
                 World.players.add(player, player.isPlayerBot?.() === true);
                 if (
-                    player.isPlayerBot?.() !== true &&
+                    (player.isUnwatchedBot?.() ?? player.isPlayerBot?.()) !== true &&
                     World.isPlayerSessionConnected(player)
                 ) {
                     activeRegionsChanged = true;

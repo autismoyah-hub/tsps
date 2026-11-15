@@ -3,6 +3,7 @@ import { MAIN_PROFILE, type PlayerProfile } from "./persistence/PlayerProfile";
 import { Sound } from "../../../Sound";
 import { PrayerData, PrayerHandler } from "../../../content/PrayerHandler";
 import { CombatFactory } from "../../../content/combat/CombatFactory";
+import { HitQueue } from "../../../content/combat/hit/HitQueue";
 import { CombatSpecial } from "../../../content/combat/CombatSpecial";
 import { CombatType } from "../../../content/combat/CombatType";
 import { FightType } from "../../../content/combat/FightType";
@@ -13,6 +14,7 @@ import { PendingHit } from "../../../content/combat/hit/PendingHit";
 import { Autocasting } from "../../../content/combat/magic/Autocasting";
 import { SkillManager } from "../../../content/skill/SkillManager";
 import { ItemDefinition } from "../../../definition/ItemDefinition";
+import type { Item } from "../../../model/Item";
 import { Mobile } from "../Mobile";
 import { NPC } from "../npc/NPC";
 import { NpcAggression } from "../npc/NpcAggression";
@@ -60,10 +62,15 @@ import { ServerPerf } from "../../../../util/ServerPerf";
 import { getSequencePriority } from "../../../cache/NpcAnimationScanner";
 import { LOGIN_TOKENS_ATTRIBUTE } from "../../../../net/login/LoginTokens";
 import { CacheDefinitions } from "../../../cache/CacheDefinitions";
+import type { GameObject } from "../object/GameObject";
+import { type LocMergeBounds, validateLocMerge } from "../../../../net/protocol/LocMerge";
+import { Music } from "../../../Music";
 
 const ATTR_SKIP_PERSISTENCE = "bot-skip-persistence";
 const DEFAULT_AUDIO_SETTINGS: Readonly<Record<number, number>> = {
     18: 0,
+    // The music settings the client sets: only their bits of varp 19 (Music.SETTINGS_MASK).
+    [Music.SETTINGS_VARP]: Music.DEFAULT_SETTINGS,
     168: 100,
     169: 100,
     872: 100,
@@ -90,6 +97,10 @@ export class Player extends Mobile {
     public static readonly STAT_RESTORE_TICKS = 100;
     /** Wiki (Rapid Heal): Rapid Heal or a Hitpoints cape heal a point every 30 seconds. */
     public static readonly FAST_HITPOINTS_REGEN_TICKS = 50;
+    /** `stat_boosts_hud_update_restore_up_timer`: (0 restore | 1 Rapid Restore, period, ticks left). */
+    private static readonly RESTORE_UP_TIMER_SCRIPT = 4517;
+    /** The overlay's timers are resent every quarter of the restore cycle. */
+    private static readonly RESTORE_TIMER_SEND_TICKS = 25;
     /** Cycle the next drained-stat restore is due on (-1: not started). */
     private statRestoreDue = -1;
     /** Cycle Rapid Restore's own restore is due on; it starts when the prayer is switched on. */
@@ -143,20 +154,44 @@ export class Player extends Mobile {
     private session: PlayerSession;
     public status: PlayerStatus = PlayerStatus.NONE;
     public interfaceId: number = -1
+    /** Counts modal opens (a change to a mounted id), so a held id can be told from the same id mounted again. */
+    private interfaceOpens = 0
     /** The process cycle of the player's last click or key press (0 before any since login). */
     public lastInputCycle = 0;
     private multiIcon: number;
     private isRunning = true;
     private playerBot = false;
+    /**
+     * Whether the player's tile blocks NPC movement. Live (LostCity's PLAYER_OCC): a player who
+     * has not moved or teleported since logging in does not block NPCs yet - they walk through -
+     * so a login defers it until the first move. Only NPC movement reads it.
+     */
+    private occupiesTile = true;
+
+    public deferTileOccupancy(): void {
+        this.occupiesTile = false;
+    }
+
+    /** Called when the player first moves: from then on the tile they stand on is occupied. */
+    public claimTileOccupancy(): boolean {
+        const deferred = !this.occupiesTile;
+        this.occupiesTile = true;
+        return deferred;
+    }
+
+    public isOccupyingTile(): boolean {
+        return this.occupiesTile;
+    }
     private botAreaProcessTick = 0;
-    private runEnergy = 100;
-    private lastRunRecovery = new TickStopwatch();
+    /** Run energy in OSRS units (0-10,000; 100 units = 1%). */
+    private runEnergy = GameConstants.RUN_ENERGY_MAX_UNITS;
     private isDying: boolean;
     public forceMovement: ForceMovement;
     private skillAnimation: number;
     private renderAnimations: number[] | null = null;
     /** Equipment slot -> item id shown in the appearance instead of the worn item (-1 shows the slot empty). */
     private displayedEquipment: Map<number, number> | null = null;
+    private displayedKits: Map<number, number> | null = null;
     private drainingPrayer = false;
     private prayerPointDrain = 0;
     /**
@@ -195,7 +230,7 @@ export class Player extends Mobile {
     public banks: Bank[] = Array(Bank.TOTAL_BANK_TABS).fill(null); // last index is for bank searches
     private searchingBank = false;
     private searchSyntax = "";
-    private fightType = FightType.UNARMED_KICK;
+    private fightType = FightType.UNARMED_PUNCH;
     public weapon: WeaponInterfaces = WeaponInterfaces.UNARMED;
     private autoRetaliate = true;
     private audioSettings: Record<number, number> = { ...DEFAULT_AUDIO_SETTINGS };
@@ -226,7 +261,11 @@ export class Player extends Mobile {
         this.setSpecialActivated(false);
         CombatSpecial.updateBar(this);
         this.setHasVengeance(false);
-        this.getCombat().getFireImmunityTimer().stop();
+        // Antifire is left running, timer and protection both: in every recorded death with one active (rsprox
+        // 227/01857, 227/00543, 227/00555, 234/03279...) its varbits count on through the death and respawn and the
+        // "about to expire" messages follow, while poison and prayers reset; the Wiki says nothing either way.
+        // Stopping only the timer left the protection on, a save wrote fireImmunityTimer 0 and enchanted bolts' fire
+        // check disagreed with dragonfire. The one reset the Wiki gives (a "no potions" duel) is the duel's own.
         this.getCombat().getPoisonImmunityTimer().stop();
         this.getCombat().getPoisonClock().resetPhase();
         this.getCombat().getTeleblockTimer().stop();
@@ -246,8 +285,10 @@ export class Player extends Mobile {
         PrayerHandler.deactivatePrayers(this);
         this.getEquipment().refreshItems();
         this.getInventory().refreshItems();
+        // Every level back to where it rests: the base, raised by a plugin's permanent boost
+        // (SkillManager.registerRestingLevelModifier), so a death keeps such a boost.
         for (let skill of Skill.values())
-            this.getSkillManager().setCurrentLevels(skill, this.getSkillManager().getMaxLevel(skill));
+            this.getSkillManager().setCurrentLevels(skill, this.getSkillManager().getRestingLevel(skill));
         this.setRunEnergy(100);
         this.getPacketSender().sendRunEnergy();
         this.getMovementQueue().setBlockMovement(false).reset();
@@ -269,13 +310,21 @@ export class Player extends Mobile {
 
     public appendDeath() {
         if (!this.isDying) {
-            const beforeDeath = { player: this, preventDeath: false, announce: true };
+            const beforeDeath: { player: Player; preventDeath: boolean; announce: boolean; message?: string } =
+                { player: this, preventDeath: false, announce: true };
             if (PluginManager.emitPlayerBeforeDeath(beforeDeath)) {
                 return;
             }
             // A respawn is the same Player object; drop rolls cached against the state it died in.
             CombatFactory.clearHitRollCache(this);
-            TaskManager.submit(new PlayerDeathTask(this, beforeDeath.announce !== false));
+            // Hits still in the air belong to this life too.
+            HitQueue.dropHitsFrom(this);
+            // Kill credit is per life: damage this player dealt stops counting once they die.
+            World.getPlayers().forEach((other) => {
+                if (other !== this) other.getCombat().removeDamager(this);
+            });
+            TaskManager.submit(new PlayerDeathTask(this, beforeDeath.announce !== false,
+                typeof beforeDeath.message === "string" ? beforeDeath.message : undefined));
             this.isDying = true;
         }
     }
@@ -285,14 +334,15 @@ export class Player extends Mobile {
     }
 
     public getAttackAnim(target?: Mobile): number {
-        const fightType = FightType.resolve(this.getFightType()) ?? FightType.UNARMED_KICK;
+        const fightType = FightType.resolve(this.getFightType()) ?? FightType.UNARMED_PUNCH;
         const againstNpc = target?.isNpc?.() === true;
         return WeaponProfiles.attackAnimation(this, fightType.getAnimationAgainst(againstNpc), againstNpc);
     }
 
-    public getAttackSound(): Sound {
-        const fightType = FightType.resolve(this.getFightType()) ?? FightType.UNARMED_KICK;
-        return WeaponProfiles.get(this)?.attackSound ?? fightType.getAttackSound();
+    public getAttackSound(): Sound | null {
+        const fightType = FightType.resolve(this.getFightType()) ?? FightType.UNARMED_PUNCH;
+        const profileSound = WeaponProfiles.get(this)?.attackSound;
+        return profileSound !== undefined ? profileSound : fightType.getAttackSound();
     }
 
     public getBlockAnim(): number {
@@ -374,6 +424,10 @@ export class Player extends Mobile {
         return true;
     }
 
+    public isNpc(): boolean {
+        return false;
+    }
+
     public equals(o: Object): boolean {
         if (!(o instanceof Player)) {
             return false;
@@ -439,7 +493,9 @@ export class Player extends Mobile {
         timed("client_input", () => this.getSession()?.processPackets());
         // The tick count, every tick, as live sends it (varp map_clock): the client's timers
         // (buff bar cooldowns, script4678 and script5940) count against it.
-        if (!isBot) this.sendMapClock();
+        // Client-only packets: a bot an administrator drives has their client, so it gets them as a player does.
+        const unwatched = this.isUnwatchedBot();
+        if (!unwatched) this.sendMapClock();
         // Queued impacts land before this player acts, matching LostCity's
         // processQueues-then-processInteraction order. A hit that kills them here
         // stops the rest of this turn via the isDying/hitpoints guards below.
@@ -447,7 +503,7 @@ export class Player extends Mobile {
 
         // Timers
         timed("timers", () => this.getTimers().process());
-        if (!isBot) this.syncPoisonOrb();
+        if (!unwatched) this.syncPoisonOrb();
 
         const movement = this.getMovementQueue();
         const combat = this.getCombat();
@@ -478,6 +534,10 @@ export class Player extends Mobile {
         // Reach checks for walk-to interactions run here, after this cycle's steps,
         // so arriving at an object/npc/ground item resolves on the same cycle.
         timed("walk_to_interaction", () => TaskManager.processWalkTo(this.getIndex()));
+        // A click this turn that started no walk leaves the run mode as it was, and a Ctrl-clicked
+        // interaction's run choice ends once the player is idle.
+        movement.dropPendingClickRunOverride();
+        movement.endClickRunOverrideWhenIdle();
 
         // Process aggression
         if (!isBot) {
@@ -499,12 +559,13 @@ export class Player extends Mobile {
 
         this.processSkullTimer();
 
-        // Increase run energy
-        if (!isBot && this.runEnergy < 100 && (!this.getMovementQueue().isMovings() || !this.isRunning)) {
-            if (this.lastRunRecovery.elapsedTime(MovementQueue.runEnergyRestoreDelay(this))) {
-                this.runEnergy++;
+        // Increase run energy every tick not spent running (Wiki: Recovery).
+        if (!isBot && this.runEnergy < GameConstants.RUN_ENERGY_MAX_UNITS
+            && !this.getMovementQueue().didRunThisCycle()) {
+            const restored = MovementQueue.runEnergyRestoreUnits(this);
+            if (restored > 0) {
+                this.addRunEnergyUnits(restored);
                 this.getPacketSender().sendRunEnergy();
-                this.lastRunRecovery.reset();
             }
         }
 
@@ -535,10 +596,12 @@ export class Player extends Mobile {
         if (restoreDue) this.statRestoreDue = cycle + Player.STAT_RESTORE_TICKS;
 
         const rapidRestore = PrayerHandler.isActivated(this, PrayerHandler.RAPID_RESTORE);
+        const rapidRestoreWasOn = this.rapidRestoreDue >= 0;
         if (!rapidRestore) this.rapidRestoreDue = -1;
         else if (this.rapidRestoreDue < 0) this.rapidRestoreDue = cycle + Player.STAT_RESTORE_TICKS;
         const rapidRestoreDue = rapidRestore && cycle >= this.rapidRestoreDue;
         if (rapidRestoreDue) this.rapidRestoreDue = cycle + Player.STAT_RESTORE_TICKS;
+        if (!this.isPlayerBot()) this.sendRestoreTimers(cycle, rapidRestore && (!rapidRestoreWasOn || rapidRestoreDue), rapidRestoreWasOn && !rapidRestore);
 
         if (restoreDue || rapidRestoreDue) {
             // An area can pause non-Hitpoints restoration (Rogues' Den holds a drained Agility/
@@ -578,6 +641,25 @@ export class Player extends Mobile {
             skills.decreaseCurrentLevel(Skill.HITPOINTS, 1, max);
         }
         this.restartHitpointsTimer(cycle);
+    }
+
+    /**
+     * The modified stats overlay's tooltip timers ("Stats restoring", "Boosts draining") count
+     * down on the client from what these scripts last set: the restore timer goes out every 25
+     * ticks of its cycle (with "stats:restore-timer-sent", for the boost drain timer), and Rapid
+     * Restore's own timer when it starts, restores and stops.
+     */
+    private sendRestoreTimers(cycle: number, rapidRestoreRestarted: boolean, rapidRestoreStopped: boolean): void {
+        const remaining = this.statRestoreDue - cycle;
+        if (remaining % Player.RESTORE_TIMER_SEND_TICKS === 0) {
+            this.getPacketSender().sendClientScript(Player.RESTORE_UP_TIMER_SCRIPT, 0, Player.STAT_RESTORE_TICKS, remaining);
+            PluginManager.emitCustomEvent("stats:restore-timer-sent", { player: this });
+        }
+        if (rapidRestoreRestarted) {
+            this.getPacketSender().sendClientScript(Player.RESTORE_UP_TIMER_SCRIPT, 1, Player.STAT_RESTORE_TICKS, Player.STAT_RESTORE_TICKS);
+        } else if (rapidRestoreStopped) {
+            this.getPacketSender().sendClientScript(Player.RESTORE_UP_TIMER_SCRIPT, 1, 0, 0);
+        }
     }
 
     /** Worn items changed: the next Hitpoints regen asks gear again, keeping the countdown. */
@@ -660,9 +742,14 @@ export class Player extends Mobile {
             .Sailing.onLogout(this);
         this.getPacketSender().sendInterfaceRemoval();
 
-        // Leave area
+        // Leave area. An area's leave code that throws must not stop the rest of the logout: the logout hooks, the
+        // task cancel and the save below (a plugin's postLeave error left the player's tasks running and unsaved).
         if (this.getArea() != null) {
-            this.getArea().leave(this, true);
+            try {
+                this.getArea().leave(this, true);
+            } catch (err) {
+                console.error(`[World] area leave failed on logout (${this.getUsername()})`, err);
+            }
         }
 
         // Do stuff...
@@ -717,7 +804,12 @@ export class Player extends Mobile {
         }
         CombatPoisonEffect.resume(this);
         for (const [varpId, value] of Object.entries(this.audioSettings)) {
-            this.getPacketSender().sendConfig(Number(varpId), value);
+            const id = Number(varpId);
+            // The music settings share varp 19 with bits the server owns.
+            const sent = id === Music.SETTINGS_VARP
+                ? (this.getPacketSender().getVarp(id) & ~Music.SETTINGS_MASK) | value
+                : value;
+            this.getPacketSender().sendConfig(id, sent);
         }
     }
 
@@ -726,10 +818,18 @@ export class Player extends Mobile {
             this.status !== PlayerStatus.TRADING &&
             this.status !== PlayerStatus.DUELING &&
             (this.status !== PlayerStatus.NONE || this.interfaceId >= 0 || this.dialogueManager.isActive() ||
-                this.packetSender.hasInterruptibleInterface())
+                this.packetSender.hasInterruptibleInterface() || this.packetSender.hasInputPrompt())
         ) {
             this.packetSender.closeInterruptibleInterfaces();
         }
+    }
+
+    /**
+     * Held by a teleport (its cast, until the move) or an agility obstacle (the agility runner's "agility.obstacle"
+     * attribute). Other holds (a spell freeze, a boss's stun or knockback, a cutscene, a ride) are not counted.
+     */
+    isLocked(): boolean {
+        return this.isTeleportingReturn() || this.getAttribute("agility.obstacle") != null;
     }
 
     busy(): boolean {
@@ -756,9 +856,13 @@ export class Player extends Mobile {
      * interaction (combat target or walk-to callback) but leaves the walk queue intact,
      * so the player keeps walking to the clicked destination without completing the
      * action. osrs-docs: Entity Interactions - Interruptions.
+     *
+     * `keepCombatTarget` leaves an attack running: a weapon or armour switch from the inventory
+     * does not end the fight on live, so the next swing comes off the old weapon's cooldown with
+     * no new click (rsprox captures, docs/weapon-switching.md).
      */
-    clearPendingAction(): void {
-        this.getCombat().clearInteraction();
+    clearPendingAction(keepCombatTarget = false): void {
+        if (!keepCombatTarget) this.getCombat().clearInteraction();
         TaskManager.cancelWalkToTasks(this.getIndex());
         // Following is an interaction too, so an inventory item action ends it.
         const following = this.getFollowing();
@@ -767,6 +871,7 @@ export class Player extends Mobile {
             if (this.getInteractingMobile() === following) this.setMobileInteraction(null);
             if (this.getPositionToFace()?.equals(following.getLocation())) this.setPositionToFace(null);
         }
+        PluginManager.emitCustomEvent("player:interaction-cleared", { player: this });
     }
 
     isStaff(): boolean {
@@ -804,7 +909,17 @@ export class Player extends Mobile {
 
     public setAudioSetting(varpId: number, value: number): boolean {
         if (!(varpId in DEFAULT_AUDIO_SETTINGS) || !Number.isFinite(value)) return false;
-        const maximum = varpId === 18 ? 2 : PACKED_AUDIO_VARPS.has(varpId) ? 0x7fffffff : 100;
+        if (varpId === Music.SETTINGS_VARP) {
+            this.audioSettings[varpId] = Math.trunc(value) & Music.SETTINGS_MASK;
+            return true;
+        }
+        if (PACKED_AUDIO_VARPS.has(varpId)) {
+            // Every bit is a setting (live sends 3109 with bits 30 and 31 set, so negative): keep the whole 32-bit
+            // value, as the client holds it, rather than clamp it to 0 and wipe the saved levels.
+            this.audioSettings[varpId] = Math.trunc(value) | 0;
+            return true;
+        }
+        const maximum = varpId === 18 ? 2 : 100;
         this.audioSettings[varpId] = Math.max(0, Math.min(maximum, Math.trunc(value)));
         return true;
     }
@@ -822,6 +937,10 @@ export class Player extends Mobile {
             PluginManager.emitCustomEvent("audio:setting-changed", { player: this, varpId, previous, value: next });
         }
         return true;
+    }
+
+    public setSession(session: PlayerSession): void {
+        this.session = session;
     }
 
     public getSession(): PlayerSession {
@@ -940,6 +1059,17 @@ export class Player extends Mobile {
         return this.fixedViewDistance ?? this.viewDistance;
     }
 
+    public getFixedViewDistance(): number | null { return this.fixedViewDistance; }
+
+    /** Ephemeral appearance visibility; never changes participation or combat policy. */
+    private appearanceHidden = false;
+    public isAppearanceHidden(): boolean { return this.appearanceHidden; }
+    public setAppearanceHidden(hidden: boolean): void {
+        if (this.appearanceHidden === hidden) return;
+        this.appearanceHidden = hidden;
+        this.getUpdateFlag().flag(Flag.APPEARANCE);
+    }
+
     /** A view distance kept regardless of the crowd (a spectator watching a room), or null. */
     private fixedViewDistance: number | null = null;
 
@@ -981,6 +1111,25 @@ export class Player extends Mobile {
         if (this.viewDistance < Player.PREFERRED_VIEW_DISTANCE) this.viewDistance++;
     }
 
+    /** Send the legacy loc_merge contract; revision241 consumes it without rendering changes. */
+    public mergeObject(object: GameObject, start: number, end: number, bounds: LocMergeBounds): this {
+        const location = object.getLocation();
+        const merge = {
+            ...bounds, locId: object.getId(), tile: { x: location.getX(), y: location.getY() },
+            level: location.getZ(), shape: object.getType(), rotation: object.getFace(),
+            playerIndex: this.getIndex(), start, end,
+        };
+        validateLocMerge(merge);
+        this.getPacketSender().sendObjectMerge(merge);
+        // View membership belongs to the recipient and can be asymmetric at crowded edges.
+        World.getPlayers().forEach(viewer => {
+            if (viewer !== this && viewer.getLocalPlayers().includes(this)) {
+                viewer.getPacketSender().sendObjectMerge(merge);
+            }
+        });
+        return this;
+    }
+
     public getLocalPlayers(): Player[] {
         return this.localPlayers;
     }
@@ -992,12 +1141,18 @@ export class Player extends Mobile {
         return this.interfaceId;
     }
 
+    /** How many modals have opened so far; a new open, even of the same id after a close, moves it. */
+    public getInterfaceOpens(): number {
+        return this.interfaceOpens;
+    }
+
     public setInterfaceId(interfaceId: number): this {
         const previousId = this.interfaceId;
         if (this.interfaceId >= 0 && interfaceId >= 0 && this.interfaceId !== interfaceId) {
             PluginManager.emitCustomEvent("interface:closed", { player: this, interfaceId: this.interfaceId });
         }
         this.interfaceId = interfaceId;
+        if (previousId !== interfaceId && interfaceId >= 0) this.interfaceOpens++;
         if (previousId !== interfaceId) {
             PluginManager.emitCustomEvent("interface:changed", { player: this, previousId, interfaceId });
         }
@@ -1102,18 +1257,94 @@ export class Player extends Mobile {
         return this;
     }
 
+    /**
+     * Shows other identity kits in some look slots (Appearance.HEAD ... Appearance.FEET) without touching the
+     * player's saved look, as live shows a minecart (kit 82, female 83) in the feet slot for a Keldagrim cart
+     * ride; null shows the player's own again.
+     */
+    public setDisplayedKits(overrides: Record<number, number> | null): Player {
+        this.displayedKits = overrides
+            ? new Map(Object.entries(overrides).map(([slot, kit]) => [Number(slot), kit]))
+            : null;
+        this.getUpdateFlag().flag(Flag.APPEARANCE);
+        return this;
+    }
+
+    /** The look the appearance shows: the saved one with any displayed kits over it. */
+    public getAppearanceLook(): number[] {
+        const look = this.getAppearance().getLook();
+        if (!this.displayedKits) return look;
+        const shown = look.slice();
+        for (const [slot, kit] of this.displayedKits) shown[slot] = kit;
+        return shown;
+    }
+
     /** The item id each equipment slot shows in the appearance. */
     public getAppearanceEquipmentIds(): number[] {
         return this.getEquipment().getItems().map((item, slot) =>
             this.displayedEquipment?.get(slot) ?? item?.getId?.() ?? -1);
     }
 
+    /** Run energy as a percentage (0-100), for content that works in whole or fractional percent. */
     public getRunEnergy(): number {
+        return this.runEnergy / 100;
+    }
+
+    public setRunEnergy(runEnergyPercent: number) {
+        // A percent read back from units (getRunEnergy, a save, a stash) isn't exact in floating point: 0.29 * 100 is
+        // 28.999..., which flooring lost a unit of on every relog. A hair over keeps floor semantics for real fractions.
+        this.setRunEnergyUnits(runEnergyPercent * 100 + 1e-6);
+    }
+
+    /** Run energy in OSRS units (0-10,000), the precision the formulas and the client use. */
+    public getRunEnergyUnits(): number {
         return this.runEnergy;
     }
 
-    public setRunEnergy(runEnergy: number) {
-        this.runEnergy = Math.max(0, Math.min(100, Math.floor(runEnergy)));
+    public setRunEnergyUnits(units: number) {
+        this.runEnergy = Math.max(0, Math.min(GameConstants.RUN_ENERGY_MAX_UNITS, Math.floor(units)));
+    }
+
+    public addRunEnergyUnits(units: number) {
+        this.setRunEnergyUnits(this.runEnergy + units);
+    }
+
+    /**
+     * Carried weight in grams: inventory plus equipment, the one total the equipment panel, the
+     * run-energy packet and the drain all use. Stackables (coins, runes, notes) weigh nothing
+     * (Wiki: Weight, their cache weight is overridden to 0), and plugins can replace a worn
+     * slot's weight through "equipment:weights" (graceful's negative weights), so the total
+     * can be negative.
+     */
+    public getCarriedWeightGrams(): number {
+        const request = { player: this, slotWeights: {} as Record<number, number> };
+        PluginManager.emitCustomEvent("equipment:weights", request);
+        const itemGrams = (item: Item | null | undefined): number => {
+            if (item == null || item.getId() < 0 || item.getAmount() <= 0) {
+                return 0;
+            }
+            const definition = ItemDefinition.forId(item.getId());
+            return definition.isStackable() || definition.isNoted() ? 0 : definition.getWeight();
+        };
+        let grams = 0;
+        const equipment = this.getEquipment().getItems();
+        for (let slot = 0; slot < equipment.length; slot++) {
+            const override = request.slotWeights[slot];
+            if (Number.isFinite(override) && equipment[slot]?.getId() >= 0 && equipment[slot].getAmount() > 0) {
+                grams += override * 1000;
+            } else {
+                grams += itemGrams(equipment[slot]);
+            }
+        }
+        for (const item of this.getInventory().getItems()) {
+            grams += itemGrams(item);
+        }
+        return grams;
+    }
+
+    /** Carried weight in whole kilograms, the fraction dropped toward zero as the client shows it. */
+    public getWeightKg(): number {
+        return Math.trunc(this.getCarriedWeightGrams() / 1000);
     }
 
     public isDrainingPrayer(): boolean {
@@ -1179,9 +1410,21 @@ export class Player extends Mobile {
         return this.skullTimer > 0;
     }
 
-    /** Counts the skull down a tick; the appearance drops the skull icon on the tick it runs out. */
+    /**
+     * Counts the skull down a tick; the appearance drops the skull icon on the tick it runs out. It stands still
+     * while dying: the items a death keeps follow the skull at the killing blow, not four ticks on.
+     */
     public processSkullTimer(): void {
-        if (!this.isSkulled()) {
+        if (!this.isSkulled() || this.isDying) {
+            return;
+        }
+        // Wiki (Skull (status), 9 December 2021): a skull "cannot disappear during PvP combat". Its last tick waits
+        // while a player is this player's target or attacker (the attacker clears six seconds after the last hit),
+        // or a player's first hit is still on its way (the attacker is only set when it lands).
+        const combat = this.getCombat();
+        const inPvpCombat = combat.getTarget?.()?.isPlayer?.() === true || combat.getAttacker?.()?.isPlayer?.() === true
+            || combat.getHitQueue?.()?.hasIncomingPlayerHit?.() === true;
+        if (this.skullTimer <= 1 && inPvpCombat) {
             return;
         }
         if (--this.skullTimer === 0) {
@@ -1320,6 +1563,14 @@ export class Player extends Mobile {
         return this.playerBot;
     }
 
+    /**
+     * A bot no client is watching: it needs no client packets and wakes no regions. A bot an administrator drives
+     * (::botcontrol) has the admin's connection, so it gets both, as a player does.
+     */
+    public isUnwatchedBot(): boolean {
+        return this.playerBot && this.getSession?.()?.hasNetworkClient?.() !== true;
+    }
+
     public setPlayerBot(playerBot: boolean): void {
         this.playerBot = playerBot;
     }
@@ -1452,7 +1703,7 @@ export class Player extends Mobile {
             }
         }
 
-        this.fightType = FightType.UNARMED_KICK;
+        this.fightType = FightType.UNARMED_PUNCH;
         return this.fightType;
     }
 

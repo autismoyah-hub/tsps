@@ -38,8 +38,8 @@ export type WidgetEventType =
     | "onResize"
     | "onClanSettingsTransmit"
     | "onClanChannelTransmit"
-    | "onItemOnItem"
-    | "onClanSettings"
+    | "onKeyDown"
+    | "onKeyUp"
     | "onMapPost"
     // Input field listeners (opcodes 1436-1439 / 2436-2439)
     | "onInputSubmit"
@@ -56,7 +56,7 @@ export interface WidgetNode {
     fileId: number;
     childIndex?: number; // OSRS: -1 for static widgets, >= 0 for dynamic children (CC_CREATE slot index)
     type?: number;
-    buttonType?: number; // IF1: 0=none, 1=ok, 2=spell, 4=close, 5=toggle, 6=continue
+    buttonType?: number; // IF1: 0=none, 1=ok, 2=target (spell), 3=close, 4=toggle, 5=select, 6=continue
     isIf3?: boolean; // true for IF3 format widgets
 
     rootIndex?: number; // Index in root interface array (-1 if not root)
@@ -182,6 +182,8 @@ export interface WidgetNode {
     rotationX?: number; // model rotation X (cache format)
     rotationY?: number; // model rotation Y (cache format)
     rotationZ?: number; // model rotation Z (cache format)
+    /** IF_SETROTATESPEED packed: signed y (yaw) speed in the high short, x (pitch) speed in the low. */
+    modelRotationSpeed?: number;
     modelAngleX?: number; // alias for CS2 ops
     modelAngleY?: number; // alias for CS2 ops
     modelAngleZ?: number; // alias for CS2 ops

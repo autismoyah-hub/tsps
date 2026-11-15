@@ -97,6 +97,7 @@ function dialogueAction(api, event) {
     }
     BOARDED.add(player);
     player.moveTo(new api.core.Location(2834, 3331, 1));
+    api.emitCustomEvent("entrana:boarded", { player });
   } else if (stepId === RETURN_ACTION && ISLAND_MONKS.has(event.npcId)) {
     event.handled = true;
     player.moveTo(new api.core.Location(3048, 3231, 1));
@@ -109,6 +110,7 @@ function resetSession({ player }) {
 
 module.exports = {
   name: "Entrana",
+  description: "Enforces Entrana's item restrictions on ferry and balloon travel: the monks search for armour, weapons, jars and supplies, with the Wiki's exceptions.",
   members: true,
   register(api) {
     api.onNpcDialogueVariant(selectVariant);

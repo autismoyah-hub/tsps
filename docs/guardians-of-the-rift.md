@@ -56,6 +56,11 @@ and the `gotr_perm_0` settings aren't in a var the server saves, so they are att
   - `[44090, 15855475]` for the huge-remains portals;
   - `[44091, 527582]` for water, body and law;
   - `[44092, 16293385]` for fire and chaos.
+- **All Settings' "Disable colourful fade effects"** (row 460, varbit 18132
+  `settings_colourful_fade_disabled`) swaps every portal's colour fade for a black one: `fade_overlay`
+  (174) with script 948 `[0, 255, 0, 0, 15]` on stepping in, `[0, 0, 0, 255, 15]` instead of 5985 on
+  arrival, closed with the overlay. Barracuda Trials' portals, which use the same `gotr_overlay`,
+  do the same with the row on (rsprox 936). The barrier's Visual-effects off still shows no fade at all.
 - **Script 5980 `gotr_hud_update`**, sent every 2 ticks while playing, takes 11 ints:
 
 | Arg | Meaning |
@@ -65,7 +70,7 @@ and the `gotr_perm_0` settings aren't in a var the server saves, so they are att
 | 4 | Huge-remains portal direction (enum 4254: 1 E, 2 SE, 3 SW, 4 S), 0 for none. |
 | 5 | Active elemental altar (enum 4270: 1 air, 2 water, 3 earth, 4 fire), 0 before the rift opens. |
 | 6 | Active catalytic altar (enum 4271: 1 mind, 2 body, 3 cosmic, 4 chaos, 5 nature, 6 law, 7 death, 8 blood). |
-| 7, 8 | Rift guardians alive / the cap (10), drawn as "7/10". |
+| 7, 8 | Rift guardians alive / the limit, drawn as "7/10". The limit is 2 solo and 10 on a busy world (captured); the plugin sends one more than the players, up to 10 (ours between the two). |
 | 9 | In the lobby, ticks to the rift opening; then ticks to the creatures' attack (200 from the open); then ticks to the altars' next change (33). Negative hides the timer. |
 | 10 | Ticks the huge-remains portal stays open (44 from its opening). Negative hides it: live sends minus the ticks since it closed. |
 
@@ -130,8 +135,10 @@ Ticks from the rift opening:
   talismans go at the start of a new game; the plugin takes those and any stones, never cells.
 - `@mes_hl_gre@` is coloured by the chatbox's transparency: 229628 on a transparent chatbox
   (Leagues capture), 06600c on the opaque one (the same green Mastering Mixology captured).
-- **Loss (no capture):** the Wiki says the game fails at 0%. The plugin closes the rift without
-  rewards and says "The Great Guardian has been defeated. The rift remains open." (our wording).
+- **Loss** (two solo losses, 2026-11-03): at 0% power, on the same tick, "<col=ef1020>The Great
+  Guardian was defeated!</col>" and "The Portal Guardians will keep their rifts open for another
+  30 seconds.". The barriers go and every tile turns inactive; there are no rewards. The Great
+  Guardian has no death animation: it plays `portal_guardian_sleep` a tick later.
 - **Altars:** one elemental and one catalytic Portal Guardian are active at a time, from the
   creatures' attack until 51 ticks after the close. The pair changes every 33 ticks, and each
   new altar differs from the one before (rev 241 captures). Active
@@ -171,7 +178,8 @@ Ticks from the rift opening:
 - **From the full charge until the Portal Guardians close their rifts, from outside:** mesbox "It looks like the adventurers
   within are just finishing up. You must wait until they are done to join."
 - **Leaving through the barrier:** `gotr_is_playing` 0, game id 0, both energies 0,
-  `gotr_mining_count` 0, the colossal pouch's guardian essence (`colossal_essence_pouch` 0) and
+  `gotr_mining_count` 0 (the server keeps the count for the game, so coming back in doesn't
+  restart the 250 that pays XP), the colossal pouch's guardian essence (`colossal_essence_pouch` 0) and
   the game's items go, and the HUD closes. The Wiki lists fragments, essence and portal talismans;
   the plugin also takes stones and cells.
 - **Logging in** inside the game side puts the player in the lobby (3615,9480).
@@ -221,7 +229,8 @@ Ticks from the rift opening:
     the HUD comes back.
   - The way back (`gotr_agility_portal_bottom_parent`, a multiloc shown by that varbit) is the
     same with the varbit 0, to 3608,9500.
-  - With Visual-effects off, the plugin skips the overlay.
+  - With Visual-effects off, the plugin skips the overlay; with "Disable colourful fade effects"
+    on, a black fade replaces it (see "Interfaces and scripts").
 - **Deposit Pool:**
   - Deposit-runes: `human_leverdown_walkmerge`, every rune to the bank, "You deposit all of your
     runes into the pool." With none: "You have no runes to deposit into the pool."
@@ -281,8 +290,13 @@ Ticks from the rift opening:
     fire, catalytic elsewhere), and the altar's XP. The capture's 22 law essence gave 209
     (9.5 each). The Runecrafting plugin's XP table is corrected to the Wiki's
     (5/5.5/6/6.5/7/7.5/8/8.5/8.7/9/9.5/10, 10.5 at the true Blood Altar).
-  - One uncharged cell is charged to the altar's tier, while no charged cell is held: "Your cell
-    absorbs a small/moderate/high/immense amount of excess energy."
+  - One uncharged cell is charged to the altar's tier: "Your cell absorbs a
+    small/moderate/high/immense amount of excess energy." A weaker charged cell held is replaced
+    (Wiki, 30 March 2022: cells can be upgraded at an altar); one as strong or stronger stops it.
+  - With no guardian essence, Craft-rune still charges an uncharged cell (Wiki/Strategies: players
+    imbue a cell between games). With nothing to charge and no essence at all: "You do not have
+    any guardian essence to bind here." (solo capture, a strong cell held at the Nature Altar).
+    Rune, pure or daeyalt essence crafts as plain Runecraft.
   - Cell tiers (Wiki): weak at air, mind and body; medium at water, cosmic and chaos; strong at
     earth, nature and law; overcharged at fire, death and blood.
   - Portal talismans (Wiki): 1/250 an essence unless Toggle-talisman turned them off, and they
@@ -291,7 +305,12 @@ Ticks from the rift opening:
   - Combination runes and polyelemental stones aren't built.
 - **Portal talisman on its Guardian (Wiki):** enters even while the Guardian is dormant. It's
   used up unless the Guardian is active: "The portal talisman shatters and you find yourself at
-  the altar it originated from." (captured).
+  the altar it originated from." (captured). Enter on a dormant Guardian does the same when its
+  talisman is held.
+- **The step through takes two ticks.** A plain Enter checks the Guardian again then: one that
+  went dormant meanwhile turns the player back with the dormant mesbox (issue 1986: the HUD's
+  timer reads 0 for the altar's last tick, so a click then got through after it closed). The HUD
+  is also sent the moment the altars change, not on its next two-tick update.
 - **Toggle-talisman:** flips `gotr_talisman_toggle_<rune>`. The chat line ("You will no longer
   find portal talismans at the Air Altar.") is ours.
 - Lantern bonus runes ("Your lantern gets you a bonus rune.") come with the rewards phase.
@@ -320,8 +339,9 @@ Ticks from the rift opening:
     only carry ten of these at a time."
   - Weak cells: Take gives one weak cell. Take-chisel gives a chisel (`human_pickuptable`, sound
     2582).
-  - The cells and talismans are destroyed when dropped: "The Uncharged cell is destroyed as you
-    drop it." (spam), sound 2739.
+  - Guardian essence, cells and talismans (the game items with Drop in the cache) are destroyed
+    when dropped: "The Uncharged cell is destroyed as you drop it." (spam), sound 2739. A stack
+    goes whole; guardian essence one at a time. Fragments and stones have Destroy instead.
 - **The seven cell tiles** (`gotr_cell_tile_*`, shape 22) and their barriers (captured):
 
   | Tile | Barrier |
@@ -345,14 +365,17 @@ Ticks from the rift opening:
     strong, overcharged), XP +10 over recharging (190, 260 captured).
   - **Otherwise:** "The weak cell is consumed as it <col=ff0000>recharges</col> the barrier.",
     sound 5428. Energy +2/+5/+9/+15, Runecraft XP 30/100/180/250 (captured), and 10/25/50/100
-    health back (Wiki).
+    health back (Wiki), shown as a heal splat so the barrier's health bar appears; placing and
+    strengthening show one too.
   - Recharging a full barrier stops paying at 2,500 XP and 450 energy a game (Wiki).
   - With no charged cell, the plugin shows an objectbox: "You need a charged cell to place on the
     tile." (our wording).
 - **A barrier destroyed:** "<col=ef1020>A barrier has been destroyed!</col>" (Leagues capture).
   - The tile becomes `gotr_cell_tile_broken_repairable`. Repair takes 12 guardian fragments and
-    gives 25 of each energy (Wiki).
-  - The plugin's refusal ("You need 12 guardian fragments to repair the cell tile.") is ours.
+    gives 25 of each energy, with `human_pickupfloor` (Wiki; solo capture).
+  - Without the fragments, a mesbox: "It looks like you'll need 12 guardian fragments to repair
+    this." With them: "The magical power of the guardian essence restores the cell tile. It can now
+    fit a charged cell again." (solo capture).
 - **At 60% power** every barrier takes 50 damage (Wiki). **At the close** every tile goes back to
   inactive and the barriers go (captured).
 - **Assemble at an essence pile** (captured, from arrival):
@@ -360,12 +383,19 @@ Ticks from the rift opening:
     sound 942 x2.
   - +2: "You carve out a place for the cell and carefully place it inside the guardian." (spam),
     `gotr_chisel_guardian`, sound 2586 x2.
-  - +4: the guardian rises (`rift_guardian_spawn`). The pile is removed for 6 ticks.
+  - +4: the guardian rises (`rift_guardian_spawn`). The pile is removed for 6 ticks. 4 ticks after
+    it rises, the guardian takes its first step, which carries sequence -1 (delay 95). That ends
+    the spawn sequence, which loops at forced priority 10: while it plays, the client holds the
+    guardian's steps and drops its attack and block sequences (issue 3837).
   - +5: the cell is used up, "The powers of the weak cell extend into the essence. A Guardian
     comes to life.", sound 956, 80 Crafting XP and the cell's Runecraft XP. The pile's energy is
     6/15/27/45 (Wiki: 2x+1 of the strengthening value), of the pile's kind only.
-  - With ten guardians up: "The powers of the cell extend into the essence, but no guardian
-    forms." The energy still comes.
+  - Already at the limit: "There are already enough rift guardians in the room." at the pile,
+    and nothing is taken (solo capture, limit 2).
+  - The limit reached while assembling: "The powers of the cell extend into the essence, but no
+    guardian forms." The cell goes and the energy still comes.
+  - The assembly holds the player (movement blocked) until it's done: clicking away can't cancel
+    it, as on live.
   - No charged cell: objectbox (weak cell) "You will need a charged cell to power any rift
     guardians you create from this essence pile."
   - No chisel (Wiki: needed): "You need a chisel to carve the essence into a guardian." (ours).
@@ -373,7 +403,7 @@ Ticks from the rift opening:
     blood.
   - Live raises a guardian on the pile itself. Here it stands up on the pile's north edge, so the
     2x2 and 3x3 guardians can walk out to their posts between the barriers and the rift.
-  - All guardians die at full power (Wiki). The HUD's "n/10" counts them.
+  - All guardians die at full power (Wiki). The HUD's "n/limit" counts them.
 - **Players may place cells and assemble guardians in the lobby** (captured between games). Both
   the barriers and the guardians carry into the game.
   - The capture: the tiles reset at the close, then players built weak barriers over the next 26
@@ -391,10 +421,14 @@ Ticks from the rift opening:
 - **Batches** (captured):
   - From the creatures' attack, they come out of the rift in batches 76 ticks apart, with
     `abyssal_demon_teleport` map anims (height 90) where they appear (3613-3617, 9522-9525).
-  - A busy world (about 450 players) had batches of 13-22: two thirds leeches, a quarter walkers,
-    the rest abyssal guardians.
-  - The plugin sends max(2, min(22, players/30 + 2)): two on a quiet world, 17 at 450 players.
-  - After the 60% surge the mix leans to walkers and abyssal guardians (Wiki).
+  - Batches grow through the game. Solo: 1, 2, 2, 2, 3, 4, 4, 4, with abyssal guardians from the
+    fifth. A world of hundreds: 15, 16, 19, 20, 18, 20, 22, 24, 26, with guardians from the third.
+    Mostly leeches, about one in seven walkers, up to one in seven guardians. An older busy capture
+    had 13-22.
+  - The plugin fits those (ours between them): a first batch of 1 + (players - 1)/25, at most 15,
+    growing by 0.45 + players/400 (at most 1.3) a wave, up to 30. Walkers are 15% (from the third
+    wave solo), abyssal guardians 12% from the fifth wave (third with 20 or more players).
+  - After the 60% surge both shares grow by a quarter (Wiki: more walkers and abyssal guardians).
 - **Stats:** the cache gives the leech 5, the walker 30 and the abyssal guardian 50 hitpoints.
   Rift guardians have 10-50 and barriers 50/100/200/400.
 - **Hits** (captured hitsplats):
@@ -414,31 +448,54 @@ Ticks from the rift opening:
 - **Targets** (Wiki):
   - Creatures go for the nearest standing barrier, else the Great Guardian.
   - They fight back only against a rift guardian that struck them, while it's beside them.
-  - Rift guardians go for the nearest creature within 10 tiles.
+  - Rift guardians go for the nearest creature anywhere in the temple. In capture
+    20261020T162558 they walk at creatures 11-26 tiles away, so there is no sight limit (a
+    10-tile one left guardians idle at the far end of their post; issue 2698).
 - **The Great Guardian** plays `9372` every 50 ticks of a game (capture 1840). The close's map anims
-  (2064 x3, sound 5406) aren't built. Each creature hit drains its power. The busy world's barriers never let
-  one through, so the drain (leech 1, walker 2, abyssal guardian 3 a hit) is ours. At 0% the game
-  is lost.
+  (2064 x3, sound 5406) aren't built.
+- **Creature hits on the Great Guardian** (two solo losses): hitsplat 17 with no health bar, and
+  half the splat, rounded up, off its power. Leeches show 1-2 (1 power), walkers 5-6 (3 power).
+  Abyssal guardians attack from range and couldn't be told apart; the plugin gives them 3. On busy
+  worlds the barriers never let a creature through, so the plugin's scaling with the maximum power
+  (250 stones a player: the same share of a bigger game's power) is ours. At 0% the game is lost.
+- **Between games the Great Guardian sleeps** (captured): `portal_guardian_sleep` 3 ticks after
+  "The Great Guardian successfully closed the rift!" and 1 tick after a loss, then
+  `portal_guardian_sleep_loop` every tick through the lobby, and `portal_guardian_wakeup` on the
+  tick "The rift becomes active!".
 - **At full power** every creature and rift guardian dies (Wiki).
 - **Damage to these NPCs** lands directly, with their splat. Core NPCs heal 10% a tick when the
   combat system hasn't hit them for 20 seconds, so every GotR NPC is flagged `combat:no-regen`.
   Walkers and guardians are flagged to walk through other entities.
 
+### The Amulet of the Eye teleport
+
+Wiki ([Amulet of the Eye](https://oldschool.runescape.wiki/w/Amulet_of_the_Eye)): the amulet gives
+unlimited teleports to the Temple of the Eye, from the inventory or the worn tab, and its red,
+green and blue dyed forms are the same item. In the rev 241 cache the plain amulet has the inventory
+options Wear, Teleport and Destroy, and the plain and the three dyed amulets (26914, 26990, 26992,
+26994) carry a worn `Teleport` as cache param 451. `Amulet.GuardiansOfTheRift.js` teleports to the lobby tile with a normal teleport, so
+Tele Block and the level 20 Wilderness limit apply. No rsprox recording touches the amulet, so the
+landing tile (the lobby tile, as for the Minigame Teleport) and the teleport graphic of the dyed
+amulets are not confirmed by a capture.
+
 ### Rewards
 
 - **End of game:** see the Power-up section above for the captured lines. The points and the XP
-  both need 300 energy in the game (Wiki). Each closed rift counts in the collection log's
-  Guardians of the Rift category.
+  both need 300 energy in the game (Wiki). Below that, live says only "The Great Guardian
+  successfully closed the rift!" and "You did not contribute enough to attune any elemental or
+  catalytic energy.", and doesn't count the rift (capture). Each counted rift counts in the
+  collection log's Guardians of the Rift category.
+- **Atlax's diary:** Read plays `human_readbook` and opens `indexed_book` (680), the 24 pages
+  captured from live in `server/plugins/minigames/data/atlax-diary.js`. The first page lists the
+  entries (Bennath 15th-23rd) in the index components, and a click opens that entry's spread; the
+  index-jump button (680:9) returns to it.
 - **Pearls:** [Abyssal pearls](https://oldschool.runescape.wiki/w/Abyssal_pearls) are the
-  minigame's reward currency. Here they are a saved balance (`shop-currency:Abyssal pearls`,
-  the Shopkeepers point-currency convention), not an inventory item, so relogging keeps them
-  and Felix's shop and Cordelia spend the same number. A won game pays each player who made a
-  valid contribution `1 + performance / 100` pearls (performance is contribution points plus
-  energy, capped at 100); standing in the game without doing anything pays none. A
-  Rewards Guardian pearl roll credits the same balance, and with no points 25 pearls buy one
-  search. Accounts from before the currency change have their inventory and bank pearl items
-  converted into the balance once, on login; the items are removed in the same save. The
-  per-game rate is ours; the Wiki's 14-16 pearls belong to the Guardian's loot table.
+  minigame's reward currency and, as on live, the `abyssal_pearl` item. They come from the
+  Rewards Guardian's searches only; a closed game pays none. Felix's shop, Felix's lantern and
+  Cordelia take them from the inventory, and 25 pearls used on the Rewards Guardian buy one roll
+  (Wiki). For a while
+  (PR 1643) they were a saved balance; a balance left from then (`shop-currency:Abyssal pearls`)
+  is given back as pearls once, on login, to the inventory or the bank if it's full.
 - **Rewards Guardian** (captured):
   - Check: mesbox "You have 3 catalytic energy and 2 elemental energy. You can use them to search
     the rift 2 times. You have searched the rift 4,003 times."
@@ -447,13 +504,17 @@ Ticks from the rift opening:
   - When the searches run out: mesbox "There doesn't seem to be anything else in the rift for
     you." With none at all: "There doesn't seem to be anything in the rift for you."
   - Big-search: the animation, and three ticks later up to five rewards at once.
-  - A search costs an elemental and a catalytic point (Wiki); with no points, 25 pearls buy
-    the search instead. The points are spent first.
+  - A search costs an elemental and a catalytic point (Wiki). Search and Big-search spend only
+    points. Before issue 2698 they went on to spend 25 pearls a search once the points ran out,
+    eating the pearls they had just found.
+  - Abyssal pearls used on the Rewards Guardian: 25 buy one roll (Wiki: "use 25 pearls on the
+    Rewards Guardian for an additional loot roll"), searched like a single Search. With fewer,
+    "You need 25 abyssal pearls to search the rift with them." (ours: no capture or Wiki text).
   - A search is rolled first and given only if the whole roll fits. Otherwise the inventory-full
     message shows and the points stay.
 - **Loot** (Wiki; `server/plugins/minigames/data/guardians-of-the-rift-rewards.json`):
   - The main table out of 140: pouches, runes, talismans, pearls, the intricate pouch, ashes and
-    the needle. Its 14-16 pearls credit the saved pearl balance rather than the inventory.
+    the needle. Its 14-16 pearls go to the inventory like any other roll.
   - The rare table rolls apart: Atlax's diary (once), the catalytic talisman, the abyssal needle
     (once), the lantern and the dyes. The Abyssal protector is 1/4,000, through the pets plugin.
   - The pouch is the next one the player lacks, else the table rolls again.
@@ -462,7 +523,10 @@ Ticks from the rift opening:
   - New pouches don't come prefilled with pure essence yet.
 - **Intricate pouch** (Wiki): Open needs two free slots ("You need at least two free inventory
   spaces to open this pouch."). Pre-roll, main and hard-clue tertiary tables. Objectbox "You open
-  the intricate pouch and find something inside!" (Leagues capture).
+  the intricate pouch and find something inside!" (Leagues capture), showing the first item found.
+- **Atlax's diary** (Wiki): Read opens the book interface from
+  `server/plugins/minigames/data/atlax-diary.js`. The text isn't in the cache and isn't
+  transcribed yet; until it is, Read says so in the chat.
 - **A needle on the Rewards Guardian** makes an abyssal needle (Wiki). The abyssal needle on a
   pouch stitches the four into a colossal pouch (see Essence pouches).
 - **Apprentice Felix:**
@@ -473,11 +537,15 @@ Ticks from the rift opening:
   - Felix's binding to the old Temple Supplies shop in shops.json is removed. The Temple of the
     Eye quest copies keep it.
   - A dye on Felix plays his transcript ("You show the abyssal red dye to Felix.", Leagues
-    capture) and swaps it. Selling dyes and lanterns isn't built.
+    capture) and swaps it.
+  - His transcript's sales (Wiki: Abyssal pearls): a dye for 50 pearls and an abyssal lantern (any
+    of its lit or dyed versions) for 100. The options show only for what the player holds, and an
+    item gone by the time of the sale sells nothing.
+  - His transcript's lantern: 1,500 pearls in the inventory buy an abyssal lantern (Wiki).
 - **Apprentice Cordelia** (her transcript; the opening line is captured):
   - 25 pearls unlock the repairs (`gotr_cordelia_repair_pouch`, which gives her the Repair
-    option). Each repair then costs 1 pearl and repairs every decayed pouch. Both take the
-    saved balance: a refused purchase leaves it untouched.
+    option). Each repair then costs 1 pearl and repairs every decayed pouch. Both take pearls from
+    the inventory: a refused purchase leaves them untouched.
   - The Repair option's chat lines are ours.
 - **Chatter:** Tamara and Cordelia say the captured lines during a game, every 25-50 ticks (ours).
 - **Not built:** the abyssal lantern's effects ("Your lantern gets you a bonus rune."),
@@ -489,7 +557,7 @@ Ticks from the rift opening:
   temple's two template squares, not here: the untouched temple at 2368-2431,5632-5695 and the
   tutorial's at 2432-2495,5696-5759 (Quest Helper's tiles and capture 1693's cameras). Its
   handlers step aside for anyone who has finished the quest, so they can run before the
-  minigame's: GotR loads after Shopkeepers (`dependsOn`, for the pearl currency), so after the
+  minigame's: GotR loads after Shopkeepers (`dependsOn`), so after the
   quests and skills too. A relog during the tutorial keeps its items (`Temple.login` only strips finished
   players).
 - **Runecrafting (`plugins/skills/Runecrafting.plugin.js`):**
@@ -500,6 +568,10 @@ Ticks from the rift opening:
     exit portal are Runecrafting's own locs, so GotR claims them in `onBeforeObjectInteraction`
     for a player on an altar trip; without guardian essence the click falls through to plain
     Runecraft.
+  - A logout ends the game, so a login at the altar of a trip (saved as
+    `guardians-of-the-rift:altar-trip`) goes to the temple's lobby, as a login on the game's side
+    of the barrier does. Before issue 2698 the altar's portal then sent the player out to its
+    ruins.
 - **Data:** the Great Guardian and the apprentices in `npc-spawns.json`, the fighters in
   `npc-combat-defs.json`, and Felix's old shop binding dropped from `shops.json`.
 - **`plugins/interface/data/minigame-teleports.json`** already lists Guardians of the Rift

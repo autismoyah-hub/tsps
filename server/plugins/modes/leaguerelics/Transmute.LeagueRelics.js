@@ -12,8 +12,11 @@
  *   Alchemic Divergence costs none, 6 May 2026), every 5 ticks (`skills:action-interval`, kind
  *   `transmute`: Flow State's 2), a click during a cast waiting for it. As recorded (237/01102, 01106, 238/04211): a stack, noted or stackable, gives 10 of the
  *   next tier in the same form (noted stays noted) and is cast on again every 5 ticks while its
- *   slot holds it, with the graphic alone; loose items convert up to 10 of those held, in place,
- *   and only with a free slot for each; with the bank toggle on a stack's products go to the bank.
+ *   slot holds it, with the graphic alone; loose items convert up to 10 of those held, in place:
+ *   holding 10 or fewer needs no free slot (the products take the slots the cast empties; 237/01102
+ *   10 uncut rubies with none free), holding more needs a free slot for each of the 10 (237/01102:
+ *   refused at 11 held with 5 free, 15 with 1, 16 and 23 with none); with the bank toggle on a
+ *   stack's products go to the bank.
  *   The lines: "Nothing interesting happens." for an item no row has, an item box for the lowest
  *   tier, the red no-room line, each word for word.
  * - The ledger (`TRANSMUTATION_LEDGER`), carried or worn in the shield slot, is an endless source
@@ -28,6 +31,7 @@
  */
 const Common = require("./Common.LeagueRelics");
 const Toggles = require("./Toggles.LeagueRelics");
+const { restricted, plainAmount, takePlain, PRESET_TEXT } = require("../../items/PoweredStaff");
 
 /** The journal scroll, as the diaries open it (Journal.AchievementDiaries.js). */
 const JOURNAL_SCROLL = 741;
@@ -102,6 +106,12 @@ function later(player, ticks, fn) {
   core.TaskManager.submit(own.task);
 }
 
+function interfaceOpen(player) {
+  const sender = player.getPacketSender?.();
+  return player.getDialogueManager?.()?.isActive?.() === true || sender?.hasInterruptibleInterface?.() === true
+    || sender?.hasInputPrompt?.() === true;
+}
+
 function lowestTier(player, itemId) {
   const { ItemStatementDialogue, DialogueChainBuilder } = core;
   const chain = new DialogueChainBuilder();
@@ -114,13 +124,19 @@ function plan(player, item, productId) {
   const inventory = player.getInventory();
   const itemId = item.getId();
   const stack = itemId !== unnoted(itemId) || stacks(itemId);
-  const amount = Math.min(effect.perCast, stack ? item.getAmount() : inventory.getAmount(itemId));
+  // Loose copies: only the plain ones convert; a preset copy in another slot would come back plain.
+  const held = stack ? item.getAmount() : plainAmount(inventory, itemId);
+  const amount = Math.min(effect.perCast, held);
   if (stack && Toggles.on(player, effect.bankToggle) && Common.bankHasRoom(player, unnoted(productId))) {
     return { stack, amount, bank: true };
   }
+  // Loose: the cast empties the slots it takes before the products go in, so all of them held
+  // (10 or fewer) always fit; more held than one cast takes needs a free slot for each product.
+  // A stack's product is plain, so it merges only into a plain stack of it (a preset stack of the
+  // same id does not count), or takes a free slot.
   const room = stack
-    ? inventory.contains(productId) || inventory.getFreeSlots() > 0 || amount === item.getAmount()
-    : inventory.getFreeSlots() >= amount;
+    ? amount === held || inventory.getAddableAmount(new core.Item(productId, amount)) >= amount
+    : amount === held || inventory.getFreeSlots() >= amount;
   return room ? { stack, amount, bank: false } : null;
 }
 
@@ -130,12 +146,22 @@ function cast(player, spellName, slot, itemId, clicked) {
   const now = core.World.getProcessCycle();
   const own = state(player);
   if (now < own.readyAt) {
-    later(player, own.readyAt - now, () => cast(player, spellName, slot, itemId, clicked));
+    later(player, own.readyAt - now, () => {
+      // A click waiting for the cast is dropped if a dialogue, menu or prompt opened meanwhile (as core's queued
+      // alch): under a hand-in's dialogue it would convert the item the dialogue had checked.
+      if (clicked && interfaceOpen(player)) return;
+      cast(player, spellName, slot, itemId, clicked);
+    });
     return;
   }
   const inventory = player.getInventory();
   const item = inventory.getItems()[slot];
   if (!item || item.getId() !== itemId) return;
+  // A preset copy (PvP presets on a league world) would come back as a plain, tradeable product.
+  if (restricted(item)) {
+    if (clicked) player.sendMessage(PRESET_TEXT);
+    return;
+  }
   if (clicked) player.getPacketSender().sendTab(MAGIC_TAB);
   const found = lookup(itemId);
   if (!found) {
@@ -155,7 +181,7 @@ function cast(player, spellName, slot, itemId, clicked) {
     return;
   }
   if (how.stack) inventory.deleteAtSlot(slot, how.amount);
-  else inventory.deleteNumber(itemId, how.amount);
+  else takePlain(inventory, itemId, how.amount);
   if (how.bank) Common.bank(player, target, how.amount);
   else inventory.adds(productId, how.amount);
   player.getSkillManager().addExperiences(core.Skill.MAGIC, effect.xpPerItem * how.amount);

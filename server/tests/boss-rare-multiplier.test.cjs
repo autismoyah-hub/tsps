@@ -99,6 +99,22 @@ test("a boss's rare main roll is that many times likelier and common loot keeps 
   assert.deepEqual(dropsAt(mainTable(true), 0.5, 1000), [10, 11]);
 });
 
+test("a fractional-weight unique (npc-drops-custom.json) keeps its weight when boosted", () => {
+  // 2.5/400 at x2 is 5/400: a roll of 4/400 hits it. Read as weight 1 it was 2/400 - below its x1 rate.
+  const fractional = (boss) => ({
+    boss,
+    main_max_roll: 400,
+    entries: [
+      { item_id: 20, name: "Unique", weight: 2.5, out_of: 400, section: "Uniques" },
+      { item_id: 21, name: "Common", weight: 397.5, out_of: 400, section: "Weapons and armour" },
+    ],
+  });
+  const separate = (boss) => ({ boss, entries: [{ item_id: 22, separate_roll: true, weight: 2.5, out_of: 400, section: "Uniques" }] });
+  assert.ok(dropsAt(fractional(true), 4 / 400, 2).includes(20), "main row");
+  assert.ok(dropsAt(separate(true), 4 / 400, 2).includes(22), "separate roll");
+  assert.ok(!dropsAt(separate(true), 4 / 400, 1).includes(22), "x1 stays 2.5/400");
+});
+
 test("unique separate and pre-roll rows are boosted even when more common than 1/100", () => {
   const unique = {
     boss: true,
@@ -189,4 +205,33 @@ test("a missing or unusable setting is the OSRS rate", () => {
   for (const multiplier of [undefined, "fast", 0.5, -2]) {
     assert.deepEqual(dropsAt(table(true), 1.5 / 400, multiplier), [2], String(multiplier));
   }
+});
+
+
+test("Corp's conditional sigil access honors boss and per-entry chance boosts", () => {
+  const corp = NpcDrops._test.tablesByNpc.get(319)[0];
+  const sigils = corp.entries.filter(entry => entry.roll_group === "Sigils");
+  const roll = (access, pick, multiplier, rules = []) => {
+    config["NpcDrops:bossRareMultiplier"] = multiplier;
+    const values = [access, pick, 0];
+    let index = 0;
+    Math.random = () => values[index++] ?? 0;
+    try { return NpcDrops.__internals.rollOnce(corp, sigils, null, true, null, rules).map(drop => drop.itemId); }
+    finally { Math.random = random; }
+  };
+  // A 1.5/585 access misses at x1, but hits at x2. A uniform league boost must
+  // raise access, rather than merely scale all weights inside the same pool.
+  assert.deepEqual(roll(1.5 / 585, 0, 1), []);
+  assert.deepEqual(roll(1.5 / 585, 0, 2), [12823]);
+  assert.deepEqual(roll(1.5 / 585, 0, 1, [{ pattern: /sigil/i, multiplier: 2 }]), [12823]);
+  assert.deepEqual(roll(3 / 585, 0, 2, [{ pattern: /sigil/i, multiplier: 2 }]), [12823]);
+  // Spectral alone doubled adds 3/7 of an access; the unchanged Arcane still
+  // owns 3/10 of the resulting conditional pool.
+  assert.deepEqual(roll(1.4 / 585, 0.7, 1, [{ pattern: /^Spectral sigil$/, multiplier: 2 }]), [12827]);
+  assert.deepEqual(roll(1.5 / 585, 0, 1, [{ pattern: /^Spectral sigil$/, multiplier: 2 }]), []);
+  // Rule floors use the marginal 1/1365 rarity, not the conditional 3/7.
+  assert.deepEqual(roll(1.5 / 585, 0, 1, [{ pattern: /sigil/i, outOf: 100 }]), [12823]);
+  // Saturating boosts still produce exactly one sigil.
+  assert.equal(roll(0.999, 0.9, 10000).length, 1);
+  config["NpcDrops:bossRareMultiplier"] = 1;
 });

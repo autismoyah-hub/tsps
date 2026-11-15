@@ -237,6 +237,13 @@ function onADiet(event) {
   noteConsumed(raid, event);
 }
 
+/** The phoenix necklace asks without eating: ghosts and On a Diet stop it, with no message or tally. */
+function necklaceEligible(event) {
+  const raid = Raid.raidOf(event.player);
+  if (!raid || !Shared.inTombs(event.player.getLocation())) return;
+  if (isGhost(event.player) || raid.settings.isActive("ON_A_DIET")) event.blocked = true;
+}
+
 /** Combat achievements: any food or potion fails one of the two supply tasks (captured). */
 function noteConsumed(raid, event) {
   if (Supplies.doses(event.itemId)) CombatAchievements.suppliesFromSpirit(raid, event.player);
@@ -297,6 +304,16 @@ function answerInTombs(query) {
   if (query?.player && Shared.inTombs(query.player.getLocation())) query.inside = true;
 }
 
+/**
+ * Cache script 2735: Normal uses 2048, Entry uses 2941 and Expert uses 2942.
+ */
+function collectionLogCount(request) {
+  if (request?.category !== "Tombs of Amascut") return;
+  const counts = Raid.killCounts(request.player);
+  request.count = counts.normal;
+  request.extraCounts = [counts.entry, counts.expert];
+}
+
 function ghostsCantEquip(event) {
   if (isGhost(event.player)) event.allow = false;
 }
@@ -307,6 +324,7 @@ module.exports = function registerTombsRaid(api) {
   api.persistAttribute(Raid.ATTR_LOGOUT);
   api.onPlayerLogin(loggedIn);
   api.onCustomEvent("combat-special:cost", specialCost);
+  api.onCustomEvent("collection-log:category-count", collectionLogCount);
   Shared.onObject(api, "Barrier", passBarrier);
   Shared.onObject(api, "Entry", useEntry);
   Shared.onObject(api, "Exit", useExit);
@@ -320,9 +338,12 @@ module.exports = function registerTombsRaid(api) {
   Raid.onRaidArea("canAttack", blockGhostAttacks);
   api.onSpellCast(standardUtilitySpells);
   api.onCanEat(onADiet);
+  api.onCustomEvent("phoenix-necklace:eligible", necklaceEligible);
   api.onCanDrink(dehydration);
   Raid.onRaidArea("canTeleport", ghostsCantTeleport);
   api.onCanEquip(ghostsCantEquip);
   api.onCanUnequip(ghostsCantEquip);
   api.onCustomEvent("toa:in-tombs", answerInTombs);
 };
+
+Object.assign(module.exports, { collectionLogCount });

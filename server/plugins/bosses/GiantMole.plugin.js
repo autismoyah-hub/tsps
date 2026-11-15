@@ -19,6 +19,8 @@ const BURROW_HP_FLOOR = 10;
 const BURROW_MIN_FRACTION = 0.05;
 const BURROW_MAX_FRACTION = 0.5;
 const BURROW_SUBSPOT_COUNT = 4;
+/** Wiki: she respawns 16 ticks after dying (the definition's default is 25). */
+const RESPAWN_TICKS = 16;
 
 const DIG_ANIMATION_ID = 830;
 const BURROW_DOWN_ANIMATION_ID = 3314;
@@ -39,6 +41,10 @@ const BURROW_LOCATIONS = [
 
 function isGiantMole({ NpcIdentifiers }, entity) {
   return entity?.isNpc?.() === true && entity.getId() === NpcIdentifiers.GIANT_MOLE;
+}
+
+function setRespawn({ NpcDefinition, NpcIdentifiers }) {
+  NpcDefinition.forId(NpcIdentifiers.GIANT_MOLE).setRespawn(RESPAWN_TICKS);
 }
 
 function digMoleHill({ Animation, Location }, { player }) {
@@ -133,11 +139,13 @@ function revealBuriedMole(core, { npc }) {
 
 module.exports = {
   name: "GiantMole",
+  description: "The Giant Mole in the Falador Mole Hole: melee only, burrowing to fixed resurface spots between 5% and 50% hitpoints.",
   members: true,
   register(api) {
     api.onItemOnObject("Spade", "Mole hill", digMoleHill.bind(null, api.core));
     api.onObjectFirstClick(api.core.ObjectIdentifiers.ROPE_17, climbMoleHoleExit.bind(null, api.core));
     api.onCustomEvent("combat:damage-apply", watchBurrow.bind(null, api.core));
     api.onNpcBeforeDeath(revealBuriedMole.bind(null, api.core));
+    api.onServerStartup(setRespawn.bind(null, api.core));
   },
 };

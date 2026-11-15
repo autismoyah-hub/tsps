@@ -31,6 +31,7 @@ let realRandomInclusive;
 const ITEMS = {
   runeKiteshield: 1201, dragonDefender: 12954, whip: 4151, runeScimitar: 1333, godsword: 11802,
   halberd: 3204, bulwark: 21015, graniteMaul: 4153, elderMaul: 21003, ringOfRecoil: 2550,
+  magicShortbow: 861, earthBattlestaff: 1399, toragsHammers: 4747,
 };
 const HILL_GIANT = 2098;
 
@@ -75,12 +76,17 @@ before(async () => {
     },
   }, { get: (target, key) => (key in target ? target[key] : on(String(key))) });
   custom["quest:is-complete"] = [(request) => { request.complete = false; }];
-  require("../plugins/modes/LeagueMode.plugin").register(api);
-  require("../plugins/modes/LeaguePoints.plugin").register(api);
-  require("../plugins/modes/LeagueTasks.plugin").register(api);
-  require("../plugins/modes/LeaguePacts.plugin").register(api);
+  require("../plugins/modes/Base.LeagueMode").register(api);
+  require("../plugins/modes/Points.LeagueMode").register(api);
+  require("../plugins/modes/Tasks.LeagueMode").register(api);
+  require("../plugins/modes/Pacts.LeagueMode").register(api);
   Common = require("../plugins/modes/leaguepacts/Common.LeaguePacts");
   Melee = require("../plugins/modes/leaguepacts/Melee.LeaguePacts");
+  // The real multi-hit resolver, so CombatFactory.getMethod picks a twin weapon's method.
+  require("../plugins/combat/MultiHitWeapons.plugin").register(PluginManager.createApi("LeaguePactsMeleeMultiHit"));
+  // And the scythe's, whose method spends the wielded scythe's charges.
+  require("../plugins/items/ScytheOfVitur.plugin").register(PluginManager.createApi("LeaguePactsMeleeScythe"));
+  PluginManager.emitServerStartup({});
   // Real PendingHits roll through the core: its custom events and roll hooks reach the handlers above.
   const realEmitCustomEvent = PluginManager.emitCustomEvent;
   PluginManager.emitCustomEvent = (name, payload) => {
@@ -394,6 +400,99 @@ test("Blindbag: a heavy weapon's attack may strike with a random heavy weapon ca
   assert.equal(target.queued.length, 2);
 });
 
+test("Blindbag with multi-hit weapons: one roll per attack; a two-hit weapon from the bag hits twice (Wiki: as though equipped)", () => {
+  const holder = character("pact-blindbag-twin", { pacts: { [effect("free_random_weapon_attack_chance")]: 1 } });
+  const { WEAPON_SLOT } = core.Equipment;
+  forceAccurate = true;
+  core.Misc.randomInclusive = (low, high) => high;
+  /** One real attack with the wielded weapon: its method's hits, each dealt as the core deals it. */
+  const attack = (weaponId, at) => {
+    wield(holder, weaponId);
+    const target = giant();
+    cycle(at);
+    let rolls = 0;
+    const draw = Math.random;
+    Math.random = () => (rolls++, draw());
+    const swing = core.CombatFactory.getMethod(holder).hits(holder, target);
+    rolls = 0; // the swing's own rolls are no Blindbag rolls
+    for (const hit of swing) hooks.onPlayerDealtDamage({ player: holder, target, hit });
+    Math.random = draw;
+    const splats = (hits) => hits.reduce((sum, each) => sum + each.getHits().length, 0);
+    return { rolls, own: splats(swing), bag: target.queued.filter((hit) => Melee._test.derived.get(hit) === "blindbag") };
+  };
+
+  // No proc: count the proc rolls. The carried weapon is heavy, so each attack rolls.
+  holder.getInventory().setItem(0, new core.Item(ITEMS.godsword, 1));
+  randoms([], 0.99);
+  let single = attack(ITEMS.runeScimitar, 300);
+  assert.deepEqual([single.own, single.rolls, single.bag.length], [1, 1, 0], "a single-hit weapon: one hitsplat, one roll");
+  randoms([], 0.99);
+  let twin = attack(ITEMS.toragsHammers, 301);
+  assert.equal(core.ItemDefinition.forId(ITEMS.toragsHammers).getWeight() >= 1000, true, "Torag's hammers are heavy");
+  assert.deepEqual([twin.own, twin.rolls, twin.bag.length], [2, 1, 0], "a two-hit weapon: two hitsplats, one roll for the attack");
+
+  // A proc with only a two-hit weapon carried: the Blindbag attack hits twice, as that weapon does.
+  holder.getInventory().resetItems();
+  holder.getInventory().setItem(0, new core.Item(ITEMS.toragsHammers, 1));
+  randoms([0, 0], 0.99); // proc; the first (only) weapon carried; the Blindbag attack's own roll misses
+  single = attack(ITEMS.runeScimitar, 302);
+  assert.equal(single.bag.length, 1, "one Blindbag attack");
+  assert.equal(single.bag[0].getHits().length, 2, "Torag's hammers from the bag: two hitsplats (three in all)");
+  assert.equal(single.bag[0].getCombatMethod(), core.CombatFactory.getMethod(wieldedAs(holder, ITEMS.toragsHammers)), "the hammers' own method");
+  assert.equal(holder.getEquipment().getItems()[WEAPON_SLOT].getId(), ITEMS.runeScimitar, "the scimitar back in hand");
+  randoms([0, 0], 0.99);
+  twin = attack(ITEMS.toragsHammers, 303);
+  assert.equal(twin.own + twin.bag.reduce((sum, hit) => sum + hit.getHits().length, 0), 4, "two-hit wielded and from the bag: four hitsplats");
+
+  // The bag's two-hit attack rolls Blindbag once more, for the attack, not per hitsplat.
+  randoms([0, 0], 0.99);
+  const bagHits = attack(ITEMS.runeScimitar, 304).bag;
+  let rolls = 0;
+  Math.random = () => (rolls++, 0.99);
+  hooks.onPlayerDealtDamage({ player: holder, target: giant(), hit: bagHits[0] });
+  assert.equal(rolls, 1, "a Blindbag attack with a two-hit weapon rolls once");
+});
+
+test("Blindbag: a charged scythe from the bag attacks charged and spends its own charge, as though equipped", () => {
+  const SCYTHE = 22325;
+  const CHARGES = "scythe-of-vitur-charges";
+  const holder = character("pact-blindbag-scythe", { pacts: { [effect("free_random_weapon_attack_chance")]: 1 } });
+  const messages = [];
+  holder.sendMessage = (message) => messages.push(message);
+  const scythe = new core.Item(SCYTHE, 1);
+  scythe.setMetaValue(CHARGES, 2);
+  holder.getInventory().setItem(0, scythe);
+  forceAccurate = true;
+  core.Misc.randomInclusive = (low, high) => high;
+  wield(holder, ITEMS.runeScimitar);
+  const swingWith = (at) => {
+    const target = giant();
+    cycle(at);
+    randoms([0, 0], 0.99); // proc; the scythe; its own Blindbag roll misses
+    for (const hit of core.CombatFactory.getMethod(holder).hits(holder, target)) hooks.onPlayerDealtDamage({ player: holder, target, hit });
+    return target.queued.filter((hit) => Melee._test.derived.get(hit) === "blindbag");
+  };
+  const first = swingWith(400);
+  assert.ok(first.length >= 1 && first[0].getTotalDamage() > 0, "the scythe's charged attack lands");
+  assert.equal(scythe.getMetaValue(CHARGES), 1, "the carried scythe paid one charge");
+  assert.deepEqual(messages, [], "no out-of-charges message");
+  const equipment = holder.getEquipment();
+  let refreshed = null;
+  equipment.refreshItems = () => (refreshed = equipment.getItems()[core.Equipment.WEAPON_SLOT].getId(), equipment);
+  swingWith(401);
+  assert.notEqual(scythe.getId(), SCYTHE, "the last charge spent: the carried scythe is uncharged now");
+  assert.equal(holder.getInventory().getItems()[0], scythe, "still in the inventory");
+  assert.equal(equipment.getItems()[core.Equipment.WEAPON_SLOT].getId(), ITEMS.runeScimitar, "the scimitar back in hand");
+  assert.equal(refreshed, ITEMS.runeScimitar, "the client was last sent the scimitar in hand");
+});
+
+/** A throwaway character wielding `id`, to ask the core which method that weapon attacks with. */
+function wieldedAs(model, id) {
+  const player = character(`${model.getUsername()}-as-${id}`);
+  wield(player, id);
+  return player;
+}
+
 test("a two-handed melee hit has a 5% chance of a Ranged echo; not on a special or a player", () => {
   const { holder, others } = cast("pact-echo", { [effect("2h_melee_echos")]: 1 });
   const target = giant();
@@ -484,6 +583,88 @@ test("Thorns: with a shield, an NPC's attack takes 3 per hitsplat, also on 0; tw
   assert.deepEqual(attacker.damage, [4, 2]);
 });
 
+test("Thorns pays the current melee style's XP; Attack off a melee weapon or autocasting (rsprox captures)", () => {
+  const xp = (player) => {
+    const gained = {};
+    const skills = player.getSkillManager();
+    skills.addExperience = (skill, amount) => {
+      gained[skill.getName?.() ?? String(skill)] = (gained[skill.getName?.() ?? String(skill)] ?? 0) + amount;
+      return skills;
+    };
+    return gained;
+  };
+  const style = (player, fightStyle) => (player.getFightType = () => ({ getStyle: () => fightStyle }));
+  const thornsHit = (player, attacker = giant()) =>
+    hooks.onCombatHitResolved({ attacker, target: player, hit: landed(core.CombatType.MELEE, [splat(0)]) });
+  const name = (skill) => skill.getName?.() ?? String(skill);
+  const { ATTACK, STRENGTH, DEFENCE, HITPOINTS } = Skill;
+  const close = (actual, expected, message) => {
+    assert.deepEqual(Object.keys(actual).sort(), Object.keys(expected).sort(), message);
+    for (const [key, amount] of Object.entries(expected)) assert.ok(Math.abs(actual[key] - amount) < 1e-9, `${message}: ${key} ${actual[key]}`);
+  };
+
+  const thorns = { [effect("thorns_damage")]: 1 };
+  const player = character("pact-thorns-xp", { pacts: thorns });
+  shield(player, ITEMS.runeKiteshield);
+  wield(player, ITEMS.runeScimitar);
+  for (const [fightStyle, expected, message] of [
+    [core.FightStyle.ACCURATE, { [name(ATTACK)]: 12, [name(HITPOINTS)]: 4 }, "Accurate: Attack"],
+    [core.FightStyle.AGGRESSIVE, { [name(STRENGTH)]: 12, [name(HITPOINTS)]: 4 }, "Aggressive: Strength"],
+    [core.FightStyle.DEFENSIVE, { [name(DEFENCE)]: 12, [name(HITPOINTS)]: 4 }, "Defensive: Defence"],
+    [core.FightStyle.CONTROLLED, { [name(ATTACK)]: 4, [name(STRENGTH)]: 4, [name(DEFENCE)]: 4, [name(HITPOINTS)]: 4 }, "Controlled: shared"],
+  ]) {
+    style(player, fightStyle);
+    const gained = xp(player);
+    thornsHit(player);
+    close(gained, expected, message);
+  }
+
+  // 238/04142: a tentacle on Controlled, then a shadowflame quadrant: Attack. 237/04099: a thrown knife.
+  wield(player, ITEMS.magicShortbow);
+  style(player, core.FightStyle.AGGRESSIVE);
+  let gained = xp(player);
+  thornsHit(player);
+  close(gained, { [name(ATTACK)]: 12, [name(HITPOINTS)]: 4 }, "a ranged weapon on Rapid: Attack");
+  // 237/04057: an earth battlestaff autocasting (its pound style is Aggressive here): Attack.
+  wield(player, ITEMS.earthBattlestaff);
+  player.getCombat().setAutocastSpell({});
+  gained = xp(player);
+  thornsHit(player);
+  close(gained, { [name(ATTACK)]: 12, [name(HITPOINTS)]: 4 }, "autocasting: Attack");
+  player.getCombat().setAutocastSpell(null);
+  gained = xp(player);
+  thornsHit(player);
+  close(gained, { [name(STRENGTH)]: 12, [name(HITPOINTS)]: 4 }, "the staff in melee: its style");
+
+  const double = character("pact-thorns-xp-double", { pacts: { ...thorns, [effect("thorns_double_hit")]: 1 } });
+  shield(double, ITEMS.runeKiteshield);
+  wield(double, ITEMS.runeScimitar);
+  style(double, core.FightStyle.ACCURATE);
+  gained = xp(double);
+  thornsHit(double);
+  close(gained, { [name(ATTACK)]: 16, [name(HITPOINTS)]: 16 / 3 }, "the second hit (1) pays too");
+
+  shield(player, ITEMS.dragonDefender);
+  gained = xp(player);
+  thornsHit(player);
+  close(gained, {}, "no Thorns with an off-hand: no XP");
+  gained = xp(double);
+  thornsHit(double, character("pact-thorns-xp-pker"));
+  close(gained, {}, "nor on a player's attack");
+
+  // The XP counts only the damage the NPC can still take (a 1 HP giant: 1 of Thorns' 3).
+  style(player, core.FightStyle.ACCURATE);
+  shield(player, ITEMS.runeKiteshield);
+  gained = xp(player);
+  thornsHit(player, giant(1, 1));
+  close(gained, { [name(ATTACK)]: 4, [name(HITPOINTS)]: 4 / 3 }, "1 HP left: XP for 1 damage");
+  // 2 HP, double Thorns (3 + 1) over two hitsplats: 2 damage in all, 8 Attack XP.
+  style(double, core.FightStyle.ACCURATE);
+  gained = xp(double);
+  hooks.onCombatHitResolved({ attacker: giant(1, 2), target: double, hit: landed(core.CombatType.MELEE, [splat(0), splat(0)]) });
+  close(gained, { [name(ATTACK)]: 8, [name(HITPOINTS)]: 8 / 3 }, "2 HP over two splats: XP for 2 damage");
+});
+
 test("a shield reflects an NPC's whole hit on 0.1% per Defence level", () => {
   const { holder, others } = cast("pact-reflect", { [effect("shield_reflect")]: 1 });
   const attacker = giant();
@@ -509,6 +690,25 @@ test("a shield reflects an NPC's whole hit on 0.1% per Defence level", () => {
     assert.equal(hit.getTotalDamage(), 12);
   }
   assert.deepEqual(attacker.damage, [12]);
+});
+
+test("shield reflect alone is nobody's kill, where thorns credits its wearer (#3919)", () => {
+  const { holder } = cast("pact-reflect-credit", { [effect("shield_reflect")]: 1 });
+  shield(holder, ITEMS.runeKiteshield);
+  const npc = new NPC(HILL_GIANT, new Location(3200, 3201, 0));
+  npc.setRegistered(true);
+  npc.setScriptedMovement(true);
+  npc.setMaxHitpoints(100);
+  npc.setHitpoints(10);
+  const hit = Object.assign(landed(core.CombatType.MELEE, [splat(12)]), {
+    getAttacker: () => npc, updateTotalDamage() {},
+  });
+  randoms([0]);
+  hooks.onPlayerHitModify({ player: holder, hit });
+  npc.getCombat().getHitQueue().process(1);
+  assert.equal(npc.getHitpoints(), 0, "the reflected hit still lands");
+  assert.equal(npc.getCombat().getKiller(false), null,
+    "a shield reflection is not the wearer's damage: only thorns marks itself as counting");
 });
 
 test("0 damage taken with a two-handed shield or an off-hand heals 2 and restores 2 Prayer", () => {
@@ -559,4 +759,212 @@ test("Blindbag: the Dramen staff is no Blindbag weapon (Wiki, 6 May 2026)", () =
   assert.deepEqual(Melee._test.heavyWeaponsCarried(holder), [], "1.8kg and a melee weapon, but left out");
   holder.getInventory().add(new core.Item(ITEMS.elderMaul, 1));
   assert.deepEqual(Melee._test.heavyWeaponsCarried(holder), [ITEMS.elderMaul]);
+});
+
+test("Thorns alone holds an NPC's regeneration timer through real queued damage and NPC turns", () => {
+  const holder = character("pact-thorns-regen", { pacts: { [effect("thorns_damage")]: 1 } });
+  holder.setAutoRetaliate(false);
+  shield(holder, ITEMS.runeKiteshield);
+  const npc = new NPC(HILL_GIANT, new Location(3200, 3201, 0));
+  npc.setRegistered(true);
+  npc.setMaxHitpoints(100);
+  npc.setHitpoints(100);
+  npc.setScriptedMovement(true);
+  cycle(10000);
+  hooks.onCombatHitResolved({ attacker: npc, target: holder, hit: landed(core.CombatType.MELEE, [splat(0)]) });
+  assert.equal(holder.getCombat().getTarget(), null, "no direct tag or auto-retaliation");
+  npc.process();
+  assert.equal(npc.getHitpoints(), 97, "the real Thorns hit survives the same NPC turn's healing check");
+  assert.equal(npc.getCombat().getAttacker(), holder);
+  assert.equal(npc.getCombat().getLastAttack().elapsed(), 0);
+  assert.deepEqual(npc.getCombat().getRecentDamagers(), [holder],
+    "thorns is the wearer's damage, so it credits them with the kill (#3919)");
+  for (let tick = 10001; tick <= 10033; tick++) {
+    cycle(tick);
+    npc.process();
+    assert.equal(npc.getHitpoints(), 97, "no fast healing before the existing timeout");
+  }
+  cycle(10034);
+  npc.process();
+  assert.equal(npc.getHitpoints(), 100, "ordinary healing resumes after the existing timer expires");
+});
+
+test("recoil and Vengeance share NPC combat bookkeeping without starting retaliation", () => {
+  for (const producer of ["recoil", "vengeance"]) {
+    const holder = character(`pact-regen-${producer}`);
+    holder.setAutoRetaliate(false);
+    const npc = new NPC(HILL_GIANT, new Location(3200, 3201, 0));
+    npc.setRegistered(true);
+    npc.setScriptedMovement(true);
+    npc.setMaxHitpoints(100);
+    npc.setHitpoints(100);
+    cycle(11000);
+    if (producer === "recoil") core.CombatFactory.handleRecoil(holder, npc, 10);
+    else core.CombatFactory.handleVengeance(holder, npc, 10);
+    npc.process();
+    const hp = producer === "recoil" ? 98 : 93;
+    assert.equal(npc.getHitpoints(), hp, producer);
+    assert.equal(npc.getCombat().getAttacker(), holder);
+    assert.equal(holder.getCombat().getTarget(), null);
+    cycle(11001);
+    npc.getCombat().setUnderAttack(null);
+    assert.equal(npc.getCombat().getAttacker(), null);
+    assert.equal(npc.getCombat().getLastAttack().elapsed(), 0, "existing clear resets the clock");
+    cycle(11034);
+    npc.process();
+    assert.equal(npc.getHitpoints(), hp);
+    cycle(11035);
+    npc.process();
+    assert.equal(npc.getHitpoints(), 100);
+  }
+});
+
+test("ordinary hits, undamaged NPCs and zero reflected damage keep their existing healing rules", () => {
+  const holder = character("pact-regen-controls");
+  for (const kind of ["ordinary", "undamaged", "zero", "sourceless"]) {
+    const npc = new NPC(HILL_GIANT, new Location(3200, 3201, 0));
+    npc.setRegistered(true);
+    npc.setScriptedMovement(true);
+    npc.setMaxHitpoints(100);
+    npc.setHitpoints(kind === "undamaged" ? 100 : 90);
+    cycle(12000);
+    if (kind === "ordinary") npc.getCombat().setUnderAttack(holder);
+    if (kind === "zero") npc.getCombat().getHitQueue().addPendingDamage([splat(0).markReflected().setSource(holder)]);
+    if (kind === "sourceless") npc.getCombat().getHitQueue().addPendingDamage([splat(1).markReflected()]);
+    npc.process();
+    assert.equal(npc.getHitpoints(), kind === "ordinary" ? 90 : kind === "sourceless" ? 99 : 100, kind);
+    assert.equal(npc.getCombat().getAttacker(), kind === "ordinary" ? holder : null);
+  }
+});
+
+/** A wounded hill giant beside the player's footprint, processed by its own NPC turns. */
+function woundedGiant(location) {
+  const npc = new NPC(HILL_GIANT, location);
+  npc.setRegistered(true);
+  npc.setScriptedMovement(true);
+  npc.setMaxHitpoints(100);
+  npc.setHitpoints(90);
+  return npc;
+}
+
+const permission = (attacker, target) => core.CanAttackResponse[core.CombatFactory.canAttackPermission(attacker, target, true)];
+
+test("a bystander's reflected hit pauses regeneration but leaves a single-way NPC with the player fighting it", () => {
+  const { AreaManager } = require("../dist/game/model/areas/AreaManager");
+  const { PendingHit } = require("../dist/game/content/combat/hit/PendingHit");
+  const fighter = character("pact-single-fighter");
+  const bystander = character("pact-single-bystander");
+  bystander.setLocation(new Location(3201, 3200, 0));
+  const npc = woundedGiant(new Location(3200, 3201, 0));
+  assert.equal(AreaManager.inMulti(npc), false, "single-way combat");
+  cycle(13000);
+  core.CombatFactory.executeHit(new PendingHit(fighter, npc, core.CombatFactory.getMethod(fighter), 0));
+  npc.process(); // the fighter's own hit lands
+  assert.equal(npc.getCombat().getAttacker(), fighter);
+  const hp = npc.getHitpoints();
+  cycle(13005);
+  // Undying Retribution and recoil from someone the NPC is not fighting.
+  core.CombatFactory.handleRecoil(bystander, npc, 10);
+  npc.process();
+  assert.equal(npc.getHitpoints(), hp - 2, "the bystander's recoil still lands");
+  assert.equal(npc.getCombat().getAttacker(), fighter, "the fighter keeps the NPC");
+  assert.equal(npc.getCombat().getLastAttack().elapsed(), 5 * GameConstants.GAME_ENGINE_PROCESSING_CYCLE_RATE,
+    "the fighter's own timer runs on; regeneration waits on it");
+  assert.equal(permission(fighter, npc), "CAN_ATTACK");
+  assert.equal(permission(bystander, npc), "TARGET_IN_COMBAT");
+  // The fighter's own reflection still tags the NPC and holds its timer.
+  cycle(13010);
+  core.CombatFactory.handleRecoil(fighter, npc, 10);
+  npc.process();
+  assert.equal(npc.getHitpoints(), hp - 4);
+  assert.equal(npc.getCombat().getAttacker(), fighter);
+  assert.equal(npc.getCombat().getLastAttack().elapsed(), 0);
+});
+
+/** A fighter's single-way tag on a hill giant that targets a bystander wearing a ring of recoil; the fighter walks off. */
+function staleTagScenario(name, start) {
+  const { AreaManager } = require("../dist/game/model/areas/AreaManager");
+  const { PendingHit } = require("../dist/game/content/combat/hit/PendingHit");
+  const fighter = character(`${name}-fighter`);
+  const bystander = character(`${name}-bystander`);
+  bystander.setAutoRetaliate(false);
+  equip(bystander, core.Equipment.RING_SLOT, ITEMS.ringOfRecoil);
+  const npc = new NPC(HILL_GIANT, new Location(3200, 3201, 0));
+  npc.setRegistered(true);
+  npc.setMaxHitpoints(100);
+  npc.setHitpoints(100);
+  assert.equal(AreaManager.inMulti(npc), false, "single-way combat");
+  forceAccurate = true;
+  randoms([], 0.99);
+  cycle(start);
+  return { fighter, bystander, npc, PendingHit };
+}
+
+/** The fighter's real hit tags the NPC, which keeps the bystander as its target. */
+function fighterTags({ fighter, bystander, npc, PendingHit }) {
+  core.CombatFactory.executeHit(new PendingHit(fighter, npc, core.CombatFactory.getMethod(fighter), 0));
+  npc.process();
+  assert.equal(npc.getCombat().getAttacker(), fighter);
+  assert.equal(npc.getCombat().getTarget(), bystander, "a single-way NPC doesn't retarget");
+  fighter.setLocation(new Location(3220, 3220, 0));
+  return npc.getHitpoints();
+}
+
+test("ordinary single-way melee: the NPC waits out a fighter's tag before hitting a bystander", () => {
+  const scenario = staleTagScenario("pact-stale-melee", 15000);
+  const { bystander, npc } = scenario;
+  npc.getCombat().attack(bystander);
+  const tagged = fighterTags(scenario);
+  for (let tick = 15001; tick <= 15060; tick++) {
+    cycle(tick);
+    bystander.getCombat().getHitQueue().process(tick);
+    npc.process();
+  }
+  assert.ok(bystander.getHitpoints() < 99, "the NPC hit the bystander once the tag expired");
+  assert.ok(npc.getHitpoints() < tagged - 5, "the bystander's recoil kept landing");
+  assert.equal(npc.getCombat().getAttacker(), bystander, "the bystander's own recoil tags the untagged NPC");
+  assert.equal(permission(bystander, npc), "CAN_ATTACK");
+});
+
+test("a bystander's recoil doesn't keep an absent fighter's single-way tag alive", () => {
+  // NPC hits that land without the NPC's attack-permission check: one already in flight when the
+  // fighter's tag lands, or a scripted/plugin attack that queues hits on players directly.
+  const scenario = staleTagScenario("pact-stale-scripted", 16000);
+  const { bystander, npc, PendingHit } = scenario;
+  npc.getCombat().setTarget(bystander);
+  const tagged = fighterTags(scenario);
+  for (let tick = 16001; tick <= 16060; tick++) {
+    cycle(tick);
+    if ((tick - 16001) % 4 === 0) core.CombatFactory.executeHit(new PendingHit(npc, bystander, core.CombatFactory.getMethod(npc), 0));
+    bystander.getCombat().getHitQueue().process(tick);
+    npc.process();
+    if (tick === 16005) assert.equal(npc.getCombat().getAttacker(), scenario.fighter, "the fighter's tag holds for 6 seconds");
+  }
+  assert.ok(bystander.getHitpoints() < 99 - 20, "the NPC kept hitting the bystander");
+  assert.ok(npc.getHitpoints() < tagged - 10, "the bystander's recoil kept landing");
+  assert.notEqual(npc.getCombat().getAttacker(), scenario.fighter, "the absent fighter's tag expires");
+  assert.equal(permission(bystander, npc), "CAN_ATTACK");
+});
+
+test("a reflected hit from a dead or logged-out source pauses regeneration but tags nobody", () => {
+  for (const gone of ["dead", "logged-out"]) {
+    const source = character(`pact-gone-${gone}`);
+    const other = character(`pact-gone-${gone}-other`);
+    other.setLocation(new Location(3201, 3200, 0));
+    const npc = woundedGiant(new Location(3200, 3201, 0));
+    cycle(14000);
+    core.CombatFactory.handleRecoil(source, npc, 10);
+    if (gone === "dead") source.setHitpoints(0);
+    else source.setRegistered(false);
+    npc.process();
+    assert.equal(npc.getHitpoints(), 88, `${gone}: the reflection still lands`);
+    assert.equal(npc.getCombat().getAttacker(), null, gone);
+    assert.equal(npc.getCombat().getLastAttack().elapsed(), 0, `${gone}: regeneration pauses`);
+    assert.equal(permission(other, npc), "CAN_ATTACK", gone);
+    for (let tick = 14001; tick <= 14033; tick++) {
+      cycle(tick);
+      npc.process();
+      assert.equal(npc.getHitpoints(), 88, `${gone}: no healing before the existing timeout`);
+    }
+  }
 });

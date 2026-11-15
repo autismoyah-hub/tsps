@@ -13,12 +13,14 @@ function fixture(complete = true, members = true) {
   const sender = new Proxy({}, {get: (_, name) => (...args) => sent.push([name, ...args])});
   const player = {getAttribute: key => attributes.get(key), setAttribute: (key, value) => attributes.set(key, value),
     getPacketSender: () => sender, sendMessage: message => sent.push(["message", message]),
-    getBank: tab => ({getItems: () => banks[tab]}), getUsername: () => "ClueCapacityTest"};
+    getBank: tab => ({getItems: () => banks[tab]}), getUsername: () => "ClueCapacityTest",
+    getDialogueManager: () => ({startDialogues: chain => sent.push(["dialogue", chain])})};
   const inventory = new Inventory(player);
   player.getInventory = () => inventory;
   const api = {core: {...core, WorldDefinition: {isMembersWorld: () => members}},
     persistAttribute: (key, value) => persisted.set(key, value), onPlayerLogin: fn => logins.push(fn),
     onItemAction: (name, handlers) => actions.set(name, handlers), onGroundItemPickup() {},
+    onNpcDialogueCondition() {}, onPlayerLogout() {},
     onCustomEvent(name, fn) { if (!events.has(name)) events.set(name, []); events.get(name).push(fn); },
     emitCustomEvent(name, request) { for (const fn of events.get(name) ?? []) fn(request); },
   };
@@ -32,6 +34,25 @@ function fixture(complete = true, members = true) {
   }
   return {player, inventory, banks, attributes, persisted, actions, api, logins, sent, query, capacity, open};
 }
+
+test("vessel opt-out suppresses generation without changing capacity or the multiplier", () => {
+  const f = fixture();
+  const key = "treasure-trails:vessel-drops-disabled";
+  assert.equal(f.persisted.get(key), false);
+  for (const vessel of ["bottle", "geode", "nest"]) {
+    const chance = () => f.query("treasure-trails:vessel-chance", {
+      player: f.player, vessel, tier: "beginner", multiplier: 4,
+    });
+    assert.notEqual(chance().allowed, false);
+    f.player.setAttribute(key, true);
+    const blocked = chance();
+    assert.equal(blocked.allowed, false);
+    assert.equal(blocked.multiplier, 4);
+    assert.equal(f.query("treasure-trails:can-receive", {player: f.player, tier: "beginner", allowed: null}).allowed, true);
+    f.player.setAttribute(key, false);
+    assert.notEqual(chance().allowed, false);
+  }
+});
 
 for (const tier of TIERS) test(`${tier} capacity requires the quest and each consumed case adds exactly one`, () => {
   const before = fixture(false);
@@ -106,6 +127,26 @@ test("boxes refuse a second active clue in bank or grave and preserve full stack
   f.inventory.setItem(1, new core.Item(-1, 0)); click();
   assert.equal(item.getAmount(), 1); assert.equal(f.inventory.getItems()[1].getId(), scroll);
   click(); assert.equal(item.getAmount(), 1);
+});
+
+for (const tier of TIERS) test(`opening the ${tier} scroll box shows the clue in an item box with its chat copy`, () => {
+  const f = fixture(), upper = tier.toUpperCase();
+  const box = core.ItemIdentifiers[`SCROLL_BOX_${upper}_`], clue = core.ItemIdentifiers[`CLUE_SCROLL_${upper}_`];
+  const item = new core.Item(box, 2); f.inventory.setItem(0, item);
+  assert.equal(f.actions.get(`Scroll box (${tier})`).Open({player: f.player, slot: 0, item, itemId: box}), true);
+  assert.equal(item.getAmount(), 1); assert.equal(f.inventory.getAmount(clue), 1);
+  const line = "You open the clue box and find a clue scroll inside!";
+  // The item box logs its own mesbox chat line as it opens; nothing is sent by hand.
+  assert.equal(f.sent.find(entry => entry[0] === "sendTypedMessage"), undefined);
+  const chain = f.sent.find(entry => entry[0] === "dialogue")?.[1];
+  assert.ok(chain, "an item box opens");
+  const first = chain.getDialogues().get(0);
+  assert.ok(first instanceof core.ItemStatementDialogue);
+  assert.equal(first.getItemId(), clue); assert.equal(first.getText(), line);
+  const before = f.sent.length;
+  f.actions.get(`Scroll box (${tier})`).Open({player: f.player, slot: 0, item, itemId: box});
+  assert.equal(item.getAmount(), 1, "a held clue keeps the box shut");
+  assert.ok(!f.sent.slice(before).some(entry => entry[0] === "dialogue" || entry[0] === "sendTypedMessage"));
 });
 
 test("Mimic case eligibility excludes held, banked and consumed copies; members cases cannot open on free worlds", () => {
@@ -202,6 +243,52 @@ test("impling and drift-net rewards choose boxes after the quest", () => {
       const fish = require("../plugins/skills/hunter/DriftNets.Hunter").rewards(f.player, 1);
       assert.deepEqual(fish, [[core.ItemIdentifiers[`${complete ? "SCROLL_BOX" : "CLUE_BOTTLE"}_MEDIUM_`], 1]]);
     }
+  } finally { C.H.api = previous.api; C.H.core = previous.core; Math.random = random; }
+});
+
+for (const complete of [false, true]) for (const banked of [false, true]) {
+  test(`drift-net clue roll gives pufferfish at the medium cap (quest ${complete}, bank ${banked})`, () => {
+    const f = fixture(complete), C = require("../plugins/skills/hunter/Context.Hunter");
+    const previous = {api: C.H.api, core: C.H.core}, random = Math.random;
+    try {
+      C.H.api = f.api; C.H.core = core;
+      f.player.getSkillManager = () => ({getMaxLevel: () => 47});
+      const held = new core.Item(core.ItemIdentifiers[`${complete ? "SCROLL_BOX" : "CLUE_BOTTLE"}_MEDIUM_`], complete ? 2 : 1);
+      if (banked) f.banks[0] = [held];
+      else f.inventory.setItem(0, held);
+      const draws = [0.5, 0, 0];
+      Math.random = () => draws.shift() ?? 0.5;
+      assert.deepEqual(require("../plugins/skills/hunter/DriftNets.Hunter").rewards(f.player, 1),
+        [[core.ItemIdentifiers.PUFFERFISH, 1]], "a won but unavailable clue is replaced by pufferfish, not a random fish");
+    } finally { C.H.api = previous.api; C.H.core = previous.core; Math.random = random; }
+  });
+}
+
+test("drift-net repeated clue wins in one harvest give pufferfish after its clue", () => {
+  const f = fixture(false), C = require("../plugins/skills/hunter/Context.Hunter");
+  const previous = {api: C.H.api, core: C.H.core}, random = Math.random;
+  try {
+    C.H.api = f.api; C.H.core = core;
+    f.player.getSkillManager = () => ({getMaxLevel: () => 47});
+    const draws = [0.5, 0, 0.5, 0, 0];
+    Math.random = () => draws.shift() ?? 0.5;
+    assert.deepEqual(require("../plugins/skills/hunter/DriftNets.Hunter").rewards(f.player, 2),
+      [[core.ItemIdentifiers.CLUE_BOTTLE_MEDIUM_, 1], [core.ItemIdentifiers.PUFFERFISH, 1]]);
+  } finally { C.H.api = previous.api; C.H.core = previous.core; Math.random = random; }
+});
+
+test("drift-net failed clue rolls still give fish and empty fossil rolls stay empty", () => {
+  const f = fixture(false), C = require("../plugins/skills/hunter/Context.Hunter");
+  const previous = {api: C.H.api, core: C.H.core}, random = Math.random;
+  try {
+    C.H.api = f.api; C.H.core = core;
+    f.player.getSkillManager = () => ({getMaxLevel: () => 47});
+    f.inventory.setItem(0, new core.Item(core.ItemIdentifiers.CLUE_BOTTLE_MEDIUM_));
+    const Drift = require("../plugins/skills/hunter/DriftNets.Hunter");
+    let draws = [0.5, 0.5, 0]; Math.random = () => draws.shift() ?? 0.5;
+    assert.deepEqual(Drift.rewards(f.player, 1), [[core.ItemIdentifiers.OYSTER, 1]]);
+    draws = [0, 0.99];
+    assert.deepEqual(Drift.rewards(f.player, 1), []);
   } finally { C.H.api = previous.api; C.H.core = previous.core; Math.random = random; }
 });
 

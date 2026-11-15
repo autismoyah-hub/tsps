@@ -48,6 +48,7 @@ function makePlayer() {
   let prayer = 50;
   let location = new core.Location(3442, 3340, 0);
   let wearingGhostspeak = true;
+  const started = [];
 
   const sender = new Proxy({
     sendConfig(id, value) { configs.set(id, value); return sender; },
@@ -87,7 +88,7 @@ function makePlayer() {
   };
 
   const player = {
-    attrs, items, messages, xp, jingles, moves, configs, varbits, inventory, damage: [], animations, graphics, sounds,
+    attrs, items, messages, xp, jingles, moves, configs, varbits, inventory, damage: [], animations, graphics, sounds, started,
     localNpcs: [],
     getAttribute: (key) => attrs.get(key),
     setAttribute: (key, value) => attrs.set(key, value),
@@ -116,7 +117,9 @@ function makePlayer() {
     setLocation: (next) => { location = next; },
     moveTo: (next) => moves.push([next.getX(), next.getY(), next.getZ()]),
     sendMessage: (message) => messages.push(message),
-    getDialogueManager: () => ({ isActive: () => false }),
+    prayerPointDrain: 7,
+    setPrayerPointDrain(drain) { player.prayerPointDrain = drain; },
+    getDialogueManager: () => ({ isActive: () => false, startDialogues(builder) { started.push(builder); } }),
     getArea: () => null,
     getIndex: () => 1,
     isPlayer: () => true,
@@ -154,7 +157,9 @@ function harness({ nativeActors = false, player = makePlayer() } = {}) {
   const deregistered = [];
   const worldObjects = [];
   const clock = { tick: 0 };
+  const diaries = new Set();
   let area = null;
+  const areas = [];
 
   class FakeGameObject {
     constructor(id, location, type, face, privateArea) {
@@ -173,7 +178,9 @@ function harness({ nativeActors = false, player = makePlayer() } = {}) {
 
   const fakeCore = {
     ...core,
-    TaskManager: { submit: noop, cancelTasks: noop },
+    // Native actors run the real ticks (the grotto exit waits one). The fixture runs a delayed
+    // step at once (a revealed ghast's form, a scene's stage); tests/nature-spirit-capture times them.
+    TaskManager: nativeActors ? core.TaskManager : { submit: (task) => task.execute?.(), cancelTasks: noop },
     World: { getObjects: () => worldObjects, getProcessCycle: () => clock.tick },
     MapObjects: { mapObjects: new Map(), getHash: (x, y, z) => `${x},${y},${z}` },
     RegionManager: { loadMapFiles: noop },
@@ -218,9 +225,11 @@ function harness({ nativeActors = false, player = makePlayer() } = {}) {
         const prerequisite = runtime.getRegisteredQuests().findLast(entry => entry.key === event.key);
         if (prerequisite) event.complete = prerequisite.isComplete(event.player);
       }
+      if (key === 'diary:is-complete') event.complete = diaries.has(`${event.diary}:${event.tier}`);
       for (const handler of custom.get(key) ?? []) handler(event);
     },
-    registerArea(next) { area = next; },
+    // The swamp is the first Area the quest registers; the rest (the gate approach strip) are kept in order.
+    registerArea(next) { areas.push(next); area ??= next; },
     spawnNpc(definition) {
       const { id, x, y, z } = definition;
       if (nativeActors) {
@@ -258,8 +267,8 @@ function harness({ nativeActors = false, player = makePlayer() } = {}) {
   const quest = runtime.getRegisteredQuests().findLast((entry) => entry.key === 'nature_spirit');
   const h = {
     player, custom, variants, conditions, objectHooks, itemOnNpc, itemOnObject,
-    itemActions, itemOnItem, groundPickups, logins, logouts, deaths, spawned, removed, registered,
-    deregistered, worldObjects, quest, clock, get area() { return area; },
+    diaries, itemActions, itemOnItem, groundPickups, logins, logouts, deaths, spawned, removed, registered,
+    deregistered, worldObjects, quest, clock, get area() { return area; }, areas,
   };
   if (!firstHarness) firstHarness = h;
   return h;
@@ -368,37 +377,56 @@ test('mandatory source route reaches completion through the registered handlers'
   assert.equal(h.quest.getStage(p), 5);
   assert.equal(variant(h, N.DREZEL), 'starting-off-talking-to-drezel-again');
 
+  p.setLocation(new core.Location(3444, 3459, 0)); // opening from the north side enters the swamp
   emit(h, 'door:toggle', { objectId: O.GATE_72 });
   assert.equal(h.quest.getStage(p), 10);
-  assert.ok(h.spawned.some((npc) => npc.getId() === N.FILLIMAN_TARLOCK));
-
+  assert.equal(h.spawned.length, 0, 'entering the swamp does not summon Filliman');
+  // Wiki Transcript:Nature Spirit, "If the player attempts to enter the Grotto": the line, the
+  // apparition box, then Filliman's dialogue; without the amulet that is the failed talk (15).
   p.setWearingGhostspeak(false);
+  objectAction(h, { objectId: O.GROTTO, ...interaction(['Enter'], 1) });
+  assert.ok(h.spawned.some((npc) => npc.getId() === N.FILLIMAN_TARLOCK));
+  assert.equal(p.started.length, 1, 'the apparition and Filliman play on the entrance');
+  assert.equal(h.quest.getStage(p), 15);
+
   assert.equal(variant(h, N.FILLIMAN_TARLOCK), 'finding-filliman-talking-to-filliman');
   assert.equal(h.quest.getStage(p), 15);
   p.setWearingGhostspeak(true);
   assert.equal(variant(h, N.FILLIMAN_TARLOCK), 'finding-filliman-talking-to-filliman');
+  // Capture NatureSpirit 380-381: 20 comes with his denial, not with the conversation.
+  assert.equal(h.quest.getStage(p), 15);
+  const line = (npcId, text) => emit(h, 'npc-dialogue:line', { npcId, text });
+  line(N.FILLIMAN_TARLOCK, "Don't be silly now! That in no way reflects the truth!").after();
   assert.equal(h.quest.getStage(p), 20);
-
   assert.equal(variant(h, N.FILLIMAN_TARLOCK), 'finding-filliman-subsequent-dialogue-with-filliman');
 
-  for (const handler of h.groundPickups) {
-    handler({ player: p, groundItemId: WASHING_BOWL, location: { x: 3437, y: 3337 } });
-  }
-  assert.equal(p.inventory.getAmount(MIRROR), 1);
-  itemOnNpcAction(h, { npcId: N.FILLIMAN_TARLOCK, itemId: MIRROR });
+  // The washing bowl leaves the mirror on the bench (capture 463-466; tests/nature-spirit-capture picks it up).
+  p.inventory.adds(MIRROR, 1);
+  line(N.FILLIMAN_TARLOCK, 'It must be a sign...').after();
   assert.equal(h.quest.getStage(p), 25);
   assert.equal(variant(h, N.FILLIMAN_TARLOCK), 'finding-filliman-talking-to-filliman-again-after-using-a-mirror-on-him');
 
   objectAction(h, { objectId: O.GROTTO_TREE, ...interaction(['Look-at', 'Search'], 2) });
+  const found = emit(h, 'npc-dialogue:action', { npcId: N.FILLIMAN_TARLOCK, stepId: 'tTawrz', kind: 'message' });
+  assert.deepEqual(found.box, { items: [JOURNAL] }, 'the journal box (capture 527)');
   assert.equal(p.inventory.getAmount(JOURNAL), 1);
-  itemOnNpcAction(h, { npcId: N.FILLIMAN_TARLOCK, itemId: JOURNAL });
-  assert.equal(h.quest.getStage(p), 30);
+  emit(h, 'npc-dialogue:action', { npcId: N.FILLIMAN_TARLOCK, stepId: 'JPq1Gd', kind: 'message' });
+  assert.equal(h.quest.getStage(p), 25, 'giving it is only the box (capture 541)');
+  line(N.FILLIMAN_TARLOCK, "It's all coming back to me now. It looks like I came to a violent and bitter end but that's not important now.").before();
+  assert.equal(h.quest.getStage(p), 30, 'capture 549');
   assert.equal(p.inventory.getAmount(JOURNAL), 0);
-  assert.equal(p.inventory.getAmount(DRUIDIC_SPELL), 1);
+  const papyrus = emit(h, 'npc-dialogue:action', { npcId: N.FILLIMAN_TARLOCK, stepId: 'WT-fQ8', kind: 'message' });
+  assert.equal(p.inventory.getAmount(DRUIDIC_SPELL), 0);
+  papyrus.after();
+  assert.equal(p.inventory.getAmount(DRUIDIC_SPELL), 1, 'the spell and 35 on the papyrus box (capture 584)');
+  assert.equal(h.quest.getStage(p), 35);
 
   assert.equal(variant(h, N.FILLIMAN_TARLOCK), 'finding-filliman-subsequent-dialogue-with-filliman-2');
-  assert.equal(h.quest.getStage(p), 35);
   assert.equal(variant(h, N.DREZEL), 'talking-to-drezel');
+  assert.equal(h.quest.getStage(p), 35, 'choosing the conversation blesses nobody');
+  const blessing = line(N.DREZEL, 'Very well my friend, prepare yourself for the blessings of Saradomin. Here we go!');
+  assert.equal(blessing.pauseTicks, 3);
+  blessing.after();
   assert.equal(h.quest.getStage(p), 40);
 
   p.setLocation(new core.Location(3438, 3337, 0));
@@ -417,41 +445,47 @@ test('mandatory source route reaches completion through the registered handlers'
   assert.equal(h.registered.at(-1).getId(), O.ROTTING_LOG);
 
   assert.equal(variant(h, N.FILLIMAN_TARLOCK), 'talking-to-filliman');
+  line(N.FILLIMAN_TARLOCK, "Wonderful, the mushroom represents 'something from nature'. Now we need to work out what the other components of the spell are!").after();
   assert.equal(h.quest.getStage(p), 55);
   itemOnObjectAction(h, { objectId: O.STONE, itemId: FUNGUS });
   itemOnObjectAction(h, { objectId: O.STONE_3, itemId: USED_SPELL });
   assert.equal(p.inventory.getAmount(FUNGUS), 0);
   assert.equal(p.inventory.getAmount(USED_SPELL), 0);
-  assert.equal(variant(h, N.FILLIMAN_TARLOCK), 'talking-to-filliman-talking-to-filliman-again-on-the-orange-stone');
+  assert.equal(variant(h, N.FILLIMAN_TARLOCK), 'talking-to-filliman');
+  const ritual = line(N.FILLIMAN_TARLOCK, "Oh really.. Have you placed all the items on the stones? Ok, well, lets try! ~ The druid attempts to cast a spell. ~");
+  assert.equal(ritual.pauseTicks, 4, "the spell lands four ticks after the continue (1038-1042)");
+  ritual.after();
   assert.equal(h.quest.getStage(p), 60);
 
   objectAction(h, { objectId: O.GROTTO, ...interaction(['Enter'], 1) });
   assert.equal(h.quest.getStage(p), 65);
-  assert.deepEqual(p.moves.at(-1), [3441, 9736, 0]);
+  assert.deepEqual(p.moves.at(-1), [3442, 9734, 0]);
+  assert.ok(h.removed.some((npc) => npc.getId() === N.FILLIMAN_TARLOCK), 'the camp actor goes');
+  objectAction(h, { objectId: O.GROTTO_2, ...interaction(['Search'], 1) });
   assert.ok(h.spawned.some((npc) => npc.getId() === N.FILLIMAN_TARLOCK && npc.getLocation().y > 9000));
-  assert.ok(h.removed.some((npc) => npc.getId() === N.FILLIMAN_TARLOCK));
 
   assert.equal(variant(h, N.NATURE_SPIRIT), 'entering-filliman-s-grove-talking-to-filliman-inside-his-grove');
-  const transform = emit(h, 'npc-dialogue:line', { npcId: N.FILLIMAN_TARLOCK,
-    text: "I must complete the transformation now. Just stand there and watch the show, apparently it's quite good!" });
+  const transform = line(N.FILLIMAN_TARLOCK, "I must complete the transformation now. Just stand there and watch the show, apparently it's quite good!");
   transform.after();
   assert.equal(h.quest.getStage(p), 70);
   assert.equal(variant(h, N.NATURE_SPIRIT), 'entering-filliman-s-grove-talking-to-filliman-inside-his-grotto-again');
 
   p.inventory.adds(SILVER_SICKLE, 1);
-  emit(h, 'npc-dialogue:action', { npcId: N.NATURE_SPIRIT, stepId: 'zcAIZC', kind: 'message' });
+  line(N.NATURE_SPIRIT, 'My friend, I will bless it for you and you will then be able to accomplish great things.').after();
   assert.equal(h.quest.getStage(p), 75);
   assert.equal(p.inventory.getAmount(SILVER_SICKLE), 0);
   assert.equal(p.inventory.getAmount(BLESSED_SICKLE), 1);
   emit(h, 'npc-dialogue:action', { npcId: N.NATURE_SPIRIT, stepId: 'bf6r0R', kind: 'message' });
-  assert.equal(h.quest.getStage(p), 90);
+  assert.equal(h.quest.getStage(p), 75, 'the pouch is handed over; filling it is 90 (capture 1124, 1248)');
   assert.equal(p.inventory.getAmount(EMPTY_POUCH), 1);
 
+  h.quest.setStage(p, 85); // a sickle Bloom (80) and its first harvest (85): tests/nature-spirit-capture
   p.inventory.adds(FUNGUS, 3);
   itemAction(h, { itemId: EMPTY_POUCH, option: 'Fill' });
   assert.equal(p.inventory.getAmount(FUNGUS), 0);
   assert.equal(p.inventory.getAmount(EMPTY_POUCH), 0);
   assert.equal(p.inventory.getAmount(FILLED_POUCH), 3);
+  assert.equal(h.quest.getStage(p), 90);
 
   const ghast = { getLocation: () => new core.Location(3440, 3345, 0) };
   itemOnNpcAction(h, { npcId: N.GHAST, itemId: FILLED_POUCH, target: ghast });
@@ -492,7 +526,7 @@ test('mandatory source route reaches completion through the registered handlers'
   assert.equal(variant(h, N.NATURE_SPIRIT), 'returning-to-filliman-s-grove-attempting-to-talk-to-him-again-before-he-disappears');
 });
 
-test('invisible ghasts in Mort Myre attack, rot food, and become visible', () => {
+test('uncharged ghast attacks rot food or damage without making the ghast attackable', () => {
   const player = makePlayer();
   const h = harness({ player });
   player.setLocation(new core.Location(3440, 3345, 0));
@@ -512,19 +546,18 @@ test('invisible ghasts in Mort Myre attack, rot food, and become visible', () =>
     h.area.process(player);
     assert.equal(player.inventory.getAmount(I.SHRIMPS), 0, 'the attack rots the food');
     assert.equal(player.inventory.getAmount(I.ROTTEN_FOOD), 1);
-    assert.equal(h.spawned.at(-1).getId(), N.GHAST_2, 'a ghast that lands a hit becomes visible');
+    assert.equal(h.spawned.length, 0, 'rotting food does not reveal an attackable ghast');
     assert.equal(player.damage.length, 0, 'rotting food replaces the damage');
 
     // With nothing to rot the same roll deals 1-3 damage.
-    death(h, h.spawned.at(-1));
     h.clock.tick = 200;
     Math.random = () => 0.9;
     h.area.process(player);
     assert.equal(player.damage.length, 1);
     assert.ok(player.damage[0].getDamage() >= 1 && player.damage[0].getDamage() <= 3);
+    assert.equal(h.spawned.length, 0, 'an unprotected damaging hit does not reveal a ghast either');
 
     // 7/10 of attempts miss: no rot, no damage, no visible ghast.
-    death(h, h.spawned.at(-1));
     h.clock.tick = 400;
     Math.random = () => 0.1;
     const spawnedBefore = h.spawned.length;
@@ -533,6 +566,34 @@ test('invisible ghasts in Mort Myre attack, rot food, and become visible', () =>
     assert.equal(player.inventory.getAmount(I.SHRIMPS), 1);
     assert.equal(player.damage.length, 1);
     assert.equal(h.spawned.length, spawnedBefore);
+  } finally {
+    Math.random = random;
+  }
+});
+
+test('worn Morytania legs 4 block the food-rotting attack (Wiki)', () => {
+  const player = makePlayer();
+  const h = harness({ player });
+  player.setLocation(new core.Location(3440, 3345, 0));
+  player.localNpcs = [{ getId: () => N.GHAST, getLocation: () => new core.Location(3441, 3345, 0) }];
+  let legs = I.MORYTANIA_LEGS_4;
+  player.getEquipment = () => ({ get: (slot) => (slot === core.Equipment.LEG_SLOT ? { getId: () => legs } : null) });
+  const random = Math.random;
+  try {
+    h.clock.tick = 0;
+    h.area.process(player);
+    player.inventory.adds(I.SHRIMPS, 1);
+    h.clock.tick = 20;
+    Math.random = () => 0.9; // not ignored, not a miss
+    h.area.process(player);
+    assert.equal(player.inventory.getAmount(I.SHRIMPS), 1, 'the food stays fresh');
+    assert.equal(player.inventory.getAmount(I.ROTTEN_FOOD), 0);
+    assert.equal(player.damage.length, 0, 'and the blocked attack does not hit instead');
+
+    legs = I.MORYTANIA_LEGS_3;
+    h.clock.tick = 200;
+    h.area.process(player);
+    assert.equal(player.inventory.getAmount(I.ROTTEN_FOOD), 1, 'lower tiers do not block it');
   } finally {
     Math.random = random;
   }
@@ -555,6 +616,7 @@ test('one invisible ghast keeps one visible copy through repeat attacks, death a
     h.clock.tick = 0;
     h.area.process(player); // the first pass only schedules the attempt
     player.inventory.adds(I.SHRIMPS, 3);
+    player.inventory.adds(FILLED_POUCH, 1);
 
     h.clock.tick = 20;
     h.area.process(player);
@@ -568,7 +630,7 @@ test('one invisible ghast keeps one visible copy through repeat attacks, death a
     h.clock.tick = 100;
     h.area.process(player);
     assert.equal(visibleGhasts().length, 1, 'a revealed source does not spawn a second copy');
-    assert.equal(player.inventory.getAmount(I.SHRIMPS), 2, 'a revealed source does not keep rotting food alongside melee combat');
+    assert.equal(player.inventory.getAmount(I.SHRIMPS), 3, 'a pouch-revealed source does not rot food alongside melee combat');
 
     // Using the pouch on a source that is already visible costs nothing and adds no copy.
     player.inventory.adds(FILLED_POUCH, 1);
@@ -663,7 +725,7 @@ test('a filled druid pouch spends a charge to reveal an attacking ghast instead 
     h.area.process(player);
     assert.equal(player.inventory.getAmount(I.SHRIMPS), 0, 'without a charged pouch the food rots');
     assert.equal(player.inventory.getAmount(I.ROTTEN_FOOD), 1);
-    assert.equal(visibleGhasts().length, 4);
+    assert.equal(visibleGhasts().length, 3, 'the empty pouch leaves the next attacker invisible');
   } finally {
     Math.random = random;
   }
@@ -693,7 +755,7 @@ test('a replacement silver sickle can be blessed after stage 75 without moving t
   h.quest.setStage(p, 90);
   p.inventory.adds(SILVER_SICKLE, 1);
 
-  emit(h, 'npc-dialogue:action', { npcId: N.NATURE_SPIRIT, stepId: 'zcAIZC', kind: 'message' });
+  emit(h, 'npc-dialogue:action', { npcId: N.NATURE_SPIRIT, stepId: 'RFkpjv', kind: 'message' });
   assert.equal(p.inventory.getAmount(SILVER_SICKLE), 0);
   assert.equal(p.inventory.getAmount(BLESSED_SICKLE), 1);
   assert.equal(h.quest.getStage(p), 90, 're-blessing must not downgrade the ghast stage');
@@ -735,21 +797,10 @@ test('Filliman repeat talk selects the ghostspeak conversation before the mirror
   h.player.setWearingGhostspeak(false);
   assert.equal(condition(h, N.FILLIMAN_TARLOCK, text), false);
   assert.equal(condition(h, N.FILLIMAN_TARLOCK, 'Without wearing a ghostspeak amulet:'), true);
+  assert.equal(condition(h, N.FILLIMAN_TARLOCK, 'If the player uses his journal on Filliman without wearing the ghostspeak amulet:'), true);
+  h.player.setWearingGhostspeak(true);
+  assert.equal(condition(h, N.FILLIMAN_TARLOCK, 'If the player uses his journal on Filliman without wearing the ghostspeak amulet:'), false);
   assert.equal(h.quest.getStage(h.player), 20);
-});
-
-test('direct mirror use works after entering the swamp and still requires the mirror and ghostspeak', () => {
-  const h = harness(), p = h.player;
-  h.quest.setStage(p, 10);
-  assert.equal(itemOnNpcAction(h, {npcId: N.FILLIMAN_TARLOCK, itemId: MIRROR}).handled, false);
-  p.inventory.adds(MIRROR, 1);
-  p.setWearingGhostspeak(false);
-  itemOnNpcAction(h, {npcId: N.FILLIMAN_TARLOCK, itemId: MIRROR});
-  assert.equal(h.quest.getStage(p), 10);
-  p.setWearingGhostspeak(true);
-  assert.equal(itemOnNpcAction(h, {npcId: N.FILLIMAN_TARLOCK, itemId: MIRROR}).handled, true);
-  assert.equal(h.quest.getStage(p), 25);
-  assert.equal(p.inventory.getAmount(MIRROR), 1, 'showing the mirror does not consume it');
 });
 
 test('Bloom grows every adjacent plant once, charges Prayer once and observes the animation delay', () => {
@@ -771,7 +822,8 @@ test('Bloom grows every adjacent plant once, charges Prayer once and observes th
     assert.equal(skills.getCurrentLevel(core.Skill.PRAYER), 44, 'one 1-6 Prayer roll covers the whole cast');
     assert.deepEqual(p.animations, [1100]);
     assert.deepEqual(p.graphics, [264]);
-    assert.deepEqual(p.sounds, [[1493, 35, 0]]);
+    // The cast's sound, then each plant's as it blooms (capture NatureSpirit 1234-1235: 1491 fungi, 1489 branch).
+    assert.deepEqual(p.sounds, [[1493, 35, 0], [1491, 30, 0], [1489, 1, 0], [1492, 1, 0]]);
     itemAction(h, {itemId: BLESSED_SICKLE, option: 'Bloom'});
     assert.equal(h.registered.length, 3);
     assert.equal(skills.getCurrentLevel(core.Skill.PRAYER), 44, 'repeat input during the animation costs nothing');
@@ -790,6 +842,56 @@ test('Bloom grows every adjacent plant once, charges Prayer once and observes th
     assert.equal(h.registered.length, before, 'each eligible plant can fail its growth roll');
     assert.equal(skills.getCurrentLevel(core.Skill.PRAYER), 44, 'an unsuccessful cast still spends Prayer');
   } finally { Math.random = random; }
+});
+
+test('every sickle and flail with Bloom in its menu grows plants; the unblessed sickle cannot', () => {
+  const cases = [
+    [I.SILVER_SICKLE_B_, 'Cast Bloom'], [I.EMERALD_SICKLE_B_, 'Cast Bloom'], [I.ENCHANTED_EMERALD_SICKLE_B_, 'Cast Bloom'],
+    [I.RUBY_SICKLE_B_, 'Cast Bloom'], [I.ENCHANTED_RUBY_SICKLE_B_, 'Cast Bloom'],
+    [I.DIAMOND_SICKLE_B_, 'Cast Bloom'], [I.ENCHANTED_DIAMOND_SICKLE_B_, 'Cast Bloom'],
+    [I.BLISTERWOOD_SICKLE, 'Cast Bloom'], [I.BLISTERWOOD_SICKLE_E_, 'Cast Bloom'],
+    [I.IVANDIS_FLAIL, 'Bloom'], [I.BLISTERWOOD_FLAIL, 'Bloom'], [I.HALLOWED_FLAIL, 'Bloom'],
+  ];
+  for (const [itemId, option] of cases) {
+    assert.ok(itemId > 0, `${option} item id missing from the cache identifiers`);
+    const h = harness(), p = h.player;
+    h.quest.setStage(p, 90);
+    p.setLocation(new core.Location(3440, 3345, 0));
+    p.inventory.adds(itemId, 1);
+    plant(h, O.ROTTING_LOG, 3439, 3345);
+    const random = Math.random;
+    try {
+      Math.random = () => 0.1;
+      const request = itemAction(h, { itemId, option });
+      assert.equal(request.handled, true, `${option} on item ${itemId} is handled`);
+      assert.deepEqual(h.registered.map(o => o.getId()), [O.FUNGI_ON_LOG], `item ${itemId} grows the log`);
+      assert.ok(p.getSkillManager().getCurrentLevel(core.Skill.PRAYER) < 50, `item ${itemId} spends Prayer`);
+    } finally { Math.random = random; }
+  }
+  const h = harness(), p = h.player;
+  h.quest.setStage(p, 90);
+  p.setLocation(new core.Location(3440, 3345, 0));
+  p.inventory.adds(I.SILVER_SICKLE, 1);
+  plant(h, O.ROTTING_LOG, 3439, 3345);
+  assert.equal(itemAction(h, { itemId: I.SILVER_SICKLE, option: 'Cast Bloom' }).handled, false);
+  assert.equal(h.registered.length, 0);
+});
+
+test('the hard Morytania diary doubles the Mort myre fungi a Bloom log gives', () => {
+  for (const [hard, expected] of [[false, 1], [true, 2]]) {
+    const h = harness(), p = h.player;
+    h.quest.setStage(p, 90);
+    if (hard) h.diaries.add('morytania:hard');
+    const fungi = plant(h, O.FUNGI_ON_LOG, 3439, 3345);
+    objectAction(h, { objectId: O.FUNGI_ON_LOG, object: fungi, ...interaction([null, 'Pick'], 2) });
+    assert.equal(p.inventory.getAmount(FUNGUS), expected);
+  }
+  const h = harness(), p = h.player;
+  h.quest.setStage(p, 90);
+  h.diaries.add('morytania:hard');
+  const branch = plant(h, O.BUDDING_BRANCH, 3440, 3345);
+  objectAction(h, { objectId: O.BUDDING_BRANCH, object: branch, ...interaction([null, 'Pick'], 2) });
+  assert.equal(p.inventory.getAmount(I.MORT_MYRE_STEM), 1, 'only the fungi are doubled');
 });
 
 test('transformation waits for its line, uses the green chathead and completion opens the finished grotto', () => {
@@ -811,6 +913,7 @@ test('transformation waits for its line, uses the green chathead and completion 
   p.getSkillManager().setCurrentLevels(core.Skill.PRAYER, 0);
   objectAction(h, {objectId: O.ALTAR_OF_NATURE, option: 'Pray-at'});
   assert.equal(p.getSkillManager().getCurrentLevel(core.Skill.PRAYER), 52);
+  assert.equal(p.prayerPointDrain, 0, 'the altar also clears the drain counter (b0ffb7704)');
 });
 
 test('pouch use is limited to one reveal per game tick across every invisible ghast variant', () => {
@@ -838,6 +941,8 @@ test('native revealed ghasts keep separate source tiles and a mobile combat targ
       h.clock.tick++;
       const source = core.NPC.create(id, new core.Location(3440 + index, 3345, 0));
       itemOnNpcAction(h, {npcId: id, itemId: FILLED_POUCH, target: source});
+      // Capture NatureSpirit 1310-1312: the attackable form two ticks after the reveal.
+      for (let step = 0; step < 3; step++) { core.World.processCycle++; core.TaskManager.process(); }
       const visible = h.spawned.at(-1);
       assert.equal(visible.getLocation().getX(), 3440 + index);
       assert.ok(visible.getMovementCoordinator().getRadius() > 0, 'the real NPC is not pinned to its spawn');
@@ -847,6 +952,59 @@ test('native revealed ghasts keep separate source tiles and a mobile combat targ
   } finally {
     for (const handler of h.logouts) handler({player: p});
   }
+});
+
+test('re-summoned Filliman occupies the ritual tile between the three stones', t => {
+  const h = harness({ nativeActors: true });
+  t.after(() => { for (const handler of h.logouts) handler({ player: h.player }); });
+  h.quest.setStage(h.player, 50);
+  objectAction(h, { objectId: O.GROTTO, ...interaction(['Enter'], 1) });
+  const at = h.spawned[0].getLocation();
+  assert.deepEqual([at.x, at.y, at.z], [3440, 3336, 0]);
+});
+
+test('native swamp attacks keep the original unattackable NPC_INFO until a pouch charge is spent', t => {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const session = new PlayerSession({ kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true,
+    send: () => true, close() {}, onData() {}, onError() {}, onClose() {} });
+  const player = new Player(session); session.setPlayer(player);
+  player.setIndex(102); player.setUsername('ghastvisibility'); player.setRegistered(true);
+  player.setLocation(new core.Location(3440, 3345)); player.needsPlacement = false;
+  const h = harness({ nativeActors: true, player }); h.quest.setStage(player, 90);
+  const source = core.PluginManager.spawnNpc({ id: N.GHAST, x: 3441, y: 3345, z: 0, wanderRadius: 0 });
+  source.needsPlacement = false;
+  const views = [], old = core.PluginManager.customEventHooks.get('network:sync-views');
+  core.PluginManager.createApi('ghast-native-info-test').onCustomEvent('network:sync-views', event => {
+    if (event.player === player) views.push(event.npcs.map(npc => npc.typeId));
+  });
+  t.after(() => {
+    for (const handler of h.logouts) handler({ player });
+    core.PluginManager.removeNpc(source); player.setRegistered(false);
+    if (old) core.PluginManager.customEventHooks.set('network:sync-views', old);
+    else core.PluginManager.customEventHooks.delete('network:sync-views');
+  });
+  t.mock.method(Math, 'random', () => 0.9);
+  let tick = 0;
+  const publish = () => {
+    core.World.updateLocalNpcs(player, [source, ...h.spawned.filter(npc => npc.isRegistered())]);
+    session.flush(++tick); session.flush(++tick);
+    return views.at(-1);
+  };
+  assert.deepEqual(publish(), [N.GHAST]);
+  assert.ok(!source.getCurrentDefinition(player).getActions().includes('Attack'));
+  player.getInventory().add(new core.Item(I.SHRIMPS));
+  h.area.process(player); h.clock.tick = 20; h.area.process(player);
+  assert.equal(player.getInventory().getAmount(I.ROTTEN_FOOD), 1);
+  assert.deepEqual(publish(), [N.GHAST], 'rotting food leaves the actual native NPC unattackable');
+  h.clock.tick = 60; h.area.process(player);
+  assert.deepEqual(publish(), [N.GHAST], 'an unprotected damaging attack does not send a visible form');
+  player.getInventory().add(new core.Item(FILLED_POUCH));
+  h.clock.tick = 100; h.area.process(player);
+  for (let step = 0; step < 3; step++) { core.World.processCycle++; core.TaskManager.process(); }
+  assert.equal(player.getInventory().getAmount(FILLED_POUCH), 0);
+  assert.ok(publish().includes(N.GHAST_2), 'automatic pouch protection does reveal the attackable form');
+  assert.ok(h.spawned[0].getCurrentDefinition(player).getActions().includes('Attack'));
 });
 
 test('native early grotto clicks keep Filliman reachable, recover via the exit and preserve later entry', async t => {
@@ -902,41 +1060,136 @@ test('native early grotto clicks keep Filliman reachable, recover via the exit a
   await click(O.GROTTO, 3440, 3337);
   assert.ok(player.getLocation().y < 4000, 'before the swamp gate, Enter does not move underground');
   assert.deepEqual(publish(), [], 'no Filliman is granted before the required gate progression');
+  const beforeGate = player.getLocation();
+  player.setLocation(new core.Location(3444, 3459, 0)); // opening from the north side enters the swamp
   emit(h, 'door:toggle', { objectId: O.GATE_72 });
+  player.setLocation(beforeGate);
   assert.equal(h.quest.getStage(player), 10);
+  assert.deepEqual(publish(), [], 'passing the swamp gate alone does not summon the ghost');
+  for (const handler of h.logins) handler({ player });
+  assert.deepEqual(publish(), [], 'logging in before the first entrance click does not summon him');
   await click(O.GROTTO, 3440, 3337);
   assert.ok(player.getLocation().y < 4000, 'early Enter summons Filliman instead of leaving him in another scene');
   assert.deepEqual(publish(), [N.FILLIMAN_TARLOCK], 'the owner actually receives Filliman in native session views');
+  const outside = h.spawned.find(npc => npc.isRegistered());
+  assert.deepEqual([outside.getLocation().x, outside.getLocation().y, outside.getLocation().z],
+    [3440, 3336, 0], 'Filliman stands between the three ritual stones');
   await click(O.GROTTO, 3440, 3337);
   assert.equal(h.spawned.filter(npc => npc.isRegistered()).length, 1, 'repeat Enter does not duplicate Filliman');
-  assert.equal(variant(h, N.FILLIMAN_TARLOCK), 'finding-filliman-talking-to-filliman');
-  assert.equal(h.quest.getStage(player), 20, 'the still-reachable ghost advances the existing dialogue');
+  // With the amulet, stage 20 waits for his denial in that conversation (capture NatureSpirit 380-381).
+  assert.equal(h.quest.getStage(player), 10, 'the entrance conversation alone does not speak to him');
+  emit(h, 'npc-dialogue:line', { npcId: N.FILLIMAN_TARLOCK, text: "Don't be silly now! That in no way reflects the truth!" }).after();
+  assert.equal(h.quest.getStage(player), 20);
+  assert.equal(variant(h, N.FILLIMAN_TARLOCK), 'finding-filliman-subsequent-dialogue-with-filliman');
 
   // Players saved underground by the old handler can leave and resume at the entrance.
   player.moveTo(new core.Location(3441, 9736, 0)); player.needsPlacement = false;
   await click(O.GROTTO_3, 3442, 9733);
-  assert.deepEqual(position(), [3443, 3338, 0]);
+  assert.deepEqual(position(), [3440, 3337, 0], 'rsprox 227/01846.txt tick 4478 landing');
   await click(O.GROTTO, 3440, 3337);
   assert.deepEqual(publish(), [N.FILLIMAN_TARLOCK]);
   for (const handler of h.logouts) handler({ player });
   assert.equal(h.spawned.filter(npc => npc.isRegistered()).length, 0);
   for (const handler of h.logins) handler({ player });
+  assert.equal(h.spawned.filter(npc => npc.isRegistered()).length, 0, 'the exterior ghost must be summoned again after relog');
   await click(O.GROTTO, 3440, 3337);
   assert.deepEqual(publish(), [N.FILLIMAN_TARLOCK], 'relogin restores exactly one usable owner actor');
   h.quest.setStage(player, 60);
   await click(O.GROTTO, 3440, 3337);
-  assert.deepEqual(position(), [3441, 9736, 0]);
+  assert.deepEqual(position(), [3442, 9734, 0], 'capture NatureSpirit tick 1057 landing');
   assert.equal(h.quest.getStage(player), 65);
-  assert.deepEqual(publish(), [N.FILLIMAN_TARLOCK], 'the inside actor stays a ghost until the transformation');
+  assert.deepEqual(publish(), [], 'he comes when the grotto is searched (capture 1068-1069), not on entry');
   h.quest.setStage(player, 110);
   await click(O.GROTTO_3, 3442, 9733);
   await click(O.GROTTO, 3440, 3337);
-  assert.deepEqual(position(), [3441, 9736, 1]);
+  assert.deepEqual(position(), [3442, 9734, 1], 'capture NatureSpirit tick 1614 landing');
   assert.equal(h.quest.getStage(player), 110, 'post-quest entry cannot lower progress');
   player.getSkillManager().setCurrentLevels(core.Skill.PRAYER, 0);
+  const said = [], sendMessage = player.sendMessage.bind(player);
+  player.sendMessage = (message) => { said.push(message); return sendMessage(message); };
   await click(O.ALTAR_OF_NATURE, 3441, 9740);
+  assert.deepEqual(said, ['You recharge your prayer points at the altar of nature.'], 'rsprox 227/01846.txt tick 4473');
   assert.equal(player.getSkillManager().getCurrentLevel(core.Skill.PRAYER),
     player.getSkillManager().getMaxLevel(core.Skill.PRAYER) + 2, 'the actual plane-1 altar restores and boosts Prayer');
   await click(O.GROTTO_4, 3442, 9733);
   assert.equal(player.getLocation().z, 0, 'the finished grotto has a working native exit');
+  assert.deepEqual(position(), [3440, 3337, 0]);
+  assert.deepEqual(said.slice(1), ["You prepare to exit the Druid's grotto.", 'You crawl back out of the grotto.'], 'rsprox 227/01846.txt ticks 4477-4478');
+});
+
+
+test('the swamp Area reports successful player entry independently of quest stage', () => {
+  const h = harness();
+  const entries = [];
+  h.custom.set('mort-myre:entered', [event => entries.push(event.player)]);
+  h.area.postEnter({ isPlayer: () => false });
+  assert.deepEqual(entries, []);
+  h.area.enter(h.player);
+  assert.deepEqual(entries, [h.player]);
+  h.player.getPrivateArea = () => ({});
+  h.area.postEnter(h.player);
+  assert.equal(entries.length, 1, 'private areas do not count as swamp entry');
+});
+
+
+test('walking through an already-open swamp gate records entry without crediting exits or teleports (#2852)', () => {
+  const cases = [
+    { from: [3443, 3459], to: [3443, 3457], expected: 10, name: 'running south through the gate' },
+    { from: [3444, 3458], to: [3444, 3457], expected: 10, name: 'walking south through the gate' },
+    { from: [3443, 3457], to: [3443, 3459], expected: 5, name: 'leaving the swamp' },
+    { from: [3443, 3458], to: [3443, 3457], expected: 5, teleport: true, name: 'teleporting just inside' },
+    { from: [3443, 3459], to: [3440, 3336], expected: 5, name: 'teleporting to the grotto' },
+    { from: [3446, 3459], to: [3446, 3457], expected: 5, name: 'crossing elsewhere' },
+  ];
+  for (const entry of cases) {
+    const h = harness(), p = h.player;
+    h.quest.setStage(p, 5);
+    // As AreaManager does: only the Area the player stands in is processed.
+    const step = () => h.areas.find(area => area.getBoundaries().some(b => b.inside(p.getLocation())))?.process(p);
+    p.setLocation(new core.Location(...entry.from, 0));
+    step();
+    p.setLocation(new core.Location(...entry.to, 0));
+    p.needsPlacement = Boolean(entry.teleport);
+    step();
+    assert.equal(h.quest.getStage(p), entry.expected, entry.name);
+    assert.equal(h.spawned.length, 0, 'crossing never auto-summons the ghost');
+    objectAction(h, { objectId: O.GROTTO, ...interaction(['Enter'], 1) });
+    assert.equal(h.spawned.some(npc => npc.getId() === N.FILLIMAN_TARLOCK),
+      entry.expected === 10, entry.name + ': only legitimate entry unlocks the existing summon');
+  }
+});
+
+test('the Mort Myre gate stays shut until Nature Spirit is started, with the notice (Wiki: Mort Myre Swamp); leaving is never stopped', () => {
+  const notice = 'Mort Myre is a dangerous Ghast infested swamp. Do not enter if you value your life. All persons wishing to enter must see Drezel.';
+  const h = harness();
+  const p = h.player;
+  p.setLocation(new core.Location(3443, 3458, 0));
+  for (const objectId of [O.GATE_72, O.GATE_73]) {
+    p.messages.length = 0;
+    assert.equal(emit(h, 'door:toggle', { objectId }).handled, true, 'not started: the gate does not open');
+    assert.deepEqual(p.messages, [notice]);
+  }
+  p.setLocation(new core.Location(3443, 3457, 0));
+  p.messages.length = 0;
+  assert.equal(emit(h, 'door:toggle', { objectId: O.GATE_73 }).handled, false, 'a player inside can always leave');
+  assert.deepEqual(p.messages, ['You skip gladly out of murky Mort Myre.']);
+  h.quest.setStage(p, 5);
+  p.setLocation(new core.Location(3443, 3458, 0));
+  p.messages.length = 0;
+  assert.equal(emit(h, 'door:toggle', { objectId: O.GATE_73 }).handled, false, 'started: it opens');
+  assert.deepEqual(p.messages, ['You walk into the gloomy atmosphere of Mort Myre.']);
+  assert.equal(h.quest.getStage(p), 10);
+});
+
+test('every Mort Myre gate crossing has its line, after the quest too (rsprox 226/01638.txt:21691, :21802)', () => {
+  const h = harness();
+  const p = h.player;
+  h.quest.setStage(p, 110);
+  p.setLocation(new core.Location(3443, 3458, 0));
+  emit(h, 'door:toggle', { objectId: O.GATE_73 });
+  assert.deepEqual(p.messages, ['You walk into the gloomy atmosphere of Mort Myre.']);
+  p.setLocation(new core.Location(3443, 3457, 0));
+  emit(h, 'door:toggle', { objectId: O.GATE_73 });
+  assert.deepEqual(p.messages, ['You walk into the gloomy atmosphere of Mort Myre.', 'You skip gladly out of murky Mort Myre.']);
+  assert.equal(h.quest.getStage(p), 110);
 });

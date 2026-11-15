@@ -37,9 +37,13 @@ const FIRST_PRODUCT_COMPONENT = 9;
 const LAST_PRODUCT_COMPONENT = 38;
 // The rusted anvil in Lumbridge can only be used to smith bronze.
 const RUSTED_ANVIL_BRONZE_ONLY_MESSAGE = "You can only use bronze bars to smith on this anvil.";
+// Wiki (Rusted anvil): selecting Smith without any bronze bars.
+const RUSTED_ANVIL_NO_BRONZE_MESSAGE = "You need a bronze bar to smith equipment on this anvil.";
 
 /** player -> the bar the open interface shows. */
 const OPEN_MENUS = new Map();
+/** player -> the anvil selected when the interface opened. */
+const OPEN_STATIONS = new Map();
 /** player -> the selected quantity ("all", "x" amount or a number); kept until disconnect. */
 const SELECTED_QUANTITY = new Map();
 
@@ -51,6 +55,42 @@ const selectedQuantity = (player) => SELECTED_QUANTITY.get(player) ?? "all";
 
 function smithingLevel(player) {
   return Common.smithingLevel(player);
+}
+
+function locationSnapshot(location) {
+  if (!location || !["getX", "getY", "getZ"].every((method) => typeof location[method] === "function")) return null;
+  return { x: location.getX(), y: location.getY(), z: location.getZ() };
+}
+
+function stationSnapshot(player, object) {
+  const stationObjectId = object?.getId?.();
+  if (!Number.isInteger(stationObjectId)) return null;
+  const location = locationSnapshot(object?.getLocation?.());
+  const startLocation = locationSnapshot(player?.getLocation?.());
+  const teleportSerial = player?.getTeleportSerial?.();
+  return location && startLocation && Number.isInteger(teleportSerial)
+    ? { stationObjectId, location, startLocation, teleportSerial, area: player.getArea?.() ?? null }
+    : null;
+}
+
+function remainsAtStation(player, context) {
+  if (!context) return true;
+  const location = locationSnapshot(player?.getLocation?.());
+  return location != null
+    && player.getTeleportSerial?.() === context.teleportSerial
+    && (player.getArea?.() ?? null) === context.area
+    && location.x === context.startLocation.x
+    && location.y === context.startLocation.y
+    && location.z === context.startLocation.z;
+}
+
+function canGrantAfterConsumption(player, product) {
+  const inventory = player.getInventory();
+  if (typeof inventory.getCopiedItems !== "function" || typeof Core.Inventory !== "function") return true;
+  const preview = new Core.Inventory(player).setItems(inventory.getCopiedItems());
+  preview.deleted(product.barId, product.bars, false);
+  const output = new Core.Item(product.itemId, product.amount);
+  return preview.getAddableAmount(output) >= product.amount;
 }
 
 /** Members products on a free world, and products behind a quest the client greys out. */
@@ -89,16 +129,25 @@ function titleCase(name) {
   return name.replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
 }
 
-function smithOnce(player, product) {
-  if (!canSmith(player, product)) return false;
+function smithOnce(player, product, provenance) {
+  if (!remainsAtStation(player, provenance) || !canSmith(player, product) || !canGrantAfterConsumption(player, product)) return false;
   const inventory = player.getInventory();
   inventory.deleteNumber(product.barId, product.bars);
   inventory.addItem(new Core.Item(product.itemId, product.amount));
   player.performAnimation(hammering(ITEM_ANIMATION_DELAY));
   player.getSkillManager().addExperiences(Core.Skill.SMITHING, product.xp);
   spam(player, `You hammer the ${product.metal} and make ${product.phrase}.`);
-  Core.api.emitCustomEvent("smithing:success", { player, skill: Core.Skill.SMITHING, itemId: product.itemId });
-  Common.produced(player, Core.Skill.SMITHING, product.itemId, product.amount, product.xp, "smith");
+  const action = {
+    inputItemIds: [product.barId],
+    inputs: [{ itemId: product.barId, amount: product.bars }],
+    outputItemId: product.itemId,
+    ...(provenance ? { stationObjectId: provenance.stationObjectId, location: provenance.location } : {}),
+  };
+  Core.api.emitCustomEvent("smithing:success", {
+    player, skill: Core.Skill.SMITHING, itemId: product.itemId, amount: product.amount, ...action,
+    ...(provenance ? { source: "anvil", objectId: provenance.stationObjectId } : {}),
+  });
+  Core.api.emitCustomEvent("skills:produced", { player, skill: Core.Skill.SMITHING, itemId: product.itemId, amount: product.amount, xp: product.xp, kind: "smith", ...action });
   return true;
 }
 
@@ -107,8 +156,8 @@ function smithingInterval(player) {
   return Math.random() < smithsUniformChance(player) ? UNIFORM_INTERVAL_TICKS : SMITHING_INTERVAL_TICKS;
 }
 
-function startSmithing(player, product, amount) {
-  if (!product || !Number.isInteger(amount) || amount <= 0 || !unlocked(player, product) || !canSmith(player, product)) return false;
+function startSmithing(player, product, amount, provenance = stationSnapshot(player, null)) {
+  if (!product || !Number.isInteger(amount) || amount <= 0 || !remainsAtStation(player, provenance) || !unlocked(player, product) || !canSmith(player, product)) return false;
   // All and X stop at what the bars cover, without an out-of-bars message.
   const most = Math.floor(player.getInventory().getAmount(product.barId) / product.bars);
   Sessions.start(player, {
@@ -116,7 +165,8 @@ function startSmithing(player, product, amount) {
     remaining: Math.min(amount, most),
     interval: smithingInterval,
     firstDelay: FIRST_DELAY_TICKS,
-    step: (smith) => smithOnce(smith, product),
+    begin: (smith) => remainsAtStation(smith, provenance),
+    step: (smith) => smithOnce(smith, product, provenance),
   });
   player.performAnimation(hammering());
   return true;
@@ -138,21 +188,22 @@ function chooseBar(player, preferredBarId) {
 }
 
 /** Blurite isn't on the smithing interface: its bolts and limbs come from a make-X menu. */
-function openBluriteMenu(player) {
+function openBluriteMenu(player, provenance) {
   const { CreationMenu } = Core;
   const products = Data.bluriteProducts();
   const bars = player.getInventory().getAmount(Core.ItemIdentifiers.BLURITE_BAR);
   player.getPacketSender().sendCreationMenu(
     new CreationMenu("What would you like to make?", products.map((product) => product.itemId), {
-      execute: (itemId, amount) => startSmithing(player, products.find((product) => product.itemId === itemId), amount),
+      execute: (itemId, amount) => startSmithing(player, products.find((product) => product.itemId === itemId), amount, provenance),
     }, { maxAmount: Math.max(1, bars) })
   );
 }
 
-function openInterface(player, preferredBarId = null) {
+function openInterface(player, preferredBarId = null, station = null) {
+  const provenance = stationSnapshot(player, station);
   const blurite = Core.ItemIdentifiers.BLURITE_BAR;
   if (preferredBarId === blurite || preferredBarId == null && chooseBar(player, null) == null && player.getInventory().contains(blurite)) {
-    openBluriteMenu(player);
+    openBluriteMenu(player, provenance);
     return true;
   }
   const bar = chooseBar(player, preferredBarId);
@@ -161,6 +212,7 @@ function openInterface(player, preferredBarId = null) {
     return false;
   }
   OPEN_MENUS.set(player, bar);
+  OPEN_STATIONS.set(player, provenance);
   const selected = selectedQuantity(player);
   const highlight = selected === "all"
     ? Math.min(ALL_QUANTITY_CAP, player.getInventory().getAmount(bar))
@@ -179,6 +231,7 @@ function openInterface(player, preferredBarId = null) {
 
 function closeInterface(player) {
   OPEN_MENUS.delete(player);
+  OPEN_STATIONS.delete(player);
   if (!player?.isRegistered?.() || player.getInterfaceId() !== Data.smithingInterface()) return;
   player.setInterfaceId(-1);
   player.getPacketSender().closeSubInterface(mainModal());
@@ -216,8 +269,10 @@ function chooseProduct({ player, buttonId: id }) {
   if (!product) return false;
 
   const selected = selectedQuantity(player);
-  const started = startSmithing(player, product, selected === "all" ? ALL_QUANTITY_CAP : selected);
+  const provenance = OPEN_STATIONS.get(player) ?? stationSnapshot(player, null);
+  const started = startSmithing(player, product, selected === "all" ? ALL_QUANTITY_CAP : selected, provenance);
   if (!started) return false;
+  OPEN_STATIONS.delete(player);
   player
     .getPacketSender()
     .sendVarbit(varbit("smithing_bar_lasttype"), Data.BAR_TYPE_BY_BAR.get(bar))
@@ -233,20 +288,34 @@ function anvilAccess(event) {
 }
 
 /** Smith: godsword pieces or a visage and anti-dragon shield go first, then the interface. */
+/**
+ * Smith on an anvil. Content that makes something of its own there takes the click first through
+ * "smithing:anvil-smith" { player, object, handled, proceed } (Between a Rock's golden helmet, whose
+ * live Smith click with gold bars asks "Would you like to make a golden helmet?"). A handler that
+ * sets handled and then turns its own offer down calls proceed() for the usual Smith click.
+ */
 function smith(event) {
   if (!anvilAccess(event)) return;
   const { player } = event;
+  const proceed = () => smithNormally(player, event.object);
+  const request = { player, object: event.object, handled: false, proceed };
+  Core.api.emitCustomEvent("smithing:anvil-smith", request);
+  if (request.handled) return;
+  proceed();
+}
+
+function smithNormally(player, object) {
   if (Godswords.smithAtAnvil(player) || DragonShields.smithAtAnvil(player)) return;
-  openInterface(player);
+  openInterface(player, null, object);
 }
 
 function smithRustedAnvil(event) {
   if (!anvilAccess(event)) return;
   if (!event.player.getInventory().contains(Core.ItemIdentifiers.BRONZE_BAR)) {
-    event.player.sendMessage(RUSTED_ANVIL_BRONZE_ONLY_MESSAGE);
+    event.player.sendMessage(RUSTED_ANVIL_NO_BRONZE_MESSAGE);
     return;
   }
-  openInterface(event.player, Core.ItemIdentifiers.BRONZE_BAR);
+  openInterface(event.player, Core.ItemIdentifiers.BRONZE_BAR, event.object);
 }
 
 /** A bar used on an anvil opens the interface on that bar. */
@@ -259,11 +328,12 @@ function useOnAnvil(event) {
     player.sendMessage(RUSTED_ANVIL_BRONZE_ONLY_MESSAGE);
     return;
   }
-  openInterface(player, itemId);
+  openInterface(player, itemId, object);
 }
 
 function forget(player) {
   OPEN_MENUS.delete(player);
+  OPEN_STATIONS.delete(player);
   SELECTED_QUANTITY.delete(player);
 }
 

@@ -19,8 +19,119 @@ const BLADES_AFTER_SOUND = 2469;
 const KNOCKBACK = { ANIM: 1114, BLADES_DELAY: 11, DARTS_DELAY: 25, BLADES_SPEED: [30, 60], DARTS_SPEED: [44, 74] };
 const BLADES_HIT_SOUND = 1376;
 const DARTS_HIT_SOUND = 1382;
+/** rsprox 1735: pressure-pad tile graphic and darts projectile. */
+const PRESSURE_PAD_GRAPHIC = 271;
+const DARTS_PROJECTILE = 270;
 /** The dodge: sound 1378, then anim 1110 (delay 70) and five ticks' wait (rsprox 1735, 1738). */
 const DART_DODGE = { SOUND: 1378, ANIM: 1110, DELAY: 70, HOLD: 5 };
+/** rsprox 1102/1735/1738/4308: three decoration ticks, then four of solid 3567 (cache seq 1103). */
+const SAW = { FIRST: 3568, SECOND: 3569, ANIMATED: 3567, PERIOD: 7, START: 3, SOUND: 1386, HIT_SOUND: 1393, ANIM: 846 };
+const SAW_PAIRS = [
+  { x: 2761, y: 9584, dx: 0, dy: 1, face: 2 },
+  { x: 2783, y: 9551, dx: 0, dy: 1, face: 2 },
+  { x: 2788, y: 9579, dx: 1, dy: 0, face: 3 },
+];
+const SAW_MESSAGE = "You were hit by the saw blade!";
+const SPINNING_BLADE_ANIM = 1107;
+/** Cache sequence 1111 activates the spikes; loc 3582 defaults to idle sequence 1112. */
+const FLOOR_SPIKE_ANIM = 1111;
+let sawPairs = [];
+
+function setSawRaised(pair, raised) {
+  if (pair.raised === raised) return;
+  const { ObjectManager } = Shared.core();
+  if (raised) {
+    ObjectManager.deregister(pair.first, true);
+    ObjectManager.deregister(pair.second, true);
+    ObjectManager.register(pair.animated, true);
+  } else {
+    ObjectManager.deregister(pair.animated, true);
+    ObjectManager.register(pair.first, true);
+    ObjectManager.register(pair.second, true);
+  }
+  pair.raised = raised;
+}
+
+function startBlades() {
+  stopBlades();
+  const { RegionManager, MapObjects, GameObject, Location } = Shared.core();
+  for (const pair of SAW_PAIRS) {
+    RegionManager.loadMapFiles(pair.x, pair.y, false);
+    const first = MapObjects.get(SAW.FIRST, new Location(pair.x, pair.y, Shared.ARENA_PLANE), null);
+    const second = MapObjects.get(SAW.SECOND, new Location(pair.x + pair.dx, pair.y + pair.dy, Shared.ARENA_PLANE), null);
+    if (!first || !second) continue;
+    const state = { ...pair, first, second, raised: false,
+      animated: new GameObject(SAW.ANIMATED, first.getLocation().clone(), 10, pair.face, null) };
+    sawPairs.push(state);
+    setSawRaised(state, Shared.cycle.tick % SAW.PERIOD >= SAW.START);
+  }
+}
+
+function stopBlades() {
+  for (const pair of sawPairs) setSawRaised(pair, false);
+  sawPairs = [];
+}
+
+function sawDamage({ player }) {
+  if (Shared.isInArena(player)) Shared.hit(player, Shared.trapDamage(player.getHitpoints()));
+}
+
+/** The world task precedes player movement: inspect the last pre-transition tile, without a latch. */
+function tickBlades() {
+  const phase = Shared.cycle.tick % SAW.PERIOD;
+  if (phase !== 0 && phase !== SAW.START) return;
+  for (const pair of sawPairs) setSawRaised(pair, phase === SAW.START);
+  if (phase !== SAW.START) return;
+  for (const player of Shared.sessions.keys()) {
+    if (!player.isRegistered() || !Shared.isInArena(player) || player.getPrivateArea()) continue;
+    const at = player.getLocation();
+    for (const pair of sawPairs) {
+      // rsprox 1102: synth 1386 at distances 1–5, absent at 6–17. Neither loc nor seq owns a sound.
+      if (Math.max(Math.abs(at.getX() - pair.x), Math.abs(at.getY() - pair.y)) <= 5) {
+        player.getPacketSender().sendSoundEffect(SAW.SOUND, 1, 0);
+      }
+      const first = at.equals(pair.first.getLocation());
+      if (!first && !at.equals(pair.second.getLocation())) continue;
+      if (player.getHitpoints() <= 0 || ObstacleRunner.isBusy(player)) continue;
+      const offset = first ? -1 : 2;
+      ObstacleRunner.run({ player }, [
+        { msg: { spam: SAW_MESSAGE } }, { sound: SAW.HIT_SOUND },
+        { move: [pair.x + pair.dx * offset, pair.y + pair.dy * offset, Shared.ARENA_PLANE],
+          anim: SAW.ANIM, delay: 30, speed: [30, 56], ticks: 1 },
+        { run: sawDamage },
+      ], { keepAnimation: true });
+    }
+  }
+}
+
+function animateSpinningBlade({ object }) {
+  object.performAnimation(new (Shared.core().Animation)(SPINNING_BLADE_ANIM));
+}
+
+function animateFloorSpikes({ player, core, pos }) {
+  const area = player.getPrivateArea?.() ?? null;
+  const object = core.MapObjects.get(Shared.OBJECTS.FLOOR_SPIKES, new core.Location(pos.x, pos.y, pos.z), area);
+  if (object?.getType() === 10 && object.getPrivateArea() === area) {
+    object.performAnimation(new core.Animation(FLOOR_SPIKE_ANIM));
+  }
+}
+
+function animatePressurePad({ player, core, pos }, delay) {
+  player.getPacketSender().sendGlobalGraphic(
+    new core.Graphic(PRESSURE_PAD_GRAPHIC, delay),
+    new core.Location(pos.x, pos.y, pos.z),
+  );
+}
+
+function fireDartProjectile({ player, core, pos }, span, dir, hit) {
+  // The darts fire from ahead of the runner. On a dodge, they keep flying past the trap.
+  const entry = dir > 0 ? span.from : span.to;
+  const start = new core.Location(...spanTile(span, entry + dir * 6), pos.z);
+  const end = new core.Location(...spanTile(span, hit ? entry : entry - dir * 2), pos.z);
+  new core.Projectile(start, end, hit ? player : null, DARTS_PROJECTILE,
+    0, hit ? 25 : 150, 0, 10, player.getPrivateArea?.() ?? null,
+  ).withAngle(2).withProgress(40).sendProjectile();
+}
 
 function createArea() {
   const { Area, Boundary } = Shared.core();
@@ -35,6 +146,7 @@ function createArea() {
       const state = Shared.stateOf(player);
       state.lastTile = null;
       state.lastAt = null;
+      Shared.setObstacleHighlights(player, true);
       Shared.sendArrow(player);
     }
 
@@ -45,6 +157,7 @@ function createArea() {
       const state = Shared.stateOf(player);
       state.lastTile = null;
       state.lastAt = null;
+      Shared.setObstacleHighlights(player, false);
       player.getPacketSender().clearHintArrow?.();
     }
   }
@@ -100,13 +213,13 @@ function trapSteps(player, span, outcome, dir) {
       const next = spanTile(span, dir > 0 ? span.to : span.from);
       const walk = next[0] === at.getX() && next[1] === at.getY() ? [past] : [next, past];
       steps.push(
-        { sound: DART_DODGE.SOUND }, { wait: 1 },
+        { sound: DART_DODGE.SOUND }, { wait: 1 }, { run: (ctx) => fireDartProjectile(ctx, span, dir, false) },
         { anim: DART_DODGE.ANIM, delay: DART_DODGE.DELAY }, { wait: DART_DODGE.HOLD },
         { walk },
       );
     } else {
       steps.push(
-        { sound: DARTS_HIT_SOUND },
+        { sound: DARTS_HIT_SOUND }, { run: (ctx) => fireDartProjectile(ctx, span, dir, true) },
         { move: [...back, z], anim: KNOCKBACK.ANIM, delay: KNOCKBACK.DARTS_DELAY, speed: KNOCKBACK.DARTS_SPEED, ticks: 1 },
         { wait: 1 },
         { msg: { spam: Shared.DARTS_FAIL_MESSAGE } },
@@ -121,6 +234,7 @@ function trapSteps(player, span, outcome, dir) {
   if (outcome === "fail" && span.kind === "SPINNING_BLADES") {
     steps.push(
       { move: [...back, z], anim: KNOCKBACK.ANIM, delay: KNOCKBACK.BLADES_DELAY, speed: KNOCKBACK.BLADES_SPEED, ticks: 1 },
+      { run: animateSpinningBlade },
       { msg: { spam: Shared.BLADES_FAIL_MESSAGE } },
       { sound: BLADES_HIT_SOUND },
       { wait: 1 },
@@ -139,12 +253,23 @@ function trapSteps(player, span, outcome, dir) {
     // XP lands three ticks after the jump (rsprox 4308 2177 -> 2180).
     steps.push(
       { move: [...past, z], anim: TRAP_JUMP.ANIM, delay: TRAP_JUMP.DELAY, speed: TRAP_JUMP.SPEED, ticks: 1 },
+      { run: animateSpinningBlade },
       { sound: BLADES_AFTER_SOUND, delay: 30 },
       { wait: 2 },
     );
+  } else if (span.kind === "FLOOR_SPIKES") {
+    // rsprox 1735 (Leagues): jump 664 -> entry spike 1111 at 665; landing/XP stay at jump+2.
+    steps.push(
+      { move: [...past, z], anim: TRAP_JUMP.ANIM, delay: TRAP_JUMP.DELAY, speed: TRAP_JUMP.SPEED, ticks: 0 },
+      { wait: 1 }, { run: animateFloorSpikes }, { wait: 1 }, { tele: [...past, z] },
+    );
   } else {
-    // Spikes and pads: XP two ticks after the jump (rsprox 1735 350 -> 352).
-    steps.push({ move: [...past, z], anim: TRAP_JUMP.ANIM, delay: TRAP_JUMP.DELAY, speed: TRAP_JUMP.SPEED, ticks: 2 });
+    // Pads: the rocks play at take-off and again on landing (rsprox 1735 350 -> 352).
+    steps.push(
+      { run: (ctx) => animatePressurePad(ctx, 20) },
+      { move: [...past, z], anim: TRAP_JUMP.ANIM, delay: TRAP_JUMP.DELAY, speed: TRAP_JUMP.SPEED, ticks: 2 },
+      { run: (ctx) => animatePressurePad(ctx, 0) },
+    );
   }
   return steps;
 }
@@ -178,8 +303,14 @@ function stepTrap(player, span, previous = null) {
   const outcome = rollTrap(kind, level) ? "pass" : "fail";
   const at = player.getLocation();
   const dir = heading(span, { x: at.getX(), y: at.getY() }, previous);
-  const context = { player, core: Shared.core(), pos: { x: at.getX(), y: at.getY(), z: at.getZ() } };
+  const core = Shared.core();
+  const context = { player, core, pos: { x: at.getX(), y: at.getY(), z: at.getZ() } };
+  if (span.object) {
+    const [x, y, face] = span.object;
+    context.object = new core.GameObject(Shared.OBJECTS.SPINNING_BLADES, new core.Location(x, y, Shared.ARENA_PLANE), 10, face, null);
+  }
   ObstacleRunner.run(context, trapSteps(player, span, outcome, dir), {
+    agility: true,
     onFinish: (completed) => {
       if (completed && outcome === "pass" && pays) Shared.addObstacleXp(player, kind);
     },
@@ -210,3 +341,6 @@ module.exports.stepTrap = stepTrap;
 module.exports.trapSteps = trapSteps;
 module.exports.heading = heading;
 module.exports.rollTrap = rollTrap;
+module.exports.startBlades = startBlades;
+module.exports.stopBlades = stopBlades;
+module.exports.tickBlades = tickBlades;

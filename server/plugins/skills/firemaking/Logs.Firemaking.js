@@ -13,6 +13,8 @@ const FIRE_OBJECT_TYPE = 10;
 const FIRE_OBJECT_FACE = 0;
 const LIGHTABLE_LOGS = [];
 const LIGHTABLE_LOGS_BY_ID = new Map();
+const COLOURED_LOGS = [];
+const FIRELIGHTERS = new Map();
 const PYROMANCER_OUTFIT = [];
 const CAMPFIRES_BY_FIRE = new Map();
 let CreationMenu, Graphic, DialogueChainBuilder, StatementDialogue;
@@ -39,6 +41,8 @@ const CAMPFIRE_MAX_LIFETIME_TICKS = 300;
 const CAMPFIRE_MIN_SPACING_TILES = 5;
 
 const PYROMANCER_SET_BONUS = 0.005;
+/** The full Pyromancer outfit in the equipment effects panel (enum 3047). */
+const PYROMANCER_SET_TEXT = 20;
 
 // OSRS Wiki campfire "Check" tiers, in ticks (0.6s each).
 const CAMPFIRE_CHECK_TIERS = [
@@ -83,9 +87,37 @@ function requiresTinderbox(player) {
   return !(player?.isPlayerBot?.() === true);
 }
 
+/** Wiki Barbarian Firemaking: any bow except these cannot light logs. */
+const NON_FIREMAKING_BOWS = new Set([
+  "twisted bow", "cursed goblin bow", "dark bow", "crystal bow", "ogre bow",
+  "rain bow", "starter bow", "signed oak bow",
+]);
+
+/** Whether the item is a bow the Wiki lets a player light logs with. */
+function isFiremakingBow(itemId) {
+  if (!Number.isInteger(itemId)) return false;
+  let name;
+  try {
+    name = pluginApi.core.ItemDefinition.forId(itemId)?.getName?.() ?? "";
+  } catch {
+    return false;
+  }
+  const lower = String(name).toLowerCase();
+  if (!lower.endsWith("bow") || lower.includes("crossbow")) return false;
+  return !NON_FIREMAKING_BOWS.has(lower);
+}
+
 function isWearing(player, slot, itemIds) {
   const item = player.getEquipment?.()?.getItems?.()[slot];
   return !!item && itemIds.includes(item.getId());
+}
+
+function addPyromancerSetText(request) {
+  const player = request?.player;
+  if (player?.getEquipment && PYROMANCER_OUTFIT.length > 0
+      && PYROMANCER_OUTFIT.every((piece) => isWearing(player, piece.slot, piece.itemIds))) {
+    request.setTexts?.push(PYROMANCER_SET_TEXT);
+  }
 }
 
 function firemakingXpMultiplier(player) {
@@ -125,10 +157,10 @@ function campfireCheckMessage(remainingTicks) {
   return CAMPFIRE_CHECK_TIERS[CAMPFIRE_CHECK_TIERS.length - 1].message;
 }
 
-function grantFiremakingLogXp(player, log) {
+function grantFiremakingLogXp(player, log, bow = false) {
   const xp = log.xpReward * firemakingXpMultiplier(player);
   player.getSkillManager().addExperiences(Skill.FIREMAKING, xp);
-  pluginApi.emitCustomEvent("firemaking:success", { player, skill: Skill.FIREMAKING, itemId: log.itemId });
+  pluginApi.emitCustomEvent("firemaking:success", { player, skill: Skill.FIREMAKING, itemId: log.itemId, bow: bow === true });
 }
 
 function dropAshes(player, location) {
@@ -287,9 +319,9 @@ function stepAwayFromFire(player) {
   }
 }
 
-function spawnFire(player, location) {
+function spawnFire(player, location, fireId = FIRE_OBJECT_ID) {
   const fire = new GameObject(
-    FIRE_OBJECT_ID,
+    fireId,
     location.clone(),
     FIRE_OBJECT_TYPE,
     FIRE_OBJECT_FACE,
@@ -297,10 +329,7 @@ function spawnFire(player, location) {
   );
   ObjectManager.register(fire, true);
   activeFires.set(fire, createFireState(fire, player));
-  if (player.getLocation().equals(location)) {
-    stepAwayFromFire(player);
-  }
-  // Live turns the player back to the fire as they step off it (face_angle 1536 after a step west).
+  // Live turns the player back to the fire a tick after they step off it (face_angle 1536 after a step west).
   player.setPositionToFace(location);
   return fire;
 }
@@ -321,8 +350,18 @@ function processFires() {
   }
 }
 
+/** Wiki Barbarian Training: bow lighting adds 20 levels, capped at 99 for high-tier logs. */
+function lightingLevel(log, bow = false) {
+  return bow ? Math.min(99, log.requiredLevel + 20) : log.requiredLevel;
+}
+
 function startFiremakingAttempt(player, log, source, activeSessions) {
   if (!player || !log || !source) {
+    return false;
+  }
+
+  if (log.colour && !pluginApi.core.WorldDefinition.isMembersWorld()) {
+    player.sendMessage("You need to be on a members' world to light coloured logs.");
     return false;
   }
 
@@ -330,15 +369,17 @@ function startFiremakingAttempt(player, log, source, activeSessions) {
     return false;
   }
 
-  if (getFiremakingLevel(player) < log.requiredLevel) {
+  const bow = source.bow === true;
+  const requiredLevel = lightingLevel(log, bow);
+  if (getFiremakingLevel(player) < requiredLevel) {
     player.sendMessage(
-      `You need a Firemaking level of at least ${log.requiredLevel} to light those logs.`
+      `You need a Firemaking level of at least ${requiredLevel} to light those logs.`
     );
     return false;
   }
 
   const inventory = player.getInventory();
-  if (requiresTinderbox(player) && !inventory.contains(TINDERBOX_ID)) {
+  if (!bow && requiresTinderbox(player) && !inventory.contains(TINDERBOX_ID)) {
     player.sendMessage("You need a tinderbox to light fires.");
     return false;
   }
@@ -388,8 +429,11 @@ function startFiremakingAttempt(player, log, source, activeSessions) {
   activeSessions.set(player, {
     mode: SESSION_MODE.GROUND,
     fromInventory,
+    bow,
+    bowId: source.bowId,
     log,
     location: sessionLocation,
+    startLocation: player.getLocation().clone(),
     privateArea,
     nextActionTick: sessionTick + FIRST_LIGHT_ROLL_TICKS,
     catchTick: null,
@@ -478,8 +522,8 @@ function completeInventoryOrGroundFire(player, state) {
     logs += extra;
   }
 
-  spawnFire(player, state.location);
-  for (let burnt = 0; burnt < logs; burnt++) grantFiremakingLogXp(player, state.log);
+  spawnFire(player, state.location, state.log.fireId);
+  for (let burnt = 0; burnt < logs; burnt++) grantFiremakingLogXp(player, state.log, state.bow === true);
   Sounds.sendSound(player, Sound.FIRE_SUCCESSFUL);
   spam(player, "The fire catches and the logs begin to burn.");
   return true;
@@ -562,6 +606,10 @@ function tendFire(player, session, activeSessions) {
   }
 }
 
+function rollLightingSuccess(level) {
+  return Math.random() < lightingSuccessChance(level);
+}
+
 function processFiremakingTick(activeSessions, currentTick) {
   for (const [player, session] of activeSessions) {
     if (!player || !player.isRegistered() || player.getHitpoints() <= 0) {
@@ -574,7 +622,15 @@ function processFiremakingTick(activeSessions, currentTick) {
       continue;
     }
 
-    if (player.getMovementQueue()?.size?.() > 0) {
+    // After a hit, the queued step off the log is ours and must not cancel the fire.
+    if (session.catchTick == null && player.getMovementQueue()?.size?.() > 0) {
+      stopFiremaking(activeSessions, player);
+      continue;
+    }
+    // The queue can drain before this global task runs; detect an actual step too.
+    // The successful roll queues its own step, so only check before catchTick.
+    if (session.mode === SESSION_MODE.GROUND && session.catchTick == null &&
+        !player.getLocation().equals(session.startLocation)) {
       stopFiremaking(activeSessions, player);
       continue;
     }
@@ -585,7 +641,7 @@ function processFiremakingTick(activeSessions, currentTick) {
       continue;
     }
 
-    if (getFiremakingLevel(player) < session.log.requiredLevel) {
+    if (getFiremakingLevel(player) < lightingLevel(session.log, session.bow)) {
       stopFiremaking(activeSessions, player);
       continue;
     }
@@ -599,7 +655,13 @@ function processFiremakingTick(activeSessions, currentTick) {
       continue;
     }
 
-    if (requiresTinderbox(player) && !player.getInventory().contains(TINDERBOX_ID)) {
+    if (session.bow && !player.getInventory().contains(session.bowId)) {
+      player.sendMessage("You need a bow to light fires.");
+      stopFiremaking(activeSessions, player);
+      continue;
+    }
+
+    if (!session.bow && requiresTinderbox(player) && !player.getInventory().contains(TINDERBOX_ID)) {
       player.sendMessage("You need a tinderbox to light fires.");
       stopFiremaking(activeSessions, player);
       continue;
@@ -630,7 +692,7 @@ function processFiremakingTick(activeSessions, currentTick) {
     }
 
     // Content may make the roll succeed ("firemaking:light-roll", a league relic that never fails to light).
-    const light = { player, success: Math.random() < lightingSuccessChance(getFiremakingLevel(player)) };
+    const light = { player, success: !!session.log.colour || rollLightingSuccess(getFiremakingLevel(player)) };
     pluginApi.emitCustomEvent("firemaking:light-roll", light);
     if (!light.success) {
       player.performAnimation(LIGHT_FIRE_ANIMATION);
@@ -639,8 +701,12 @@ function processFiremakingTick(activeSessions, currentTick) {
       continue;
     }
 
-    // A hit stops the animation; the fire catches on the next tick.
+    // A hit stops the animation and steps the player off the log on the same tick; the fire catches
+    // on the next tick, behind them (rsprox recordings 1035, 1098 and 1108).
     player.performAnimation(Animation.DEFAULT_RESET_ANIMATION);
+    if (player.getLocation().equals(session.location)) {
+      stepAwayFromFire(player);
+    }
     session.catchTick = currentTick + FIRE_CATCH_DELAY_TICKS;
   }
 }
@@ -671,14 +737,76 @@ function handleItemOnItem(event, activeSessions) {
   player.getPacketSender().sendInterfaceRemoval();
   player.getSkillManager()?.stopSkillable?.();
 
+  const lighterId = usedItemId === ItemIds.LOGS ? usedWithItemId
+    : usedWithItemId === ItemIds.LOGS ? usedItemId : -1;
+  const coloured = FIRELIGHTERS.get(lighterId);
+  if (coloured) {
+    event.handled = true;
+    if (!pluginApi.core.WorldDefinition.isMembersWorld()) {
+      player.sendMessage("You need to be on a members' world to use firelighters.");
+      return;
+    }
+    const inventory = player.getInventory();
+    const inputs = [[event.usedItemSlot, event.usedItem], [event.usedWithItemSlot, event.usedWithItem]];
+    if (inputs.some(([slot, item]) => !item || inventory.getItems()[slot] !== item || item.getAmount() < 1 ||
+      item.isPresetItem() || item.getMetaValue(Item.UNTRADEABLE_META) === true ||
+      item.getMetaValue(Item.UNBANKABLE_META) === true)) return;
+    for (const [slot] of inputs) inventory.deleteAtSlot(slot, 1, false);
+    inventory.add(new Item(coloured.itemId, 1), true);
+    // A spam (filterable) line, as live sends it (rsprox 227/00091.txt tick 24172).
+    spam(player, `You coat the logs with the ${coloured.colour} chemicals.`);
+    return;
+  }
+
+  const helmetId = usedItemId === TINDERBOX_ID ? usedWithItemId
+    : usedWithItemId === TINDERBOX_ID ? usedItemId : -1;
+  // The Wiki's unlit mining helmet is 5014 and the lit one 5013 (Darkness counts 5013 as lit).
+  if (helmetId === ItemIds.MINING_HELMET_2) {
+    event.handled = true;
+    if (getFiremakingLevel(player) < 65) {
+      player.sendMessage("You need a Firemaking level of at least 65 to light a mining helmet.");
+      return;
+    }
+    // The helmet that was clicked: its marks (a preset copy) stay with it.
+    const helmet = [event.usedItem, event.usedWithItem].find((held) => held?.getId() === helmetId);
+    if (!helmet) return;
+    helmet.setId(ItemIds.MINING_HELMET);
+    player.getInventory().refreshItems();
+    player.sendMessage("You light your mining helmet.");
+    pluginApi.emitCustomEvent("firemaking:success", {
+      player,
+      skill: Skill.FIREMAKING,
+      itemId: helmetId,
+      resultId: ItemIds.MINING_HELMET,
+      activity: "mining-helmet",
+    });
+    return;
+  }
+
   let logId = -1;
+  let bow = false;
+  let bowId;
   if (usedItemId === TINDERBOX_ID) {
     logId = usedWithItemId;
   } else if (usedWithItemId === TINDERBOX_ID) {
     logId = usedItemId;
+  } else if (isFiremakingBow(usedItemId) && LIGHTABLE_LOGS_BY_ID.has(usedWithItemId)) {
+    logId = usedWithItemId;
+    bow = true;
+    bowId = usedItemId;
+  } else if (isFiremakingBow(usedWithItemId) && LIGHTABLE_LOGS_BY_ID.has(usedItemId)) {
+    logId = usedItemId;
+    bow = true;
+    bowId = usedWithItemId;
   }
 
   if (logId <= 0) {
+    return;
+  }
+
+  if (bow && !pluginApi.core.WorldDefinition.isMembersWorld()) {
+    player.sendMessage("You need to be on a members' world to light fires with a bow.");
+    event.handled = true;
     return;
   }
 
@@ -690,7 +818,7 @@ function handleItemOnItem(event, activeSessions) {
   const started = startFiremakingAttempt(
     player,
     log,
-    { mode: SESSION_MODE.INVENTORY },
+    { mode: SESSION_MODE.INVENTORY, bow, bowId },
     activeSessions
   );
   if (started) {
@@ -886,6 +1014,16 @@ function answerLogXp(request) {
   }
 }
 
+/** "firemaking:xp-multiplier": Firemaking XP earned outside lighting logs (Wintertodt) asks for the outfit. */
+function answerXpMultiplier(request) {
+  request.multiplier *= firemakingXpMultiplier(request.player);
+}
+
+/** Stop this player's firemaking when their interaction is cleared. */
+function handleInteractionCleared({ player }) {
+  stopFiremaking(activeSessionsRef, player);
+}
+
 function handlePlayerDisconnect({ player }) {
   stopFiremaking(activeSessionsRef, player, false);
 }
@@ -927,11 +1065,12 @@ module.exports = {
     return !!(activeSessionsRef && player && activeSessionsRef.has(player));
   },
   isWoodcuttingLog(itemId) {
-    return LIGHTABLE_LOGS_BY_ID.has(itemId);
+    return LIGHTABLE_LOGS.some((log) => log.itemId === itemId);
   },
   // Exposed for tests and other plugins.
   LIGHTABLE_LOGS,
   LIGHTABLE_LOGS_BY_ID,
+  isFiremakingBow,
   lightingSuccessChance,
   firemakingXpMultiplier,
   rollFireLifetimeTicks,
@@ -944,6 +1083,7 @@ module.exports = {
   CAMPFIRE_MIN_SPACING_TILES,
   isFireTileBlocked,
   blocksFireTile,
+  addPyromancerSetText,
   attach,
 };
 
@@ -996,6 +1136,20 @@ function attach(api) {
 
   LIGHTABLE_LOGS_BY_ID.clear();
   for (const log of LIGHTABLE_LOGS) LIGHTABLE_LOGS_BY_ID.set(log.itemId, log);
+  // Pinned rev 241 loc symbols identify the five coloured fire objects.
+  COLOURED_LOGS.splice(0, COLOURED_LOGS.length,
+    { colour: "red", itemId: ItemIds.RED_LOGS, lighterId: ItemIds.RED_FIRELIGHTER, fireId: ObjectIds.FIRE_24 },
+    { colour: "green", itemId: ItemIds.GREEN_LOGS, lighterId: ItemIds.GREEN_FIRELIGHTER, fireId: ObjectIds.FIRE_25 },
+    { colour: "blue", itemId: ItemIds.BLUE_LOGS, lighterId: ItemIds.BLUE_FIRELIGHTER, fireId: ObjectIds.FIRE_26 },
+    { colour: "white", itemId: ItemIds.WHITE_LOGS, lighterId: ItemIds.WHITE_FIRELIGHTER, fireId: ObjectIds.FIRE_16 },
+    { colour: "purple", itemId: ItemIds.PURPLE_LOGS, lighterId: ItemIds.PURPLE_FIRELIGHTER, fireId: ObjectIds.FIRE_17 },
+  );
+  FIRELIGHTERS.clear();
+  for (const log of COLOURED_LOGS) {
+    Object.assign(log, { requiredLevel: 1, xpReward: 50 });
+    LIGHTABLE_LOGS_BY_ID.set(log.itemId, log);
+    FIRELIGHTERS.set(log.lighterId, log);
+  }
   CAMPFIRES_BY_FIRE.clear();
   for (const [fire, campfire] of [
     [ObjectIds.FIRE_23, ObjectIds.FORESTERS_CAMPFIRE],
@@ -1018,12 +1172,15 @@ function attach(api) {
   sessionTick = 0;
   TaskManager.submit(createFiremakingTask(activeSessionsRef));
   api.onCustomEvent("firemaking:log-xp", answerLogXp);
+  api.onCustomEvent("firemaking:xp-multiplier", answerXpMultiplier);
+  api.onCustomEvent("equipment:effects", addPyromancerSetText);
   api.onPlayerDisconnect(handlePlayerDisconnect);
+  api.onCustomEvent("player:interaction-cleared", handleInteractionCleared);
   api.onCustomEvent("level-up:popup-opened", handlePlayerLevelUp);
   api.onItemOnItem(onItemOnItemEvent, { noted: false });
   api.onItemOnGroundItem(onItemOnGroundItemEvent, { noted: false });
   api.onGroundItemClick(
-    LIGHTABLE_LOGS.map((log) => log.itemId),
+    [...LIGHTABLE_LOGS, ...COLOURED_LOGS].map((log) => log.itemId),
     LIGHT_GROUND_OPTION,
     onGroundItemLightEvent
   );

@@ -5,8 +5,14 @@ import { getWorldDefinition, WORLD_SPAWN } from "./definition/WorldDefinition";
 import { PlayerRights } from "./model/rights/PlayerRights"
 
 
+/** See GameConstants.WORLD_TYPE. */
+export interface WorldType {
+    label: string;
+    flags: number;
+    activity: string | null;
+}
+
 export class GameConstants {
-    public static readonly NAME: string = "RspsApp";
     public static readonly NPC_BITS: number = 18;
     // Process NPC mechanics near active players while carrying active off-region state.
     public static readonly PROCESS_NPCS_BY_ACTIVE_REGIONS: boolean = true;
@@ -20,6 +26,8 @@ export class GameConstants {
     // Java server runs at ~600ms per cycle; mirror that here.
     public static readonly GAME_ENGINE_PROCESSING_CYCLE_RATE: number = 600;
     public static readonly QUEUED_LOOP_THRESHOLD: number = 150;
+    /** OSRS run energy is 0-10,000 units; the orb shows only the whole percentage. */
+    public static readonly RUN_ENERGY_MAX_UNITS: number = 10_000;
     // OSRS wiki documents that pets auto-teleport when stuck/too far; use the
     // existing follow break range from Java follow behavior as the auto-teleport
     // threshold for pets in this server.
@@ -37,6 +45,13 @@ export class GameConstants {
      * `setWorldProfile` from its plugin config.
      */
     public static WORLD_PROFILE: PlayerProfile = MAIN_PROFILE;
+    /**
+     * What kind of world this is, as the client is told: `label` is script 876's world type (live
+     * "REGULAR", "HARDCORE WORLD"), `flags` the world-list type bits added to members (live 0x800 on
+     * a Hardcore world) and `activity` the world list's activity text. A game mode with worlds of
+     * its own claims it through `setWorldType` from its plugin config.
+     */
+    public static WORLD_TYPE: WorldType = { label: "REGULAR", flags: 0, activity: null };
     public static readonly DEBUG_ATTACK_DISTANCE: boolean = false;
     // Verbose NPC face-change debug is expensive in large fights; keep off unless diagnosing.
     public static readonly DEBUG_NPC_FACE_POSITION_CHANGES: boolean = false;
@@ -91,6 +106,14 @@ export class GameConstants {
 
     public static setWorldProfile(profile: PlayerProfile): void {
         this.WORLD_PROFILE = profile;
+    }
+
+    public static setWorldType(type: Partial<WorldType>): void {
+        this.WORLD_TYPE = {
+            label: typeof type.label === "string" && type.label ? type.label : this.WORLD_TYPE.label,
+            flags: Number.isInteger(type.flags) ? (type.flags as number) >>> 0 : this.WORLD_TYPE.flags,
+            activity: typeof type.activity === "string" ? type.activity : this.WORLD_TYPE.activity,
+        };
     }
 
     public static setExperienceRate(rate: number): void {

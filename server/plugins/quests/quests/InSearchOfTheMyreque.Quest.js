@@ -86,7 +86,7 @@ module.exports = function registerInSearchOfTheMyrequeQuest(api) {
   ]);
 
   const STEEL_LONGSWORD_ITEM_ID = ItemIdentifiers.STEEL_LONGSWORD;
-  const STEEL_SWORD_ITEM_ID = ItemIdentifiers.STEEL_SWORD;
+  const STEEL_SWORD_ITEM_ID = ItemIdentifiers.STEEL_SHORTSWORD;
   const STEEL_DAGGER_ITEM_ID = ItemIdentifiers.STEEL_DAGGER;
   const STEEL_MACE_ITEM_ID = ItemIdentifiers.STEEL_MACE;
   const STEEL_WARHAMMER_ITEM_ID = ItemIdentifiers.STEEL_WARHAMMER;
@@ -107,7 +107,7 @@ module.exports = function registerInSearchOfTheMyrequeQuest(api) {
   /** The steel delivery Vanstrom asks for (amounts matter for two swords). */
   const WEAPONS = [
     { itemId: STEEL_LONGSWORD_ITEM_ID, amount: 1, label: "1 x Steel longsword" },
-    { itemId: STEEL_SWORD_ITEM_ID, amount: 2, label: "2 x Steel sword" },
+    { itemId: STEEL_SWORD_ITEM_ID, amount: 2, label: "2 x Steel shortsword" },
     { itemId: STEEL_DAGGER_ITEM_ID, amount: 1, label: "1 x Steel dagger" },
     { itemId: STEEL_MACE_ITEM_ID, amount: 1, label: "1 x Steel mace" },
     { itemId: STEEL_WARHAMMER_ITEM_ID, amount: 1, label: "1 x Steel warhammer" },
@@ -146,13 +146,14 @@ module.exports = function registerInSearchOfTheMyrequeQuest(api) {
 
   const START_HOOK = "quest:in-search-of-the-myreque:start";
   const QUIZ_START_ACTION_ID = "sXzRb_";
-  const QUIZ_PASS_CONDITION_ID = "3l6Jxc";
+  const QUIZ_PASS_CONDITION_ID = "P7_hRO"; // "If the player answered three out of three questions correctly:"
   const SHOW_POUCH_MESSAGE_ID = "BKpf08";
   const PLANKS_MESSAGE_ID = "DsO5TF";
   const GIVE_WEAPONS_CONDITION_ID = "VLPyT3";
   const CUTSCENE_START_ACTION_ID = "bLWS_j";
   const SUMMON_HOUND_ACTION_ID = "OFmcmp";
-  const KNOCKOUT_MESSAGE_IDS = new Set(["kDZQpN", "4t7Rpj", "iVqbuD"]);
+  // "Curpile knocks you out and takes you back to Mort'ton." after one, two or three wrong answers.
+  const KNOCKOUT_MESSAGE_IDS = new Set(["OGn3Rx", "Dssih6", "SGfUg5"]);
   const FIRST_SPEAKING_STEP_FLAGS = new Map([
     ["k_vzYt", "met_harold"],
     ["_g5SY-", "met_radigad"],
@@ -420,14 +421,17 @@ module.exports = function registerInSearchOfTheMyrequeQuest(api) {
     return request.complete === true;
   }
 
-  function handleStartHook({ player, npcId, hook }) {
+  function handleStartHook(event) {
+    const { player, npcId, hook } = event;
     if (hook !== START_HOOK || !VANSTROM_NPC_IDS.has(npcId)) return;
     if (quest.getStage(player) === STAGE_UNSTARTED) {
       if (!meetsSkillRequirements(player)) {
+        event.end = true;
         notifySkillRequirements(player);
         return;
       }
       if (!natureSpiritComplete(player)) {
+        event.end = true;
         player.sendMessage("You must complete Nature Spirit to start this quest.");
         return;
       }
@@ -745,12 +749,14 @@ module.exports = function registerInSearchOfTheMyrequeQuest(api) {
       if (stage === STAGE_GAVE_PLANKS) quest.setStage(player, STAGE_REACHED_HOLLOWS);
       player.moveTo(new api.core.Location(3498, 3380, 0));
       player.sendMessage("You board the boat and journey to the Hollows.");
+      api.emitCustomEvent("transport:swamp-boaty", { player, from: "mortton", to: "hollows" });
       return;
     }
     if (objectId === HOLLOWS_BOAT_ID) {
       event.handled = true;
       player.moveTo(new api.core.Location(3522, 3285, 0));
       player.sendMessage("You board the boat and journey back to Mort'ton.");
+      api.emitCustomEvent("transport:swamp-boaty", { player, from: "hollows", to: "mortton" });
       return;
     }
     if (objectId === HOLLOWS_SIGN_ID) {

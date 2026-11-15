@@ -299,9 +299,10 @@ test("every kill drops an even amount of ether in range; the rolls land in the r
 
 test("loot: under the revenant for the killer, ether absorbed, avarice notes", () => {
   const registered = [];
+  const obtains = [];
   Revenants.init({
     core: { ...core, ItemOnGroundManager: { registerLocation: (owner, i, at) => registered.push([i.getId(), i.getAmount()]) } },
-    emitCustomEvent: () => {},
+    emitCustomEvent: (name, event) => { if (name === "collection-log:obtain") obtains.push(event); },
   });
   const bracelet = item(ITEMS.BRACELET_CHARGED);
   bracelet.setMetaValue("charges", 10);
@@ -319,6 +320,8 @@ test("loot: under the revenant for the killer, ether absorbed, avarice notes", (
   assert.ok(Bracelet.charges(bracelet) > 10);
   const [id] = registered[0];
   assert.ok(CacheDefinitions.getItem(id).noteTemplate > 0 || CacheDefinitions.getItem(id).stackable, "noted by the amulet");
+  assert.ok(obtains.length > 0 && obtains.every((event) => event.player === killer), "each drop is credited to the killer");
+  assert.ok(obtains.some((event) => event.itemId === ITEMS.ETHER), "ether is credited even when the bracelet absorbs it");
 });
 
 // ------------------------------------------------------------------ spawns
@@ -359,6 +362,7 @@ function maledictusHarness({ players = [] } = {}) {
   const spawned = [];
   const ground = [];
   const surged = [];
+  const obtains = [];
   const fakeCore = {
     ...core,
     World: { ...core.World, getProcessCycle: () => 0, getPlayers: () => players },
@@ -372,9 +376,10 @@ function maledictusHarness({ players = [] } = {}) {
       return npc;
     },
     removeNpc() {},
+    emitCustomEvent(name, event) { if (name === "collection-log:obtain") obtains.push(event); },
   };
   const m = Maledictus.createMaledictus(api, fakeCore, { inCaves: Data.inCaves, surge: { grant: (p) => surged.push(p.name) } });
-  return { m, spawned, ground, surged };
+  return { m, spawned, ground, surged, obtains };
 }
 
 function caver(name, at = new Location(3200, 10100, 0)) {
@@ -424,7 +429,7 @@ test("maledictus: revenant kills add up until a roll spawns it, announced in the
 test("maledictus loot: the top damager's artefact and dragon rolls, blighted supplies for the rest, announced to all", () => {
   const top = caver("top");
   const helper = caver("helper");
-  const { m, ground, surged } = maledictusHarness({ players: [top, helper] });
+  const { m, ground, surged, obtains } = maledictusHarness({ players: [top, helper] });
   const npc = { getId: () => Maledictus.ID, getCombat: () => ({ getRecentDamagerEntries: () => [{ player: helper, damage: 100 }, { player: top, damage: 900 }] }) };
   m.rememberDamagers({ npc });
   m.dropLoot({ npc });
@@ -437,6 +442,44 @@ test("maledictus loot: the top damager's artefact and dragon rolls, blighted sup
   assert.ok([24589, 24592, 24595].includes(helperItems[1][1]));
   assert.match(helper.messages.find((x) => /top received/.test(x)), /^<col=005f00>top received a drop: Ancient (emblem|totem)<\/col> <col=106f10>\(Revenant maledictus\)<\/col>$/);
   assert.ok(top.messages.some((x) => x === "<col=005f00>helper received a drop: Blighted super restore(4)</col> <col=106f10>(Revenant maledictus)</col>"));
+  assert.ok(obtains.length > 0 && obtains.some((event) => event.player === top && (event.itemId === 21807 || event.itemId === 21810)),
+    "the top damager's unique is credited");
+  assert.ok(obtains.some((event) => event.player === helper && event.itemId === 24598), "the others' supplies are credited");
+});
+
+test("maledictus blood: heals half of what lands, so Protect from Magic read later heals nothing (#4067)", () => {
+  const { HitDamage, HitMask } = core;
+  for (const [prayed, healed] of [[false, 10], [true, 0]]) {
+    const tasks = [];
+    let hp = 500;
+    const boss = { getHitpoints: () => hp, heal(amount) { hp += amount; } };
+    const target = caver("blood");
+    target.getPacketSender = () => ({ sendGlobalGraphic() {} });
+    const queued = [];
+    class FakeHit {
+      constructor() { this.parts = [new HitDamage(21, HitMask.RED)]; }
+      getHits() { return this.parts; }
+      getTotalDamage() { return this.parts.reduce((sum, part) => sum + part.getDamage(), 0); }
+    }
+    const fakeCore = {
+      ...core,
+      World: { ...core.World, getProcessCycle: () => 0, getPlayers: () => [target] },
+      TaskManager: { submit: (task) => tasks.push(task) },
+      PendingHit: FakeHit,
+      CombatFactory: { addPendingHit: (hit) => queued.push(hit) },
+      Sounds: { playAreaSound() {} },
+    };
+    const m = Maledictus.createMaledictus({}, fakeCore, { inCaves: Data.inCaves, surge: { grant() {} } });
+    m.tileSpell(boss, [target], "blood");
+    assert.equal(tasks.length, 1);
+    tasks[0].execute();
+    assert.equal(hp, 500, "nothing healed when the hit is queued");
+    // The victim's turn: the prayer is read, then the hit lands.
+    const [part] = queued[0].getHits();
+    if (prayed) part.setDamage(0);
+    part.notifyApplied(part.getDamage());
+    assert.equal(hp, 500 + healed, prayed ? "blocked: no heal" : "half of 21, rounded down");
+  }
 });
 
 test("maledictus spawn tiles are walkable, in the caves", () => {

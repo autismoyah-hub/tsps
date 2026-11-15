@@ -92,6 +92,10 @@ function award(player, voyage, random = Math.random) {
   }
   const reward = rollCatch(voyage.shareFor(player), Shared.baseLevel(player, "FISHING"), random, (id) => ownedAmount(player, id));
   player.setAttribute(Shared.REWARD_ATTRIBUTE, { items: reward.items, xp: reward.xp });
+  const fish = Object.freeze(reward.items
+    .filter(([id]) => Shared.ids().fish.some((entry) => entry.id === id))
+    .map(([itemId, amount]) => Object.freeze({ itemId, amount })));
+  if (fish.length > 0) Shared.api().emitCustomEvent("fishing-trawler:catch-awarded", { player, fish });
   rollHeron(player, points);
   return reward;
 }
@@ -109,7 +113,12 @@ function rollHeron(player, points) {
 function inspectNet({ player }) {
   const reward = player.getAttribute(Shared.REWARD_ATTRIBUTE);
   if (!reward || !Array.isArray(reward.items) || reward.items.length === 0) {
-    player.sendMessage(Shared.message("nothingInNet"));
+    // Wiki: Transcript:Trawler_net, inspecting when no rewards are waiting.
+    const { DialogueChainBuilder, PlayerDialogue, EndDialogue } = Shared.core();
+    player.getDialogueManager().startDialogues(new DialogueChainBuilder().add(
+      new PlayerDialogue(0, "I'd better not steal other people's fish!"),
+      new EndDialogue(1),
+    ));
     return true;
   }
   const { Bank, Item } = Shared.core();
@@ -124,11 +133,27 @@ function inspectNet({ player }) {
     const amount = bank.getAddableAmount(new Item(id, count));
     totalXp += count * xpFor(id);
     if (amount > 0) {
+      const before = bank.getAmount(id);
       bank.add(new Item(id, amount), false);
-      deliveredXp += amount * xpFor(id);
-      if (anglers.has(id)) player.sendMessage(Shared.message("angler"));
+      const accepted = Math.max(0, bank.getAmount(id) - before);
+      deliveredXp += accepted * xpFor(id);
+      if (accepted > 0) {
+        Shared.api().emitCustomEvent("items:obtained", {
+          player,
+          itemId: id,
+          amount: accepted,
+          source: "fishing-trawler",
+          location: player.getLocation().clone(),
+        });
+        if (anglers.has(id)) {
+          Shared.api().emitCustomEvent("collection-log:obtain", { player, itemId: id, amount: accepted });
+          player.sendMessage(Shared.message("angler"));
+        }
+      }
+      if (accepted < count) left.push([id, count - accepted]);
+    } else {
+      left.push([id, count]);
     }
-    if (amount < count) left.push([id, count - amount]);
   }
   const xp = totalXp > 0 ? Math.round((reward.xp * deliveredXp / totalXp) * 10) / 10 : 0;
   Shared.addXp(player, "FISHING", left.length === 0 ? reward.xp : xp);

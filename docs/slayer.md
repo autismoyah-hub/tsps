@@ -14,11 +14,14 @@ The plugin is `server/plugins/skills/Slayer.plugin.js`; its units are in
 | `Tasks.Slayer.js` | Assigning, counting kills, completing, points and streaks |
 | `Masters.Slayer.js` | The Assignment, Trade and Rewards options, and the masters' Wiki transcripts |
 | `Choice.Slayer.js` | Mortimer's task choice |
+| `Offer.Slayer.js` | A choice of tasks with a typed kill count, where content offers one (`slayer:task-offer`) |
 | `Combat.Slayer.js` | The Slayer level needed to attack |
 | `Checks.Slayer.js` | The enchanted gem's and slayer ring's Check |
 | `Rewards.Slayer.js` | The Slayer Rewards interface |
 | `Equipment.Slayer.js` | Protective gear; kurask and turoth weaknesses |
+| `CaveHorror.Slayer.js` | Cave horrors' scream and magical melee |
 | `SlaughterBracelet.Slayer.js` | Bracelet of slaughter effects, shared charges, Check and Break |
+| `ExpeditiousBracelet.Slayer.js` | Expeditious bracelet: double kill credit, shared charges, Check and Break |
 | `Finishers.Slayer.js` | Rock hammer, bag of salt, ice cooler, fungicide spray |
 | `Superiors.Slayer.js` | Superior monsters |
 | `Keys.Slayer.js` | Brimstone and Larran's keys from Konar's and Krystilia's task kills |
@@ -93,7 +96,9 @@ A master only assigns rows the player qualifies for:
 
 A row is picked by weight. Its amount is the row's range, or the extension's range with that
 unlock. Konar also picks one of the task's areas. The Boss task picks a boss the player has the
-levels for, 3-35 kills (Wiki; in OSRS the player chooses the amount).
+levels for, 3-35 kills (Wiki; in OSRS the player chooses the amount). A master with a `bosses`
+list in `slayer-masters.json` picks only from it: Krystilia's are the Wilderness bosses (Wiki,
+Krystilia: not the Abyssal Sire or the King Black Dragon).
 
 ### Mortimer
 
@@ -114,6 +119,18 @@ levels for, 3-35 kills (Wiki; in OSRS the player chooses the amount).
 - **Talk:** his transcript's assignment opens the choice; after the pick he says the line for the
   task's modifier, then offers tips, cancelling (100 points) or "Okay, great!".
 
+### Offered choices (`slayer:task-offer`)
+
+- Asked whenever a master other than Mortimer would assign (the Assignment option, the
+  transcript's assignment step, Turael's replacement, a remote assignment). An answer gives how
+  many tasks, the kill count range the player types, and whether one is a boss task (with a
+  `bossAllowed(task)` filter). Demonic Pacts' Culling Spree answers it: three tasks, one a boss
+  from the unlocked areas with Like a Boss, 5-200 kills (Wiki).
+- The talk ends and a chatbox menu lists the tasks; a pick asks for the count (an amount
+  prompt that takes 0 and negatives so it can refuse them). Out of range assigns nothing; the
+  roll is saved (`slayer:offered-tasks`) and offered again until any task is assigned. A pick
+  is set as the master would set it (Konar's area, the master's streak and points).
+
 ### Superior uniques
 
 A superior rolls two unique tables, each at 1 in (200 - (Slayer level + 55)² / 125) (Wiki,
@@ -131,6 +148,7 @@ bit and 1 in 200, which a listener may unlock or shorten; the toggle-off always 
 - **Counting:** a kill counts when the monster counts for the task. Konar's kills must be in her
   area, and Krystilia's in the Wilderness.
 - **XP:** a monster's hitpoints in Slayer XP.
+- **Morytania Diary:** a completed Morytania Diary tier gives 2.5/5/7.5/10% (easy to elite) more Slayer XP for a task kill in the Slayer Tower (a kill the Slayer Master relic counts as on task too), with the legs worn or not: the Wiki lists it as a reward of its own, apart from the legs (it says "completed" on the Slayer changes and "claiming" on the legs page; completion is used, as for the Karamja Tokkul perk). The tower is the floors (Slayer area 9's first box), the basement (`SlayerTower.plugin.js` bounds, inferred to count) and the Grotesque Guardians' roof, so Dusk's 1,350 XP is boosted too. Stacking with Mortimer's XP modifier is not on the Wiki; they multiply. `MorytaniaDiary.Slayer.js`.
 - **Keys (Wiki: Brimstone key, Larran's key):** a kill that counts for a Konar task may drop a
   brimstone key, one for a Krystilia task a Larran's key, at a chance set by the monster's combat
   level (1 in 2,060 at level 1 up to 1 in 50 from level 350 for brimstone; 1 in 1,972 to 1 in 50
@@ -138,6 +156,46 @@ bit and 1 in 200, which a listener may unlock or shorten; the toggle-off always 
   inside the Wilderness Slayer Cave. A superior on such a task always drops its key. The keys are
   on no monster's drop table: `NpcDrops` strips the Wiki's "Konar task bonus" rows, which dropped
   a brimstone key from every superior kill, on task or not.
+
+### Cave horrors
+
+Sources: Wiki [Cave horror](https://oldschool.runescape.wiki/w/Cave_horror),
+[Witchwood icon](https://oldschool.runescape.wiki/w/Witchwood_icon) and
+[Magical melee](https://oldschool.runescape.wiki/w/Magical_melee); rsprox captures 4053 and 4066
+(Leagues VI), 3279 (an event world) and 1846 (Leagues V). `CaveHorror.Slayer.js`.
+
+- **Scream (no witchwood icon worn):** every attack is the scream. The horror plays its howl
+  (`harmless_island_cave_horror_howl`, 4237), the player plays `steam_head_play` (2835) and the
+  hit lands on that tick, every 4 ticks (recordings 4053 and 4066: howl, steam head and the
+  hitsplat on one tick; recording 4053 has them 4 ticks apart; the sound 497 plays on almost
+  every howl tick). It always hits for a tenth of the player's *base* Hitpoints level, rounded down, whatever
+  they wear (Wiki). Protect from Melee turns it into a 0 (recordings 3279, 4053 and 4066 show a 0 splat on
+  the scream ticks while the prayer is up). Unprotected, recording 1846 shows the splat three times, always 8;
+  it does not show the base level, so the tenth is the Wiki's.
+- **With the icon:** the horror picks the scream or a kick at random for each attack; a kick is
+  followed by a 4-tick wait and a scream by a 5-tick one (Wiki). The scream then rolls as a regular
+  attack. The kick is the horror's own attack animation (4234/4235 in the captures).
+- **Regular attacks are magical melee:** accuracy rolls against the player's Magic defence, and
+  Protect from Melee blocks them (Wiki: Magical melee).
+- **Not built:** the Wiki says the scream also hits players standing beside the horror who are not
+  already in combat with it; no capture shows it. Cave abominations are not covered.
+
+### Protective gear
+
+`slayer-gear.json` lists the monsters that punish a player who lacks their protection. An
+unprotected hit always lands (and goes through protection prayers where the Wiki says so), takes
+the monster's unprotected damage and drains the listed stats.
+
+- **Slayer helmets:** every recolour and imbued form protects like the plain helmet; the Wiki
+  calls the recolours purely cosmetic (Wiki, Slayer helmet).
+- **Sourhog** (Wiki, Sourhog): without reinforced goggles or a Slayer helmet its caustic saliva hits
+  for 20-30, drains current Attack and Defence by 90% and the player shouts "Argh! My eyes!". Protected,
+  its max hit is 6.
+- **Fever spider** (Wiki, Fever spider): without Slayer gloves it hits for 12.5% of the Hitpoints
+  level (the infobox's 1-12). Not done: the disease it also gives (Wiki, Disease: an 8 hitsplat that
+  falls by 1 every 1.5 minutes, draining a skill every 18 seconds) because player disease is not
+  modelled and the Wiki lists no messages for it. No recording shows an unprotected sourhog or
+  fever spider hit.
 
 ### Bracelet of slaughter
 
@@ -159,7 +217,7 @@ and the [Elite rewards list](https://oldschool.runescape.wiki/w/Combat_Achieveme
 (“10% chance to fully recharge instead of breaking”); the Wiki says rewards are claimed from
 Ghommal once the points are reached. Inventory Break consumes that exact
 bracelet and resets the pool; Check works in inventory and while worn. Notes and bank
-placeholders cannot use either action. This does not implement the expeditious bracelet.
+placeholders cannot use either action.
 
 Evidence:
 
@@ -190,6 +248,33 @@ passed all 78 tests. Omitting the bracelet kill-count integration made four new 
 fail. The worktree client returned HTTP 200 on port 3149 and the game server listened on
 43749. Live MCP checks were not completed: the OS rejected the assigned port 49849 with
 `EADDRINUSE`, including an independent bind probe. No worktree port was overridden.
+
+### Expeditious bracelet
+
+[Wiki mechanics](https://oldschool.runescape.wiki/w/Expeditious_bracelet): while item
+`EXPEDITIOUS_BRACELET` is in the hands slot at the Slayer XP drop, a task kill has a 25% chance
+to count as two kills toward the task; no extra Slayer XP is given. A doubled kill that needs
+only one more ends the task (the count stops at 0), and a doubled final kill is allowed. The Wiki lists
+no excluded monsters.
+
+Charges follow the bracelet of slaughter's model: the persisted attribute
+`slayer:expeditious-charges` starts at 30 and is shared by every expeditious bracelet; only
+activations spend one. The last activation resets the pool to 30 and removes the worn bracelet,
+except for a 10% regeneration roll once the Elite Combat Achievements rewards are claimed (Wiki:
+the message is “Your expeditious bracelet helps you progress your slayer task faster. It then
+regenerates itself to full charge!”). Inventory Break consumes that exact bracelet and resets
+the pool; Check works in inventory and while worn. Notes and placeholders (items 21178, 21179)
+can use neither action.
+
+Evidence and limits: the Wiki page above is the only source. The local rsprox index knows the
+item in many recordings but has no recorded activation, Check or Break, so the wording of the
+charges-left suffix, the crumble text, Check and Break is copied from the slaughter bracelet's
+captured wording (recording-backed above) and is unverified for this bracelet.
+
+Regression coverage extends `server/tests/slayer.test.cjs` (25% boundary, no extra XP, a
+doubled kill finishing the task, shared charges, save/load key, Break, crumble and the 10%
+regeneration boundary, note rejection); `tests/leviathan-rewards.test.cjs` initialises the unit
+its task-kill path now calls.
 
 ### Completing
 
@@ -224,9 +309,26 @@ fail. The worktree client returned HTTP 200 on port 3149 and the game server lis
   - the points line ("You've completed # tasks and received # points, giving you a total of #");
   - the free-task line ("...will need # more before you start receiving Slayer points");
   - the line for masters that give no points.
-- **Gem Check:** the streak line.
+- **Gem, ring and helmet Check** (recordings 1040, 1087, 2960 and 22 other task lines): the task
+  line, red but for the task and its count ("<col=ef1020>You're assigned to kill </col>bats<col=ef1020>;
+  only </col>17<col=ef1020> more to go."), with a Konar area after the task name; then the streak
+  line. With no task, "You need something new to hunt."
+- **Slayer helmet** (recordings 1040, 95, 1864, 4099; 76 for the lock):
+  - assembling: "You combine the items into a Slayer helm." (spam, sound 2241); without the
+    Malevolent masquerade, "You have not unlocked the ability to combine these items.";
+  - a recolour's head on an uncoloured helmet: "Combine the Kbd heads with your helm?" Yes/No, then
+    "You combine the items into a Black slayer helmet (i)." (spam, sound 2241); without its unlock,
+    the mesbox "You must first learn how to do this from a Slayer Master."; on a recoloured helmet,
+    "Nothing interesting happens.";
+  - Disassemble: "You disassemble your Slayer helm." (spam, sound 2241), the mask, the components and
+    the head;
+  - the Soul Wars imbued mask makes the Soul Wars imbued helmet, and its recolours stay Soul Wars
+    copies.
 - **Finishing items:** the gargoyle's "The gargoyle cracks apart." and the zygomite's "The Zygomite
   is covered in fungicide. It bubbles away to nothing!"
+- **Finishing thresholds** (Wiki pages Rockslug and Desert Lizard): a bag of salt finishes a
+  rockslug at 4 or fewer hitpoints, an ice cooler a desert lizard below 5. Used above that, the bag
+  or cooler is consumed with no effect.
 - **Superiors:** "<col=ff0000>A superior foe has appeared...</col>"
 - **Mortimer** (recording `mortimer-and-task-completion`):
   - Assignment with no task: the `slayer_choose_*` varbits and `slayer_choose_rolled_master`, then
@@ -244,14 +346,26 @@ fail. The worktree client returned HTTP 200 on port 3149 and the game server lis
   - opening it: `slayer_master_in_focus`, varps `if1`-`if3` (the task's count, id and boss), and
     the `if_setevents` ranges;
   - the task list popup (script 8059);
-  - the block confirmation popup (script 4212).
+  - the block confirmation popup (script 4212);
+  - a task list row (recordings 3421 and 3422, Krystilia): the row's slot is the master's
+    `slayer_master_task` row in cache order. A task blocked with the master: "This task is currently
+    blocked."; one the master can't assign: "This master cannot currently assign you this task.";
+    otherwise the rewards close and a "Select an option" menu offers "Block Black Demons (100
+    points)" and "Don't Block". Block fills the first free `slayer_blocked_<master>_*` slot and says
+    "<col=ef1020>Black Demons</col> has been blocked." (or "You do not have any available slots in
+    which to block this task."); either answer opens the rewards again.
+- **Task storage** (Wiki: Slayer Rewards; cache scripts 9736 and 423): unlocked by
+  `slayer_unlock_storage` (500 points). The Tasks tab's button is Store with a current task and
+  nothing stored (slot 76), Swap with both (slot 76), Unstore with only a stored task (slot 77); all
+  free. The tab shows the stored task from varps `if4`-`if6`. The stored master, boss and modifier
+  sit in `slayer_master_stored`, `slayer_target_bossid_stored` and `slayer_modifier_*_stored`.
 
-Konar's lines and the gem's task line are the Wiki's.
+Konar's lines are the Wiki's.
 
 ## Ours
 
 - **Below a master's requirements:** the master's line.
-- **Assembling a Slayer helmet without the unlock:** the message.
+- **Slayer helmet:** the full-inventory line for Disassemble.
 - **Drains:** where the Wiki only says "greatly reduced", unprotected drains take 10% of the level
   per hit.
 - **Gem:** its Activate gives the same answer as Check.
@@ -261,6 +375,10 @@ Konar's lines and the gem's task line are the Wiki's.
     return to a Slayer master.");
   - the line for the Slayer XP modifier (the Wiki has none);
   - cancelling from his menu works like the Rewards interface's cancel (the Wiki has no text).
+- **Task storage:** the stored task's count, area and Slayer XP so far (no varp holds them) are kept
+  in the `slayer:stored-task` attribute.
+- **Task list:** blocking the current task from the list also ends it, as the Tasks tab's Block
+  does. The Tasks tab's Block uses the list's "no available slots" line.
 
 ## Developer commands
 
@@ -277,6 +395,8 @@ Konar's lines and the gem's task line are the Wiki's.
 
 - **Mortimer:** Partner Slayer's rules for his tasks; showing modifiers on the gem. His tips are
   the generic line, as for the other masters.
-- **Rewards:** task storage (Store/Unstore), including a stored task's modifier. Picking tasks to block from the task list.
-- **Equipment and monsters:** the gem's Partner and Log, killerwatts, cave horrors, fever spiders,
+- **Slayer helmet:** reinforced goggles in the helmet (assembling leaves them in the inventory, so
+  Disassemble gives none back); the Tztok, Vampyric and Tzkal recolours (Ghommal, Laidee Gnonock);
+  making, reverting and disassembling the Radiant helmet.
+- **Equipment and monsters:** the gem's and helmet's Partner and Log, killerwatts, fever spiders,
   harpie bug swarms and mogres. Zygomites don't regenerate.

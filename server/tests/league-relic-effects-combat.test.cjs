@@ -14,6 +14,7 @@ Server.installProductionPathResolver();
 const { CachePipeline } = require("../dist/game/cache/CachePipeline");
 const { PluginManager } = require("../dist/plugins/PluginManager");
 const { Player } = require("../dist/game/entity/impl/player/Player");
+const { PlayerSave } = require("../dist/game/entity/impl/player/persistence/PlayerSave");
 const { GameConstants } = require("../dist/game/GameConstants");
 const { Skill } = require("../dist/game/model/Skill");
 const { Location } = require("../dist/game/model/Location");
@@ -49,7 +50,7 @@ before(async () => {
   const modifier = (name) => (fn) => ((modifiers[name] ??= []).push(fn));
   const api = new Proxy({
     core,
-    persistAttribute() {},
+    persistAttribute: (key, fallback) => PlayerSave.persistAttribute(key, fallback),
     getPluginConfig: (key, fallback) => (key === "league:type" ? 4 : fallback),
     setWorldProfile: (profile) => GameConstants.setWorldProfile(profile),
     getSkillManager: () => require("../dist/game/content/skill/SkillManager").SkillManager,
@@ -73,9 +74,9 @@ before(async () => {
       for (const handler of custom[name] ?? []) handler(payload);
     },
   }, { get: (target, key) => (key in target ? target[key] : on(String(key))) });
-  require("../plugins/modes/LeagueMode.plugin").register(api);
-  require("../plugins/modes/LeaguePoints.plugin").register(api);
-  require("../plugins/modes/LeagueRelics.plugin").register(api);
+  require("../plugins/modes/Base.LeagueMode").register(api);
+  require("../plugins/modes/Points.LeagueMode").register(api);
+  require("../plugins/modes/Relics.LeagueMode").register(api);
   pluginApi = api;
 });
 
@@ -477,7 +478,7 @@ test("Specialist: specials cost a fifth with double accuracy, a miss refunds 10%
   const dealt = (player, special, accurate) => {
     player.setSpecialPercentage(50);
     player.setSpecialActivated(special);
-    hooks.onPlayerDealtDamage({ player, target: who.main, hit: fakeHit({ isAccurate: () => accurate }) });
+    hooks.onPlayerDealtDamage({ player, target: who.main, hit: fakeHit({ isAccurate: () => accurate, getFailedAccuracyChecks: () => (accurate ? 0 : 1) }) });
     player.setSpecialActivated(false);
     return player.getSpecialPercentage();
   };
@@ -493,6 +494,113 @@ test("Specialist: specials cost a fifth with double accuracy, a miss refunds 10%
     player.setSpecialPercentage(50);
     hooks.onNpcDeath({ killer: player, damagers: [player], npc: {}, npcId: 1, location: { x: 0, y: 0, z: 0 }, remains: null });
     assert.equal(player.getSpecialPercentage(), 50);
+  }
+});
+
+test("Specialist: each hitsplat of a real multi-hit special that fails its accuracy roll refunds 10%", (t) => {
+  // Wiki: "For each failed accuracy roll with a special attack, gain 10%"; on multi-hit specials each
+  // hitsplat can trigger it. The dragon claws and daggers put all their hitsplats in one PendingHit.
+  require("../plugins/combat/specials/DragonClaw.SpecialAttack")(pluginApi);
+  require("../plugins/combat/specials/DragonDagger.SpecialAttack")(pluginApi);
+  require("../plugins/combat/specials/AbyssalDagger.SpecialAttack")(pluginApi);
+  const { AccuracyFormulasDpsCalc } = require("../dist/game/content/combat/formula/AccuracyFormulasDpsCalc");
+  const who = cases(SPECIALIST, 5);
+  const player = who.relic;
+  const target = who.main;
+  let outcomes = [];
+  t.mock.method(AccuracyFormulasDpsCalc, "rollAccuracy", () => outcomes.shift() ?? false);
+  t.mock.method(AccuracyFormulasDpsCalc, "rollAccuracyCount", (_a, _b, _c, count) => (outcomes.shift() ?? false ? count : 0));
+  const attack = (weapon, rolls) => {
+    wield(player, weapon);
+    player.setCombatSpecial(core.CombatSpecial.getForWeaponId(weapon));
+    player.setSpecialActivated(true);
+    player.setSpecialPercentage(0);
+    outcomes = [...rolls];
+    const hit = new core.PendingHit(player, target, core.CombatFactory.getMethod(player), { delay: 0 });
+    hooks.onPlayerDealtDamage({ player, target, hit });
+    player.setSpecialActivated(false);
+    return player.getSpecialPercentage();
+  };
+  assert.equal(attack(core.ItemIdentifiers.DRAGON_CLAWS, [false, false, false, false]), 40, "claws: all four rolls miss");
+  assert.equal(attack(core.ItemIdentifiers.DRAGON_CLAWS, [false, true]), 10, "claws: the second roll lands");
+  assert.equal(attack(core.ItemIdentifiers.DRAGON_CLAWS, [true]), 0, "claws: the first roll lands");
+  assert.equal(attack(core.ItemIdentifiers.DRAGON_DAGGER, [false, false]), 20, "dragon dagger: both independent rolls miss");
+  assert.equal(attack(core.ItemIdentifiers.DRAGON_DAGGER, [true, false]), 10, "dragon dagger: one of two misses");
+  assert.equal(attack(core.ItemIdentifiers.ABYSSAL_DAGGER, [false]), 10, "abyssal dagger: one shared roll, one refund");
+});
+
+test("Last Stand: logging out mid-stand settles the boosts at base + 15 before the save", () => {
+  const who = cases(LAST_STAND, 5);
+  const tasks = [];
+  const submit = core.TaskManager.submit;
+  core.TaskManager.submit = (task) => tasks.push(task);
+  try {
+    const skills = who.relic.getSkillManager();
+    skills.setMaxLevels(Skill.HITPOINTS, 99, false);
+    skills.setMaxLevels(Skill.ATTACK, 70, false);
+    skills.setCurrentLevels(Skill.ATTACK, 70, false);
+    cycle = 300;
+    who.relic.setAttribute("league:last-stand-ready-at", 0);
+    skills.setCurrentLevel(Skill.HITPOINTS, 0, false);
+    hooks.onPlayerBeforeDeath({ player: who.relic, preventDeath: false });
+    assert.equal(skills.getCurrentLevel(Skill.ATTACK), 255);
+    hooks.onPlayerLogout({ player: who.relic });
+    assert.equal(skills.getCurrentLevel(Skill.ATTACK), 85, "base 70 + 15, as the drain would leave it");
+  } finally {
+    core.TaskManager.submit = submit;
+  }
+});
+
+test("Last Stand: a save mid-stand that no logout settled (shutdown, tick error) comes back at base + 15", () => {
+  const who = cases(LAST_STAND, 5);
+  const tasks = [];
+  const submit = core.TaskManager.submit;
+  core.TaskManager.submit = (task) => tasks.push(task);
+  try {
+    const skills = who.relic.getSkillManager();
+    skills.setMaxLevels(Skill.HITPOINTS, 99, false);
+    skills.setMaxLevels(Skill.ATTACK, 70, false);
+    skills.setCurrentLevels(Skill.ATTACK, 70, false);
+    cycle = 400;
+    who.relic.setAttribute("league:last-stand-ready-at", 0);
+    skills.setCurrentLevel(Skill.HITPOINTS, 0, false);
+    hooks.onPlayerBeforeDeath({ player: who.relic, preventDeath: false });
+    assert.equal(skills.getCurrentLevel(Skill.ATTACK), 255);
+    const saved = PlayerSave.fromPlayer(who.relic); // World.savePlayers("shutdown"): no logout hook
+    const back = new Player(null);
+    back.setUsername("relic");
+    back.setProfile("league");
+    back.setLocation(new Location(3200, 3200, 0));
+    back.setRegistered(true);
+    const sender = new Proxy({}, { get: () => () => sender });
+    back.getPacketSender = () => sender;
+    back.sendMessage = () => {};
+    saved.applyToPlayer(back);
+    assert.equal(back.getSkillManager().getCurrentLevel(Skill.ATTACK), 255, "the save holds the boost");
+    hooks.onPlayerLogin({ player: back, username: "relic", isNewAccount: false, profile: "league" });
+    assert.equal(back.getSkillManager().getCurrentLevel(Skill.ATTACK), 85, "base 70 + 15, as the drain would leave it");
+    assert.equal(back.getAttribute("league:last-stand-draining"), false);
+
+    // A stand that drained out on its own leaves nothing to settle: a later boost is kept.
+    assert.equal(who.relic.getAttribute("league:last-stand-draining"), true, "set while the boosts drain");
+    for (let i = 0; i < 40; i++) {
+      cycle++;
+      tasks[0].execute();
+    }
+    assert.equal(skills.getCurrentLevel(Skill.ATTACK), 85);
+    assert.equal(who.relic.getAttribute("league:last-stand-draining"), false, "cleared when the drain ends");
+    skills.setCurrentLevel(Skill.ATTACK, 99, false); // a super potion afterwards
+    const later = PlayerSave.fromPlayer(who.relic);
+    const relog = new Player(null);
+    relog.setUsername("relic");
+    relog.setProfile("league");
+    relog.getPacketSender = () => sender;
+    relog.sendMessage = () => {};
+    later.applyToPlayer(relog);
+    hooks.onPlayerLogin({ player: relog, username: "relic", isNewAccount: false, profile: "league" });
+    assert.equal(relog.getSkillManager().getCurrentLevel(Skill.ATTACK), 99, "a later boost is kept");
+  } finally {
+    core.TaskManager.submit = submit;
   }
 });
 
@@ -637,17 +745,49 @@ test("Equilibrium: every gain brings 10% of the total level in that skill, 20% i
     emit("skills:experience-gained", { player, skill, experience: 10, multiplied: true });
     return skills.getExperience(skill) - before;
   };
+  // Sailing came after both leagues: it is neither part of the total nor the least-experienced skill.
+  const leagueSkills = Skill.values().filter((skill) => skill !== Skill.SAILING);
+  const leagueTotal = (player) => leagueSkills.reduce((sum, skill) => sum + player.getSkillManager().getMaxLevel(skill), 0);
   for (const who of [trailblazer, echoes]) {
-    const total = who.relic.getSkillManager().getTotalLevel();
+    const total = leagueTotal(who.relic);
     assert.equal(gain(who.relic, Skill.COOKING), shown(total * 0.1), `${who.relic.getAttribute("league:type")}: a tenth of ${total}`);
-    const least = Skill.values().reduce((low, skill) => (
+    const least = leagueSkills.reduce((low, skill) => (
       who.relic.getSkillManager().getExperience(skill) < who.relic.getSkillManager().getExperience(low) ? skill : low
     ));
     assert.notEqual(least, Skill.COOKING);
-    assert.equal(gain(who.relic, least), shown(who.relic.getSkillManager().getTotalLevel() * 0.2), "a fifth in the least-experienced skill");
+    assert.equal(gain(who.relic, least), shown(leagueTotal(who.relic) * 0.2), "a fifth in the least-experienced skill");
     for (const player of others(who)) assert.equal(gain(player, Skill.COOKING), 0, `${player.getUsername()} gets nothing`);
   }
   assert.notEqual(GameConstants.EXPERIENCE_MULTIPLIER, 0);
+});
+
+test("Equilibrium on the real addExperience path: an untrained Sailing is not the least-experienced skill (#1354 review)", (t) => {
+  // The real SkillManager emits skills:experience-gained through the PluginManager; carry it to this harness's relics.
+  const bridge = PluginManager.createApi("EquilibriumBridge");
+  let forward = true;
+  bridge.onCustomEvent("skills:experience-gained", (event) => { if (forward) emit("skills:experience-gained", event); });
+  t.after(() => { forward = false; });
+  const { relic } = cases(EQUILIBRIUM_TRAILBLAZER, 4);
+  const skills = relic.getSkillManager();
+  for (const skill of Skill.values()) {
+    const untrained = skill === Skill.ATTACK || skill === Skill.SAILING;
+    skills.skills.experience[skill.getIndex()] = untrained ? 0 : 13034431;
+    skills.skills.maxLevel[skill.getIndex()] = untrained ? 1 : 99;
+    skills.skills.level[skill.getIndex()] = untrained ? 1 : 99;
+  }
+  const bonuses = [];
+  const add = skills.addExperience.bind(skills);
+  t.mock.method(skills, "addExperience", (skill, experience, multipliers = true) => {
+    if (multipliers === false) bonuses.push([skill, experience]);
+    return add(skill, experience, multipliers);
+  });
+  skills.addExperience(Skill.ATTACK, 4);
+  // 22 league skills at 99 and Attack at 1: a total of 2,179, a fifth of it for the least-experienced Attack.
+  const total = Skill.values().filter((skill) => skill !== Skill.SAILING).length * 99 - 98;
+  assert.equal(total, 2179);
+  assert.equal(bonuses.length, 1);
+  assert.equal(bonuses[0][0], Skill.ATTACK);
+  assert.ok(Math.abs(bonuses[0][1] - total * 0.2) < 1e-9, `the bonus is a fifth of ${total}: ${bonuses[0][1]}`);
 });
 
 test.after(() => {

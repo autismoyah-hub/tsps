@@ -147,7 +147,11 @@ const api = {
   },
   onCustomEvent() {},
   emitCustomEvent() {},
+  onServerStartup(handler) {
+    startupHooks.push(handler);
+  },
 };
+const startupHooks = [];
 
 function createMatch(roles) {
   const team = roles.map((role, index) => [createPlayer(`player${index}`), role]);
@@ -173,6 +177,33 @@ before(async () => {
     registeredAmmoHandler.checkAmmo(player, amountRequired, silent);
   PluginManager.decrementRangedAmmo = (player, pos, amount, delayTicks) =>
     registeredAmmoHandler.decrementAmmo(player, pos, amount, delayTicks);
+});
+
+test("at startup Barbarian Assault tells the Grouping plugin a team takes 5 players", (t) => {
+  const announced = [];
+  const original = api.emitCustomEvent;
+  api.emitCustomEvent = (name, payload) => announced.push([name, payload]);
+  t.after(() => { api.emitCustomEvent = original; });
+  assert.equal(startupHooks.length, 1);
+  startupHooks[0]({ timestamp: Date.now() });
+  assert.deepEqual(announced, [["grouping:activity", { name: "Barbarian Assault", maxSize: data.TEAM_SIZE }]]);
+});
+
+test("the lobby forms one team at a time: queued group-mates start together, in joining order", (t) => {
+  const { Lobby } = BarbarianAssault._test;
+  const { ATTACKER, COLLECTOR, DEFENDER, HEALER } = data.ROLE;
+  const roles = [ATTACKER, COLLECTOR, DEFENDER, HEALER, ATTACKER];
+  const team = roles.map((_role, index) => createPlayer(`lobby${index}`));
+  t.after(() => {
+    Lobby.cancelCountdown();
+    for (const player of team) Lobby.leave(player);
+  });
+  team.forEach((player, index) => assert.equal(Lobby.join(player, roles[index]), true));
+  assert.ok(Lobby.queue.length === data.TEAM_SIZE && team.every((player, index) => Lobby.queue[index].player === player));
+  assert.ok(data.ROLES.every((role) => !Lobby.canAdd(role)), "a full team takes nobody else");
+  const groupMate = createPlayer("lobby-mate");
+  assert.equal(Lobby.join(groupMate, HEALER), false, "a sixth player waits for the next team");
+  assert.ok(!Lobby.inQueue(groupMate), "so the starting team is the whole queue: no pick can split a group");
 });
 
 test("the reward shop stock comes from the plugin source, not shops.json", () => {
@@ -536,4 +567,70 @@ test("equipped arena arrows are cleaned up on finish and reconnect", () => {
   assert.equal(returning.getEquipment().get(Equipment.WEAPON_SLOT).getId(), SHORTBOW);
   assert.equal(returning.getInventory().getAmount(BRONZE_ARROW), 7);
   reconnect.finish(false);
+});
+
+// Wiki Imcando_hammer and Barbarian_Assault/Strategies: the Defender can use either
+// Imcando hammer variant, carried or equipped, to repair runner traps.
+test("runner trap repairs accept carried and equipped Imcando hammers", async (t) => {
+  const I = core.ItemIdentifiers;
+  const variants = [
+    ["main-hand", I.IMCANDO_HAMMER, Equipment.WEAPON_SLOT],
+    ["off-hand", I.IMCANDO_HAMMER_OFF_HAND_, Equipment.SHIELD_SLOT],
+  ];
+
+  function scenario(run) {
+    const { match, players: [player] } = createMatch([data.ROLE.DEFENDER]);
+    const tile = data.ARENA.normal.traps[0];
+    const trap = { location: new core.Location(tile.x, tile.y, tile.z ?? 0), charges: 0, object: null };
+    match.traps.push(trap);
+    try {
+      match.refreshTrap(trap);
+      assert.equal(trap.object.getId(), data.OBJECT.RUNNER_TRAP_0);
+      assert.equal(trap.object.getPrivateArea(), match.area);
+      run({ match, player, trap, inventory: player.getInventory() });
+    } finally {
+      match.finish(false);
+    }
+  }
+
+  await t.test("ordinary hammer and logs repair a broken trap", () => scenario(({ match, player, trap, inventory }) => {
+    inventory.adds(I.HAMMER, 1);
+    inventory.adds(I.LOGS, 1);
+    assert.equal(inventory.getAmount(I.HAMMER), 1);
+    assert.equal(inventory.getAmount(I.LOGS), 1);
+    assert.equal(match.handleObject(player, trap.object, 1), true);
+    assert.equal(trap.charges, 2);
+    assert.equal(trap.object.getId(), data.OBJECT.RUNNER_TRAP_2);
+    assert.equal(inventory.getAmount(I.LOGS), 0);
+  }));
+
+  await t.test("a hammer without logs leaves the broken trap unchanged", () => scenario(({ match, player, trap, inventory }) => {
+    inventory.adds(I.HAMMER, 1);
+    assert.equal(inventory.getAmount(I.LOGS), 0);
+    assert.equal(match.handleObject(player, trap.object, 1), true);
+    assert.equal(trap.charges, 0);
+    assert.equal(inventory.getAmount(I.HAMMER), 1);
+  }));
+
+  for (const [name, id, slot] of variants) {
+    for (const worn of [false, true]) {
+      await t.test(`${name} Imcando hammer ${worn ? "equipped" : "in inventory"}`, () => scenario(({ match, player, trap, inventory }) => {
+        assert.ok(Number.isInteger(id) && id > 0, "the canonical hammer identifier exists");
+        assert.match(core.ItemDefinition.forId(id).getName(), /Imcando hammer/);
+        inventory.adds(id, 1);
+        if (worn) equipFromInventory(player, id); // Its legacy boolean omits shield-slot successes.
+        assert.equal(player.getEquipment().get(slot).getId(), worn ? id : -1, "native equipment state");
+        assert.equal(inventory.getAmount(id), worn ? 0 : 1, "native inventory state");
+        assert.equal(inventory.getAmount(I.HAMMER), 0, "no ordinary hammer can satisfy the repair gate");
+        inventory.adds(I.LOGS, 1);
+        assert.equal(inventory.getAmount(I.LOGS), 1);
+        assert.equal(match.handleObject(player, trap.object, 1), true);
+        assert.equal(trap.charges, 2, "the Imcando hammer repairs the broken trap");
+        assert.equal(trap.object.getId(), data.OBJECT.RUNNER_TRAP_2);
+        assert.equal(inventory.getAmount(I.LOGS), 0);
+        assert.equal(player.getEquipment().get(slot).getId(), worn ? id : -1, "the tool stays equipped");
+        assert.equal(inventory.getAmount(id), worn ? 0 : 1, "the carried tool is retained");
+      }));
+    }
+  }
 });

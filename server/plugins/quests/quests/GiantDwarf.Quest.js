@@ -45,20 +45,23 @@
  *    outcomes but no capture establishes the chance. The right boot supports the
  *    real Telekinetic Grab event; rejected grabs restore the ground item so it
  *    stays reclaimable. The cat branch (6GAow8) is unreachable and answers false.
- *  - The consortium loop tracks one pinned company and one task at a time, with no
- *    delivery timer or per-company score; +20 per ore delivery, +12 per bar
+ *  - The consortium loop tracks one task at a time, with no
+ *    delivery timer; +20 per ore delivery, +12 per bar
  *    delivery, -2 for cancelling, +20 once for the Purple Pewter H.A.M. headstart.
- *  - Cutscene room availability is always "a room is available"; the captured
- *    boat fade is replayed, while later statue/council scenes remain transcript
- *    prose because capture 3278 only covers the start. The boatman's post-quest
- *    Travel option is not handled.
+ *  - The opening uses the Wiki's event order, dedicated cache151/152/172 and
+ *    integrated model7023/sequence2138 in a private copy. Camera/reading times are
+ *    authored, not captured retail choreography. Recordings3278/70 show optional
+ *    Skip only; the current server's optional Skip policy is retained. Later
+ *    statue/council scenes remain transcript prose.
  *  - The "[company name]" placeholder in spoken lines is filled, but option labels
  *    are not routed through the line hook, so the one option reading "Yes! Long
  *    live the [company name]!" keeps its wiki placeholder.
  */
 module.exports = function registerGiantDwarfQuest(api) {
-  const { Item, ItemIdentifiers, Location, MagicSpellbook, NpcIdentifiers, ObjectIdentifiers, Skill } = api.core;
+  const { ActionDialogue, DialogueChainBuilder, Item, ItemIdentifiers, Location, MagicSpellbook,
+    NpcIdentifiers, ObjectIdentifiers, Skill, StatementDialogue } = api.core;
   const { registerQuest, startTranscript, loadTranscripts } = require("../QuestRuntime");
+  const { createQuestScenes } = require("../QuestScenes");
 
   // ==========================================================================
   // Page, variants
@@ -66,6 +69,23 @@ module.exports = function registerGiantDwarfQuest(api) {
 
   const PAGE = "The Giant Dwarf";
   const FADE_UID = (161 << 16) | 1;
+  // Matching cache242: centered 512x334 mainmodal, separate from the ordinary chatbox.
+  const BOAT_SCENE_UID = (161 << 16) | 16;
+  const BOAT_STORY_GROUP = 151;
+  const BOAT_TITLES_GROUP = 152;
+  const BOAT_CRASH_GROUP = 172;
+  // Actual7023 skins/base205/7518 frames link both the boat assembly and statue
+  // breakup to this native sequence.172:2 is parchment and172:3 the planar map.
+  const BOAT_INTEGRATED_MODEL_UID = (BOAT_CRASH_GROUP << 16) | 4;
+  const BOAT_CRASH_SEQUENCE = 2138;
+  // 310 +65*7 +6*5 graphics cycles before the final20001 hold: nominal15.9s.
+  //27world ticks is our authored schedule, not observed retail/client timing.
+  const BOAT_CRASH_TICKS = 27;
+  const BOAT_GUARD_ID = NpcIdentifiers.BLACK_GUARD_BERSERKER;
+  const BOAT_VELDABAN_ID = NpcIdentifiers.COMMANDER_VELDABAN;
+  const BOAT_TITLE_PARENTS = [0, 3, 6];
+  const BOAT_STORY_LINES = 9;
+  const BOAT_SCENE_RECOVERY_ATTRIBUTE = "giant-dwarf:boat-scene-exit";
 
   const BOATMAN_START_VARIANT = "starting-off-talking-to-dwarven-boatman";
   const VELDABAN_AGAIN_VARIANT = "starting-off-talking-to-veldaban-again-after-agreeing-to-help";
@@ -130,9 +150,20 @@ module.exports = function registerGiantDwarfQuest(api) {
   // ==========================================================================
 
   const BOATMAN_NPC_IDS = new Set([
+    NpcIdentifiers.DWARVEN_BOATMAN, // 2433, the city dock
     NpcIdentifiers.DWARVEN_BOATMAN_3, // 7725, at the mine before the ride
     NpcIdentifiers.DWARVEN_BOATMAN_4, // 7726, after the quest is started
   ]);
+  const CITY_BOATMAN_NPC_ID = NpcIdentifiers.DWARVEN_BOATMAN;
+  // Matching cache 242: the mine's spawned 2432 transforms into 7725/7726 for its viewer.
+  const MINES_BOATMAN_ROOT_ID = 2432;
+  const BOATMAN_MINES_VARIANT = "standard-dialogue-mines";
+  const BOATMAN_CITY_VARIANT = "standard-dialogue-keldagrim";
+  const BOATMAN_RETURN_REPLY = "Yes, please take me.";
+  // The dock anchors are the current cache NPC spawns and Wiki Dwarven Boatman map pins.
+  // Arrival is adjacent; the native regression checks both tiles against the active map.
+  const MINES_BOAT_LANDING = new Location(2841, 10129, 0);
+  const CITY_BOAT_LANDING = new Location(2888, 10226, 0);
   const VELDABAN_NPC_IDS = new Set([
     NpcIdentifiers.COMMANDER_VELDABAN, // 2228
     NpcIdentifiers.COMMANDER_VELDABAN_2, // 6045
@@ -158,9 +189,10 @@ module.exports = function registerGiantDwarfQuest(api) {
   const RED_AXE_SECRETARY_NPC_ID = NpcIdentifiers.RED_AXE_SECRETARY; // 5997
   const RED_AXE_DIRECTOR_NPC_ID = NpcIdentifiers.RED_AXE_DIRECTOR_4; // 6025
 
+  const PURPLE_PEWTER_COMPANY = 1;
   const COMPANIES = [
     {
-      id: 1,
+      id: PURPLE_PEWTER_COMPANY,
       name: "Purple Pewter",
       secretaryName: "Purple Pewter Secretary",
       directorName: "Purple Pewter Director",
@@ -341,6 +373,7 @@ module.exports = function registerGiantDwarfQuest(api) {
   const DECLINED_ATTRIBUTE = "quest.giant_dwarf.declined";
   const COMPANY_ATTRIBUTE = "quest.giant_dwarf.company";
   const POINTS_ATTRIBUTE = "quest.giant_dwarf.points";
+  const COMPANY_POINTS_ATTRIBUTE = "giant-dwarf:company-points";
   const JOINED_ATTRIBUTE = "quest.giant_dwarf.joined";
   const HAM_BONUS_ATTRIBUTE = "quest.giant_dwarf.ham-bonus";
   const TASK_KIND_ATTRIBUTE = "quest.giant_dwarf.task-kind";
@@ -351,20 +384,25 @@ module.exports = function registerGiantDwarfQuest(api) {
   const BLACK_GUARD_HQ_TILE = new Location(2827, 10214, 0);
   const BLASIDAR_HOUSE_TILE = new Location(2907, 10206, 0);
 
-  // The boatman's "Play Cutscene" branch: RV7CMp starts the cutscene and the
-  // wiki marks its scene transitions unavailable. Skipping them plays the
-  // transcript's real lines through to Veldaban.
-  const BOAT_CUTSCENE_STEP_IDS = new Set([
-    "bQ3UM1",
-    "Ru6HA5",
-    "ZPUkah",
-    "efDsj3",
-    "6Pr95H",
-    "dLRCT3",
-    "XggBjQ",
-    "sg2BCG",
-    "4m4OUB",
-  ]);
+  // Current cache placement roots7031/7040/7042 all originate at2878,10177,
+  // type10/rotation0, effectiveplanes2/1/0. Use their concrete intact children
+  // privately instead of changing577/575 or the real city's quest state.
+  const BOAT_STATUE_PARTS = [
+    { id: ObjectIdentifiers.GIANT_DWARF_4, x: 2878, y: 10177, z: 2, type: 10, face: 0 },
+    { id: ObjectIdentifiers.GIANT_DWARF_12, x: 2878, y: 10177, z: 1, type: 10, face: 0 },
+    { id: ObjectIdentifiers.GIANT_DWARF_13, x: 2878, y: 10177, z: 0, type: 10, face: 0 },
+  ];
+  const BOAT_CITY_DOCK = [2888, 10226, 0];
+  const BOAT_GUARD_TILES = [[2887, 10226, 0], [2889, 10226, 0]];
+  const BOAT_SCENE_SOURCE_CHUNK = [350, 1266];
+  const BOAT_SCENE_CHUNKS = 13;
+  const BOAT_SCENE_BOUNDS = [[2800, 2903, 10128, 10231, 0]];
+  const BOAT_SAFE_EXIT = [2827, 10214, 0];
+  // Palace polygon/statue map pin from Wiki; views are authored inside the copied map.
+  const BOAT_PALACE_VIEW = [[2888, 10212, 1000], [2880, 10201, 400]];
+  const BOAT_CITY_VIEW = [[2854, 10217, 900], [2849, 10205, 200]];
+  const BOAT_STATUE_VIEW = [[2885, 10192, 1100], [2879, 10179, 500]];
+  const BOAT_DOCK_VIEW = [[2894, 10231, 700], [2888, 10226, 150]];
 
   const BETWEEN_A_ROCK = "between_a_rock";
   const KNIGHTS_SWORD = "the_knights_sword";
@@ -377,6 +415,10 @@ module.exports = function registerGiantDwarfQuest(api) {
   const meetingCompany = new WeakMap(); // player -> company id during the meeting
 
   let quest;
+  const BoatScenes = createQuestScenes(api, {
+    onEnd: onBoatSceneEnd,
+    recoveryAttribute: BOAT_SCENE_RECOVERY_ATTRIBUTE,
+  });
 
   // ==========================================================================
   // Small state helpers
@@ -503,8 +545,33 @@ module.exports = function registerGiantDwarfQuest(api) {
     return numberAttribute(player, COMPANY_ATTRIBUTE);
   }
 
-  function points(player) {
+  function points(player, npcId) {
+    const company = companyForNpc(npcId);
+    const current = companyId(player);
+    if (company && company.id !== current) {
+      const scores = player.getAttribute(COMPANY_POINTS_ATTRIBUTE) ?? {};
+      if (Object.hasOwn(scores, company.id)) return Number(scores[company.id]) || 0;
+      // Older saves could receive the Purple Pewter bonus before choosing a company.
+      if (!current && company.id === PURPLE_PEWTER_COMPANY && flag(player, HAM_BONUS_ATTRIBUTE)) {
+        return numberAttribute(player, POINTS_ATTRIBUTE);
+      }
+      return 0;
+    }
     return numberAttribute(player, POINTS_ATTRIBUTE);
+  }
+
+  // Keep the old score as the current company's score for existing saves.
+  function switchCompany(player, company) {
+    const current = companyId(player);
+    if (!current || current === company.id) return true;
+    if (joined(player) || taskActive(player) || pendingTask(player)) return false;
+    const scores = { ...(player.getAttribute(COMPANY_POINTS_ATTRIBUTE) ?? {}) };
+    scores[current] = points(player);
+    player.setAttribute(COMPANY_POINTS_ATTRIBUTE, scores);
+    player.setAttribute(COMPANY_ATTRIBUTE, company.id);
+    player.setAttribute(POINTS_ATTRIBUTE, Number(scores[company.id]) || 0);
+    syncVarbits(player);
+    return true;
   }
 
   function addPoints(player, amount) {
@@ -588,8 +655,9 @@ module.exports = function registerGiantDwarfQuest(api) {
     const { npcId, player } = event;
     const stage = stageOf(player);
 
-    if (BOATMAN_NPC_IDS.has(npcId)) {
-      return stage === 0 ? BOATMAN_START_VARIANT : null;
+    if (BOATMAN_NPC_IDS.has(npcId) || npcId === MINES_BOATMAN_ROOT_ID) {
+      if (stage === 0) return npcId === CITY_BOATMAN_NPC_ID ? null : BOATMAN_START_VARIANT;
+      return { page: "Dwarven Boatman", variant: npcId === CITY_BOATMAN_NPC_ID ? BOATMAN_CITY_VARIANT : BOATMAN_MINES_VARIANT };
     }
     if (VELDABAN_NPC_IDS.has(npcId)) {
       if (stage >= STAGE_COMPLETE || stage < STAGE_STARTED) return null;
@@ -829,21 +897,21 @@ module.exports = function registerGiantDwarfQuest(api) {
       case "waIrdt":
       case "TRnN0M":
       case "Oto6R9":
-        return points(player) < 20;
+        return points(player, event.npcId) < 20;
       case "jzxdAM":
       case "358NnA":
       case "WG1P6M":
       case "tRKFXE":
       case "OsZ4_q":
-        return points(player) >= 20;
+        return points(player, event.npcId) >= 20;
       case "j33FhT":
-        return points(player) >= 20 && points(player) < DIRECTOR_POINTS;
+        return points(player, event.npcId) >= 20 && points(player, event.npcId) < DIRECTOR_POINTS;
       case "5mNpjN":
       case "Rx8A7A":
       case "nhMUz4":
-        return stepId === "nhMUz4" ? points(player) < DIRECTOR_POINTS : points(player) >= DIRECTOR_POINTS;
+        return stepId === "nhMUz4" ? points(player, event.npcId) < DIRECTOR_POINTS : points(player, event.npcId) >= DIRECTOR_POINTS;
       case "pMsir8":
-        return points(player) >= DIRECTOR_POINTS;
+        return points(player, event.npcId) >= DIRECTOR_POINTS;
       case "OG9Fvx":
         return taskActive(player) && taskKind(player) === "ore";
       case "b2W2BJ":
@@ -854,10 +922,10 @@ module.exports = function registerGiantDwarfQuest(api) {
         return !joined(player);
       case "RBg-Mt":
       case "m5t76w":
-        return points(player) < JOIN_POINTS;
+        return points(player, event.npcId) < JOIN_POINTS;
       case "wJzWen":
       case "yyCqHp":
-        return points(player) >= JOIN_POINTS;
+        return points(player, event.npcId) >= JOIN_POINTS;
       case "idYwU6":
         return !joined(player);
       case "98Qh1k":
@@ -865,8 +933,14 @@ module.exports = function registerGiantDwarfQuest(api) {
       case "eQt6ua": {
         const wearing = event.npcId === NpcIdentifiers.PURPLE_PEWTER_SECRETARY && wearingHamRobes(player);
         if (wearing && !flag(player, HAM_BONUS_ATTRIBUTE)) {
+          if (companyId(player)) {
+            addPoints(player, HAM_HEADSTART_POINTS);
+          } else {
+            const scores = { ...(player.getAttribute(COMPANY_POINTS_ATTRIBUTE) ?? {}) };
+            scores[PURPLE_PEWTER_COMPANY] = points(player, event.npcId) + HAM_HEADSTART_POINTS;
+            player.setAttribute(COMPANY_POINTS_ATTRIBUTE, scores);
+          }
           player.setAttribute(HAM_BONUS_ATTRIBUTE, true);
-          addPoints(player, HAM_HEADSTART_POINTS);
         }
         return wearing;
       }
@@ -906,6 +980,19 @@ module.exports = function registerGiantDwarfQuest(api) {
   function handleLine(event) {
     const { player, npcId, text } = event;
     if (typeof text !== "string" || text.length === 0) return;
+    const boatScene = BoatScenes.get(player);
+    if (boatScene?.phase === "dock" && event.step?.presentation === "overhead" && text === "Halt!") {
+      event.actors = boatScene.guards;
+    }
+    if (BOATMAN_NPC_IDS.has(npcId) && text === BOATMAN_RETURN_REPLY && stageOf(player) >= STAGE_STARTED) {
+      // Keep the actual affirmative player line, and travel only once it is continued.
+      const after = event.after;
+      event.after = () => {
+        after?.();
+        boatmanJourney(player, npcId);
+      };
+      return;
+    }
     if (
       npcId === VERMUNDI_NPC_ID &&
       text.startsWith("A book, how wonderful!") &&
@@ -1007,13 +1094,29 @@ module.exports = function registerGiantDwarfQuest(api) {
     if (!pendingTask(player)) return;
     player.setAttribute(TASK_ACTIVE_ATTRIBUTE, true);
     const company = companyForNpc(npcId);
-    if (company && companyId(player) === 0) player.setAttribute(COMPANY_ATTRIBUTE, company.id);
+    if (company && companyId(player) === 0) {
+      const scores = { ...(player.getAttribute(COMPANY_POINTS_ATTRIBUTE) ?? {}) };
+      if (flag(player, HAM_BONUS_ATTRIBUTE) && !Object.hasOwn(scores, PURPLE_PEWTER_COMPANY)) {
+        scores[PURPLE_PEWTER_COMPANY] = numberAttribute(player, POINTS_ATTRIBUTE);
+        player.setAttribute(COMPANY_POINTS_ATTRIBUTE, scores);
+      }
+      const score = points(player, npcId);
+      player.setAttribute(COMPANY_ATTRIBUTE, company.id);
+      player.setAttribute(POINTS_ATTRIBUTE, score);
+    }
   }
 
-  function cancelPending(player) {
+  function cancelPending(player, npcId) {
     if (!pendingTask(player)) return;
+    const company = companyForNpc(npcId);
+    if (company && company.id !== companyId(player)) {
+      const scores = { ...(player.getAttribute(COMPANY_POINTS_ATTRIBUTE) ?? {}) };
+      scores[company.id] = Math.max(0, points(player, npcId) - CANCEL_POINTS);
+      player.setAttribute(COMPANY_POINTS_ATTRIBUTE, scores);
+    } else {
+      addPoints(player, -CANCEL_POINTS);
+    }
     clearTask(player);
-    addPoints(player, -CANCEL_POINTS);
   }
 
   function joinCompanyForNpc(player, npcId) {
@@ -1080,44 +1183,239 @@ module.exports = function registerGiantDwarfQuest(api) {
     });
   }
 
-  function finishBoatCutscene(player) {
-    fade(player, false);
-    player.getPacketSender().closeSubInterface(FADE_UID);
+  /** A held chain is replaced only by this scene's next canonical transcript phase. */
+  function boatSceneHold(scene) {
+    const player = scene.owner, sender = player.getPacketSender();
+    const owner = Object.freeze({});
+    scene.dialogueOwner = owner;
+    player.getDialogueManager().startDialogues(new DialogueChainBuilder().add(
+      new ActionDialogue(0, { execute: () => sender.withChatboxOwner(owner,
+        () => StatementDialogue.send(player, "", false)) }, true)
+    ), owner);
+    scene.heldDialogue = player.getDialogueManager().getCurrent();
+  }
+
+  function closeBoatOverlay(scene) {
+    if (scene.overlay) scene.owner.getPacketSender().closeSubInterfaceMount(scene.overlay);
+    scene.overlay = null;
+  }
+
+  function boatOverlay(scene, group) {
+    if (!retainBoatScene(scene)) return false;
+    const sender = scene.owner.getPacketSender();
+    // Even a same-group reopen must really close/unload its old animation frames first.
+    closeBoatOverlay(scene);
+    const mounted = sender.mountSubInterface(BOAT_SCENE_UID, group, 1);
+    // interface:opened runs synchronously and may replace this mount or end the scene.
+    if (BoatScenes.get(scene.owner) !== scene) {
+      sender.closeSubInterfaceMount(mounted);
+      return false;
+    }
+    scene.overlay = mounted;
+    return retainBoatScene(scene);
+  }
+
+  function boatSceneTitle(scene, parent) {
+    if (!boatOverlay(scene, BOAT_TITLES_GROUP)) return false;
+    const sender = scene.owner.getPacketSender();
+    for (const layer of BOAT_TITLE_PARENTS) {
+      sender.sendInterfaceDisplayState((BOAT_TITLES_GROUP << 16) | layer, layer !== parent);
+    }
+    return true;
+  }
+
+  function boatSceneStory(scene, after) {
+    if (!boatOverlay(scene, BOAT_STORY_GROUP)) return;
+    const sender = scene.owner.getPacketSender();
+    for (let line = 0; line < BOAT_STORY_LINES; line++) {
+      sender.sendInterfaceDisplayState((BOAT_STORY_GROUP << 16) | line, true);
+      boatSceneLater(scene, line * 3 + 1, () => {
+        sender.sendInterfaceDisplayState((BOAT_STORY_GROUP << 16) | line, false);
+      });
+    }
+    // Authored reading time. Reveal the cache's hidden PARENTS, not just text children9..17.
+    boatSceneLater(scene, 32, after);
+  }
+
+  function resumeBoatTranscript(scene, stepId, npcId) {
+    if (!retainBoatScene(scene)) return;
+    const steps = loadTranscripts(api)?.[PAGE]?.variants?.[BOATMAN_START_VARIANT];
+    const tail = transcriptTailAfter(steps, stepId);
+    if (!tail) throw new Error(`Missing canonical Giant Dwarf scene continuation ${stepId}`);
+    const player = scene.owner, sender = player.getPacketSender();
+    const previousOwner = scene.dialogueOwner;
+    if (!startTranscript(api, player, npcId, PAGE, BOATMAN_START_VARIANT, () => tail, null, { scoped: true })) {
+      throw new Error(`Cannot resume Giant Dwarf scene continuation ${stepId}`);
+    }
+    const manager = player.getDialogueManager();
+    scene.dialogueOwner = manager.getOwner();
+    scene.heldDialogue = null;
+    if (!scene.dialogueOwner) throw new Error("Giant Dwarf scene transcript has no scoped owner");
+    // An initial timed overhead has not opened a new chatbox yet. Transfer only our
+    // preceding held presentation to its new canonical owner, never a foreign replacement.
+    if (manager.getCurrent() instanceof ActionDialogue && sender.getChatboxOwner() === previousOwner) {
+      sender.withChatboxOwner(scene.dialogueOwner, () => StatementDialogue.send(player, "", false));
+    }
+  }
+
+  function onBoatSceneEnd(player, scene, logout) {
+    closeBoatOverlay(scene);
+    const manager = player.getDialogueManager(), sender = player.getPacketSender();
+    if (scene.dialogueOwner) {
+      sender.closeChatboxFor(scene.dialogueOwner);
+      // The visible chatbox may now belong to another feature while our old chain
+      // still exists. Stop that chain without closing the foreign presentation.
+      if (manager.getOwner() === scene.dialogueOwner) manager.reset();
+    }
+    // QuestScenes removes the private map/actors and restores controls/camera. A forced
+    // boundary exit must not leave a player just outside the destroyed allocation.
+    if (!scene.finished && !logout) player.moveTo(BLACK_GUARD_HQ_TILE.clone());
+    // The normal completion caller alone resumes Veldaban; interruption never offers a task.
+  }
+
+  function cancelBoatScene(player) {
+    BoatScenes.end(player, false);
+  }
+
+  function ownsBoatScene(scene) {
+    const player = scene.owner;
+    if (BoatScenes.get(player) !== scene) return false;
+    const manager = player.getDialogueManager(), sender = player.getPacketSender();
+    return !!scene.dialogueOwner && manager.isActive() && manager.getOwner() === scene.dialogueOwner
+      && (!scene.heldDialogue || manager.getCurrent() === scene.heldDialogue)
+      && sender.getChatboxGroupId() >= 0 && sender.getChatboxOwner() === scene.dialogueOwner
+      && (!scene.overlay || sender.getSubInterfaceAt(BOAT_SCENE_UID) === scene.overlay);
+  }
+
+  function retainBoatScene(scene) {
+    if (ownsBoatScene(scene)) return true;
+    // A stale callback must not cancel a different, newer scene.
+    if (BoatScenes.get(scene.owner) === scene) cancelBoatScene(scene.owner);
+    return false;
+  }
+
+  function boatSceneLater(scene, ticks, callback) {
+    BoatScenes.later(scene, ticks, () => {
+      // Global tasks run BEFORE area processing. Check before every deferred camera,
+      // widget/loc/actor write or transcript handoff, not merely at the end of the tick.
+      if (retainBoatScene(scene)) callback();
+    });
+  }
+
+  function boatSceneProcess(player, mobile) {
+    if (mobile !== player) return;
+    const scene = BoatScenes.get(player);
+    if (scene) retainBoatScene(scene);
+  }
+
+  function startBoatOpening(player) {
+    if (stageOf(player) !== STAGE_STARTED || BoatScenes.get(player) || player.busy()
+      || player.getPrivateArea?.() || player.getPacketSender().getSubInterfaceAt(BOAT_SCENE_UID)) return false;
+    const scene = BoatScenes.open(player, "giant-dwarf-boat", BOAT_SCENE_BOUNDS, {
+      barsFollowers: true, allowSummonPet: false, process: mobile => boatSceneProcess(player, mobile),
+    }, {
+      instance: { sourceChunk: BOAT_SCENE_SOURCE_CHUNK, size: BOAT_SCENE_CHUNKS },
+      at: BOAT_CITY_DOCK, exit: BOAT_SAFE_EXIT,
+    });
+    scene.phase = "palace";
+    BoatScenes.controls(player, true, true);
+    boatSceneHold(scene);
+    scene.statueParts = BOAT_STATUE_PARTS.map(part => BoatScenes.loc(scene, part));
+    BoatScenes.camera(player, ...BOAT_PALACE_VIEW);
+    if (!boatSceneTitle(scene, 0)) return false;
+    boatSceneLater(scene, 6, () => {
+      scene.phase = "story";
+      boatSceneStory(scene, () => {
+        scene.phase = "city";
+        BoatScenes.camera(player, ...BOAT_CITY_VIEW);
+        if (!boatSceneTitle(scene, 3)) return;
+        boatSceneLater(scene, 6, () => {
+          scene.phase = "statue";
+          BoatScenes.camera(player, ...BOAT_STATUE_VIEW);
+          if (!boatSceneTitle(scene, 6)) return;
+          boatSceneLater(scene, 6, () => {
+            if (!boatOverlay(scene, BOAT_CRASH_GROUP)) return;
+            scene.phase = "map";
+            // Fresh close/unload before mount, then pause in the same turn. Reusing
+            //2138 alone cannot reset client modelFrame/modelFrameCycle counters.
+            player.getPacketSender().sendInterfaceAnimation(BOAT_INTEGRATED_MODEL_UID, -1);
+            resumeBoatTranscript(scene, "RKXHvp", NpcIdentifiers.DWARVEN_BOATMAN_3);
+          });
+        });
+      });
+    });
+    return true;
+  }
+
+  function crashBoatOpening(player) {
+    const scene = BoatScenes.get(player);
+    if (!scene || scene.phase !== "map" || !retainBoatScene(scene)) return false;
+    scene.phase = "crash";
+    boatSceneHold(scene);
+    // The native integrated animation moves its boat and breaks its statue;
+    // moving the separate parchment/map widgets would move the wrong geometry.
+    player.getPacketSender().sendInterfaceAnimation(BOAT_INTEGRATED_MODEL_UID, BOAT_CRASH_SEQUENCE);
+    boatSceneLater(scene, BOAT_CRASH_TICKS, () => {
+      if (player.getPacketSender().getSubInterfaceAt(BOAT_SCENE_UID) !== scene.overlay) {
+        cancelBoatScene(player);
+        return;
+      }
+      // Remove only this copy's intact presentation after the native breakup.
+      // The real city and its quest-controlled transforms remain untouched.
+      for (const part of scene.statueParts.splice(0)) api.core.ObjectManager.deregister(part, true);
+      closeBoatOverlay(scene);
+      scene.phase = "dock";
+      BoatScenes.camera(player, ...BOAT_DOCK_VIEW);
+      scene.guards = BOAT_GUARD_TILES.map(at => BoatScenes.actor(scene, BOAT_GUARD_ID, at, BOAT_CITY_DOCK));
+      if (scene.guards.some(npc => !npc)) { cancelBoatScene(player); return; }
+      // World builds the owner's local NPC view after tasks and before flushing.
+      // Explicit overhead actors must already be in that view: speaking in this
+      // spawn callback would reject the guards and cancel an otherwise valid scene.
+      // Keep the held owner until the next tick; the guarded callback also refuses
+      // Escape, logout or a foreign presentation during this visibility boundary.
+      boatSceneLater(scene, 1, () => resumeBoatTranscript(scene, "2B7gDn", BOAT_GUARD_ID));
+    });
+    return true;
+  }
+
+  function finishBoatOpening(player) {
+    const scene = BoatScenes.get(player);
+    if (!scene || scene.phase !== "dock" || !retainBoatScene(scene)) return false;
+    scene.finished = true;
+    BoatScenes.end(player, false);
+    player.moveTo(BLACK_GUARD_HQ_TILE.clone());
+    const remainder = veldabanOfferRemainder(), sender = player.getPacketSender();
+    // A synchronous close hook may have opened another feature during teardown.
+    if (remainder && !player.getDialogueManager().isActive() && sender.getChatboxGroupId() < 0
+      && !sender.getSubInterfaceAt(BOAT_SCENE_UID)) {
+      startTranscript(api, player, BOAT_VELDABAN_ID, PAGE, BOATMAN_START_VARIANT, () => remainder);
+    }
+    return true;
   }
 
   function handleAction(event) {
     const { player, stepId } = event;
-    if (BOAT_CUTSCENE_STEP_IDS.has(stepId)) {
-      event.handled = true;
-      return;
-    }
     switch (stepId) {
-      case "RV7CMp": {
-        // The capture fades to black for the client-side boat film. The scene
-        // markers cannot be replayed here, so the fade carries the transition
-        // into the arrival action instead of dropping the presentation.
+      case "RV7CMp":
         event.handled = true;
-        fade(player, true);
-        const { CountdownTask, TaskManager } = api.core;
-        if (CountdownTask && TaskManager) {
-          TaskManager.submit(new CountdownTask(player, 3, () => {
-            if (player.isRegistered?.() === false) return;
-            finishBoatCutscene(player);
-          }));
-        }
+        if (!startBoatOpening(player)) event.end = true;
         return;
-      }
-      case "rbNSPj": {
+      case "2B7gDn":
         event.handled = true;
-        player.moveTo(BLACK_GUARD_HQ_TILE);
+        if (!crashBoatOpening(player)) event.end = true;
+        return;
+      case "rbNSPj": {
+        // Retain the existing optional Skip policy; it is not a universal retail-world claim.
+        event.handled = true;
+        if (stageOf(player) !== STAGE_STARTED) { event.end = true; return; }
+        player.moveTo(BLACK_GUARD_HQ_TILE.clone());
         const remainder = veldabanOfferRemainder();
         if (remainder) event.steps = remainder;
         return;
       }
       case "TWPrRb":
         event.handled = true;
-        player.moveTo(BLACK_GUARD_HQ_TILE);
-        finishBoatCutscene(player);
+        if (!finishBoatOpening(player)) event.end = true;
         return;
       case "GVSGRf": {
         event.handled = true;
@@ -1176,9 +1474,9 @@ module.exports = function registerGiantDwarfQuest(api) {
         player.setAttribute(PIE_ATTRIBUTE, true);
         syncVarbits(player);
         return;
-      case "z3YxxS":
+      case "e1zjyh": // "Return to Keldagrim immediately.": the fade to Blasidar's house
         event.handled = true;
-        event.end = true; // the parsed variant leaves a stray "Explore" menu after this
+        event.end = true;
         if (skipReturnState.has(player)) {
           skipReturnState.delete(player);
           return;
@@ -1252,6 +1550,7 @@ module.exports = function registerGiantDwarfQuest(api) {
         const missing = missingRequirements(player);
         if (missing.length > 0) {
           player.sendMessage(`You need ${missing.join(", ")} to start The Giant Dwarf.`);
+          event.end = true; // Do not offer Skip/Play after a refused start.
           return;
         }
         setStage(player, STAGE_STARTED);
@@ -1300,12 +1599,12 @@ module.exports = function registerGiantDwarfQuest(api) {
     }
     if (SECRETARY_NPC_IDS.has(npcId)) {
       if (option === "I'll take it.") promoteTask(player, npcId);
-      else if (option === "No thanks.") cancelPending(player);
+      else if (option === "No thanks.") cancelPending(player, npcId);
       return;
     }
     if (DIRECTOR_NPC_IDS.has(npcId)) {
       if (option === "I'll take it.") promoteTask(player, npcId);
-      else if (option === "No thanks.") cancelPending(player);
+      else if (option === "No thanks.") cancelPending(player, npcId);
       else if (option === "I'd like to officially join your company." && points(player) >= JOIN_POINTS) {
         joinCompanyForNpc(player, npcId);
       }
@@ -1323,6 +1622,19 @@ module.exports = function registerGiantDwarfQuest(api) {
     // first option is still Talk-to.
     if (action) return action;
     return event.clickType === 1 ? "Talk-to" : undefined;
+  }
+
+  /** The free repeat service, not the opening film, the ore hauler, or the paid ferryman. */
+  function boatmanJourney(player, npcId) {
+    if (!BOATMAN_NPC_IDS.has(npcId) || stageOf(player) < STAGE_STARTED
+      || player.busy?.() || player.getMovementQueue?.().isMovementBlocked?.()) return false;
+    const destination = npcId === CITY_BOATMAN_NPC_ID ? MINES_BOAT_LANDING : CITY_BOAT_LANDING;
+    player.moveTo(destination.clone());
+    return true;
+  }
+
+  function travelWithBoatman({ player, npcId }) {
+    return boatmanJourney(player, npcId);
   }
 
   /** A declined task leaves stage 5 with no transcript hook; offer it again. */
@@ -1354,7 +1666,7 @@ module.exports = function registerGiantDwarfQuest(api) {
     }
     if (SECRETARY_NPC_IDS.has(npcId)) {
       const company = companyForNpc(npcId);
-      if (companyId(player) !== 0 && companyId(player) !== company.id) return;
+      if (!switchCompany(player, company)) return;
       event.handled = true;
       const variant =
         taskActive(player) && taskKind(player) === "ore" && hasTaskItems(player)
@@ -1382,11 +1694,19 @@ module.exports = function registerGiantDwarfQuest(api) {
   function handleItemOnObject(event) {
     const { player, itemId, objectId } = event;
     if (objectId !== SPINNING_MACHINE_OBJECT) return;
-    if (itemId === COAL_ITEM) {
+    // Vermundi: "Some coal and logs should do it! ... put them in the machine". Either item
+    // used on the machine loads both; any other order used to fall through silently.
+    if (itemId === COAL_ITEM || itemId === LOGS_ITEM) {
       if (stageOf(player) < STAGE_ITEMS || clothesState(player) < CLOTHES_BOOK) return;
-      if (machineState(player) >= MACHINE_LOADED) return;
-      if (!hasItem(player, LOGS_ITEM)) return;
       event.handled = true;
+      if (machineState(player) >= MACHINE_LOADED) {
+        player.sendMessage("The spinning machine already has coal and logs in it.");
+        return;
+      }
+      if (!hasItem(player, COAL_ITEM) || !hasItem(player, LOGS_ITEM)) {
+        player.sendMessage("You need both some coal and some logs to fuel the spinning machine.");
+        return;
+      }
       player.getInventory().deleteNumber(COAL_ITEM, 1);
       player.getInventory().deleteNumber(LOGS_ITEM, 1);
       setMachineState(player, MACHINE_LOADED);
@@ -1400,7 +1720,11 @@ module.exports = function registerGiantDwarfQuest(api) {
         startTranscript(api, player, VERMUNDI_NPC_ID, PAGE, LIGHT_AGAIN_VARIANT);
         return;
       }
-      if (machineState(player) !== MACHINE_LOADED) return;
+      if (machineState(player) !== MACHINE_LOADED) {
+        event.handled = true;
+        player.sendMessage("There is nothing in the spinning machine to light. It needs coal and logs first.");
+        return;
+      }
       event.handled = true;
       const success = skillLevel(player, Skill.FIREMAKING) >= LIGHT_LEVEL;
       lightingState.set(player, success);
@@ -1669,6 +1993,8 @@ module.exports = function registerGiantDwarfQuest(api) {
     api.persistAttribute(key);
   }
 
+  api.persistAttribute(COMPANY_POINTS_ATTRIBUTE, {});
+
   quest = registerQuest(api, {
     key: "giant_dwarf",
     name: "The Giant Dwarf",
@@ -1695,6 +2021,7 @@ module.exports = function registerGiantDwarfQuest(api) {
   api.onNpcsInteraction(SECRETARY_NAMES, { "Talk-to": handleConsortiumNpc });
   api.onNpcsInteraction(DIRECTOR_NAMES, { "Talk-to": handleConsortiumNpc });
   api.onNpcInteraction("Commander Veldaban", { "Talk-to": talkToVeldaban });
+  api.onNpcInteraction("Dwarven Boatman", { Travel: travelWithBoatman });
   api.onItemOnObject(handleItemOnObject, { noted: false });
   api.onItemOnItem(handleItemOnItem);
   api.onItemAction(handleItemAction);

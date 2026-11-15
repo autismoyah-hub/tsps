@@ -172,7 +172,8 @@ test('capes block entry before the teleport', () => {
   assert.equal(player.moves.length, 0);
   // rsprox 3233 (rev 232): the reason in chat, then the message box.
   assert.deepEqual(player.messages, ["You can't wear capes in the arena."]);
-  assert.deepEqual(player.typed, [[115, 'Some items are stopping you from entering the Castle Wars waiting area. See the chat for details.']]);
+  // The box logs its own mesbox chat line as it opens; nothing is sent by hand.
+  assert.deepEqual(player.typed, []);
   assert.equal(player.statements.length, 1);
 });
 
@@ -225,6 +226,89 @@ test('seeded bots log out once no real player is left', () => {
   assert.equal(bot.logouts, 1, 'the bot was logged out');
 });
 
+test("leaving a waiting room restores stats (Wiki) but keeps the player's own skull, Tele Block, poison and boosts", () => {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const registered = [];
+  const island = {
+    data, BOT_KEY: {}, TRANSITION_KEY: {},
+    getTeamData: (team) => data.TEAM_DATA[team], getTeamId: () => null, setTeamId: () => {},
+    clearCastleWarsItems: () => {}, closeOverlay: () => {}, equipTeamColours: () => {},
+    beginStartCountdown: () => {}, startSecondsLeft: () => 0, returnToLobby: () => {},
+    releaseSeededBots: () => false, checkStartCountdown: () => {},
+  };
+  Areas({
+    core,
+    registerArea: (area) => registered.push(area),
+    onServerStartup: () => {}, onPlayerLogin: () => {}, onCanEquip: () => {}, onCanUnequip: () => {},
+    onPlayerDeath: () => {}, onShouldDropItemsOnDeath: () => {}, onPlayerBeforeDeath: () => {}, onCustomEvent: () => {},
+  }, island);
+  const waitingRoom = registered.find((area) => area.getName().includes('waiting room'));
+  const p = new Player(null);
+  p.getSession = () => ({ sendClientPacket: () => true, write: () => true });
+  const skills = p.getSkillManager();
+  skills.setMaxLevels(core.Skill.HITPOINTS, 99, false).setCurrentLevel(core.Skill.HITPOINTS, 10, false);
+  p.setSkullTimer(3000);
+  p.getCombat().getTeleblockTimer().start(300);
+  p.setPoisonDamage(6);
+  skills.setMaxLevels(core.Skill.PRAYER, 70, false).setCurrentLevel(core.Skill.PRAYER, 5, false);
+  skills.setMaxLevels(core.Skill.STRENGTH, 90, false).setCurrentLevel(core.Skill.STRENGTH, 109, false);
+  p.setRunEnergy(10);
+  waitingRoom.postLeave(p, false);
+  assert.ok(p.getSkullTimer() > 0, 'still skulled');
+  assert.ok(p.getCombat().getTeleblockTimer().secondsRemaining() > 0, 'still tele-blocked');
+  assert.equal(p.getPoisonDamage(), 6, 'still poisoned');
+  assert.equal(skills.getCurrentLevel(core.Skill.HITPOINTS), 99, 'Hitpoints restored');
+  assert.equal(skills.getCurrentLevel(core.Skill.PRAYER), 70, 'Prayer restored');
+  assert.equal(skills.getCurrentLevel(core.Skill.STRENGTH), 109, 'a boost stays');
+  assert.equal(p.getRunEnergy(), 100, 'run energy restored');
+});
+
+test("leaving the game restores stats as the waiting room does, up to a skill's resting level (Wiki)", () => {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { SkillManager } = require('../dist/game/content/skill/SkillManager');
+  const registered = [];
+  const island = {
+    data, BOT_KEY: {}, TRANSITION_KEY: {},
+    getTeamData: (team) => data.TEAM_DATA[team], getTeamId: () => TEAM.SARADOMIN, setTeamId: () => {},
+    closeOverlay: () => {}, clearBraceletEffect: () => {}, equipTeamColours: () => {}, dropCarriedFlag: () => {},
+    clearCastleWarsItems: () => {}, returnToLobby: () => {}, releaseSeededBots: () => false, checkTeamsRemain: () => {},
+    beginStartCountdown: () => {}, startSecondsLeft: () => 0, checkStartCountdown: () => {},
+  };
+  Areas({
+    core,
+    registerArea: (area) => registered.push(area),
+    onServerStartup: () => {}, onPlayerLogin: () => {}, onCanEquip: () => {}, onCanUnequip: () => {},
+    onPlayerDeath: () => {}, onShouldDropItemsOnDeath: () => {}, onPlayerBeforeDeath: () => {}, onCustomEvent: () => {},
+  }, island);
+  const gameArea = registered.find((area) => area.getName() === 'Castle Wars');
+  const waitingRoom = registered.find((area) => area.getName().includes('waiting room'));
+  const boosted = new WeakSet();
+  // A permanent resting boost (as League Pacts give Defence): +10 for the marked players only.
+  SkillManager.registerRestingLevelModifier((player, skill, level) => (boosted.has(player) && skill === core.Skill.DEFENCE ? level + 10 : level));
+  for (const [name, area] of [['game', gameArea], ['waiting room', waitingRoom]]) {
+    for (const logout of [false, true]) {
+      const p = new Player(null);
+      p.getSession = () => ({ sendClientPacket: () => true, write: () => true });
+      boosted.add(p);
+      const skills = p.getSkillManager();
+      skills.setMaxLevels(core.Skill.HITPOINTS, 99, false).setCurrentLevel(core.Skill.HITPOINTS, 10, false);
+      skills.setMaxLevels(core.Skill.PRAYER, 70, false).setCurrentLevel(core.Skill.PRAYER, 5, false);
+      skills.setMaxLevels(core.Skill.DEFENCE, 99, false).setCurrentLevel(core.Skill.DEFENCE, 60, false);
+      skills.setMaxLevels(core.Skill.STRENGTH, 90, false).setCurrentLevel(core.Skill.STRENGTH, 109, false);
+      p.setPoisonDamage(6);
+      p.setRunEnergy(10);
+      area.postLeave(p, logout);
+      const where = `${name}, logout ${logout}`;
+      assert.equal(skills.getCurrentLevel(core.Skill.HITPOINTS), 99, `Hitpoints restored (${where})`);
+      assert.equal(skills.getCurrentLevel(core.Skill.PRAYER), 70, `Prayer restored (${where})`);
+      assert.equal(skills.getCurrentLevel(core.Skill.DEFENCE), 109, `drained Defence back to its resting level (${where})`);
+      assert.equal(skills.getCurrentLevel(core.Skill.STRENGTH), 109, `a boost stays (${where})`);
+      assert.equal(p.getRunEnergy(), 100, `run energy restored (${where})`);
+      assert.equal(p.getPoisonDamage(), 6, `still poisoned (${where})`);
+    }
+  }
+});
+
 test('both waiting rooms release seeded bots on leave and honour the transition path', () => {
   const registered = [];
   const calls = { released: 0, coloured: 0, countdown: 0 };
@@ -248,13 +332,19 @@ test('both waiting rooms release seeded bots on leave and honour the transition 
     core,
     registerArea: (area) => registered.push(area),
     onServerStartup: () => {}, onPlayerLogin: () => {}, onCanEquip: () => {}, onCanUnequip: () => {},
-    onPlayerDeath: () => {}, onShouldDropItemsOnDeath: () => {}, onCustomEvent: () => {},
+    onPlayerDeath: () => {}, onShouldDropItemsOnDeath: () => {}, onPlayerBeforeDeath: () => {}, onCustomEvent: () => {},
   }, island);
 
   const waitingRooms = registered.filter((area) => area.getName().includes('waiting room'));
   assert.equal(waitingRooms.length, 2, 'both waiting rooms are registered');
   for (const waitingRoom of waitingRooms) {
-    const real = { getAsPlayer: () => real, getAttribute: () => false, isPlayerBot: () => false, resetAttributes: () => {} };
+    const real = {
+      getAsPlayer: () => real, getAttribute: () => false, isPlayerBot: () => false, isPlayer: () => true, isNpc: () => false,
+      // Leaving restores stats (restoreStats): the skills, run energy and prayers it touches.
+      getSkillManager: () => ({ getCurrentLevel: () => 1, getRestingLevel: () => 1, setCurrentLevel() {} }),
+      setRunEnergy() {}, getPrayerActive: () => [],
+      getQuickPrayers: () => ({ setEnabled() {} }), getPacketSender: () => ({ sendQuickPrayersState() {} }),
+    };
     waitingRoom.postLeave(real, false);
     assert.equal(calls.released, 1, 'leaving releases seeded bots');
     assert.equal(calls.countdown, 1, 'leaving cancels a pending countdown');
@@ -337,8 +427,8 @@ test('practice sizes count the human and select the requested opposing bot role'
     World.getAddPlayerQueue().splice(0);
     game.settings = { teamSize: size, opponent: 'scorer' };
     const player = fakePlayer();
-    enterPortal(player, core.ObjectIdentifiers.SARADOMIN_PORTAL);
-    prompt.options[2].pick();
+    // The settings are Lanthus' practice: "Join practice" joins with the practice flag.
+    game.joinFromLobby(player, TEAM.SARADOMIN, 'veteran', TEAM.SARADOMIN, false, true);
     const bots = World.getAddPlayerQueue();
     assert.equal(bots.filter((bot) => game.getTeamId(bot) === TEAM.SARADOMIN).length, size - 1);
     const opponents = bots.filter((bot) => game.getTeamId(bot) === TEAM.ZAMORAK);
@@ -346,6 +436,56 @@ test('practice sizes count the human and select the requested opposing bot role'
     assert.ok(opponents.every((bot) => bot.getAttribute(game.BOT_ROLE_KEY) === 'scorer'));
     assert.ok(bots.filter((bot) => game.getTeamId(bot) === TEAM.SARADOMIN).every((bot) => bot.getAttribute(game.BOT_ROLE_KEY) === 'defender'));
     assert.ok(bots.every((bot) => bot.getAttribute(game.BOT_TIER_KEY) === 'veteran'));
+  }
+});
+
+test("a practice match's settings stay with it: the next public game has no team cap and the normal bot fill", (t) => {
+  // A 1 vs 1 practice with no opposing bots left in Lanthus' settings.
+  game.settings = { teamSize: 1, opponent: 'none', barricades: 10, botTier: 'veteran' };
+  World.getAddPlayerQueue().splice(0);
+  game.joinFromLobby(fakePlayer(), TEAM.SARADOMIN, null, TEAM.SARADOMIN, false, true);
+  assert.equal(game.practice, true);
+
+  // The practice player has gone; a public game starts in the empty lobby, and the bot prompt fills both teams.
+  const counts = t.mock.method(game, 'queueCounts', () => ({ [TEAM.SARADOMIN]: 0, [TEAM.ZAMORAK]: 0 }));
+  World.getAddPlayerQueue().splice(0);
+  const first = fakePlayer();
+  enterPortal(first, core.ObjectIdentifiers.SARADOMIN_PORTAL);
+  prompt.options[2].pick();
+  assert.equal(game.practice, false, 'a join that is not "Join practice" starts a public match');
+  counts.mock.restore();
+  const bots = World.getAddPlayerQueue();
+  assert.equal(bots.filter((bot) => game.getTeamId(bot) === TEAM.ZAMORAK).length, 30, 'not 1 vs 1, and not none');
+  assert.equal(bots.filter((bot) => game.getTeamId(bot) === TEAM.SARADOMIN).length, 29);
+
+  // And a third human joins a team that already has people: no practice cap of 1.
+  t.mock.method(game, 'queueCounts', () => ({ [TEAM.SARADOMIN]: 2, [TEAM.ZAMORAK]: 2 }));
+  const third = fakePlayer();
+  enterPortal(third, core.ObjectIdentifiers.SARADOMIN_PORTAL);
+  assert.ok(!third.messages?.includes?.('That Castle Wars team is full.'), 'no cap outside practice');
+  assert.equal(game.getTeamId(third), TEAM.SARADOMIN);
+  game.settings = { ...Settings._test.DEFAULTS };
+});
+
+test("an abandoned practice's bots still logging out don't count: the next human gets an empty lobby and a public match", () => {
+  game.settings = { teamSize: 1, opponent: 'none', barricades: 10, botTier: 'veteran' };
+  game.joinFromLobby(fakePlayer(), TEAM.SARADOMIN, null, TEAM.SARADOMIN, false, true);
+  assert.equal(game.practice, true);
+  // The practice player left; the released bots are queued for removal but still in the waiting rooms this tick.
+  const departing = [fakePlayer({ bot: true }), fakePlayer({ bot: true })];
+  game.waitingAreas[TEAM.SARADOMIN].players.push(departing[0]);
+  game.waitingAreas[TEAM.ZAMORAK].players.push(departing[1]);
+  World.getRemovePlayerQueue().push(...departing);
+  try {
+    assert.deepEqual(game.queueCounts(), { [TEAM.SARADOMIN]: 0, [TEAM.ZAMORAK]: 0 }, 'departing bots are not queued');
+    const next = fakePlayer();
+    enterPortal(next, core.ObjectIdentifiers.SARADOMIN_PORTAL);
+    assert.ok(prompt, 'the empty-lobby prompt is shown');
+    prompt.options[3].pick();
+    assert.equal(game.practice, false, 'the abandoned practice flag does not stick');
+  } finally {
+    for (const bot of departing) World.getRemovePlayerQueue().splice(World.getRemovePlayerQueue().indexOf(bot), 1);
+    game.settings = { ...Settings._test.DEFAULTS };
   }
 });
 
@@ -392,8 +532,6 @@ test('practice menus join from every portal through the real prompt dispatcher w
     pick(player, 'Bots:');
     pick(player, 'Scorer (magic defence)');
     pick(player, 'More settings');
-    pick(player, 'Ice freeze:');
-    pick(player, '10 seconds');
     pick(player, 'Barricades per team:');
     pick(player, '20');
     pick(player, 'Back');
@@ -403,7 +541,7 @@ test('practice menus join from every portal through the real prompt dispatcher w
     assert.equal(moves.length, 1, 'the join action reaches the waiting room');
     assert.equal(game.getTeamId(player), expectedTeam);
     assert.equal(forms.at(-1), god, 'the original portal determines the waiting-room transformation');
-    assert.deepEqual(game.settings, { teamSize: 1, opponent: 'scorer', freezeSeconds: 10, barricades: 20, botTier: 'maxed', barricadePlayerPriority: false });
+    assert.deepEqual(game.settings, { teamSize: 1, opponent: 'scorer', barricades: 20, botTier: 'maxed' });
     const bots = World.getAddPlayerQueue();
     assert.equal(bots.length, 1, '1 vs 1 uses the human and one opposing bot');
     assert.equal(game.getTeamId(bots[0]), game.opposingTeam(expectedTeam));
@@ -503,11 +641,63 @@ test('a carrier whose banner was stripped before the drop hook still drops the f
   game.restoreFlagToBase(TEAM.ZAMORAK);
 });
 
-test('Castle Wars deaths keep gear, drop flags and supplies but no bones; other deaths still drop bones', (t) => {
+test('a carrier who logs out drops the flag before the banner is stripped, as a death does', () => {
+  const Areas = require('../plugins/minigames/castlewars/Areas.CastleWars');
+  const registered = [];
+  const calls = [];
+  const island = {
+    data, BOT_KEY: {}, TRANSITION_KEY: {},
+    getTeamData: (team) => data.TEAM_DATA[team], getTeamId: () => TEAM.ZAMORAK, setTeamId: () => {},
+    closeOverlay: () => {}, clearBraceletEffect: () => {}, equipTeamColours: () => {},
+    dropCarriedFlag: () => calls.push('drop flag'), clearCastleWarsItems: () => calls.push('strip items'),
+    returnToLobby: () => calls.push('lobby'), releaseSeededBots: () => false, checkTeamsRemain: () => {},
+    beginStartCountdown: () => {}, startSecondsLeft: () => 0, checkStartCountdown: () => {},
+  };
+  Areas({
+    core,
+    registerArea: (area) => registered.push(area),
+    onServerStartup: () => {}, onPlayerLogin: () => {}, onCanEquip: () => {}, onCanUnequip: () => {},
+    onPlayerDeath: () => {}, onShouldDropItemsOnDeath: () => {}, onPlayerBeforeDeath: () => {}, onCustomEvent: () => {},
+  }, island);
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const gameArea = island.gameArea;
+  const p = new Player(null);
+  p.getSession = () => ({ sendClientPacket: () => true, write: () => true });
+  gameArea.postLeave(p, true);
+  assert.deepEqual(calls, ['drop flag', 'strip items', 'lobby']);
+});
+
+// The exit portal (and the idle kick) go through returnToLobby, which moves the player before the area's leave hook
+// runs: the flag must drop where the carrier stood, not in the lobby.
+test('a carrier who leaves by the exit portal drops the flag in the game, not in the lobby', () => {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true, send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+  const carrier = new Player(new PlayerSession(channel));
+  carrier.setUsername('cwportal');
+  const standing = new core.Location(2426, 3080, 0); // the Saradomin castle's ground floor
+  assert.ok(game.inGameBounds(standing));
+  carrier.setLocation(standing);
+  game.setTeamId(carrier, TEAM.SARADOMIN);
+  game.carryFlag(carrier, TEAM.ZAMORAK);
+  assert.equal(game.flagStatus[TEAM.ZAMORAK], 1, 'carried');
+  const portal = { getId: () => [...data.GAME_EXIT_IDS][0], getLocation: () => standing };
+  objectHandler({ player: carrier, object: portal, clickType: 1, handled: false });
+  assert.equal(game.flagStatus[TEAM.ZAMORAK], 2, 'the flag was dropped');
+  const dropped = game.getDroppedFlagObject(TEAM.ZAMORAK);
+  assert.ok(dropped?.getLocation().equals(standing), `dropped where the carrier stood, not at ${dropped?.getLocation()}`);
+  assert.ok(game.inGameBounds(dropped.getLocation()), 'inside the game, where it can be picked up');
+  assert.ok(!game.inGameBounds(carrier.getLocation()), 'and the carrier was sent out to the lobby');
+  game.restoreFlagToBase(TEAM.ZAMORAK);
+  game.setTeamId(carrier, null);
+});
+
+test('Castle Wars deaths keep gear and supplies, drop flags but no bones; other deaths still drop bones', (t) => {
   const { PlayerDeathTask } = require('../dist/game/task/impl/PlayerDeath');
   const { ItemOnGroundManager } = require('../dist/game/entity/impl/grounditem/ItemOnGroundManager');
   let deathPolicy;
   let respawn;
+  let beforeDeath;
   const calls = [];
   const deathApi = PluginManager.createApi('Castle Wars death regression');
   const island = {
@@ -520,6 +710,7 @@ test('Castle Wars deaths keep gear, drop flags and supplies but no bones; other 
   Areas({
     core, registerArea() {}, onServerStartup() {}, onPlayerLogin() {}, onCanEquip() {}, onCanUnequip() {}, onCustomEvent: deathApi.onCustomEvent,
     onShouldDropItemsOnDeath: (handler) => { deathPolicy = handler; },
+    onPlayerBeforeDeath: (handler) => { beforeDeath = handler; },
     onPlayerDeath: (handler) => { respawn = handler; },
   }, island);
   t.mock.method(PluginManager, 'emitShouldDropItemsOnDeath', (player) => {
@@ -531,9 +722,13 @@ test('Castle Wars deaths keep gear, drop flags and supplies but no bones; other 
   t.mock.method(PluginManager, 'emitPlayerDefeated', () => {});
   const bones = t.mock.method(ItemOnGroundManager, 'registerLocation', () => {});
   const drop = t.mock.method(PlayerDeathTask, 'dropItems', () => []);
+  const announced = [];
   function victim(bot, area = island.gameArea) {
     const gear = new core.Item(core.ItemIdentifiers.DRAGON_WARHAMMER, 1);
     const player = {
+      // The respawn tick says "Oh dear, you are dead!" with jingle 90 (PlayerDeathTask, 0277f01c0).
+      sendMessage: (message) => announced.push(message),
+      getPacketSender: () => ({ sendJingle: (id) => announced.push('jingle:' + id) }),
       isPlayerBot: () => bot,
       getArea: () => area,
       getLocation: () => new core.Location(2420, 3075),
@@ -556,6 +751,8 @@ test('Castle Wars deaths keep gear, drop flags and supplies but no bones; other 
     }
   }
   assert.equal(bones.mock.callCount(), 0, 'Castle Wars players and bots leave no bones in the arena or waiting rooms');
+  assert.deepEqual(announced, Array.from({ length: announced.length / 2 }, () => ['Oh dear, you are dead!', 'jingle:90']).flat());
+  assert.equal(announced.length, 2 * 2 * (1 + Object.values(island.waitingAreas).length), 'every death is announced');
   assert.equal(drop.mock.callCount(), 0);
   assert.deepEqual(calls, ['flag', data.DEATH_REMOVE_ITEM_IDS, 'flag', data.DEATH_REMOVE_ITEM_IDS]);
   for (const area of Object.values(island.waitingAreas)) {
@@ -579,6 +776,62 @@ test('Castle Wars deaths keep gear, drop flags and supplies but no bones; other 
   }
   assert.equal(bones.mock.callCount(), 2, 'outside bones still drop for both safe and dangerous deaths');
   assert.equal(drop.mock.callCount(), 1, 'only the dangerous outside death processes gear');
+
+  // The game ends during a death: the player is moved to the lobby (not a Castle Wars area) before tick 0.
+  let where = island.gameArea;
+  const ending = { getArea: () => where };
+  beforeDeath({ player: ending });
+  where = island.lobbyArea;
+  const late = { player: ending, shouldDrop: null };
+  deathPolicy(late);
+  assert.equal(late.shouldDrop, false, 'a death begun in the game keeps its gear in the lobby');
+  const settle = { player: ending, handled: false };
+  respawn(settle);
+  assert.equal(settle.handled, true, 'and the player stays in the lobby');
+
+  // The same, through the real death task's tick 0: no bones in the lobby for a death begun in the game.
+  const bonesBefore = bones.mock.callCount();
+  const { player: midDeath } = victim(false);
+  let midArea = island.gameArea;
+  midDeath.getArea = () => midArea;
+  beforeDeath({ player: midDeath });
+  midArea = island.lobbyArea;
+  // The outside cases above pinned the drop policy; this death goes through the plugin's own again.
+  t.mock.method(PluginManager, 'emitShouldDropItemsOnDeath', (player) => {
+    const event = { player, shouldDrop: null };
+    deathPolicy(event);
+    return event.shouldDrop;
+  });
+  const midTask = new PlayerDeathTask(midDeath);
+  midTask.ticks = 0;
+  midTask.execute();
+  assert.equal(midTask.loseItems, false);
+  assert.equal(bones.mock.callCount(), bonesBefore, 'a death begun in the game leaves no bones in the lobby');
+  const after = { player: ending, shouldDrop: null };
+  deathPolicy(after);
+  assert.equal(after.shouldDrop, null, 'a later lobby death follows the world rules');
+
+});
+
+test('a mark whose death never reached the death hook does not keep a later death outside Castle Wars safe', () => {
+  let deathPolicy;
+  let beforeDeath;
+  const deathApi = PluginManager.createApi('Castle Wars stale death mark');
+  const island = { ...game };
+  Areas({
+    core, registerArea() {}, onServerStartup() {}, onPlayerLogin() {}, onCanEquip() {}, onCanUnequip() {}, onCustomEvent: deathApi.onCustomEvent,
+    onShouldDropItemsOnDeath: (handler) => { deathPolicy = handler; },
+    onPlayerBeforeDeath: (handler) => { beforeDeath = handler; },
+    onPlayerDeath() {},
+  }, island);
+  let area = island.gameArea;
+  const player = { getArea: () => area };
+  beforeDeath({ player }); // a death in the game that another death hook handled first
+  area = island.lobbyArea;
+  beforeDeath({ player }); // a later death in the lobby
+  const later = { player, shouldDrop: null };
+  deathPolicy(later);
+  assert.equal(later.shouldDrop, null, 'the world rules, not an old mark');
 });
 
 test('the arena is multi-combat: several enemies may hit one player, the lobby and waiting rooms are not', (t) => {
@@ -593,7 +846,7 @@ test('the arena is multi-combat: several enemies may hit one player, the lobby a
   const registered = [];
   Areas({
     core, registerArea: (area) => registered.push(area), onServerStartup() {}, onPlayerLogin() {}, onCanEquip() {},
-    onCanUnequip() {}, onCustomEvent() {}, onShouldDropItemsOnDeath() {}, onPlayerDeath() {},
+    onCanUnequip() {}, onCustomEvent() {}, onShouldDropItemsOnDeath() {}, onPlayerBeforeDeath() {}, onPlayerDeath() {},
   }, island);
   AreaManager.areas.push(...registered);
   t.after(() => {
@@ -705,7 +958,7 @@ test('ending and resetting a match clears both native Castle Wars team flags', t
   }
 });
 
-test('Lanthus freeze choices survive a practice start and cap Ice Barrage, movement and the overlay', t => {
+test('practice and human matches retain normal Ice Barrage movement and overlay timing after the custom controls are removed', t => {
   const { Player } = require('../dist/game/entity/impl/player/Player');
   const { MultiChatboxPrompt } = require('../dist/game/model/menu/MultiChatboxPrompt');
   const realApi = PluginManager.createApi('CastleWarsPracticeFreezeTest');
@@ -719,7 +972,8 @@ test('Lanthus freeze choices survive a practice start and cap Ice Barrage, movem
     onPlayerProcess(handler) { syncTimer = handler; }, onPlayerLogout() {} });
   t.after(() => { game.endGame(); game.gameArea.players.length = 0; delete registry.emitCustomEvent; });
 
-  for (const [choice, ticks, practice] of [['10 seconds', 16, true], ['15 seconds', 25, true], ['Standard', 32, true], ['10 seconds', 32, false]]) {
+  const ticks = 32;
+  for (const practice of [true, false]) {
     const caster = new Player(null), victim = new Player(null);
     for (const p of [caster, victim]) {
       t.mock.method(p, 'getSession', () => ({ sendClientPacket: () => true }));
@@ -731,13 +985,13 @@ test('Lanthus freeze choices survive a practice start and cap Ice Barrage, movem
     const configs = new Map();
     t.mock.method(victim.getPacketSender(), 'sendConfig', (id, value) => configs.set(id, value));
     Settings.openSettings({ player: victim });
-    for (const text of ['More settings', 'Ice freeze:', choice]) {
-      const pending = MultiChatboxPrompt.getPending(victim);
-      const index = pending.options.findIndex(option => option.startsWith(text));
-      assert.notEqual(index, -1, `${text} is available`);
-      assert.equal(PluginManager.emitInterfaceActionClick({ player: victim,
-        buttonId: MultiChatboxPrompt.OPTIONS_WIDGET_ID, groupId: 219, action: 1, slot: index + 1, handled: false }), true);
-    }
+    const pending = MultiChatboxPrompt.getPending(victim);
+    const index = pending.options.indexOf('More settings');
+    assert.notEqual(index, -1);
+    assert.equal(PluginManager.emitInterfaceActionClick({ player: victim,
+      buttonId: MultiChatboxPrompt.OPTIONS_WIDGET_ID, groupId: 219, action: 1, slot: index + 1, handled: false }), true);
+    assert.deepEqual(MultiChatboxPrompt.getPending(victim).options,
+      ['Barricades per team: 10', 'Bot combat: Maxed (126)', 'Bracelet charges', 'Back']);
     caster.setPlayerBot(practice);
     caster.setAttribute(game.BOT_KEY, practice);
     for (const [p, team] of [[caster, TEAM.SARADOMIN], [victim, TEAM.ZAMORAK]]) {
@@ -755,7 +1009,7 @@ test('Lanthus freeze choices survive a practice start and cap Ice Barrage, movem
     assert.equal(victim.getTimers().getTicks(core.TimerKey.FREEZE), ticks);
     assert.equal(victim.getMovementQueue().getMobility().canMove(), false);
     syncTimer({ player: victim });
-    assert.equal(configs.get(7998), Math.ceil(ticks * 0.6), 'the overlay receives the capped freeze duration');
+    assert.equal(configs.get(7998), Math.ceil(ticks * 0.6), 'the overlay receives the normal freeze duration');
     for (let i = 0; i < ticks; i++) victim.getTimers().process();
     assert.equal(victim.getTimers().has(core.TimerKey.FREEZE), false);
     assert.equal(victim.getMovementQueue().getMobility().canMove(), true);

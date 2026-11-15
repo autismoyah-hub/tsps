@@ -11,14 +11,22 @@ const { PluginManager } = require("../dist/plugins/PluginManager");
 const { ItemIdentifiers: I } = require("../dist/util/ItemIdentifiers");
 const { Item } = require("../dist/game/model/Item");
 const { Location } = require("../dist/game/model/Location");
+const { Dialogue } = require("../dist/game/model/dialogues/entries/Dialogue");
 const { FightType } = require("../dist/game/content/combat/FightType");
 
 const core = PluginManager.getCoreApi();
 
-function register(plugin) {
+const prompts = [];
+
+function register(plugin, pluginCore = core) {
   const hooks = { resolvers: [], events: new Map(), actions: new Map(), itemOnItem: [], specials: [] };
+  // Uncharge and Dismantle ask on the destroy prompt (DestroyItem); these tests answer Yes.
+  hooks.events.set("destroy-item:confirm", [(request) => {
+    prompts.push(request);
+    request.confirm(request.player, request.item);
+  }]);
   plugin.register({
-    core,
+    core: pluginCore,
     registerCombatMethodResolver: (resolver) => hooks.resolvers.push(resolver),
     registerCombatSpecial: (special) => hooks.specials.push(special),
     onCustomEvent: (name, handler) => hooks.events.set(name, [...(hooks.events.get(name) ?? []), handler]),
@@ -26,6 +34,7 @@ function register(plugin) {
     onItemAction: (name, actions) => hooks.actions.set(name, actions),
     onItemOnItem: (handler) => hooks.itemOnItem.push(handler),
     onPlayerLogin() {},
+    onPlayerDeathItemDrop: (handler) => { hooks.death = handler; },
   });
   return hooks;
 }
@@ -51,13 +60,15 @@ function player({ weapon = null, magic = 99, items = {}, at = new Location(3200,
     isNpc: () => false,
     getAsPlayer: () => self,
     getLocation: () => at,
-    getEquipment: () => ({ getItems: () => equipment, refreshItems() {} }),
+    getEquipment: () => ({ get: (slot) => equipment[slot], getItems: () => equipment, refreshItems() {} }),
     getInventory: () => ({
-      getItems: () => inventoryItems,
+      getItems: () => [...inventoryItems, ...[...amounts].filter(([, amount]) => amount > 0).map(([id, amount]) => new Item(id, amount))],
+      deleteAtSlot(slot, amount) { this.deleteNumber(this.getItems()[slot].getId(), amount); },
       getAmount: (id) => amounts.get(id) ?? 0,
       deleteNumber: (id, amount) => amounts.set(id, Math.max(0, (amounts.get(id) ?? 0) - amount)),
       contains: (id) => (amounts.get(id) ?? 0) > 0,
       getFreeSlots: () => 28,
+      getAddableAmount: (item) => item.getAmount(),
       addItem: (item) => amounts.set(item.getId(), (amounts.get(item.getId()) ?? 0) + item.getAmount()),
       refreshItems() {},
     }),
@@ -72,6 +83,15 @@ function player({ weapon = null, magic = 99, items = {}, at = new Location(3200,
     getPacketSender: () => ({
       sendVarbit: (id, value) => state.varbits.set(id, value),
       sendEnterAmountPrompt: (title) => { state.prompt = title; },
+      sendTypedMessage: (type, text) => { state.box = text; },
+      sendSound: (id) => { state.sound = id; },
+    }),
+    // An objectbox is continued at once: only the chain's actions run, and each box logs its own chat line.
+    getDialogueManager: () => ({
+      startDialogues: (chain) => [...chain.getDialogues().values()].forEach((dialogue) => {
+        if (dialogue.isSelfAdvancing?.() !== undefined) dialogue.send(self);
+        else if (dialogue.getText) Dialogue.sendBoxChatLine(self, dialogue.getText());
+      }),
     }),
     setEnteredAmountAction: (action) => { state.amountAction = action; },
     isSpecialActivated: () => state.special != null,
@@ -115,6 +135,31 @@ test("tridents attack with their built-in spell; the max hit follows Magic (Wiki
   assert.equal(Trident._test.maxHit(seasRecipe, player({ magic: 1 })), 1, "never below 1");
   assert.equal(Trident._test.maxHit(swampRecipe, player({ magic: 99 })), 31, "floor(99 / 3) - 2");
   assert.equal(Trident._test.maxHit(swampRecipe, player({ magic: 1 })), 4, "never below 4");
+});
+
+// A target bigger than one tile is measured to its nearest tile, not its south-west corner. Same fault
+// #2568 fixed for the Sanguinesti staff: the end cycle, and so the tick the hit lands, came out late.
+const sized = (x, y, size) => ({ getLocation: () => new Location(x, y, 0), getSize: () => size, getPrivateArea: () => null });
+
+test("a trident's projectile ends at the target's nearest tile (rsprox 4152, rev 238, giant lobster)", () => {
+  // Nine seas-trident casts at a size-2 giant lobster (south-west tile 2846,8939) from 2845,8941/8940: the
+  // projectile (1252) ends at cycle 56, one tile, where the south-west tile is two away (66).
+  assert.equal(Trident._test.projectileEnd(sized(2845, 8941, 1), sized(2846, 8939, 2)), 56);
+  assert.equal(Trident._test.projectileEnd(sized(2845, 8940, 1), sized(2846, 8939, 2)), 56);
+  // Larger targets, from any side; a caster beside or inside the footprint still counts one tile.
+  assert.equal(Trident._test.projectileEnd(sized(3200, 3200, 1), sized(3204, 3200, 3)), 46 + 10 * 4, "east of a size-3 target 4 tiles from its edge");
+  assert.equal(Trident._test.projectileEnd(sized(3208, 3201, 1), sized(3200, 3200, 3)), 46 + 10 * 6, "6 from the east edge, not 8");
+  assert.equal(Trident._test.projectileEnd(sized(3201, 3201, 1), sized(3200, 3200, 3)), 56, "inside the footprint is at least one tile");
+});
+
+test("the Eye of Ayak's projectile ends at the target's nearest tile (rsprox 3431, rev 235, Tombs of Amascut)", () => {
+  // Ends 51 + 5 a tile past the first. Zebak (size 9, south-west 3918,5404) from 3933,5408 ends at 81: 7 tiles
+  // from its edge, not 15 from the corner (121). Baba (5) from 3818,5412 to 3815,5406 ends at 56; the Warden (5)
+  // from 3936,5162 to 3934,5152 at 76; a size-1 baboon shaman 5 tiles away at 71.
+  assert.equal(EyeOfAyak._test.projectileEnd(sized(3933, 5408, 1), sized(3918, 5404, 9)), 81);
+  assert.equal(EyeOfAyak._test.projectileEnd(sized(3818, 5412, 1), sized(3815, 5406, 5)), 56);
+  assert.equal(EyeOfAyak._test.projectileEnd(sized(3936, 5162, 1), sized(3934, 5152, 5)), 76);
+  assert.equal(EyeOfAyak._test.projectileEnd(sized(3807, 5282, 1), sized(3812, 5283, 1)), 71, "a size-1 target is unchanged");
 });
 
 test("trident projectiles end 46 + 10 a tile, and the hit lands as they arrive (rsprox)", () => {
@@ -250,6 +295,7 @@ test("Accursed sceptre: a 1,000 ether deposit, then up to 16,000 charges (Wiki, 
   assert.equal(method.canAttack(worn, NPC), false);
   assert.equal(worn.state.messages.at(-1), "There is not enough revenant ether left powering your sceptre.");
 
+  assert.equal(sceptre.getMetaValue(Accursed._test.DEPOSIT_META), true, "activating it records the paid deposit");
   sceptre.setMetaValue(CHARGES_KEY, 200);
   Accursed._test.uncharge({ player: p, item: sceptre });
   assert.equal(sceptre.getId(), I.ACCURSED_SCEPTRE_U_);
@@ -278,6 +324,119 @@ test("Accursed sceptre (a) autocasts instead, and either gives +50% against Wild
   p.state.target = wilderness;
   Accursed._test.spellCast({ player: p });
   assert.equal(swapped.getMetaValue(CHARGES_KEY), 9, "a spellbook cast there spends a charge");
+});
+
+test("Thammaron's sceptre: the same ether rules and built-in spell, max hit floor(Magic / 3) - 8, no Condemn (Wiki)", () => {
+  const { CHARGES_KEY, ACTIVATION_ETHER } = Accursed._test;
+  const sceptre = new Item(I.THAMMARONS_SCEPTRE_U_, 1);
+  const p = player({ items: { [I.REVENANT_ETHER]: 1500 } });
+  p.inventoryItems.push(sceptre);
+  Accursed._test.chargeWithEther({ player: p, usedItem: new Item(I.REVENANT_ETHER, 1500), usedWithItem: sceptre, usedItemId: I.REVENANT_ETHER, usedWithItemId: sceptre.getId() });
+  p.state.amountAction.execute(500);
+  assert.equal(sceptre.getId(), I.THAMMARONS_SCEPTRE);
+  assert.equal(sceptre.getMetaValue(CHARGES_KEY), 500);
+
+  const worn = player({ weapon: sceptre });
+  const method = accursed.resolvers[0].resolve(worn);
+  assert.ok(method, "the charged sceptre casts its built-in spell");
+  assert.equal(method.attackSpeed(worn), 4);
+  assert.equal(method.attackDistance(worn), 7);
+  assert.equal(method.canAttack(worn, NPC), true);
+  assert.equal(worn.state.castSpell.maximumHit(), 25, "floor(99 / 3) - 8");
+  assert.equal(sceptre.getMetaValue(CHARGES_KEY), 499, "a cast spends a charge");
+
+  sceptre.setMetaValue(CHARGES_KEY, 200);
+  Accursed._test.uncharge({ player: p, item: sceptre });
+  assert.equal(sceptre.getId(), I.THAMMARONS_SCEPTRE_U_);
+  assert.equal(p.amounts.get(I.REVENANT_ETHER), 200 + ACTIVATION_ETHER);
+});
+
+test("Thammaron's sceptre (a) autocasts, and Dismantle on an uncharged one gives 7,500 ether (Wiki)", () => {
+  const { CHARGES_KEY, DISMANTLE_ETHER } = Accursed._test;
+  const swapped = staffItem(I.THAMMARONS_SCEPTRE, CHARGES_KEY, 10);
+  const p = player({ weapon: swapped });
+  p.inventoryItems.push(swapped);
+  Accursed._test.swap({ player: p, item: swapped });
+  assert.equal(swapped.getId(), I.THAMMARONS_SCEPTRE_A_);
+  assert.equal(accursed.resolvers[0].resolve(p), null);
+  const wilderness = { isPlayer: () => false, isNpc: () => true, getLocation: () => new Location(3100, 3600, 0) };
+  const boosted = { attacker: p, target: wilderness, maxHit: 30, attackRoll: 1000 };
+  Accursed._test.boostMaxHit(boosted);
+  Accursed._test.boostAccuracy(boosted);
+  assert.deepEqual([boosted.maxHit, boosted.attackRoll], [45, 1500]);
+
+  const bare = new Item(I.THAMMARONS_SCEPTRE_U_, 1);
+  const q = player();
+  q.inventoryItems.push(bare);
+  prompts.length = 0;
+  assert.equal(accursed.actions.get("Thammaron's sceptre (u)").Dismantle({ player: q, item: bare }), true);
+  assert.equal(q.state.box, "Thammaron's sceptre (u) will be dismantled for <col=ef1020>7500 <col=ef1020>Revenant ether</col>.");
+  assert.deepEqual([prompts[0].question, prompts[0].note],
+    ["Are you sure you want to dismantle this weapon?", "Your weapon will be broken down for <col=ef1020>7500 Revenant ether</col>."]);
+  assert.equal(q.amounts.get(I.REVENANT_ETHER), 7500);
+  assert.deepEqual(q.state.messages, [], "no chat message");
+  assert.equal(7500, DISMANTLE_ETHER);
+});
+
+test("a sceptre with no paid deposit refunds nothing for it, so Uncharge then Dismantle mints no ether", () => {
+  const { CHARGES_KEY, DEPOSIT_META } = Accursed._test;
+  for (const [charged, uncharged] of [[I.THAMMARONS_SCEPTRE, I.THAMMARONS_SCEPTRE_U_], [I.ACCURSED_SCEPTRE, I.ACCURSED_SCEPTRE_U_]]) {
+    const bought = new Item(charged, 1);
+    const p = player();
+    p.inventoryItems.push(bought);
+    Accursed._test.uncharge({ player: p, item: bought });
+    assert.equal(bought.getId(), uncharged);
+    assert.equal(p.amounts.get(I.REVENANT_ETHER) ?? 0, 0, "no deposit was paid, none is refunded");
+    assert.equal(bought.getMetaValue(DEPOSIT_META), undefined);
+  }
+  const held = new Item(I.THAMMARONS_SCEPTRE, 1);
+  held.setMetaValue(CHARGES_KEY, 40);
+  const q = player();
+  q.inventoryItems.push(held);
+  Accursed._test.uncharge({ player: q, item: held });
+  assert.equal(q.amounts.get(I.REVENANT_ETHER), 40, "only its charges come back");
+});
+
+test("an unpaid Thammaron's sceptre refuses Dismantle after Uncharge", () => {
+  const bought = new Item(I.THAMMARONS_SCEPTRE, 1);
+  const p = player();
+  p.inventoryItems.push(bought);
+  Accursed._test.uncharge({ player: p, item: bought });
+  assert.equal(Accursed._test.dismantleThammarons({ player: p, item: bought }), true);
+  assert.equal(p.amounts.get(I.REVENANT_ETHER) ?? 0, 0, "no ether from dismantling");
+  assert.equal(bought.getId(), I.THAMMARONS_SCEPTRE_U_, "the sceptre is kept");
+});
+
+test("custom shops do not sell the revenant weapons that dismantle into ether", () => {
+  const shops = require("../data/definitions/custom-shops.json");
+  const sold = new Set(shops.flatMap((shop) => (shop.originalStock ?? []).map((entry) => entry.id)));
+  for (const id of [I.CRAWS_BOW, I.THAMMARONS_SCEPTRE, I.ACCURSED_SCEPTRE, I.VIGGORAS_CHAINMACE, I.URSINE_CHAINMACE]) {
+    assert.equal(sold.has(id), false, `item ${id} is not for sale`);
+  }
+});
+
+test("a Wilderness PvP death drops a sceptre's deposit and charges to the killer, protected or not", () => {
+  const { CHARGES_KEY, DEPOSIT_META } = Accursed._test;
+  const dropped = [];
+  const stubbed = register(Accursed, { ...core, ItemOnGroundManager: { registerLocation: (owner, item) => dropped.push(item) } });
+  try {
+    for (const kept of [true, false]) {
+      dropped.length = 0;
+      const sceptre = staffItem(I.THAMMARONS_SCEPTRE, CHARGES_KEY, 7);
+      sceptre.setMetaValue(DEPOSIT_META, true);
+      const victim = player();
+      const event = { player: victim, killer: player(), item: sceptre, kept, shouldDropItems: true, location: new Location(3090, 3600, 0) };
+      stubbed.death(event);
+      assert.equal(sceptre.getId(), I.THAMMARONS_SCEPTRE_U_);
+      assert.equal(dropped[0].getAmount(), 1007);
+      assert.equal(event.handled, kept ? true : undefined);
+    }
+    const safe = staffItem(I.THAMMARONS_SCEPTRE, CHARGES_KEY, 7);
+    stubbed.death({ player: player(), killer: player(), item: safe, kept: false, shouldDropItems: true, location: new Location(3200, 3200, 0) });
+    assert.equal(safe.getId(), I.THAMMARONS_SCEPTRE, "outside the Wilderness nothing is lost");
+  } finally {
+    register(Accursed);
+  }
 });
 
 test("Soul Rend lowers Magic Defence by the damage, never below 0, keeping other overrides (Wiki)", () => {
@@ -399,4 +558,43 @@ test("the Accursed sceptre's last charge still pays for its own Wilderness passi
   } finally {
     World.getProcessCycle = cycle;
   }
+});
+
+test("a kept charge with extra charges given back (combat:consume-charge extra) adds them, up to the staff's most", () => {
+  const key = Trident._test.TRIDENT_CHARGE_META_KEY;
+  const saver = (event) => { event.skip = true; event.extra = 3; };
+  trident.events.set("combat:consume-charge", [...(trident.events.get("combat:consume-charge") ?? []), saver]);
+  try {
+    const staff = staffItem(I.TRIDENT_OF_THE_SEAS, key, 100);
+    const seas = player({ weapon: staff });
+    const method = trident.resolvers[0].resolve(seas);
+    assert.equal(method.canAttack(seas, NPC), true);
+    assert.equal(Trident._test.getCharges(staff), 103);
+    staff.setMetaValue(key, 2499);
+    method.canAttack(seas, NPC);
+    assert.equal(Trident._test.getCharges(staff), 2500, "a trident of the seas holds 2,500");
+  } finally {
+    trident.events.set("combat:consume-charge", trident.events.get("combat:consume-charge").filter((each) => each !== saver));
+  }
+});
+
+test("Accursed and Thammaron's sceptres: Uncharge asks first and plays the destroy sound; the (u) splits back on Yes", () => {
+  const { CHARGES_KEY } = Accursed._test;
+  const charged = staffItem(I.ACCURSED_SCEPTRE, CHARGES_KEY, 30);
+  const p = player();
+  p.inventoryItems.push(charged);
+  prompts.length = 0;
+  assert.equal(accursed.actions.get("Accursed sceptre").Uncharge({ player: p, item: charged }), true);
+  assert.deepEqual([prompts[0].question, prompts[0].note, prompts[0].slot],
+    ["Are you sure you want to uncharge it?", "If you uncharge this weapon, all the revenant ether will be returned to your inventory.", 0]);
+  assert.equal(charged.getId(), I.ACCURSED_SCEPTRE_U_);
+  assert.equal(p.state.sound, 2381);
+  assert.deepEqual(p.state.messages, []);
+
+  prompts.length = 0;
+  assert.equal(accursed.actions.get("Accursed sceptre (u)").Dismantle({ player: p, item: charged }), true);
+  assert.deepEqual([prompts[0].question, prompts[0].note], ["Are you sure you want to dismantle this weapon?", "You will receive its components back."]);
+  assert.equal(charged.getId(), I.THAMMARONS_SCEPTRE_U_);
+  assert.equal(p.amounts.get(I.SKULL_OF_VETION), 1);
+  assert.deepEqual(p.state.messages, []);
 });

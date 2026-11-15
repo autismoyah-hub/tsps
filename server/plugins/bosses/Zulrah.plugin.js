@@ -6,11 +6,13 @@
  */
 module.exports = {
   name: "Zulrah",
+  description: "Zulrah: the sacrificial boat from Zul-Andra, the fight at its shrine and what it leaves behind.",
   members: true,
   register(api) {
     require("./zulrah/Access.Zulrah").attach(api);
     require("./zulrah/Shrine.Zulrah")(api);
     require("./zulrah/Commands.Zulrah")(api);
     require("./zulrah/CombatAchievements.Zulrah")(api);
+    require("./zulrah/Resurrection.Zulrah")(api);
   },
 };

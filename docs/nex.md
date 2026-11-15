@@ -28,7 +28,7 @@ Changes outside the plugin:
 - **Combat Achievements:** `combat-achievements:tier` `{ player, tier: "Hard" }` comes back with `unlocked`, for content behind a tier (private fights). "Nex" is counted by event (`monsters.json`).
 - **`npc-combat-defs.json`:** Nex's forms (attack 9180, no block, death 9184), the mages (1979/424/836), the prison's minions and both blood reavers (9194/9196/9192).
 - **`npc-spawns.json`:** the prison's spiritual warriors, rangers and mages were the God Wars factions' ids (2210/2242/3161); they are the prison's own (11290/11291/11292), as captured. Ashuelot Reis is 11289, the form with Bank and Collect.
-- **`music-data.json`:** region 11601 (the barrier, safe room and chamber) plays "The Ancient Prison" (709), as captured; the fight changes it.
+- **Music:** the barrier and safe room play "The Ancient Prison" (709), as captured; the Wiki's music map gives the chamber the fight's own tracks, and the fight changes the music itself.
 - **`item-gameplay.json`:** damaged Torva can't be worn (Wiki).
 - **`npc-drops.json`:** her table's paired drops ("dropped together" on the Wiki) are one entry each with a `bonus_drops` item.
 
@@ -37,7 +37,7 @@ Changes outside the plugin:
 | What | Behaviour | Source |
 | --- | --- | --- |
 | Area | Part of the God Wars Dungeon: the essence overlay stays up. Multi-combat. The chamber is cut out of its boundary (an actor keeps an area while inside it). | Wiki, ours |
-| Followers | Spiritual warriors, rangers, mages and blood reavers attack anyone not wearing a Zarosian item (by name: "ancient ", "zaryte ", "torva ", "virtus ", "... of darkness", not the ancient hilt). Each one killed in the prison is a point of ancient essence. | Wiki |
+| Followers | Spiritual warriors, rangers, mages and blood reavers attack anyone not wearing a Zarosian item: the God Wars Dungeon's Zaros protection table (`godwars.json`, from the Wiki's God items), so not the ancient hilt or the Ancient mace (Bandos). Each one killed in the prison is a point of ancient essence. | Wiki |
 | Logging out | In the prison proper or a chamber: back in the entry room. | Wiki |
 | Frozen key | The four generals' pieces "Assemble" into the frozen key (26356). Using it on the Frozen Door (42840/42841) from the God Wars side unseals the door for good (`nex:frozen-door-unlocked`); without it, one of six laments. The two messages are ours. | Wiki, ours |
 | Frozen Door | Fade, the move two ticks later, fade back (the God Wars doors' fade). The prison side (42931/42932) leads back up. | ours |
@@ -52,7 +52,7 @@ Changes outside the plugin:
 
 The [ring of endurance](https://oldschool.runescape.wiki/w/Ring_of_endurance) counts as
 Saradomin equipment. It does not grant [Zarosian protection](https://oldschool.runescape.wiki/w/Zaros#Affiliated_items)
-in the Ancient Prison. The prison's hand-maintained `itemKeywords` list therefore excludes it;
+in the Ancient Prison. The prison uses the God Wars Dungeon's Zaros protection table, which does not list it;
 a worn ancient item still protects the player when worn alongside the ring.
 The rsprox index has no recorded actions for the ring, so this correction relies on the Wiki.
 The cache identifies the charged, wearable ring as 24736; 24844 is the tradeable uncharged ring.
@@ -110,6 +110,7 @@ The barrier at (2909, 5202) is a multiloc on varbit 13184 (`nex_barrier`), as ca
 - The mage dies (seq 836), the next phase's line comes a tick later and its mage sends her its power again; the dead mage is gone two ticks after its death (captured).
 - An attack every 4 ticks; every 6th is a special, the phase's first 4 ticks after its line (captured). Each phase alternates its two specials and the next phase carries on in the lane of the last one used: virus leads to darkness, siphon and the ice prison; the dash to the smash, the sacrifice and containment (captured).
 - Umbra's death ends the darkness; Cruor's kills the reavers, who heal her their hitpoints (Wiki).
+- A thrall's hit queues straight to her, past her hit hook, so the same rules apply as it lands (`combat:damage-apply`): nothing while she is immune, a heal during a siphon ("all damage she receives will instead heal her", Wiki), nothing below a phase's floor, and the damage counts as its owner's share (Wiki: Thrall). It gets no "immune" line or hit sound (ours: the Wiki gives none). Recoil and vengeance are labelled the same but never reach her: she is on the Wiki's recoil-immune list, which the rings and vengeance both respect.
 - Zaros: seq 9179, spotanim 2016, 500 hitpoints back as a heal hitsplat (captured). Soul Split (11280) from her first attack, Deflect Melee (11281) four attacks later, none (11278) four after that, and round (captured as far as the fights went; the Wiki for the cycle).
 - Her Defence can be lowered by 10 at most (Wiki). The engine's regeneration is off for her and the mages (their attacks are the fight's).
 - Every hit on her: sound_area 5304 (captured).
@@ -186,7 +187,7 @@ A death in either chamber: what would drop goes to the chests (42854) instead; 1
 
 ## The Ancient Forge and Torva (`Forge.Nex.js`, rec 819)
 
-- **Ancient Forge (42966), Use:** "Melt down your Bandos chestplate into 3 Bandosian components?" (tassets: 2) Yes. / No.; "You use the forge to melt the armour down into some components.", seq 899, synth 2725, the components three ticks later. Otherwise "You don't have anything suitable to put in the forge." or "You require more inventory space to do that."
+- **Ancient Forge (42966), Use:** "Melt down your Bandos chestplate into 3 Bandosian components?" (tassets: 2) Yes. / No.; "You use the forge to melt the armour down into some components.", seq 899, synth 2725, and three ticks later one inventory update removes the armour and adds the components. Otherwise "You don't have anything suitable to put in the forge." or, at the click with no prompt (rec 819 cycle 10153, one free slot), "You require more inventory space to do that." That message at Yes and at the end of the three ticks, and keeping the armour on a logout in them, are ours: the capture doesn't show those cases.
 - **Anvil (28563), Smith:** "Repair your Torva platebody with 2 Bandosian components?" Yes. / No.; "You set to work on the Torva platebody...", seq 898 every 4 ticks; on the 12th tick an object box with the repaired piece, "You use 2 Bandosian components to repair your Torva platebody. You feel mentally and physically exhausted.", and the Smithing XP. "You don't have anything suitable to repair your Torva platebody with." / "You need 2 Bandosian components to repair your Torva platebody.". Wiki: Smithing 90, a hammer, 2,250 XP; helm 1, body 2. Legs 2 and the Strength and Prayer drain (to about 36% and 10%, in three steps) come from one capture; the level and hammer refusals are ours.
 
 ## Items (`Items.Nex.js`, Wiki)

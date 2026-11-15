@@ -4,11 +4,18 @@ const { Animation } = require("../../src/main/typescript/elvarg/game/model/Anima
 const { Task } = require("../../src/main/typescript/elvarg/game/task/Task");
 const { MapObjects } = require("../../src/main/typescript/elvarg/game/entity/impl/object/MapObjects");
 const { GameObject } = require("../../src/main/typescript/elvarg/game/entity/impl/object/GameObject");
+const WorldDefinition = require("../../src/main/typescript/elvarg/game/definition/WorldDefinition");
+const { CacheDefinitions } = require("../../src/main/typescript/elvarg/game/cache/CacheDefinitions");
 const { ItemIds, ObjectIds } = require("../../src/main/typescript/elvarg/util/IdEnums");
 const { ItemIdentifiers } = require("../../src/main/typescript/elvarg/util/ItemIdentifiers");
 const InfernalPickaxe = require("./mining/InfernalPickaxe.Mining");
 const CrystalPickaxe = require("./mining/CrystalPickaxe.Mining");
 const ClueGeodes = require("./mining/ClueGeodes.Mining");
+const CalcifiedWater = require("./mining/CalcifiedWater.Mining");
+const Saltpetre = require("./mining/Saltpetre.Mining");
+const VarrockArmour = require("./mining/VarrockArmour.Mining");
+const ProspectorOutfit = require("./mining/ProspectorOutfit.Mining");
+const AncientEssence = require("./mining/AncientEssence.Mining");
 const { pauseForLevelUp, actionInterval } = require("./SkillActions");
 
 // rsprox recordings: a mined-out rock becomes "rocks1"/"rocks2" (the digit of the rock's own gameval,
@@ -16,6 +23,8 @@ const { pauseForLevelUp, actionInterval } = require("./SkillActions");
 // The Sailing rocks have their own "<gameval>_empty" loc (leadrock1 -> leadrock1_empty, named "Rocks").
 const DEPLETED_ROCK_NAME = "rocks";
 const EMPTY_ROCK_SUFFIX = "_empty";
+// Mined-out locs named "<rock>_empty", or "_empty" and the rock's variant (varlamore_mining_rock_empty02).
+const EMPTY_ROCK_PATTERN = /_empty\d*$/;
 const DEFAULT_DEPLETED_ROCK = `${DEPLETED_ROCK_NAME}1`;
 const ROCK_VARIANT_PATTERN = /rock_?(\d)$/;
 const RESPAWN_TIMER_SCRIPT = 5474; // add_overlaytimer_loc: coord, loc, shape, timer id, ticks, colour, 0
@@ -24,8 +33,9 @@ const RESPAWN_TIMER_COLOUR = 16765184;
 const NO_ORE_MESSAGE = "There is currently no ore available in this rock.";
 // rsprox captures 3139 (rev 232): Mine on a mined-out rock stops the swing and plays this sound.
 const NO_ORE_SOUND = 2661;
-// The rocks without their own mined-out loc that still offer Mine (amethyst's wall).
-const EMPTY_ROCK_NAMES = ["Empty wall"];
+// Mined-out locs by name that still offer Mine: amethyst's wall, and the ash pile's fossil_ashpile_empty
+// (Ours: no capture clicks an empty ash pile, so it answers as the rocks do).
+const EMPTY_ROCK_NAMES = ["Empty wall", "Wall", "Empty ash pile"];
 const SWING_MESSAGE = "You swing your pick at the rock.";
 const NO_PICKAXE_MESSAGE = "You need a pickaxe to mine this rock. You do not have a pickaxe which you have the Mining level to use.";
 const MINING_SUCCESS_SOUND = 3600;
@@ -60,16 +70,17 @@ let miningTick = 0;
 // Wiki Pickaxe "Ticks between rolls": the pickaxe sets how often the game rolls, never the chance.
 // `key` names its wall swings: human_mining_<key>_pickaxe_wall, sang_mining_wall_<key>_pickaxe.
 // Dragon and infernal: 3 ticks, 1/6 chance of 2; crystal: 3 ticks, 1/4 chance of 2 (members worlds only).
+// `standard`: the plain tools, bronze to dragon, as Woodcutting marks its axes (bots wield only these).
 const PICKAXES = [
-  { id: ItemIds.BRONZE_PICKAXE, key: "bronze", requiredLevel: 1, attemptIntervalTicks: 8, animation: new Animation(625) },
-  { id: ItemIds.IRON_PICKAXE, key: "iron", requiredLevel: 1, attemptIntervalTicks: 7, animation: new Animation(626) },
-  { id: ItemIds.STEEL_PICKAXE, key: "steel", requiredLevel: 6, attemptIntervalTicks: 6, animation: new Animation(627) },
-  { id: ItemIds.BLACK_PICKAXE, key: "black", requiredLevel: 11, attemptIntervalTicks: 5, animation: new Animation(3873) },
-  { id: ItemIds.MITHRIL_PICKAXE, key: "mithril", requiredLevel: 21, attemptIntervalTicks: 5, animation: new Animation(629) },
-  { id: ItemIds.ADAMANT_PICKAXE, key: "adamant", requiredLevel: 31, attemptIntervalTicks: 4, animation: new Animation(628) },
-  { id: ItemIds.RUNE_PICKAXE, key: "rune", requiredLevel: 41, attemptIntervalTicks: 3, animation: new Animation(624) },
-  { id: ItemIds.DRAGON_PICKAXE, key: "dragon", requiredLevel: 61, attemptIntervalTicks: 3, fastRollChance: 1 / 6, animation: new Animation(7139) },
-  { id: ItemIds.CRYSTAL_PICKAXE, key: "crystal", requiredLevel: 71, attemptIntervalTicks: 3, fastRollChance: 1 / 4, animation: new Animation(8347) },
+  { id: ItemIds.BRONZE_PICKAXE, key: "bronze", standard: true, requiredLevel: 1, attemptIntervalTicks: 8, animation: new Animation(625) },
+  { id: ItemIds.IRON_PICKAXE, key: "iron", standard: true, requiredLevel: 1, attemptIntervalTicks: 7, animation: new Animation(626) },
+  { id: ItemIds.STEEL_PICKAXE, key: "steel", standard: true, requiredLevel: 6, attemptIntervalTicks: 6, animation: new Animation(627) },
+  { id: ItemIds.BLACK_PICKAXE, key: "black", standard: true, requiredLevel: 11, attemptIntervalTicks: 5, animation: new Animation(3873) },
+  { id: ItemIds.MITHRIL_PICKAXE, key: "mithril", standard: true, requiredLevel: 21, attemptIntervalTicks: 5, animation: new Animation(629) },
+  { id: ItemIds.ADAMANT_PICKAXE, key: "adamant", standard: true, requiredLevel: 31, attemptIntervalTicks: 4, animation: new Animation(628) },
+  { id: ItemIds.RUNE_PICKAXE, key: "rune", standard: true, requiredLevel: 41, attemptIntervalTicks: 3, animation: new Animation(624) },
+  { id: ItemIds.DRAGON_PICKAXE, key: "dragon", standard: true, requiredLevel: 61, attemptIntervalTicks: 3, fastRollChance: 1 / 6, animation: new Animation(7139) },
+  { id: ItemIds.CRYSTAL_PICKAXE, key: "crystal", requiredLevel: 71, requiredAgility: 50, attemptIntervalTicks: 3, fastRollChance: 1 / 4, animation: new Animation(8347) },
   { id: ItemIds.INFERNAL_PICKAXE, key: "infernal", requiredLevel: 61, attemptIntervalTicks: 3, fastRollChance: 1 / 6, animation: new Animation(4482) },
   // Cosmetic and uncharged variants mine as their base tool; `key` and `animation` are each one's own cache
   // sequences (human_mining_<key>_pickaxe*). `walls` names the wall swings where the cache orders the words differently.
@@ -94,7 +105,9 @@ const PICKAXES = [
   { id: ItemIds.INFERNAL_PICKAXE_UNCHARGED_, key: "infernal", requiredLevel: 61, attemptIntervalTicks: 3, fastRollChance: 1 / 6, animation: new Animation(4482) },
   { id: ItemIds.INFERNAL_PICKAXE_UNCHARGED__2, key: "trailblazer", requiredLevel: 61, attemptIntervalTicks: 3, fastRollChance: 1 / 6, animation: new Animation(11831) },
   { id: ItemIds.INFERNAL_PICKAXE_UNCHARGED__4, key: "trailblazer_reloaded", requiredLevel: 61, attemptIntervalTicks: 3, fastRollChance: 1 / 6, animation: new Animation(11832) },
-  { id: ItemIds.CRYSTAL_PICKAXE_INACTIVE_, key: "crystal", requiredLevel: 61, attemptIntervalTicks: 3, fastRollChance: 1 / 6, animation: new Animation(8347) },
+  // The cache's param_23 is 71, as for the charged one (Wiki: "It requires 71 Mining ... to create and use"); it
+  // ranks with the dragon pickaxe it mines like.
+  { id: ItemIds.CRYSTAL_PICKAXE_INACTIVE_, key: "crystal", requiredLevel: 71, rank: 61, requiredAgility: 50, attemptIntervalTicks: 3, fastRollChance: 1 / 6, animation: new Animation(8347) },
   // The league's Echo pickaxe (Wiki): a crystal pickaxe with no requirement that always rolls every 2 ticks; `rank` places it above the crystal one.
   { id: ItemIds.ECHO_PICKAXE, key: "crystal", requiredLevel: 1, rank: 72, attemptIntervalTicks: 2, animation: new Animation(8347) },
 ];
@@ -124,6 +137,30 @@ const ROCKS = [
     outcomes: [
       { itemId: ItemIds.BARRONITE_SHARDS, min: 4, max: 6, weight: 76, xp: 16, message: "You manage to mine some barronite shards." },
       { itemId: ItemIds.BARRONITE_DEPOSIT, min: 1, max: 1, weight: 24, xp: 32, message: "You manage to mine a barronite deposit." },
+    ],
+  },
+  // Wiki Calcified rocks (Cam Torum mine): level 41, 33 XP for 1-3 blessed bone shards (74/75) or 36 for a
+  // calcified deposit (1/75), the gem pre-roll, a 30 s respawn, and no mining enhancers (outcomes never ask).
+  // The rock runs out on a timer, "around 70 seconds" of being mined (117 ticks); rsprox capture 1105
+  // (rev 237, a Leagues world) has it go with the first ore after it (`depletesOnOre`), 121-127 ticks into
+  // mining, with area sound 2661 (delay 10, range 1), and each shard counted in tracking_ore_mined
+  // (`countEach`). Recorded: wall swings, "You manage to chip off some bone shards." / "... a calcified
+  // deposit.". The Wiki has no success chart: [20, 200] is an estimate (51% at 61, near the capture's
+  // 46%, and the Wiki training rates). Oozing water is CalcifiedWater.Mining.js.
+  {
+    objectName: "Calcified rocks",
+    level: 41, xp: 33, oreId: ItemIdentifiers.CALCIFIED_DEPOSIT, petBase: 741600,
+    chance: [20, 200], gems: true, respawnTicks: 50, swing: "wall",
+    depletionTicks: 117, depletesOnOre: true, countEach: true, depletionSound: { id: 2661, delay: 10, radius: 1 },
+    depletedRocks: {
+      varlamore_mining_rock: "varlamore_mining_rock_empty",
+      varlamore_mining_rock02: "varlamore_mining_rock_empty02",
+      varlamore_mining_rock03: "varlamore_mining_rock_empty03",
+      varlamore_mining_rock04: "varlamore_mining_rock_empty04",
+    },
+    outcomes: [
+      { itemId: ItemIdentifiers.BLESSED_BONE_SHARDS, min: 1, max: 3, weight: 74, xp: 33, message: "You manage to chip off some bone shards." },
+      { itemId: ItemIdentifiers.CALCIFIED_DEPOSIT, min: 1, max: 1, weight: 1, xp: 36, message: "You manage to mine a calcified deposit." },
     ],
   },
   // Wiki Sandstone rocks / Granite rocks: one piece per success, then the rock is "rocks1" for 9 ticks
@@ -157,6 +194,10 @@ const ROCKS = [
   { objectName: "Silver rocks", objectIds: [7457], level: 20, xp: 40, oreId: ItemIds.SILVER_ORE, petBase: 741600, chance: [25, 200], gems: true, respawnTicks: 100 },
   { objectName: "Coal rocks", objectIds: [7456], level: 30, xp: 50, oreId: ItemIds.COAL, petBase: 290640, chance: [16, 100], gems: true, respawnTicks: 50 },
   { objectName: "Gold rocks", objectIds: [7491, 9720, 9721, 9722, 11951, 11183, 11184, 11185, 2099, ObjectIds.GOLD_ROCKS_2], level: 40, xp: 65, oreId: ItemIds.GOLD_ORE, petBase: 296640, chance: [7, 75], gems: true, respawnTicks: 100 },
+  // The Arzinian mine's gold veins (Between a Rock...): the user's rsprox capture BetweenARock (rev 242.1) mines
+  // them with the wall swing, 65 XP and a gold ore each, going to dwarf_gold_depleted for 9 ticks (3389-3398,
+  // 3415-3424, 3786-3795). Ours: gold rocks' chance chart and gem roll.
+  { objectName: "Gold vein", level: 40, xp: 65, oreId: ItemIds.GOLD_ORE, petBase: 296640, chance: [7, 75], gems: true, respawnTicks: 9, swing: "wall", depletedRock: "dwarf_gold_depleted" },
   { objectName: "Mithril rocks", objectIds: [7492, 7459], level: 55, xp: 80, oreId: ItemIds.MITHRIL_ORE, petBase: 148320, chance: [4, 50], gems: true, respawnTicks: 200 },
   { objectName: "Adamantite rocks", objectIds: [7460], level: 70, xp: 95, oreId: ItemIds.ADAMANTITE_ORE, petBase: 59328, chance: [2, 25], gems: true, respawnTicks: 400 },
   { objectName: "Runite rocks", objectIds: [14859, 4860, 2106, 2107, 7461], level: 85, xp: 125, oreId: ItemIds.RUNITE_ORE, petBase: 42377, chance: [1, 18], gems: true, respawnTicks: 1200 },
@@ -166,9 +207,32 @@ const ROCKS = [
   { objectName: "Lead rocks", level: 25, xp: 40.5, oreId: ItemIdentifiers.LEAD_ORE, petBase: 741600, chance: [112, 278], gems: true, respawnTicks: 10 },
   // Wiki Lovakite rocks: 35 s respawn. No published chart: coal's is an estimate.
   { objectName: "Lovakite rocks", level: 65, xp: 60, oreId: ItemIdentifiers.LOVAKITE_ORE, petBase: 245562, chance: [16, 100], gems: true, respawnTicks: 58 },
-  // Wiki Nickel rocks: 2-16 ores before the rock goes, 2 min respawn; only Varrock armour 4 adds ore,
-  // so no "mining:extra-ore". No published chart: mithril's is an estimate.
-  { objectName: "Nickel rocks", level: 74, xp: 80.5, oreId: ItemIdentifiers.NICKEL_ORE, petBase: 247200, chance: [4, 50], gems: true, respawnTicks: 200, yield: { min: 2, max: 16 }, noExtraOre: true },
+  // Wiki Volcanic sulphur: 42 Mining, 35 XP, 25.2 s respawn. The Wiki chart gives low 100, high 220
+  // (0.39453125 at level 1, 0.58984375 at 42, 0.86328125 at 99). A breathing filter must be worn.
+  // No depleted loc of its own is published, so the shared fallback ("rocks1") is used.
+  { objectName: "Volcanic sulphur", objectIds: [28496, 28497, 28498], level: 42, xp: 35, oreId: ItemIdentifiers.VOLCANIC_SULPHUR, petBase: 710000, chance: [100, 220], gems: true, respawnTicks: 42, requiresBreathingFilter: true, oreMessage: "You manage to mine some volcanic sulphur." },
+  // Wiki Ash pile / Volcanic ash: level 22, 10 XP a success whatever it gives, volcanic ash 19/20 (one at 22 and
+  // one more every 15 levels, six from 97, by the boosted level) or one soda ash 1/20, a 1/4 chance on each
+  // success that the pile goes, gems, clue geodes and the rock golem (741,600) but no mining enhancers or gloves.
+  // rsprox captures AshPile-MithrilPickaxe and AshPile-DragonPickaxe (rev 242, Mining 73, 750 successes):
+  // "You manage to mine some volcanic ash." / "... soda ash." (spam), sound 3600, four ash (tracking_ore_mined +4)
+  // or one soda ash, fossil_ashpile -> fossil_ashpile_empty only on a success (181 of 750), back after 49 ticks
+  // with a 49-tick timer every time. The first roll comes a full pickaxe interval after arrival, the previous
+  // pile's timer never carrying over (`freshRollTimer`: mithril +4 after the swing in 76 of 76, dragon +2 or +1).
+  // The Wiki has no success chart: [206, 255] is an estimate fitted to the captures' 95% at 73 (750 of 789 rolls).
+  // Ours: a soda ash with no free slot (a full inventory still mines on, as the ash stacks) falls to the floor.
+  {
+    objectName: "Ash pile",
+    level: 22, xp: 10, oreId: ItemIdentifiers.VOLCANIC_ASH, petBase: 741600,
+    chance: [206, 255], gems: true, respawnTicks: 49, yield: { min: 1, chance: 1 / 4 }, countEach: true, freshRollTimer: true,
+    outcomes: [
+      { itemId: ItemIdentifiers.VOLCANIC_ASH, weight: 19, xp: 10, levelSteps: { from: 22, every: 15, max: 6 }, message: "You manage to mine some volcanic ash." },
+      { itemId: ItemIdentifiers.SODA_ASH, min: 1, max: 1, weight: 1, xp: 10, message: "You manage to mine some soda ash." },
+    ],
+  },
+  // Wiki Nickel rocks: 2-16 ores before the rock goes, 2 min respawn; only Varrock armour 4 adds ore
+  // (the cape and celestial ring stop below level 74). No published chart: mithril's is an estimate.
+  { objectName: "Nickel rocks", level: 74, xp: 80.5, oreId: ItemIdentifiers.NICKEL_ORE, petBase: 247200, chance: [4, 50], gems: true, respawnTicks: 200, yield: { min: 2, max: 16 } },
   // Wiki Rubium rocks: stackable splinters, two a success from 72; at least two before the rock goes,
   // then a 1/6 chance on each. 35.4 s respawn. The chart is an estimate from the Wiki's splinter rates.
   { objectName: "Rubium rocks", level: 48, xp: 30, oreId: ItemIdentifiers.RUBIUM_SPLINTERS, chance: [107, 230], gems: true, respawnTicks: 59, yield: { min: 2, chance: 1 / 6 }, doubleFromLevel: 72, oreMessage: "You manage to mine some rubium splinters." },
@@ -212,6 +276,8 @@ const ROCKS = [
     objectName: "Daeyalt rocks",
     level: 20, xp: 17.5, oreId: ItemIdentifiers.DAEYALT_ORE,
     chance: [96, 350], respawnTicks: 47, swing: "sang", sound: 2998, oreMessage: "You manage to mine some ore.", gameMessage: true,
+    // rsprox_transcripts/226/01637.txt:75573: "Your inventory is too full to hold any more ore."
+    fullName: "ore",
     stages: ["area_sanguine_mine_minerocks_01", "area_sanguine_mine_minerocks_02", "area_sanguine_mine_minerocks_03"],
     depletedRock: "area_sanguine_mine_minerocks_04", emptyMessage: "This rock face is now empty.",
   },
@@ -222,11 +288,46 @@ const ROCKS = [
 // rsprox captures 70 (rev 227) and 3027 (rev 231): each essence plays sound 3600 and counts in
 // tracking_ore_mined, with no chat line.
 const ESSENCE_ROCKS = [
-  { objectName: "Rune Essence", objectIds: [ObjectIds.RUNE_ESSENCE_3], level: 1, xp: 5, oreId: ItemIds.PURE_ESSENCE, respawnTicks: 0, infinite: true, silent: true },
-  { objectName: "Rune essence", objectIds: [ObjectIds.RUNE_ESSENCE, ObjectIds.RUNE_ESSENCE_2], level: 1, xp: 5, oreId: ItemIds.PURE_ESSENCE, respawnTicks: 0, infinite: true, silent: true },
+  // `runeEssence`: Wiki (Rune Essence mine): "Free players, or members with less than level 30 Mining, will mine rune
+  // essence from the outcrops"; members at 30 or higher mine pure essence.
+  { objectName: "Rune Essence", objectIds: [ObjectIds.RUNE_ESSENCE_3], level: 1, xp: 5, oreId: ItemIds.PURE_ESSENCE, runeEssence: true, respawnTicks: 0, infinite: true, silent: true },
+  { objectName: "Rune essence", objectIds: [ObjectIds.RUNE_ESSENCE, ObjectIds.RUNE_ESSENCE_2], level: 1, xp: 5, oreId: ItemIds.PURE_ESSENCE, runeEssence: true, respawnTicks: 0, infinite: true, silent: true },
+  // Wiki Ancient essence crystals: 75 Mining, 13.5 XP, 1-4 essence by level, never mined out (the active
+  // spot moves instead, see AncientEssence.Mining), no pet. No published chart: every roll lands.
+  { objectName: "Ancient essence crystals", level: 75, xp: 13.5, oreId: ItemIdentifiers.ANCIENT_ESSENCE, gems: true, respawnTicks: 0, infinite: true, essenceByLevel: true, oreMessage: "You manage to mine some ancient essence." },
 ];
 
-const ALL_ROCKS = [...ROCKS, ...ESSENCE_ROCKS];
+/**
+ * The Abandoned Mine's ore veins (lotr_mine_wall_<ore>_<l|r|mid|single>, "Coal ore vein" and the rest): wall rocks
+ * mined as their ore's rocks are, going to the matching lotr_mine_wall_depleted_<pos>. Recorded:
+ * rsprox_transcripts/231/03063.txt:16924-17021 (a normal world): the wall swing, "You manage to mine some coal.",
+ * lotr_mine_wall_depleted_mid with coal's timer, and the depleted vein's "There is no ore currently available in this
+ * vein." (spam).
+ */
+// Every ore has all four positions in the cache (lotr_mine_wall_<ore>_l/_r/_mid/_single).
+const VEIN_POSITIONS = ["l", "r", "mid", "single"];
+const ORE_VEINS = [
+  ["Tin ore vein", "Tin rocks", "tin"],
+  ["Copper ore vein", "Copper rocks", "copper"],
+  ["Clay ore vein", "Clay rocks", "clay"],
+  ["Coal ore vein", "Coal rocks", "coal"],
+  ["Iron ore vein", "Iron rocks", "iron"],
+  ["Mithril ore vein", "Mithril rocks", "mithril"],
+  ["Adamant ore vein", "Adamantite rocks", "adamant", "You manage to mine some adamantite."],
+].map(([objectName, base, ore, oreMessage]) => {
+  const positions = VEIN_POSITIONS;
+  const rock = ROCKS.find((candidate) => candidate.objectName === base);
+  const { objectIds, ...stats } = rock;
+  return {
+    ...stats, objectName, swing: "wall",
+    ...(oreMessage ? { oreMessage } : {}),
+    depletedRocks: Object.fromEntries(positions.map((pos) => [`lotr_mine_wall_${ore}_${pos}`, `lotr_mine_wall_depleted_${pos}`])),
+  };
+});
+const DEPLETED_VEIN = "Depleted vein";
+const NO_ORE_IN_VEIN = "There is no ore currently available in this vein.";
+
+const ALL_ROCKS = [...ROCKS, ...ORE_VEINS, ...ESSENCE_ROCKS];
 
 const ROCK_BY_NAME = new Map(ALL_ROCKS.map((rock) => [rock.objectName, rock]));
 let activeSessions;
@@ -235,6 +336,14 @@ const ACTIVE_MINERS = new Set();
 const ROLL_READY_TICKS = new Map();
 // Ore taken so far from rocks that give several before going (`yield`), by the standing rock.
 const ROCK_YIELDS = new WeakMap();
+// Saves belong to the standing rock and are cleared when it is exhausted. Tracking the
+// saves already used also bounds the effect if miners change gloves or share a rock.
+const ROCK_GLOVE_SAVES = new WeakMap();
+const GLOVE_STANDARD_ROCKS = new Set([
+  "Copper rocks", "Tin rocks", "Iron rocks", "Silver rocks", "Lead rocks", "Coal rocks", "Gold rocks",
+]);
+const GLOVE_SUPERIOR_ROCKS = new Set(["Mithril rocks", "Adamantite rocks"]);
+const GLOVE_EXPERT_ROCKS = new Set(["Sandstone rocks", "Sunstone rocks", "Runite rocks", "Amethyst crystals"]);
 // Ticks left on a rock that runs out on a timer (`depletionTicks`), by the standing rock; it counts
 // down on the ticks someone mines it.
 const ROCK_TIMERS = new WeakMap();
@@ -272,6 +381,28 @@ function rockHolds(rockObject, rock) {
   return holds;
 }
 
+/** Extra successful gathers allowed by the gloves actually worn at this rock. */
+function gloveSaves(player, rock) {
+  if (!pluginApi.core.WorldDefinition.isMembersWorld()) return 0;
+  const hands = player.getEquipment().getItems()[Equipment.HANDS_SLOT];
+  const tier = hands?.getId() === ItemIdentifiers.MINING_GLOVES ? 1
+    : hands?.getId() === ItemIdentifiers.SUPERIOR_MINING_GLOVES ? 2
+      : hands?.getId() === ItemIdentifiers.EXPERT_MINING_GLOVES ? 3 : 0;
+  if (GLOVE_STANDARD_ROCKS.has(rock.objectName)) return tier;
+  if (GLOVE_SUPERIOR_ROCKS.has(rock.objectName)) return Math.max(0, tier - 1);
+  return tier === 3 && GLOVE_EXPERT_ROCKS.has(rock.objectName) ? 1 : 0;
+}
+
+/** Spend one save only after the rock's ordinary yield has run out. */
+function gloveHolds(player, rockObject, rock) {
+  const saved = ROCK_GLOVE_SAVES.get(rockObject) ?? { used: 0, baseExhausted: false };
+  if (saved.used >= gloveSaves(player, rock)) return false;
+  saved.used++;
+  saved.baseExhausted = true;
+  ROCK_GLOVE_SAVES.set(rockObject, saved);
+  return true;
+}
+
 class RockRespawnTask extends Task {
   constructor(delayTicks, originalRockObject, depletedObject) {
     super(Math.max(1, delayTicks));
@@ -299,7 +430,7 @@ function getMiningLevel(player) {
 
 /**
  * The level the success rolls use: the visible level, capped at 99, plus invisible boosts other plugins
- * add ("mining:level-boost", the celestial ring's +4), which do count past 99 (Wiki "Skilling success
+ * add ("mining:level-boost", the celestial ring's +4, the Mining Guild's +7), which do count past 99 (Wiki "Skilling success
  * rate", Boosts over 99). Requirements still read the visible level.
  */
 function getRollMiningLevel(player) {
@@ -361,6 +492,13 @@ function answerBestPickaxe(request) {
   }
 }
 
+/** "mining:pickaxe": the pickaxe `itemId` is (Mining's own list), or null; no level check, only "is it a pickaxe". */
+function answerPickaxe(request) {
+  if (request && request.itemId != null && request.pickaxe == null) {
+    request.pickaxe = PICKAXES.find((pickaxe) => pickaxe.id === request.itemId) ?? null;
+  }
+}
+
 /** "mining:roll-interval": ticks to the next roll with `pickaxe`, for other mining content (stars, GotR, Volcanic Mine). */
 function answerRollInterval(request) {
   if (request && request.pickaxe && request.ticks == null) {
@@ -377,7 +515,12 @@ function findBestPickaxe(player) {
     if (miningLevel < pickaxe.requiredLevel) {
       continue;
     }
+    // Wiki (Crystal pickaxe): "50 Agility … required to wield it", as the crystal axe (Woodcutting) checks.
+    if (player.getSkillManager().getCurrentLevel(Skill.AGILITY) < (pickaxe.requiredAgility ?? 1)) {
+      continue;
+    }
     if (weaponId === pickaxe.id || player.getInventory().contains(pickaxe.id)) {
+      if (!WorldDefinition.isMembersWorld() && CacheDefinitions.getItem(pickaxe.id)?.isMembers === true) continue;
       return pickaxe;
     }
   }
@@ -445,8 +588,10 @@ function nextStageId(rockObject, rock) {
 }
 
 /** Depletes the rock unless content keeps it standing ("mining:deplete-rock", a league relic's four ores a rock); true when it went. */
-function depleteRock(player, rockObject, rock) {
-  const event = { player, object: rockObject, rock: rock.objectName, handled: false };
+function depleteRock(player, rockObject, rock, heldByGloves = false) {
+  // Preserve existing finite-yield/staged behavior until its relic interaction is established.
+  const gloveSaveAdditive = heldByGloves && !rock.yield && !rock.stages;
+  const event = { player, object: rockObject, rock: rock.objectName, handled: heldByGloves, gloveSaveAdditive };
   pluginApi.emitCustomEvent("mining:deplete-rock", event);
   if (event.handled) return false;
   // A staged rock grows back whole, from whichever stage it was mined out.
@@ -457,16 +602,54 @@ function depleteRock(player, rockObject, rock) {
     rockObject.getFace(),
     rockObject.getPrivateArea()
   ) : rockObject;
+  exhaustRock(rockObject, rock, [player], whole);
+  if (rock.emptyMessage) player.sendMessage(rock.emptyMessage);
+  return true;
+}
+
+/**
+ * Whether content keeps a rock standing for the players mining it ("mining:deplete-rock", Demonic Pacts'
+ * Endless Harvest), asked for the oozing water that stops, which mines its wet rocks out whoever is there.
+ */
+function minersKeepStanding(rockObject, rock) {
+  for (const [player, state] of activeSessions ?? []) {
+    if (state.objectId !== rockObject.getId() || !state.location.equals(rockObject.getLocation())) continue;
+    // `water`: this is not an ore depleting the rock, so counts of ores (Power Miner's four) do not move.
+    const event = { player, object: rockObject, rock: rock.objectName, handled: false, water: true };
+    pluginApi.emitCustomEvent("mining:deplete-rock", event);
+    if (event.handled) return true;
+  }
+  return false;
+}
+
+/**
+ * Mines a rock out with nothing to keep it standing (the water that stops on a calcified rock): its
+ * mined-out loc, depletion sound and respawn, and the respawn timer for each of `viewers`.
+ */
+function exhaustRock(rockObject, rock, viewers, whole = rockObject) {
+  ROCK_TIMERS.delete(rockObject);
+  ROCK_YIELDS.delete(rockObject);
+  ROCK_GLOVE_SAVES.delete(rockObject);
   const depleted = replaceRock(rockObject, depletedRockId(rockObject.getId(), rock));
   if (rock.depletionSound) {
     const at = depleted.getLocation();
     const { id, delay, radius } = rock.depletionSound;
     pluginApi.core.Sounds.playAreaSound({ soundId: id, delay, radius, x: at.getX(), y: at.getY(), level: at.getZ() });
   }
-  TaskManager.submit(new RockRespawnTask(rock.respawnTicks, whole, depleted));
-  sendRespawnTimer(player, depleted, rock.respawnTicks);
-  if (rock.emptyMessage) player.sendMessage(rock.emptyMessage);
-  return true;
+  const respawnTicks = respawnTicksFor(rockObject, rock);
+  TaskManager.submit(new RockRespawnTask(respawnTicks, whole, depleted));
+  for (const viewer of viewers) sendRespawnTimer(viewer, depleted, respawnTicks);
+  return depleted;
+}
+
+/**
+ * How long a mined-out rock stays empty: the Wiki rock page's time, which content may shorten
+ * ("mining:respawn-ticks" { object, rock, ticks }, the Mining Guild's members' area).
+ */
+function respawnTicksFor(rockObject, rock) {
+  const request = { object: rockObject, rock: rock.objectName, ticks: rock.respawnTicks };
+  pluginApi.emitCustomEvent("mining:respawn-ticks", request);
+  return Number.isFinite(request.ticks) ? Math.max(1, request.ticks) : rock.respawnTicks;
 }
 
 /** Failures are message boxes in live OSRS (rsprox recordings). */
@@ -475,8 +658,9 @@ function messageBox(player, text) {
   player.getDialogueManager().startDialogues(new DialogueChainBuilder().add(new StatementDialogue(0, text)));
 }
 
-function inventoryFull(player, oreId) {
-  const name = pluginApi.core.CacheDefinitions.getItem(oreId).name.toLowerCase();
+/** "...any more iron ore."; a rock's own `fullName` where live names it otherwise (Daeyalt: "ore"). */
+function inventoryFull(player, oreId, rock = null) {
+  const name = rock?.fullName ?? pluginApi.core.CacheDefinitions.getItem(oreId).name.toLowerCase();
   messageBox(player, `Your inventory is too full to hold any more ${name}.`);
 }
 
@@ -485,7 +669,31 @@ function oreMessage(rock) {
   return `You manage to mine some ${rock.objectName.split(" ")[0].toLowerCase()}.`;
 }
 
+const BREATHING_FILTER_PATTERN = /gas mask|facemask|slayer helmet/i;
+const NO_BREATHING_FILTER = "You'll choke on the fumes if you try to mine without protection.";
+
+/** Whether the worn head slot is a breathing filter: a gas mask, facemask or slayer helmet (Wiki Sulphur mine). */
+function wearsBreathingFilter(player) {
+  const head = player.getEquipment().get(Equipment.HEAD_SLOT);
+  if (!head || head.getId() <= 0) return false;
+  return BREATHING_FILTER_PATTERN.test(pluginApi.core.CacheDefinitions.getItem(head.getId())?.name ?? "");
+}
+
+const PURE_ESSENCE_LEVEL = 30;
+
+/** The essence mine's outcrops give rune essence on a free world or below 30 Mining: this session's copy of the rock. */
+function forMiner(player, rock) {
+  if (!rock.runeEssence) return rock;
+  const pure = pluginApi.core.WorldDefinition.isMembersWorld() && getMiningLevel(player) >= PURE_ESSENCE_LEVEL;
+  return pure ? rock : { ...rock, oreId: ItemIds.RUNE_ESSENCE };
+}
+
 function startMining(player, rockObject, rock, activeSessions) {
+  rock = forMiner(player, rock);
+  if (rock.requiresBreathingFilter && !wearsBreathingFilter(player)) {
+    player.sendMessage(NO_BREATHING_FILTER);
+    return false;
+  }
   const pickaxe = findBestPickaxe(player);
   if (!pickaxe) {
     messageBox(player, NO_PICKAXE_MESSAGE);
@@ -498,7 +706,7 @@ function startMining(player, rockObject, rock, activeSessions) {
     return false;
   }
   if (inventoryBlocks(player, rock.oreId)) {
-    inventoryFull(player, rock.oreId);
+    inventoryFull(player, rock.oreId, rock);
     return false;
   }
 
@@ -510,11 +718,20 @@ function startMining(player, rockObject, rock, activeSessions) {
     location: rockObject.getLocation().clone(),
     privateArea: rockObject.getPrivateArea(),
     swingTick: miningTick + 1,
-    // The skilling timer carries over between rocks: a roll waits for the last one's interval.
-    nextRollTick: Math.max(miningTick + FIRST_ROLL_DELAY_TICKS, ROLL_READY_TICKS.get(player) ?? 0),
+    nextRollTick: firstRollTick(player, pickaxe, rock),
   });
   ACTIVE_MINERS.add(player);
   return true;
+}
+
+/**
+ * The tick of a new session's first roll. The skilling timer carries over between rocks: a roll waits for the last
+ * one's interval. A rock with a `freshRollTimer` (ash piles) starts its own: the first roll is a full pickaxe
+ * interval after arrival, one less than that after the swing, however recently the last pile was mined.
+ */
+function firstRollTick(player, pickaxe, rock) {
+  if (rock.freshRollTimer) return miningTick + actionInterval(pluginApi, player, Skill.MINING, "mine", rollInterval(pickaxe));
+  return Math.max(miningTick + FIRST_ROLL_DELAY_TICKS, ROLL_READY_TICKS.get(player) ?? 0);
 }
 
 /** Mining's chat lines are spam (rsprox captures), except where a rock was recorded otherwise. */
@@ -558,6 +775,18 @@ function rollOutcome(rock) {
   return outcomes.find((outcome) => (roll -= outcome.weight) < 0) ?? outcomes[outcomes.length - 1];
 }
 
+/** The chart a rock's ore roll uses: a charged glory has gem rocks roll their own, better one (Wiki Gem rocks). */
+function rockChart(player, rock) {
+  return rock.gloryChance && wearsChargedGlory(player) ? rock.gloryChance : rock.chance;
+}
+
+/** The chance (0-1) that an ore roll on this rock succeeds, for "mining:attempt": 1 with no chart, null for a cascade. */
+function rollChance(player, rock) {
+  if (rock.cascade) return null;
+  const chart = rockChart(player, rock);
+  return chart ? successNumerator(chart, getRollMiningLevel(player)) / SUCCESS_ROLL_SIDES : 1;
+}
+
 /** One roll's result: a gem-table hit, the ore outcome, or null for a miss. */
 function rollAttempt(player, rock) {
   if (rock.gems) {
@@ -569,8 +798,7 @@ function rollAttempt(player, rock) {
     const outcome = rollCascade(rock, level);
     return outcome ? { outcome } : null;
   }
-  // A charged glory has gem rocks roll their own, better chart (Wiki Gem rocks).
-  const chance = rock.gloryChance && wearsChargedGlory(player) ? rock.gloryChance : rock.chance;
+  const chance = rockChart(player, rock);
   if (chance && !rollSucceeds(chance, level)) {
     return null;
   }
@@ -583,16 +811,40 @@ function rollAttempt(player, rock) {
  */
 function giveGem(player, { itemId }) {
   if (itemId == null) return;
+  // "mining:gem" { player, itemId }: the gem pre-roll's find, for a league's "Obtain a Gem While Mining".
+  pluginApi.emitCustomEvent("mining:gem", { player, itemId });
   player.sendMessage(gemMessage(itemId));
-  giveOre(player, itemId, 1);
+  // Ours (no source covers it): with no room anywhere, which an open coal bag can bring about while
+  // still mining, the gem falls to the floor rather than vanishing.
+  deliverOre(player, prepareOre(player, itemId, 1, 0));
 }
 
-function outcomeAmount(outcome) {
+/**
+ * "mining:gem-roll" `{ player, gem }`: the gem pre-roll for content mining its own rocks (the Motherlode Mine's ore
+ * veins; Wiki, Ore vein: "The mining gem drop table has a 1/256 chance to roll on every mining attempt", 1/64.2 with a
+ * charged glory, and "in either case can not receive an ore"). On a hit, the gem (or nothing) is given and `gem` is set.
+ */
+function answerGemRoll(request) {
+  if (!request?.player) return;
+  const gem = rollGemTable(request.player);
+  if (!gem) return;
+  giveGem(request.player, gem);
+  request.gem = true;
+}
+
+/**
+ * How many of an outcome a success gives: `min`-`max`, or one from `levelSteps.from` and one more every `every`
+ * levels up to `max`, by the current (boosted) level (Wiki Volcanic ash: "Boosts can be used").
+ */
+function outcomeAmount(player, outcome) {
+  const steps = outcome.levelSteps;
+  if (steps) return Math.min(steps.max, 1 + Math.floor(Math.max(0, getMiningLevel(player) - steps.from) / steps.every));
   return outcome.min + Math.floor(Math.random() * (outcome.max - outcome.min + 1));
 }
 
 /** One ore a success, or two from a rock's `doubleFromLevel` (rubium splinters at 72, the visible level). */
 function oreAmount(player, rock) {
+  if (rock.essenceByLevel) return AncientEssence.essenceAmount(getMiningLevel(player));
   return rock.doubleFromLevel !== undefined && getMiningLevel(player) >= rock.doubleFromLevel ? 2 : 1;
 }
 
@@ -611,13 +863,15 @@ class MiningTask extends Task {
         this.activeSessions.delete(player);
         continue;
       }
-      if (player.getMovementQueue().size() > 0 || player.getForceMovement() != null) {
+      // Global tasks precede player turns; the last step may have drained the route.
+      const movement = player.getMovementQueue();
+      if (movement.size() > 0 || movement.isMovings?.() || player.getForceMovement() != null) {
         stopMining(this.activeSessions, player);
         continue;
       }
       if (state.levelUpPaused) continue;
 
-      const rockObject = MapObjects.get(
+      const rockObject = state.npcRock ? npcRockTarget(state.npcRock) : MapObjects.get(
         state.objectId,
         state.location,
         state.privateArea
@@ -633,7 +887,8 @@ class MiningTask extends Task {
       }
 
       const pickaxe = findBestPickaxe(player);
-      if (!pickaxe || getMiningLevel(player) < state.rock.level) {
+      if (!pickaxe || getMiningLevel(player) < state.rock.level
+        || (state.rock.requiresBreathingFilter && !wearsBreathingFilter(player))) {
         stopMining(this.activeSessions, player);
         continue;
       }
@@ -641,7 +896,7 @@ class MiningTask extends Task {
       state.pickaxe = pickaxe;
 
       if (inventoryBlocks(player, state.rock.oreId)) {
-        inventoryFull(player, state.rock.oreId);
+        inventoryFull(player, state.rock.oreId, state.rock);
         stopMining(this.activeSessions, player);
         continue;
       }
@@ -649,7 +904,9 @@ class MiningTask extends Task {
       if (state.swingTick !== undefined && this.cycle >= state.swingTick) {
         swing(player, state);
       }
-      if (rockTimerRanOut(rockObject, state.rock)) {
+      // A rock that `depletesOnOre` waits for the next ore once its countdown has ended.
+      const timerRanOut = rockTimerRanOut(rockObject, state.rock);
+      if (timerRanOut && !state.rock.depletesOnOre) {
         // The countdown ends with this depletion: the rock that respawns, or one content keeps
         // standing ("mining:deplete-rock"), starts a fresh one.
         ROCK_TIMERS.delete(rockObject);
@@ -668,8 +925,9 @@ class MiningTask extends Task {
       player.performAnimation(swingAnimation(state.pickaxe, state.rock));
 
       const result = rollAttempt(player, state.rock);
-      // Content may turn a miss into a hit ("mining:attempt", a league relic's second chance); a gem roll is never a miss.
-      const attempt = { player, object: rockObject, oreId: state.rock.oreId, success: result !== null };
+      // Content may turn a miss into a hit ("mining:attempt", a league relic's second chance, Cam Torum's
+      // oozing water); a gem roll is never a miss. `chance` is the ore roll's own chance of success.
+      const attempt = { player, object: rockObject, rock: state.rock.objectName, oreId: state.rock.oreId, success: result !== null, chance: rollChance(player, state.rock) };
       pluginApi.emitCustomEvent("mining:attempt", attempt);
       const landed = result ?? (attempt.success ? { outcome: state.rock.outcomes ? rollOutcome(state.rock) : null } : null);
       if (!landed) continue;
@@ -679,8 +937,14 @@ class MiningTask extends Task {
       }
 
       const { outcome } = landed;
-      const oreId = outcome?.itemId ?? state.rock.oreId;
-      const amount = outcome?.min !== undefined ? outcomeAmount(outcome) : oreAmount(player, state.rock);
+      let oreId = outcome?.itemId ?? state.rock.oreId;
+      let amount = outcome?.min !== undefined || outcome?.levelSteps ? outcomeAmount(player, outcome) : oreAmount(player, state.rock);
+      // Content may change what a success yields ("mining:ore-yield": a bracelet of clay softens clay and
+      // doubles soft clay). `spend` runs once the ore is really kept, so a charge is not used on an ore
+      // that content takes off the player or a pickaxe burns.
+      const oreYield = { player, rock: state.rock.objectName, oreId, amount, spend: null };
+      pluginApi.emitCustomEvent("mining:ore-yield", oreYield);
+      ({ oreId, amount } = oreYield);
       // Content may take the ore off the player as it is mined ("mining:hand-over", Miscellania's
       // coal goes to Miner Magnus): no ore, no count and no sound, only the line naming who took it.
       const handOver = { player, object: rockObject, itemId: oreId, amount, taker: null };
@@ -693,8 +957,9 @@ class MiningTask extends Task {
           player.getPacketSender().sendSoundEffect(SMELT_SOUND, 1, 0, 1);
         } else {
           pendingOre = prepareOre(player, oreId, amount, outcome?.xp ?? state.rock.xp);
-          countOre(player);
+          countOre(player, state.rock.countEach ? amount : 1);
           kept = true;
+          oreYield.spend?.();
         }
         player.getPacketSender().sendSoundEffect(state.rock.sound ?? MINING_SUCCESS_SOUND, 1, 0, 1);
       }
@@ -703,18 +968,33 @@ class MiningTask extends Task {
         if (state.rock.gameMessage) player.sendMessage(line);
         else spam(player, line);
       }
-      CrystalPickaxe.tryUseCharge(player);
-      player.getSkillManager().addExperiences(Skill.MINING, outcome?.xp ?? state.rock.xp);
+      // Only a charged crystal pickaxe mining spends a charge: one carried beside the pickaxe in use (a rune pickaxe
+      // below the crystal's 50 Agility) is left alone.
+      if (state.pickaxe?.id === ItemIds.CRYSTAL_PICKAXE) CrystalPickaxe.tryUseCharge(player);
+      player.getSkillManager().addExperiences(Skill.MINING, (outcome?.xp ?? state.rock.xp) * ProspectorOutfit.xpMultiplier(player));
       // OSRS gives a winning pet the last backpack slot before the resource.
       // Storage and XP retain their order; ordinary success consumers run after delivery.
       const petRoll = { player, skill: Skill.MINING, petBase: state.rock.petBase, handled: false };
       pluginApi.emitCustomEvent("pets:skilling-roll", petRoll);
       deliverOre(player, pendingOre);
-      if (kept && !state.rock.outcomes) mineExtraOre(player, state.rock, outcome);
-      pluginApi.emitCustomEvent("mining:success", { player, skill: Skill.MINING, petBase: state.rock.petBase, itemId: oreId, petRolled: petRoll.handled, pickaxeId: state.pickaxe?.id ?? null });
+      if (kept && !state.rock.outcomes) mineExtraOre(player, state.rock, outcome, oreId);
+      const minedNpcRock = state.npcRock;
+      pluginApi.emitCustomEvent("mining:success", { player, skill: Skill.MINING, petBase: state.rock.petBase, itemId: oreId, petRolled: petRoll.handled, pickaxeId: state.pickaxe?.id ?? null, objectId: state.objectId, location: state.location });
+      if (minedNpcRock) {
+        stopMining(this.activeSessions, player);
+        pluginApi.emitCustomEvent("mining:npc-rock-mined", { player, npc: minedNpcRock.npc });
+        continue;
+      }
+      if (state.rock.depletesOnOre && timerRanOut) {
+        ROCK_TIMERS.delete(rockObject);
+        if (depleteRock(player, rockObject, state.rock)) {
+          stopMining(this.activeSessions, player);
+          continue;
+        }
+      }
       if (state.rock.infinite || state.rock.depletionTicks) {
         if (inventoryBlocks(player, state.rock.oreId)) {
-          inventoryFull(player, state.rock.oreId);
+          inventoryFull(player, state.rock.oreId, state.rock);
           stopMining(this.activeSessions, player);
           continue;
         }
@@ -726,8 +1006,11 @@ class MiningTask extends Task {
         state.objectId = replaceRock(rockObject, nextStage).getId();
         continue;
       }
-      if (rockHolds(rockObject, state.rock)) continue;
-      if (!depleteRock(player, rockObject, state.rock)) continue;
+      // A saved finite-yield rock has already spent its normal yield; do not draw a
+      // fresh Amethyst yield until the rock really depletes and respawns.
+      if (!ROCK_GLOVE_SAVES.get(rockObject)?.baseExhausted && rockHolds(rockObject, state.rock)) continue;
+      const heldByGloves = gloveHolds(player, rockObject, state.rock);
+      if (!depleteRock(player, rockObject, state.rock, heldByGloves)) continue;
       stopMining(this.activeSessions, player);
     }
   }
@@ -758,9 +1041,14 @@ function inventoryBlocks(player, oreId) {
 function giveOre(player, oreId, amount, xp = 0) {
   const request = { player, itemId: oreId, amount, stored: 0, skill: Skill.MINING, xp };
   pluginApi.emitCustomEvent("storage:gather", request);
-  if (amount > request.stored) {
-    player.getInventory().adds(oreId, amount - request.stored);
-  }
+  // `stored` counts requested units even if a listener transforms or doubles output.
+  const stored = Number.isFinite(request.stored) ? Math.max(0, Math.min(amount, request.stored)) : 0;
+  const remaining = amount - stored;
+  if (remaining <= 0) return stored;
+  const item = new pluginApi.core.Item(oreId, remaining);
+  const accepted = Math.min(remaining, player.getInventory().getAddableAmount(item));
+  if (accepted > 0) player.getInventory().add(item.clone().setAmount(accepted), true);
+  return stored + accepted;
 }
 
 /** Storage resolves first; a winning pet can take room reserved for the remaining ore. */
@@ -779,33 +1067,48 @@ function deliverOre(player, ore) {
 }
 
 /**
- * "mining:extra-ore": a mining enhancer (the charged celestial ring) may grant a second ore with
+ * "mining:extra-ore": mining enhancers may each grant an extra ore with
  * its experience, and its own `message`. Without room for it, neither is given (Wiki, Mod Ash).
  * A sandstone or granite piece is doubled at its own size (Wiki Sandstone rocks; rsprox capture
  * 3165: "Your cape allows you to mine an additional ore.", two 1kg pieces, two counts).
  */
-function mineExtraOre(player, rock, outcome) {
+function mineExtraOre(player, rock, outcome, minedOreId) {
   if (rock.infinite || rock.noExtraOre) {
     return;
   }
-  const oreId = outcome?.itemId ?? rock.oreId;
+  // The rock's own ore decides who may add one; `minedOreId` is what that success actually yielded.
+  const rockOreId = outcome?.itemId ?? rock.oreId;
+  const oreId = minedOreId ?? rockOreId;
   const xp = outcome?.xp ?? rock.xp;
-  const request = { player, oreId, rockLevel: rock.level, extra: false, message: null };
+  const request = { player, oreId: rockOreId, rockLevel: rock.level, bonuses: [] };
   pluginApi.emitCustomEvent("mining:extra-ore", request);
-  if (!request.extra || inventoryBlocks(player, oreId)) {
-    return;
+  for (const bonus of request.bonuses) {
+    if (inventoryBlocks(player, oreId) || giveOre(player, oreId, 1, xp) !== 1) break;
+    if (bonus.message) spam(player, bonus.message);
+    countOre(player);
+    player.getSkillManager().addExperiences(Skill.MINING, xp * ProspectorOutfit.xpMultiplier(player));
   }
-  if (request.message) spam(player, request.message);
-  giveOre(player, oreId, 1, xp);
-  countOre(player);
-  player.getSkillManager().addExperiences(Skill.MINING, xp);
 }
 
-/** tracking_ore_mined counts every ore kept, essence too (rsprox captures 70, 3027); the client reads it for the Mining tab. */
-function countOre(player) {
-  const mined = (player.getAttribute(ORE_MINED_ATTRIBUTE) ?? 0) + 1;
+/**
+ * tracking_ore_mined counts every ore kept, essence too (rsprox captures 70, 3027), each blessed bone
+ * shard (1105: +3 for three) and each stardust (237/01101: +4 for four); the client reads it for the
+ * Mining tab and the league summary's ore row. This plugin is its only writer.
+ */
+function countOre(player, amount = 1) {
+  const mined = (player.getAttribute(ORE_MINED_ATTRIBUTE) ?? 0) + amount;
   player.setAttribute(ORE_MINED_ATTRIBUTE, mined);
   player.getPacketSender().sendConfig(pluginApi.core.CacheDefinitions.getVarpId(ORE_MINED_VARP), mined);
+}
+
+/** Ore kept outside a rock session ("mining:count-ore", a shooting star's stardust) counts the same. */
+function countKeptOre({ player, amount }) {
+  if (amount > 0) countOre(player, amount);
+}
+
+/** The counter for whoever shows it ("mining:ores-mined", the league summary's ore row). */
+function answerOresMined(query) {
+  query.count = query.player?.getAttribute(ORE_MINED_ATTRIBUTE) ?? 0;
 }
 
 function sendOresMined({ player }) {
@@ -815,11 +1118,19 @@ function sendOresMined({ player }) {
   }
 }
 
-/** A depleted rock ("rocks1"/"rocks2", a Sailing rock's "_empty" loc, amethyst's empty wall) still offers Mine; it only says it is empty. */
+/** A depleted rock ("rocks1"/"rocks2", a Sailing or calcified rock's "_empty" loc, amethyst's empty wall) still offers Mine; it only says it is empty. */
 function mineDepletedRock(event) {
   const { CacheDefinitions } = pluginApi.core;
+  if (CacheDefinitions.getObject(event.object.getId())?.name === DEPLETED_VEIN) {
+    stopMining(activeSessions, event.player, false);
+    event.player.performAnimation(Animation.DEFAULT_RESET_ANIMATION);
+    event.player.getPacketSender().sendSoundEffect(NO_ORE_SOUND, 1, 0, 1);
+    spam(event.player, NO_ORE_IN_VEIN);
+    event.handled = true;
+    return true;
+  }
   const gameval = CacheDefinitions.getLocNames().get(event.object.getId()) ?? "";
-  const depleted = [`${DEPLETED_ROCK_NAME}1`, `${DEPLETED_ROCK_NAME}2`].includes(gameval) || gameval.endsWith(EMPTY_ROCK_SUFFIX)
+  const depleted = [`${DEPLETED_ROCK_NAME}1`, `${DEPLETED_ROCK_NAME}2`].includes(gameval) || EMPTY_ROCK_PATTERN.test(gameval)
     || EMPTY_ROCK_NAMES.includes(CacheDefinitions.getObject(event.object.getId())?.name);
   if (!depleted) {
     return false;
@@ -843,6 +1154,42 @@ function handleMine(event) {
   }
 }
 
+/**
+ * "mining:mine-npc-rock": a rock that is an NPC (a killed Runite Golem's head), mined with the named rock's
+ * rules. `stands` says whether it can still be mined; "mining:npc-rock-mined" follows the ore.
+ */
+function mineNpcRock({ player, npc, rockName, stands }) {
+  const rock = ROCK_BY_NAME.get(rockName);
+  if (!rock) return;
+  const target = npcRockTarget({ npc, stands });
+  if (target && startMining(player, target, rock, activeSessions)) {
+    activeSessions.get(player).npcRock = { npc, stands };
+  }
+}
+
+/** The loop's view of an NPC rock, as it reads a loc's. */
+function npcRockTarget({ npc, stands }) {
+  if (!stands()) return null;
+  return {
+    getId: () => npc.getId(),
+    getLocation: () => npc.getLocation(),
+    getPrivateArea: () => npc.getPrivateArea?.() ?? null,
+    isWithinInteractionDistance: (location) => Math.max(
+      Math.abs(location.getX() - npc.getLocation().getX()), Math.abs(location.getY() - npc.getLocation().getY())
+    ) <= 1 && location.getZ() === npc.getLocation().getZ(),
+  };
+}
+
+/** A cleared interaction ends the private mining action, without resetting the shared roll timer. */
+function interruptMining({ player }) {
+  stopMining(activeSessions, player);
+}
+
+/** An accepted emote replaces mining while keeping the emote's animation. */
+function interruptMiningForEmote({ player }) {
+  stopMining(activeSessions, player, false);
+}
+
 function endMiningSession({ player }) {
   stopMining(activeSessions, player, false);
   ROLL_READY_TICKS.delete(player);
@@ -854,11 +1201,15 @@ function pauseMining(event) {
 
 module.exports = {
   name: "Mining",
+  description: "Mining: rocks and ores with pickaxes, respawn timers and depleted rocks, plus events other content uses for pickaxe and ore checks.",
   PICKAXES,
   PICKAXES_DESC,
   ROCKS,
   ESSENCE_ROCKS,
+  ORE_VEINS,
   findBestPickaxe,
+  swingAnimation,
+  wearsBreathingFilter,
   rollOutcome,
   isMiningActive(player) {
     return ACTIVE_MINERS.has(player);
@@ -871,13 +1222,21 @@ module.exports = {
     TaskManager.submit(new MiningTask(activeSessions));
 
     api.onPlayerDisconnect(endMiningSession);
+    api.onCustomEvent("player:interaction-cleared", interruptMining);
+    api.onCustomEvent("player:emote", interruptMiningForEmote);
     api.onCustomEvent("level-up:popup-opened", pauseMining);
     api.onCustomEvent("mining:best-pickaxe", answerBestPickaxe);
+    api.onCustomEvent("mining:pickaxe", answerPickaxe);
     api.onCustomEvent("mining:roll-interval", answerRollInterval);
+    api.onCustomEvent("mining:gem-roll", answerGemRoll);
     api.persistAttribute(ORE_MINED_ATTRIBUTE, 0);
     api.onPlayerLogin(sendOresMined);
+    api.onCustomEvent("mining:count-ore", countKeptOre);
+    api.onCustomEvent("mining:mine-npc-rock", mineNpcRock);
+    api.onCustomEvent("mining:ores-mined", answerOresMined);
     api.onObjectInteraction("Rocks", { Mine: mineDepletedRock });
     for (const name of EMPTY_ROCK_NAMES) api.onObjectInteraction(name, { Mine: mineDepletedRock });
+    api.onObjectInteraction(DEPLETED_VEIN, { Mine: mineDepletedRock });
 
     for (const rock of ALL_ROCKS) {
       api.onObjectInteraction(rock.objectName, { Mine: handleMine });
@@ -886,6 +1245,11 @@ module.exports = {
     InfernalPickaxe.attach(api);
     CrystalPickaxe.attach(api);
     ClueGeodes.attach(api);
+    CalcifiedWater.attach(api, ROCK_BY_NAME.get(CalcifiedWater.ROCK_NAME), exhaustRock, minersKeepStanding);
+    Saltpetre.attach(api);
+    VarrockArmour.attach(api);
+    ProspectorOutfit.attach(api);
+    AncientEssence.attach(api);
 
     api.log("registered", {
       rocks: ROCKS.length,

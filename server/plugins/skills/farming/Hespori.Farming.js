@@ -129,6 +129,7 @@ function harvestHespori(player, patch) {
             }
             Patches.spam(player, "You have successfully cleared this patch for new crops.");
             Patches.award(player, Data.CROPS.get("HESPORI").harvest);
+            Patches.awardPendingPlantExperience(player, patch, state);
             Services.cropRewards(player, Data.CROPS.get("HESPORI"));
             Patches.clearPatch(player, patch);
         });
@@ -202,7 +203,10 @@ class HesporiCombat extends core.CombatMethod {
             const hit = new core.PendingHit(npc, target, this, 2 + index);
             const prayer = target.getPrayerActive()[ranged ? core.PrayerHandler.PROTECT_FROM_MISSILES : core.PrayerHandler.PROTECT_FROM_MAGIC];
             const damage = hit.isAccurate() ? Math.floor(Math.random() * (ranged ? 9 : 15)) : 0;
-            hit.setTotalDamage(Math.min(target.getHitpoints(), prayer ? Math.floor(damage / 4) : damage));
+            // Wiki: Protect from Missiles caps each spore at 2 (8+8 -> 2+2) and Protect from
+            // Magic caps the wave at 3; it is a cap, not a quarter of the roll.
+            const capped = prayer ? Math.min(damage, ranged ? 2 : 3) : damage;
+            hit.setTotalDamage(Math.min(target.getHitpoints(), capped));
             return hit;
         });
     }
@@ -363,11 +367,17 @@ function hesporiCave(event) {
         player.moveTo(EXIT.clone());
     } else if (location.y > 3700 && location.y < 3730 && action === "enter") {
         event.handled = true;
-        const area = new HesporiArea();
-        player.getArea()?.leave(player, false);
-        area.enter(player);
-        player.moveTo(ENTRY.clone());
+        // A league character carrying the echo orb is asked first ("echo-boss:entry").
+        const entry = { player, boss: "hespori", enter: () => enterCave(player), handled: false };
+        core.PluginManager.emitCustomEvent("echo-boss:entry", entry);
+        if (!entry.handled) entry.enter();
     }
+}
+function enterCave(player) {
+    const area = new HesporiArea();
+    player.getArea()?.leave(player, false);
+    area.enter(player);
+    player.moveTo(ENTRY.clone());
 }
 
 Object.assign(module.exports, { warningInterfaceChanged, reentryAction, questHesporiDeath, challengeHespori, harvestHespori, HesporiCombat, hesporiHitRoll, hesporiCanAttack, hesporiHit, hesporiDamage, hesporiInput, hesporiProcess, keepQuestHesporiEngaged, hesporiLoot, hesporiLogout, hesporiDeathDrop, hesporiPlayerDeath, hesporiNpc, hesporiCave });

@@ -120,7 +120,12 @@ function setup() {
       },
     },
     TaskManager: { ...realCore.TaskManager, submit: (task) => pendingTasks.push(task) },
-    Sounds: { ...realCore.Sounds, sendSound: (target, sound) => sounds.push({ target, sound }) },
+    Sounds: {
+      ...realCore.Sounds,
+      sendSound: (target, sound) => sounds.push({ target, sound }),
+      // Impacts and splashes are range-10 area sounds at the target (RSProx 102 tick 232, 3275 line 1370).
+      playAreaSoundAt: (target, sound, radius) => sounds.push({ target, sound, radius, area: true }),
+    },
     CacheDefinitions: {
       getItem: (id) => ({ name: itemNames.get(id) }),
       getSpellName: () => 'Wind Bolt',
@@ -212,7 +217,8 @@ function setup() {
     isFull: () => full,
     getFreeSlots: () => full ? 0 : 28,
     adds(id, amount) { inventory.set(id, (inventory.get(id) ?? 0) + amount); },
-    forceAdd(id, amount) { inventory.set(id, (inventory.get(id) ?? 0) + amount); },
+    // The real signature: forceAdd(player, item).
+    forceAdd(player, item) { const id = item.getId?.() ?? item.id, amount = item.getAmount?.() ?? item.amount ?? 1; inventory.set(id, (inventory.get(id) ?? 0) + amount); },
     deleteNumber(id, amount) {
       assert.ok((inventory.get(id) ?? 0) >= amount, `missing item ${id}`);
       inventory.set(id, (inventory.get(id) ?? 0) - amount);
@@ -344,12 +350,72 @@ function limbCounts(h) {
   };
 }
 
+test('soft clay makes a camel mask after the granite head is placed', () => {
+  const h = setup();
+  const I = h.core.ItemIdentifiers, O = h.core.ObjectIdentifiers;
+  h.quest.setStage(h.player, 14);
+  h.inventory.set(I.SOFT_CLAY, 1);
+  h.itemOnObject(I.SOFT_CLAY, O.PEDESTAL);
+  assert.equal(h.inventory.get(I.CAMEL_MOULD_P_), 1);
+  assert.equal(h.inventory.get(I.CAMEL_MASK) ?? 0, 0);
+  h.itemOnObject(I.SOFT_CLAY, O.PEDESTAL_2); // No clay, even if another player changed the shared object.
+  assert.equal(h.inventory.get(I.CAMEL_MASK) ?? 0, 0);
+
+  h.inventory.set(I.GRANITE_5KG_, 1);
+  h.itemOnItem(I.CHISEL, I.GRANITE_5KG_);
+  h.itemOnObject(I.STONE_HEAD_5, O.PEDESTAL);
+  assert.equal(h.quest.getStage(h.player), 15);
+  for (let count = 1; count <= 2; count++) {
+    h.inventory.set(I.SOFT_CLAY, 1);
+    h.itemOnObject(I.SOFT_CLAY, O.PEDESTAL_2);
+    assert.equal(h.inventory.get(I.SOFT_CLAY), 0);
+    assert.equal(h.inventory.get(I.CAMEL_MASK), count);
+    assert.equal(h.inventory.get(I.CAMEL_MOULD_P_), 0);
+    assert.equal(h.quest.getStage(h.player), 15);
+  }
+  h.quest.setStage(h.player, 20);
+  h.attrs.delete('quest.enakhras_lament.bits');
+  h.inventory.set(I.SOFT_CLAY, 1);
+  h.itemOnObject(I.SOFT_CLAY, O.PEDESTAL_2);
+  assert.equal(h.inventory.get(I.CAMEL_MASK), 3);
+  h.logout();
+  h.login();
+  h.inventory.set(I.SOFT_CLAY, 1);
+  h.itemOnObject(I.SOFT_CLAY, O.PEDESTAL);
+  assert.equal(h.inventory.get(I.CAMEL_MASK), 4);
+});
+
+test('camel mask eligibility follows the player, and clay frees its inventory slot', () => {
+  const other = setup();
+  const I = other.core.ItemIdentifiers, O = other.core.ObjectIdentifiers;
+  other.quest.setStage(other.player, 14);
+  other.inventory.set(I.SOFT_CLAY, 1);
+  other.itemOnObject(I.SOFT_CLAY, O.PEDESTAL_2);
+  assert.equal(other.inventory.get(I.CAMEL_MOULD_P_), 1);
+  assert.equal(other.inventory.get(I.CAMEL_MASK) ?? 0, 0);
+
+  const h = setup();
+  h.quest.setStage(h.player, 15);
+  const inventory = new Inventory(h.player);
+  h.useInventory(inventory);
+  for (let slot = 0; slot < 27; slot++) inventory.setItem(slot, new Item(I.SHARK, 1));
+  inventory.setItem(27, new Item(I.SOFT_CLAY, 1));
+  assert.equal(inventory.isFull(), true);
+  h.itemOnObject(I.SOFT_CLAY, O.PEDESTAL_2);
+  assert.equal(inventory.getAmount(I.SOFT_CLAY), 0);
+  assert.equal(inventory.getAmount(I.CAMEL_MASK), 1);
+  assert.equal(inventory.getAmount(I.SHARK), 27);
+});
+
 test('fresh stage 0 follows the full mandatory route to completion and rewards once', () => {
   const h = setup();
   const I = PluginManager.getCoreApi().ItemIdentifiers;
   const N = PluginManager.getCoreApi().NpcIdentifiers;
   const O = PluginManager.getCoreApi().ObjectIdentifiers;
   h.core = PluginManager.getCoreApi();
+  // The map's statue multiloc: a click names it, and varbit 1593 shows each stage.
+  h.core.ObjectDefinition.init();
+  const STATUE = 10952;
   assert.equal(h.quest.getStage(h.player), 0);
   assert.equal(h.variant(N.LAZIM), 'starting-out-talking-to-lazim');
 
@@ -367,7 +433,7 @@ test('fresh stage 0 follows the full mandatory route to completion and rewards o
   h.itemOnItem(I.SANDSTONE_32KG_, I.CHISEL);
   assert.equal(h.quest.getStage(h.player), 3);
   assert.equal(h.inventory.get(I.SANDSTONE_BASE), 1);
-  h.itemOnObject(I.SANDSTONE_BASE, O.FLAT_GROUND);
+  h.itemOnObject(I.SANDSTONE_BASE, STATUE);
   assert.equal(h.quest.getStage(h.player), 4);
 
   // 20 kg body, chisel, place, chisel statue. Talking at stage 4 while carrying
@@ -380,9 +446,9 @@ test('fresh stage 0 follows the full mandatory route to completion and rewards o
   assert.equal(h.quest.getStage(h.player), 5);
   h.itemOnItem(I.SANDSTONE_20KG_, I.CHISEL);
   assert.equal(h.quest.getStage(h.player), 6);
-  h.itemOnObject(I.SANDSTONE_BODY, O.HEADLESS_STATUE);
+  h.itemOnObject(I.SANDSTONE_BODY, STATUE);
   assert.equal(h.quest.getStage(h.player), 7);
-  h.itemOnObject(I.CHISEL, O.HEADLESS_STATUE_2);
+  h.itemOnObject(I.CHISEL, STATUE);
   assert.equal(h.quest.getStage(h.player), 8);
 
   // Choose and carve the head, confirm it, use it on the statue.
@@ -393,7 +459,7 @@ test('fresh stage 0 follows the full mandatory route to completion and rewards o
   assert.equal(h.quest.getStage(h.player), 9);
   assert.equal(h.inventory.get(I.STONE_HEAD), 1);
   assert.equal(conditionValue(h, 'Oxb3xp', N.LAZIM), true);
-  h.itemOnObject(I.STONE_HEAD, O.HEADLESS_STATUE_3);
+  h.itemOnObject(I.STONE_HEAD, STATUE);
   assert.equal(h.varbits.get(1593), 28, 'the head handover transforms the cache statue into its hole');
   h.action('ARRUvf', N.LAZIM);
   assert.equal(h.quest.getStage(h.player), 10);
@@ -893,6 +959,8 @@ test('spell puzzles resolve at projectile impact, and a Boneguard splash can be 
   assert.equal(h.quest.getStage(h.player), 16, 'a splash leaves the guard and quest unchanged');
   assert.equal(h.graphics.length, 1);
   assert.equal(h.sounds.length, 1);
+  assert.deepEqual([h.sounds[0].area, h.sounds[0].radius, h.sounds[0].sound.getId()], [true, 10, 227],
+    'a splash is the captured area sound at the boneguard, not a private one');
 
   h.accuracyResults.push(true);
   h.spellOnNpc(N.BONEGUARD, 'CRUMBLE_UNDEAD', null, false);
@@ -901,6 +969,9 @@ test('spell puzzles resolve at projectile impact, and a Boneguard splash can be 
   assert.equal(h.quest.getStage(h.player), 17, 'the accurate impact frees the guard');
   assert.equal(h.removed.filter((npc) => npc.id === N.BONEGUARD).length, 1);
   assert.equal(h.graphics.length, 2, 'the successful cast shows its spell end graphic');
+  assert.equal(h.sounds.length, 2, 'and its impact sound, which the old spell.impactSound() lookup never found');
+  assert.deepEqual([h.sounds[1].area, h.sounds[1].radius, h.sounds[1].sound.getId()], [true, 10, 124],
+    'Crumble Undead (spell 1171) lands as the table sound 124 at range 10');
 });
 
 test('a player logout before impact cancels quest effects and removes owner NPCs', () => {

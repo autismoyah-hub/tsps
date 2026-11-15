@@ -15,7 +15,7 @@ const rondache = require("../plugins/combat/effects/Rondache.EquipmentEffects");
 rondache._test.bind({ Equipment, ItemIdentifiers: ItemIds });
 
 rewards({
-  core: { PrayerData, Skill, ItemIdentifiers: ItemIds, Area: class {}, Boundary: class {} },
+  core: { PrayerData, PrayerHandler, Skill, ItemIdentifiers: ItemIds, Area: class {}, Boundary: class {} },
   persistAttribute() {}, registerArea() {}, onPlayerLogin() {}, onPrayerDisabled() {}, onItemAction() {}, onItemOnNpc() {}, onItemOnItem() {},
 });
 
@@ -68,6 +68,15 @@ test("Rondache takes 2 off each hit and charges by what it took", () => {
   const bare = hit(10);
   rondache._test.applyRondache(player(), bare);
   assert.equal(bare.damage, 10);
+});
+
+test("Inspecting the Horn of Bran points the player at Camelot", () => {
+  const messages = [];
+  rewards._test.inspectHorn({ player: { sendMessage: (message) => messages.push(message) } });
+  assert.deepEqual(messages, [
+    "You inspect the horn-like item...",
+    "You notice a small symbol, similar to the one you've seen the Knights of the Round Table wear.",
+  ]);
 });
 
 test("Entering Camelot with the Horn of Bran unlocks Zeal and uses the horn up", () => {

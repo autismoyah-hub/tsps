@@ -9,6 +9,7 @@ import type { GLRenderer } from "../../widgets/gl/renderer";
 import type { ClickRegistry } from "../../widgets/gl/click-registry";
 import type { SimpleMenuEntry } from "../../ui/menu/MenuEngine";
 import type { MenuTransformContext } from "../../ui/menu/menuTransforms";
+import type { MenuActionData } from "../../ui/menu/menuEvents";
 import type { FontLoader } from "../../widgets/components/TextRenderer";
 import type { IndexedSprite } from "../../rs/sprite/IndexedSprite";
 import type { OverlayPosition } from "@runelite/client/ui/overlay/OverlayPosition";
@@ -24,6 +25,7 @@ import type { LoginStretch } from "../login/renderer/types";
 import type { WebGLOsrsRendererHost } from "../../render/render/hostInterface";
 import type { OverheadTextEntry } from "../../ui/devoverlay/Overlay";
 import type { GpuSettings } from "./gpu/GpuPlugin";
+import type { ShaderFxRuntime } from "./shaderfx/ShaderFxState";
 import type { InteractHighlightPluginConfig } from "./interacthighlight/InteractHighlightConfig";
 import type { FixedStretch } from "./stretchedmode/StretchedModePlugin";
 import { DISABLED_TILE_MARKERS_CONFIG, type TileMarkersPluginConfig } from "./tilemarkers/types";
@@ -86,6 +88,10 @@ export type WidgetOverlayDrawContext = {
     itemImage?(itemId: number, quantity: number, outline: number): HTMLCanvasElement | undefined;
     /** Where a movable overlay of this size (layout units) draws this frame; nothing while the HUD is hidden. */
     place(overlay: WidgetOverlay, width: number, height: number): OverlayPlacement | undefined;
+    /** Visible game canvas width in CSS pixels, for compact infobox wrapping. */
+    canvasCssWidth?: number;
+    /** Mobile gameframe growth relative to compact phone-sized controls. */
+    hudScale?: number;
     /** HUD text scale on each canvas axis, including touch-display adjustments. */
     overlayTextScale?(): { x: number; y: number };
     inputScale?(): { x: number; y: number };
@@ -105,6 +111,40 @@ export type WorldMapOverlayContext = {
 
 /** A right-click entry on an overlay: "<option> <target>". */
 export type OverlayMenuEntry = { option: string; target: string; onClick(): void };
+
+/** The font metrics a text rewrite needs to fit its text (BitmapFont's). */
+export type WidgetTextFont = {
+    measure(text: string): number;
+    readonly lineHeight: number;
+    readonly ascent: number;
+    maxAscent?: number;
+    maxDescent?: number;
+};
+
+/** A text component about to be drawn; `text` is what it would draw, `<br>` breaks included. */
+export type WidgetTextEvent = {
+    readonly groupId: number;
+    readonly text: string;
+    /** The component's own size and line height, before UI scaling. */
+    readonly width: number;
+    readonly height: number;
+    readonly lineHeight: number;
+    readonly font?: WidgetTextFont;
+    /** The component's uid (group << 16 | child). */
+    readonly uid?: number;
+    /**
+     * The uid of the component it sits in. Text a script creates (cc_create) has a made-up uid,
+     * so its container is what identifies it.
+     */
+    readonly parentUid?: number;
+    /**
+     * The text of the component `offset` children away in the same group, or undefined when
+     * there is none: journals put one line in each component, so a sentence can span several.
+     */
+    siblingText?(offset: number): string | undefined;
+};
+
+export type WidgetDisplayText = { text: string; lineHeight?: number };
 
 /** A loc model outline a plugin asks for: colour 0xRRGGBB, alpha 0-1, width in pixels. */
 export type LocOutline = {
@@ -214,6 +254,8 @@ export type ScriptCallbackEvent = { eventName: string; vm: Cs2Vm };
 export type WidgetDragEvent = { source: any; target: any };
 
 export interface ClientPlugin {
+    /** Return true to defer an accepted login's handshake to a plugin. */
+    beforeLoginHandshake?(sendHandshake: () => void): boolean;
     /** Extra player headicons; return stable, immutable sprites so textures can be reused. */
     getPlayerHeadIcons?(serverId: number): readonly IndexedSprite[] | undefined;
     transformSceneProgram?(source: ProgramSource): ProgramSource;
@@ -236,19 +278,48 @@ export interface ClientPlugin {
     updateInteractionPointer?(camera: Camera): void;
     transformCameraRotation?(rotation: CameraRotation): void;
     handleCameraFollow?(context: CameraFollowContext): boolean;
+    /**
+     * The tile roof hiding treats as the camera's (world tiles): roofs on the line from it to
+     * the player hide the planes above. A plugin camera far from the player returns a nearer,
+     * steadier tile so roofs don't flicker as that long line sweeps across buildings.
+     */
+    roofCameraTile?(
+        cameraTile: { x: number; y: number },
+        playerTile: { x: number; y: number },
+    ): { x: number; y: number } | undefined;
     /** A connected standard-mapping controller, each frame; return true to take it over. */
     handleGamepad?(context: GamepadContext): boolean;
     /** A hitsplat arrived from the server (before it is drawn). */
     onHitsplat?(event: HitsplatEventPayload): void;
     /** A health bar update arrived from the server. */
     onHealthBar?(event: HealthBarEvent): void;
+    /**
+     * Text is about to show over a player's head, their public chat or forced chat (RuneLite's
+     * OverheadTextChanged): return the text to show instead, or undefined to leave it. The chat
+     * history keeps the message as sent.
+     */
+    overheadChatText?(event: { name: string; text: string }): string | undefined;
+    /**
+     * Text is about to show over an NPC's head: return the text to show instead, or undefined
+     * to leave it. Separate from overheadChatText, whose plugins treat the speaker as a player.
+     */
+    npcOverheadText?(event: { npcIndex: number; text: string }): string | undefined;
+    /**
+     * A text component is about to be drawn: return what to draw instead, and optionally a
+     * line height for this draw, or undefined to leave it. Display only: the component's text,
+     * which scripts and plugins read, is unchanged.
+     */
+    widgetDisplayText?(event: WidgetTextEvent): WidgetDisplayText | undefined;
+    /** A menu option is about to be dispatched (RuneLite's MenuOptionClicked); true consumes it. */
+    onMenuOptionClicked?(action: MenuActionData): boolean;
     /** A clientscript finished, nested calls included (RuneLite's ScriptPostFired). */
     onScriptFinished?(scriptId: number): void;
     /**
      * A clientscript is about to run, before pre-script listeners such as Bank Tags' (RuneLite's
      * ScriptPreFired with a subscriber priority above theirs).
      */
-    onScriptPreFired?(scriptId: number): void;
+    /** `vm` is set when the script was invoked by another and its arguments are still on the stacks. */
+    onScriptPreFired?(scriptId: number, vm?: Cs2Vm): void;
     /** A clientscript ran `runelite_callback`. */
     onScriptCallback?(event: ScriptCallbackEvent): void;
     /** A widget was dropped on another; return true to keep the drag from the server. */
@@ -281,6 +352,8 @@ export interface ClientPlugin {
     ): SimpleMenuEntry[];
     /** Graphics settings overriding the renderer's own (first answer wins). */
     gpuSettings?(): GpuSettings | undefined;
+    /** Screen shader effects for the WebGPU post chain (first answer wins). */
+    shaderFx?(): ShaderFxRuntime | undefined;
     /** Whether HD lighting is on, which widens draw distance and fog. */
     hdEnabled?(): boolean;
     /** How scenery animations are baked when a map square loads (first answer wins). */
@@ -343,6 +416,10 @@ export class ClientPluginManager {
         let plugins = this.implementers.get(hook);
         if (!plugins) this.implementers.set(hook, (plugins = this.plugins.filter((plugin) => plugin[hook] !== undefined)));
         return plugins;
+    }
+
+    beforeLoginHandshake(sendHandshake: () => void): boolean {
+        return this.plugins.some((plugin) => plugin.beforeLoginHandshake?.(sendHandshake) === true);
     }
 
     playerHeadIcons(serverId: number): IndexedSprite[] {
@@ -443,6 +520,18 @@ export class ClientPluginManager {
         return this.plugins.some((plugin) => plugin.handleCameraFollow?.(context) === true);
     }
 
+    /** Runs every frame: with no plugin implementing it, it costs a cached empty list. */
+    roofCameraTile(
+        cameraTile: { x: number; y: number },
+        playerTile: { x: number; y: number },
+    ): { x: number; y: number } {
+        for (const plugin of this.implementing("roofCameraTile")) {
+            const tile = plugin.roofCameraTile!(cameraTile, playerTile);
+            if (tile) return tile;
+        }
+        return cameraTile;
+    }
+
     handleGamepad(context: GamepadContext): boolean {
         return this.plugins.some((plugin) => plugin.handleGamepad?.(context) === true);
     }
@@ -455,12 +544,54 @@ export class ClientPluginManager {
         for (const plugin of this.plugins) plugin.onHealthBar?.(event);
     }
 
+    onMenuOptionClicked(action: MenuActionData): boolean {
+        return this.implementing("onMenuOptionClicked").some((plugin) => plugin.onMenuOptionClicked!(action) === true);
+    }
+
+    /** The overhead text after every plugin has had its say, each seeing the last one's text. */
+    overheadChatText(name: string, text: string): string {
+        for (const plugin of this.implementing("overheadChatText")) {
+            text = plugin.overheadChatText!({ name, text }) ?? text;
+        }
+        return text;
+    }
+
+    /** The NPC overhead text after every plugin has had its say. */
+    npcOverheadText(npcIndex: number, text: string): string {
+        for (const plugin of this.implementing("npcOverheadText")) {
+            text = plugin.npcOverheadText!({ npcIndex, text }) ?? text;
+        }
+        return text;
+    }
+
+    /**
+     * Whether a running plugin may rewrite drawn component text, so the draw loop can skip
+     * building the event. Disabled plugins stay registered, so their started state is checked.
+     */
+    hasWidgetDisplayText(): boolean {
+        return this.implementing("widgetDisplayText").some(
+            (plugin) => (plugin as { isStarted?(): boolean }).isStarted?.() !== false,
+        );
+    }
+
+    /** The text to draw for a component, each plugin seeing the last one's; the smallest line height wins. */
+    widgetDisplayText(event: WidgetTextEvent): WidgetDisplayText | undefined {
+        let result: WidgetDisplayText | undefined;
+        for (const plugin of this.implementing("widgetDisplayText")) {
+            const next = plugin.widgetDisplayText!(result ? { ...event, text: result.text } : event);
+            if (!next) continue;
+            const heights = [result?.lineHeight, next.lineHeight].filter((h): h is number => h !== undefined);
+            result = heights.length ? { text: next.text, lineHeight: Math.min(...heights) } : { text: next.text };
+        }
+        return result;
+    }
+
     onScriptFinished(scriptId: number): void {
         for (const plugin of this.implementing("onScriptFinished")) plugin.onScriptFinished!(scriptId);
     }
 
-    onScriptPreFired(scriptId: number): void {
-        for (const plugin of this.implementing("onScriptPreFired")) plugin.onScriptPreFired!(scriptId);
+    onScriptPreFired(scriptId: number, vm?: Cs2Vm): void {
+        for (const plugin of this.implementing("onScriptPreFired")) plugin.onScriptPreFired!(scriptId, vm);
     }
 
     onScriptCallback(event: ScriptCallbackEvent): void {
@@ -515,6 +646,14 @@ export class ClientPluginManager {
         for (const plugin of this.implementing("gpuSettings")) {
             const settings = plugin.gpuSettings!();
             if (settings) return settings;
+        }
+        return undefined;
+    }
+
+    shaderFx(): ShaderFxRuntime | undefined {
+        for (const plugin of this.implementing("shaderFx")) {
+            const runtime = plugin.shaderFx!();
+            if (runtime) return runtime;
         }
         return undefined;
     }

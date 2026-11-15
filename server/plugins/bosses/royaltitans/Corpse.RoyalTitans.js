@@ -19,11 +19,14 @@
  */
 const Shared = require("./Shared.RoyalTitans");
 const CombatAchievements = require("./CombatAchievements.RoyalTitans");
+const { sendBossKillCount } = require("../../interface/BossKillCount.plugin");
 
 /** Desiccated pages (both tables roll this id). */
 const PAGES_ITEM_ID = 30640;
 const BRAN_ITEM_ID = 30622;
 const SACRIFICE_PET_RATE = 1500;
+/** Bran's tertiary rate on a Loot or Take-pages claim (npc-drops.json, both titans: 1/3000; Sacrifice doubles it). */
+const CLAIM_PET_RATE = 3000;
 const BOSS_NAME = "Royal Titans";
 /** Below 1% share (1-11 damage of 1200) rolls twice but yields 1 of each (Wiki). */
 const MIN_SHARE_PERCENT = 0.01;
@@ -43,6 +46,8 @@ const CORPSE_REMAINS_TICKS = 6000;
 
 let api = null;
 let core = null;
+/** The titans and their corpses, by id (filled at attach). */
+const TITAN_OR_CORPSE = new Set();
 /** corpse -> the session kill it belongs to, so a lingering corpse is never claimable. */
 const corpseKills = new WeakMap();
 
@@ -152,10 +157,12 @@ function recordKill(player, session, ticks) {
   const total = CombatAchievements.killed(player, session, own, (kills) => announceKill(player, kills, ticks));
   player.setAttribute(Shared.KILLS_ATTRIBUTE, Math.max(own, total ?? 0));
   if (total == null) player.getPacketSender().sendConfig(Shared.TOTAL_KILLS_VARP, own);
+  // The log's category isn't either titan's name, so their rolls never count it: one kill of the pair is one here.
+  api.emitCustomEvent("collection-log:count", { player, category: BOSS_NAME });
 }
 
 function announceKill(player, kills, ticks) {
-  player.sendMessage(`Your Royal Titans kill count is: <col=ff0000>${kills}</col>.`);
+  sendBossKillCount(player, `Your Royal Titans kill count is: <col=ff0000>${kills}</col>.`);
   const best = player.getAttribute(Shared.BEST_TICKS_ATTRIBUTE);
   if (!best || ticks < best) {
     player.setAttribute(Shared.BEST_TICKS_ATTRIBUTE, ticks);
@@ -167,17 +174,53 @@ function announceKill(player, kills, ticks) {
   player.sendMessage(Shared.ELIGIBLE_MESSAGE);
 }
 
-/** The engine's death roll, stashed per titan until its claim. */
+/**
+ * Bran is had at a corpse's claim, one roll per claim (Wiki: Sacrificing doubles the pet rate), not at the death. The
+ * death roll can't be told from a claim's by its npc (both carry the corpse), so the claims mark theirs (`claim`), and
+ * any other roll of a titan in an encounter keeps its pet back from Pets.
+ */
+function holdPetForClaim(request) {
+  if (request.claim === true || !sessionOfNpc(request.npc)) return;
+  const ids = [request.npcId, request.npc?.getId?.()];
+  if (ids.some((id) => TITAN_OR_CORPSE.has(id))) request.hold = true;
+}
+
+/**
+ * Wiki (Ironman Mode): "Iron accounts receive group-boss rewards when fighting with others", Royal Titans among them.
+ * The titan's death roll is thrown away (each claim rolls its claimant's own), so an Ironman's share of a team kill is
+ * kept, not wiped with the "others helped you" line.
+ */
+function ironmanKeeps(request) {
+  const ids = [request?.npcId, request?.npc?.getId?.()];
+  if (!ids.some((id) => TITAN_OR_CORPSE.has(id))) return;
+  request.keep.push(...request.drops.map((drop) => drop.itemId));
+}
+
+/** A claim's own Bran roll, at the table's rate. */
+function claimPet(drops, rate) {
+  if (Math.random() < 1 / rate) drops.push({ itemId: BRAN_ITEM_ID, amount: 1 });
+}
+
+/**
+ * The claimant's own roll of the titan's table (Wiki: each player's loot is their own), Bran left to claimPet.
+ * `entries` narrows it to some of the table (a Sacrifice or Take pages keeps only its clue scrolls).
+ */
+function ownRoll(player, npc, id, entries = () => true) {
+  const request = { player, npc, npcId: id, drops: [], entryFilter: (entry) => entry.item_id !== BRAN_ITEM_ID && entries(entry) };
+  api.emitCustomEvent("npc-drops:roll-table", request);
+  return request.drops;
+}
+
+const clueEntry = (entry) => /clue scroll/i.test(entry.name ?? "");
+
+/** The engine's death roll gives nothing: each claim rolls its claimant's own (ownRoll). */
 function stashGenerated(event) {
   const session = sessionOfNpc(event.npc);
   if (!session || !Array.isArray(event.drops)) return;
   const id = event.npcId ?? event.npc.getId();
   if (id !== Shared.BRANDA_ID && id !== Shared.ELDRIC_ID) return;
   event.handled = true;
-  session.stash = session.stash ?? {};
-  session.stash[id] = [...event.drops];
-  // Nothing is received at the death: emptying the roll keeps the collection log (which
-  // reads it a microtask later) for the claim's own npc-drops:roll.
+  // Emptying the roll keeps the collection log (which reads it a microtask later) for the claim's own npc-drops:roll.
   event.drops.length = 0;
 }
 
@@ -193,7 +236,7 @@ function unworthy(player, npc, option) {
   player.sendMessage(`You do not feel worthy enough to ${verb} ${name}.`);
 }
 
-/** Scale a stash by contribution share (Wiki); pet/clues pass through untouched. */
+/** Scale a claim's drops by contribution share (Wiki); pet/clues pass through untouched. */
 function scaleDrops(drops, share, keepAlways) {
   const out = [];
   for (const drop of drops ?? []) {
@@ -264,17 +307,26 @@ function claim({ player, npc }, option) {
   return true;
 }
 
+/** The Wiki gives each titan two primary rolls on its table (rolls=2 on its repeated rows). */
+const PRIMARY_ROLLS = 2;
+
 /** Loot: two primary rolls (death roll + one extra), scaled; no pages; tertiary as rolled. */
 function loot(player, session, npc, share) {
   const id = npc.getId() === Shared.BRANDA_CORPSE_ID ? Shared.BRANDA_ID : Shared.ELDRIC_ID;
-  const stash = (session.stash ?? {})[id] ?? [];
-  const extra = { player, npc, npcId: id, rolls: 1, drops: [] };
-  api.emitCustomEvent("npc-drops:extra-rolls", extra);
-  const drops = scaleDrops([...stash, ...extra.drops], share, false);
+  // The death roll was the top damager's: every claimant rolls their own in its place, so nothing is copied between
+  // them. The table repeats itself `rolls` times when the export carries it (the Wiki's rolls=2), so only the primary
+  // rolls it does not already make are added: one extra with no exported count, none with rolls=2.
+  const own = { player, npc, npcId: id, rolls: 1 };
+  api.emitCustomEvent("npc-drops:table-rolls", own);
+  const missing = Math.max(0, PRIMARY_ROLLS - (Number.isInteger(own.rolls) ? Math.max(1, own.rolls) : 1));
+  const extra = { player, npc, npcId: id, rolls: missing, drops: [] };
+  if (missing > 0) api.emitCustomEvent("npc-drops:extra-rolls", extra);
+  const drops = scaleDrops([...ownRoll(player, npc, id), ...extra.drops], share, false);
+  claimPet(drops, CLAIM_PET_RATE);
   player.performAnimation(new core.Animation(CLAIM_ANIMATION));
   later(Shared.CLAIM_LOOT_TICKS, () => {
     if (!player.isRegistered()) return;
-    api.emitCustomEvent("npc-drops:roll", { player, npc, npcId: id, drops });
+    api.emitCustomEvent("npc-drops:roll", { player, npc, npcId: id, drops, claim: true });
     spawnDrops(player, session, npc, drops);
     player.getPacketSender().sendSoundEffect(Shared.CLAIM_SOUND[id], 1, 0);
   });
@@ -283,18 +335,14 @@ function loot(player, session, npc, share) {
 /** Sacrifice: forfeit drops (clues kept), Bran at 1/1500. */
 function sacrifice(player, session, npc) {
   const id = npc.getId() === Shared.BRANDA_CORPSE_ID ? Shared.BRANDA_ID : Shared.ELDRIC_ID;
-  const stash = (session.stash ?? {})[id] ?? [];
-  const clues = stash.filter((drop) => /clue scroll/i.test(drop.name ?? ""));
+  const clues = ownRoll(player, npc, id, clueEntry);
   player.performAnimation(new core.Animation(CLAIM_ANIMATION));
   later(Shared.CLAIM_LOOT_TICKS, () => {
     if (!player.isRegistered()) return;
     const drops = [...clues];
-    if (Math.random() < 1 / SACRIFICE_PET_RATE) {
-      drops.push({ itemId: BRAN_ITEM_ID, amount: 1 });
-    } else {
-      player.sendMessage(Shared.SACRIFICE_MISS);
-    }
-    api.emitCustomEvent("npc-drops:roll", { player, npc, npcId: id, drops });
+    claimPet(drops, SACRIFICE_PET_RATE);
+    if (!drops.some((drop) => drop.itemId === BRAN_ITEM_ID)) player.sendMessage(Shared.SACRIFICE_MISS);
+    api.emitCustomEvent("npc-drops:roll", { player, npc, npcId: id, drops, claim: true });
     spawnDrops(player, session, npc, drops);
     player.getPacketSender().sendSoundEffect(Shared.CLAIM_SOUND[id], 1, 0);
   });
@@ -303,9 +351,7 @@ function sacrifice(player, session, npc) {
 /** Take pages: 10-19 desiccated pages (estimated scaling) plus tertiary as rolled. */
 function pages(player, session, npc, share) {
   const id = npc.getId() === Shared.BRANDA_CORPSE_ID ? Shared.BRANDA_ID : Shared.ELDRIC_ID;
-  const stash = (session.stash ?? {})[id] ?? [];
-  const tertiary = stash.filter((drop) =>
-    drop.itemId === BRAN_ITEM_ID || /clue scroll/i.test(drop.name ?? ""));
+  const tertiary = ownRoll(player, npc, id, clueEntry);
   const dealt = combinedDamage(session, player);
   let amount = 0;
   if (dealt >= PAGES_FULL_DAMAGE) {
@@ -317,8 +363,9 @@ function pages(player, session, npc, share) {
   later(Shared.CLAIM_LOOT_TICKS, () => {
     if (!player.isRegistered()) return;
     const drops = [...tertiary];
+    claimPet(drops, CLAIM_PET_RATE);
     if (amount > 0) drops.push({ itemId: PAGES_ITEM_ID, amount });
-    api.emitCustomEvent("npc-drops:roll", { player, npc, npcId: id, drops });
+    api.emitCustomEvent("npc-drops:roll", { player, npc, npcId: id, drops, claim: true });
     spawnDrops(player, session, npc, drops);
     player.getPacketSender().sendSoundEffect(Shared.CLAIM_SOUND[id], 1, 0);
   });
@@ -385,8 +432,11 @@ const claimPages = (event) => claim(event, "Take pages");
 function attach(pluginApi) {
   api = pluginApi;
   core = pluginApi.core;
+  for (const id of [Shared.BRANDA_ID, Shared.ELDRIC_ID, Shared.BRANDA_CORPSE_ID, Shared.ELDRIC_CORPSE_ID]) TITAN_OR_CORPSE.add(id);
   pluginApi.onNpcDeath(titanDied);
   pluginApi.onCustomEvent("npc-drops:generated", stashGenerated);
+  pluginApi.onCustomEvent("pets:hold-for-claim", holdPetForClaim);
+  pluginApi.onCustomEvent("ironman:shared-kill-keeps", ironmanKeeps);
   pluginApi.onCombatHitResolved(trackDamage);
   pluginApi.onNpcsInteraction([Shared.BRANDA_NAME, Shared.ELDRIC_NAME], {
     Loot: claimLoot, Sacrifice: claimSacrifice, "Take pages": claimPages,

@@ -16,6 +16,8 @@ const GATHER_EVENT = "storage:gather";
 const AMOUNT_EVENT = "storage:amount";
 /** `storage:take` `{ player, itemId, amount, taken }`: takes up to `amount` from carried containers. */
 const TAKE_EVENT = "storage:take";
+/** `storage:empty-to-bank` `{ player, key, moved, left }`: a carried or worn container of family `key` empties into the bank. */
+const BANK_EMPTY_EVENT = "storage:empty-to-bank";
 
 const DATA = require("../data/storage-items.json");
 
@@ -74,8 +76,11 @@ function isNoted(id) {
  * A container family: `key` (attribute and log name), `names` (every item that shares the
  * store, open variants included), `openNames` (the variants that fill themselves), `pairs`
  * (closed/open gamevals), `accepts(id)`,
- * `room(player, id, contents)` (how many more of `id` fit), `usable(id)` (whether consumers may
- * take `id` from it while it is carried) and `followsOnDeath` (contents go where the item goes on death).
+ * `room(player, id, contents)` (how many more of `id` fit), `announced(player, id)` (its line for a
+ * gather that asks with `announce`, room or not), `usable(id)` (whether consumers may
+ * take `id` from it while it is carried), `followsOnDeath` (contents go where the item goes on death),
+ * `emptiedOnPvpDeath` (a PvP death empties it even when it is kept) and `emptyOnDeathVarbit` (its
+ * "Always empty ... on death" setting).
  */
 function register(family) {
   FAMILIES.set(family.key, { usable: () => false, followsOnDeath: false, openNames: [], worn: false, ...family });
@@ -199,9 +204,7 @@ function inventoryIds(player) {
 
 /** How many of `id` the inventory has room for. */
 function inventoryRoom(player, id) {
-  const inventory = player.getInventory();
-  if (isStackable(id)) return inventory.contains(id) || inventory.getFreeSlots() > 0 ? Number.MAX_SAFE_INTEGER : 0;
-  return inventory.getFreeSlots();
+  return player.getInventory().getAddableAmount(new core.Item(id, Number.MAX_SAFE_INTEGER));
 }
 
 /**
@@ -228,10 +231,13 @@ function emptyToBank(player, family) {
   let moved = 0;
   for (const entry of contents(player, family)) {
     const tab = player.getBank(Bank.getTabForItem(player, entry.id));
-    if (tab.isFull() && !tab.contains(entry.id)) continue;
-    take(player, family, entry.id, entry.amount);
-    tab.add(new core.Item(entry.id, entry.amount), false);
-    moved += entry.amount;
+    const item = new core.Item(entry.id, entry.amount);
+    const accepted = tab.getAddableAmount(item);
+    if (accepted <= 0) continue;
+    const taken = take(player, family, entry.id, accepted);
+    if (taken <= 0) continue;
+    tab.add(item.setAmount(taken), false);
+    moved += taken;
   }
   refreshBank(player);
   return moved;
@@ -263,7 +269,7 @@ function showBox(player, lines) {
 function answerRoom(event) {
   if (event.room) return;
   for (const family of FAMILIES.values()) {
-    if (!family.gathers?.(event.player) || !family.accepts(event.itemId)) continue;
+    if (!family.gathers?.(event.player, event) || !family.accepts(event.itemId)) continue;
     if (family.room(event.player, event.itemId, contents(event.player, family)) > 0) {
       event.room = true;
       return;
@@ -276,7 +282,8 @@ function answerGather(event) {
   for (const family of FAMILIES.values()) {
     const left = event.amount - event.stored;
     if (left <= 0) return;
-    if (!family.gathers?.(event.player) || !family.accepts(event.itemId)) continue;
+    if (!family.gathers?.(event.player, event) || !family.accepts(event.itemId)) continue;
+    if (event.announce) family.announced?.(event.player, event.itemId);
     const stored = store(event.player, family, event.itemId, left);
     if (stored > 0) {
       event.stored += stored;
@@ -309,6 +316,14 @@ function destroyed({ player, itemId }) {
   if (family && !owns(player, family)) setContents(player, family, []);
 }
 
+/** `storage:empty-to-bank`: what a carried or worn container of the family holds goes into the bank, as far as it fits. */
+function answerBankEmpty(event) {
+  const family = FAMILIES.get(event.key);
+  if (!family || !carried(event.player, family).length) return;
+  event.moved += emptyToBank(event.player, family);
+  event.left += total(event.player, family);
+}
+
 /** Read-only contents of the requested container, including gear not usable in place. */
 function answerContents(event) {
   const family = familyOf(event.item);
@@ -322,6 +337,7 @@ module.exports = {
   GATHER_EVENT,
   AMOUNT_EVENT,
   TAKE_EVENT,
+  BANK_EMPTY_EVENT,
   DATA,
   FAMILIES,
   init,
@@ -359,6 +375,7 @@ module.exports = {
   describe,
   showBox,
   answerContents,
+  answerBankEmpty,
   answerRoom,
   answerGather,
   answerAmount,

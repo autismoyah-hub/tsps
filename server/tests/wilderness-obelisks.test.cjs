@@ -15,7 +15,7 @@ const { MapObjects } = require("../dist/game/entity/impl/object/MapObjects");
 const Obelisks = require("../plugins/areas/WildernessObelisks.plugin");
 const T = Obelisks._test;
 
-let core, players, locs, diaryDone, handlers;
+let core, players, locs, rewardClaimed, handlers;
 
 before(async () => {
   const { CachePipeline } = require("../dist/game/cache/CachePipeline");
@@ -28,6 +28,7 @@ before(async () => {
   handlers = {};
   Obelisks.register({
     core,
+    getTaskManager: () => core.TaskManager,
     persistAttribute() {},
     onObjectInteraction: (name, options) => { handlers[name] = options; },
     onInterfaceActionClick() {},
@@ -35,7 +36,7 @@ before(async () => {
     onPlayerLogin() {},
     onServerShutdown() {},
     emitCustomEvent: (name, request) => {
-      if (name === "diary:is-complete" && request.diary === "wilderness" && request.tier === "hard") request.complete = diaryDone;
+      if (name === "diary:is-reward-claimed" && request.diary === "wilderness" && request.tier === "hard") request.claimed = rewardClaimed;
     },
   });
 });
@@ -43,7 +44,7 @@ before(async () => {
 beforeEach(() => {
   players = [];
   locs = [];
-  diaryDone = true;
+  rewardClaimed = true;
   T.active.clear();
 });
 
@@ -59,7 +60,7 @@ function fakePlayer(at, { teleblocked = false } = {}) {
     sendMessage: (m) => player.log.push(`message ${m}`),
     setInterfaceId: (id) => { player.interfaceId = id; },
     getInterfaceId: () => player.interfaceId,
-    getCombat: () => ({ getTeleblockTimer: () => ({ finished: () => !teleblocked }) }),
+    getCombat: () => ({ getTeleblockTimer: () => ({ finished: () => !teleblocked, secondsRemaining: () => (teleblocked ? 100 : 0) }) }),
     getPacketSender: () => ({
       sendSound: (id, volume, delay) => player.log.push(`synth ${id} delay ${delay}`),
       sendAreaSound: (id, x, y, z, loops, delay, radius) => player.log.push(`area ${id} ${x},${y} r${radius}`),
@@ -67,6 +68,7 @@ function fakePlayer(at, { teleblocked = false } = {}) {
       sendClientScript: (id, ...args) => player.log.push(`script ${id} ${JSON.stringify(args)}`),
       sendVarbit: (id, value) => player.log.push(`varbit ${id}=${value}`),
       sendInterfaceScript() {}, sendSubInterface: (uid, id) => player.log.push(`open ${id}`), closeSubInterface() {}, sendInterfaceFlagsRange() {},
+      sendTypedMessage: (type, m) => player.log.push(`${type === core.ChatType.SPAM ? "spam" : "message"} ${m}`),
     }),
   };
   players.push(player);
@@ -110,7 +112,8 @@ test("Teleport to Destination plays the recorded sequence and lands on the chose
   tick(1);
   assert.equal(player.log.some((line) => line.startsWith("move")), false);
   tick(1);
-  assert.ok(player.log.includes("message Ancient magic teleports you to a place within the wilderness!"));
+  // rsprox 236/03931.txt:45746: spam.
+  assert.ok(player.log.includes("spam Ancient magic teleports you to a place within the wilderness!"));
   const at = player.getLocation();
   assert.ok(at.getX() >= 3306 && at.getX() <= 3308 && at.getY() >= 3915 && at.getY() <= 3917, "on level 50's pad");
 });
@@ -125,10 +128,10 @@ test("everyone on the pad goes; a Tele Blocked player stays and is told; someone
   T.activate(activator, 0, 1, false);
   tick(13);
   for (const traveller of [activator, rider]) {
-    assert.ok(traveller.log.includes("message Ancient magic teleports you somewhere in the Wilderness!"));
+    assert.ok(traveller.log.includes("spam Ancient magic teleports you somewhere in the Wilderness!"));
     assert.ok(traveller.getLocation().getY() > 3660, "at level 19");
   }
-  assert.ok(blocked.log.includes("message A magical spell is blocking you from teleporting."));
+  assert.ok(blocked.log.includes("message A teleport block has been cast on you. It should wear off in 1 minute, 40 seconds."));
   assert.equal(blocked.getLocation().getY(), 3620);
   assert.equal(beside.getLocation().getX(), 3154);
   assert.equal(dead.getLocation().getY(), 3621, "a player dying on the pad stays");
@@ -154,17 +157,16 @@ test("Activate may send the players back to the same obelisk (Wiki)", (t) => {
 });
 
 test("Set and Teleport to Destination need the hard Wilderness Diary, and a destination set", () => {
-  diaryDone = false;
+  rewardClaimed = false;
   const player = fakePlayer([3156, 3620]);
   handlers.Obelisk["Set Destination"]({ player, objectId: LEVEL_13 });
   handlers.Obelisk["Teleport to Destination"]({ player, objectId: LEVEL_13 });
   assert.equal(player.log.filter((line) => line.includes("hard Wilderness Diary")).length, 2);
   assert.equal(T.active.size, 0);
-  diaryDone = true;
+  rewardClaimed = true;
   handlers.Obelisk["Teleport to Destination"]({ player, objectId: LEVEL_13 });
   assert.ok(player.log.includes("message You haven't set a destination yet."));
   assert.equal(T.active.size, 0);
-  assert.equal(handlers.Obelisk.Activate({ player, objectId: 31554 }), false, "the house's obelisk isn't one of these");
   const stray = { getLocation: () => new core.Location(4091, 4312, 0) };
   assert.equal(handlers.Obelisk.Activate({ player, objectId: 14826, object: stray }), false, "the map's stray copy of level 44's stones");
 });

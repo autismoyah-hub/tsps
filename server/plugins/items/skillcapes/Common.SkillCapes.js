@@ -181,7 +181,8 @@ function talk(player, steps) {
       chain.add(new core.ActionDialogue(index++, { execute: () => {
         step();
         if (rest.length) talk(player, rest);
-        else if (!player.getDialogueManager().getCurrent?.()) player.getPacketSender().sendInterfaceRemoval();
+        // A prompt the step just opened stays open: this removal would close it.
+        else if (!player.getDialogueManager().getCurrent?.() && !core.MultiChatboxPrompt.getPending(player)) player.getPacketSender().sendInterfaceRemoval();
       } }));
       player.getDialogueManager().startDialogues(chain);
       return;
@@ -211,7 +212,7 @@ function playTranscript(player, npc, variant) {
 function teleport(player, tile, onArrival) {
   const destination = Array.isArray(tile) ? new core.Location(tile[0], tile[1], tile[2] ?? 0) : tile;
   if (!core.TeleportHandler.checkReqs(player, destination)) return false;
-  core.TeleportHandler.teleport(player, destination, core.TeleportType.NORMAL, false, onArrival);
+  core.TeleportHandler.confirm(player, destination, () => core.TeleportHandler.teleport(player, destination, core.TeleportType.NORMAL, false, onArrival));
   return true;
 }
 

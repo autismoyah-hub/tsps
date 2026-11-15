@@ -4,7 +4,8 @@
  *   whirlwinds (a player at 40 kg worn or more gets the knockback less often - the gryphon
  *   "prioritises" the others, Wiki);
  * - knockback: a player under 40 kg worn is thrown back for up to 30; one at 40 kg or more
- *   stops it, the gryphon left stunned for 2 ticks;
+ *   stops it, the gryphon left stunned for 2 ticks - hitting it in that window counters the
+ *   attack, and if they don't they are thrown back anyway ("regains its focus");
  * - corrosive spit at the player's tile: still standing there, their armour corrodes - 6 hits
  *   of one value from 3 to 12, 5 ticks apart (less the more ranged defence they wear, the Wiki's
  *   captures), ended by taking everything off; with nothing on it's just the one hit;
@@ -24,6 +25,7 @@ class Fight {
     this.attacks = 0;
     this.warnedNoShield = false;
     this.knockback = null;
+    this.stun = null;
     this.spit = null;
     this.corrosion = null;
     this.whirlwinds = [];
@@ -71,10 +73,31 @@ class Fight {
     if (Common.wornWeight(player) >= knockback.weight) {
       player.sendMessage(Common.message("heavyEquipment"));
       this.boss.getCombat?.().extendAttackDelay?.(knockback.stunTicks);
+      // The stun is the window to counter-attack in (Wiki): hit it and the knockback is beaten.
+      this.stun = { until: this.tickCount + knockback.stunTicks, countered: false };
       return;
     }
     Common.hurtPlayer(player, Common.randomInt(0, knockback.max));
     this.pushAway(player, knockback.push);
+  }
+
+  /** The player attacked the gryphon while it was stunned: the knockback is countered. */
+  counterKnockback(player) {
+    if (!this.stun || this.stun.countered) return false;
+    if (player !== this.player()) return false;
+    this.stun.countered = true;
+    return true;
+  }
+
+  /** Not countered in time: thrown back anyway, whatever the player weighs (Wiki). */
+  tickStun(player) {
+    const stun = this.stun;
+    if (!stun || this.tickCount <= stun.until) return;
+    this.stun = null;
+    if (stun.countered) return;
+    player.sendMessage(Common.message("regains"));
+    Common.hurtPlayer(player, Common.randomInt(0, Common.data.knockback.max));
+    this.pushAway(player, Common.data.knockback.push);
   }
 
   /** Straight away from the gryphon, stopping at anything in the way; the player can fight on at once. */
@@ -128,23 +151,43 @@ class Fight {
       return;
     }
     const { spit } = Common.data;
-    this.corrosion = { left: spit.hits, next: this.tickCount + spit.every, every: spit.every, damage: this.corrosionHit(player) };
+    // rsprox 235/03456.txt:49039-49483: the first hit lands with the message, then one every 6 ticks; varp corrosion
+    // (4966) counts the hits left (6, then 5 at the first) and goes to 0 when it ends. In the recording hits 2-4 show
+    // one tick after their varp change; here both go out on the same tick.
+    // The player is kept with it so the varp is reset even after they have left the cave (stop() from destroy()).
+    this.corrosion = { player, left: spit.hits, next: this.tickCount, every: spit.every, damage: this.corrosionHit(player) };
     player.sendMessage(Common.message("corroding"));
+    setCorrosionVarp(player, spit.hits);
   }
 
   tickCorrosion(player) {
     const corrosion = this.corrosion;
     if (!corrosion) return;
     if (!wearsAnything(player)) {
-      this.corrosion = null;
-      player.sendMessage(Common.message("stopsCorroding"));
+      this.endCorrosion();
       return;
     }
     if (this.tickCount < corrosion.next) return;
     Common.hurtPlayer(player, corrosion.damage);
     corrosion.left -= 1;
     corrosion.next = this.tickCount + corrosion.every;
+    setCorrosionVarp(player, corrosion.left);
     if (corrosion.left <= 0) this.corrosion = null;
+  }
+
+  /**
+   * Corrosion cut short (armour off, the gryphon dies, or the player leaves): the varp back to 0, and the spam line, as
+   * recorded, while the player is still in the cave.
+   */
+  endCorrosion() {
+    const corrosion = this.corrosion;
+    if (!corrosion) return;
+    this.corrosion = null;
+    const { player } = corrosion;
+    if (this.cave.players().includes(player)) {
+      player.getPacketSender?.().sendTypedMessage(Common.core.ChatType.SPAM, Common.message("stopsCorroding"));
+    }
+    setCorrosionVarp(player, 0);
   }
 
   // --- Whirlwinds
@@ -235,6 +278,7 @@ class Fight {
     if ((this.boss.getPoisonDamage?.() ?? 0) > 0) this.boss.setPoisonDamage(0);
     this.boss.setVenomed?.(false);
     this.tickKnockback(player);
+    this.tickStun(player);
     this.tickSpit(player);
     this.tickCorrosion(player);
     this.tickWhirlwinds(player);
@@ -243,8 +287,9 @@ class Fight {
   stop() {
     this.stopped = true;
     this.knockback = null;
+    this.stun = null;
     this.spit = null;
-    this.corrosion = null;
+    this.endCorrosion();
     this.clearWhirlwinds();
   }
 }
@@ -253,7 +298,12 @@ class Fight {
 function walkable(tile) {
   const { RegionManager } = Common.core;
   if (!RegionManager?.getClipping) return true;
-  return (RegionManager.getClipping(tile.getX(), tile.getY(), tile.getZ(), null) & 0x200100) === 0;
+  return (RegionManager.getClipping(tile.getX(), tile.getY(), tile.getZ(), null) & RegionManager.BLOCKED_MASK) === 0;
+}
+
+function setCorrosionVarp(player, value) {
+  const id = Common.core.CacheDefinitions.getVarpId?.("corrosion");
+  if (player && id != null && id >= 0) player.getPacketSender().sendConfig(id, value);
 }
 
 function wearsAnything(player) {

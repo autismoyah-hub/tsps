@@ -47,20 +47,38 @@ function rollFish(level, scale, random) {
   return { itemId: hit.itemId, amount: amount(hit.amount), noted: true };
 }
 
-/** A chest's reward: [{ itemId, amount, noted }]. */
-function roll(chest, fishingLevel, random = Math.random) {
+/** One main-table roll: the entry's items (and its oneOf pick or fish); the rest of outOf is nothing. */
+function rollMain({ outOf, main }, fishingLevel, random) {
+  let roll = Math.floor(random() * outOf);
+  const entry = main.find((candidate) => (roll -= candidate.weight) < 0);
+  if (!entry) return [];
+  const drops = entry.items.map((item) => drop(item, random));
+  if (entry.oneOf) drops.push(drop(pick(entry.oneOf, random), random));
+  if (entry.fish != null) drops.push(rollFish(fishingLevel, entry.fish, random));
+  return drops;
+}
+
+/** How much more likely the chance `rules` ("drops:chance", a league's boosted drops) make a pre-roll's items. */
+function boost(entries, rules) {
+  const names = entries.map((entry) => core.ItemDefinition.forId(entry.itemId)?.getName?.() ?? "");
+  return rules.reduce((value, rule) => (names.some((name) => rule.pattern.test(name)) ? value * rule.multiplier : value), 1);
+}
+
+/**
+ * A chest's reward: [{ itemId, amount, noted }]; a pre-roll hit is flagged `preRoll`, a tertiary
+ * hit `bonus`. `rules` raise the pre-rolls' chances.
+ */
+function roll(chest, fishingLevel, random = Math.random, rules = []) {
   const { loot } = chest;
   for (const preRoll of loot.preRolls) {
     const [chance, outOf] = preRoll.chance;
-    if (Math.floor(random() * outOf) < chance) return [drop(pick(preRoll.oneOf, random), random)];
+    const hits = rules.length ? chance * boost(preRoll.oneOf, rules) : chance;
+    if (random() * outOf < hits) return [{ ...drop(pick(preRoll.oneOf, random), random), preRoll: true }];
   }
   const drops = loot.always.map((entry) => drop(entry, random));
-  let main = Math.floor(random() * loot.outOf);
-  const entry = loot.main.find((candidate) => (main -= candidate.weight) < 0);
-  if (!entry) return drops;
-  drops.push(...entry.items.map((item) => drop(item, random)));
-  if (entry.oneOf) drops.push(drop(pick(entry.oneOf, random), random));
-  if (entry.fish != null) drops.push(rollFish(fishingLevel, entry.fish, random));
+  if (loot.outOf != null) drops.push(...rollMain(loot, fishingLevel, random));
+  for (const table of loot.tables) for (let i = 0; i < table.times; i++) drops.push(...rollMain(table, fishingLevel, random));
+  for (const { chance: [hits, outOf], item } of loot.tertiary) if (Math.floor(random() * outOf) < hits) drops.push({ ...drop(item, random), bonus: true });
   return drops;
 }
 

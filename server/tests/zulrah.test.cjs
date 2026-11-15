@@ -102,6 +102,7 @@ function fakeInventory() {
     getFreeSlots: () => slots,
     contains: (id) => items.has(id),
     getAmount: (id) => items.get(id) ?? 0,
+    getAddableAmount: (item) => Math.min(item.getAmount(), 2147483647 - (items.get(item.getId()) ?? 0)),
     add(item) {
       if (!items.has(item.getId())) slots--;
       items.set(item.getId(), (items.get(item.getId()) ?? 0) + item.getAmount());
@@ -194,7 +195,7 @@ test('dragon, crystal and noxious halberds reach Zulrah across the actual swamp 
       for (let x = spawn.x - 2; x <= spawn.x + 6; x++) {
         for (let y = spawn.y - 2; y <= spawn.y + 6; y++) {
           const distance = Math.max(0, spawn.x - x, x - (spawn.x + 4), spawn.y - y, y - (spawn.y + 4));
-          if (distance < 1 || distance > 2 || (RegionManager.getClipping(x, y, 0, null) & 0x1280100) !== 0) continue;
+          if (distance < 1 || distance > 2 || (RegionManager.getClipping(x, y, 0, null) & RegionManager.BLOCKED_MASK) !== 0) continue;
           const player = meleePlayer(id, x, y);
           assert.equal(method.attackDistance(player), 2, `${id} has halberd reach`);
           assert.equal(CombatRange.canReach(player, method, zulrah), true, `${id}, ${name}, tile ${x},${y}`);
@@ -291,7 +292,7 @@ test('the fight opens, runs a rotation, closes it and picks the next', () => {
 });
 
 test('every cloud and snakeling reaches the shrine island', () => {
-  const walkable = (x, y) => (RegionManager.getClipping(x, y, 0, null) & 0x1280100) === 0;
+  const walkable = (x, y) => (RegionManager.getClipping(x, y, 0, null) & RegionManager.BLOCKED_MASK) === 0;
   const touches = (x, y) => [-1, 0, 1].some((dx) => [-1, 0, 1].some((dy) => walkable(x + dx, y + dy)));
   const phases = [Rotations.OPENING, Rotations.CLOSING, ...Rotations.ROTATIONS.flat()];
   for (const phase of phases) {
@@ -316,7 +317,7 @@ test('Zulrah can see the island from each of its four places', () => {
     let total = 0;
     for (let x = 2262; x <= 2274; x++) {
       for (let y = 3068; y <= 3078; y++) {
-        if ((RegionManager.getClipping(x, y, 0, null) & 0x1280100) !== 0) continue;
+        if ((RegionManager.getClipping(x, y, 0, null) & RegionManager.BLOCKED_MASK) !== 0) continue;
         total++;
         const player = { getLocation: () => new Location(x, y, 0), isPlayer: () => true, getSize: () => 1, getPrivateArea: () => null };
         if (RegionManager.canProjectileAttackTarget(zulrah, player)) seen++;
@@ -410,7 +411,7 @@ test('the tail throws the player back, away from Zulrah and onto the island', ()
   player.location = new Location(2268, 3069, 0);
   const destination = fight.knockbackTile(player);
   assert.ok(destination.getY() < 3069, 'pushed south, away from Zulrah');
-  assert.ok((RegionManager.getClipping(destination.getX(), destination.getY(), 0, null) & 0x1280100) === 0, 'onto the island');
+  assert.ok((RegionManager.getClipping(destination.getX(), destination.getY(), 0, null) & RegionManager.BLOCKED_MASK) === 0, 'onto the island');
   fight.end();
 });
 
@@ -579,6 +580,54 @@ test('after 50 kills reclaiming costs 100,000 coins; dying elsewhere first loses
   player.setAttribute(Shared.ATTR.RETRIEVAL, { items: [[4151, 1]], paid: false });
   hooks.drops.forEach((handler) => handler({ player, item: new Item(995, 1), dropEligible: true, shouldDropItems: true, handled: false }));
   assert.equal(player.getAttribute(Shared.ATTR.RETRIEVAL), null, 'an unsafe death elsewhere loses them');
+});
+
+test('a second shrine death before collecting loses the first death items (Wiki: permanently lost); one death items gather', () => {
+  const { Item } = PluginManager.getCoreApi();
+  const { player, fight } = startedFight();
+  player.location = new Location(2268, 3070, 0);
+  player.setAttribute(Shared.ATTR.RETRIEVAL, { items: [[11802, 1]], paid: false }); // from an earlier death
+  for (const item of [new Item(4151, 1), new Item(560, 250)]) {
+    hooks.drops.forEach((handler) => handler({ player, item, dropEligible: true, shouldDropItems: true, handled: false }));
+  }
+  assert.deepEqual(player.getAttribute(Shared.ATTR.RETRIEVAL).items, [[4151, 1], [560, 250]], 'only this death items');
+  fight.end();
+});
+
+// Wiki (Zulrah): held items are "permanently lost if the player dies an unsafe death before reclaiming them". A death
+// with nothing to drop never reaches the item-drop hook, so the hold from an earlier death survived it.
+test('an unsafe death with nothing to drop still loses what she held; a safe one keeps it', () => {
+  const died = (player, itemsLost) => {
+    hooks.death.forEach((handler) => handler({ player, itemsLost, handled: false }));
+    (hooks.custom['player:died'] ?? []).forEach((handler) => handler({ player, itemsLost }));
+  };
+  const { player, fight } = startedFight();
+  player.location = new Location(2268, 3070, 0);
+  player.setAttribute(Shared.ATTR.RETRIEVAL, { items: [[11802, 1]], paid: false }); // from an earlier death
+  const before = player.messages.length;
+  died(player, true); // at the shrine, empty-handed
+  assert.equal(player.getAttribute(Shared.ATTR.RETRIEVAL), null, 'lost at the shrine');
+  assert.equal(player.messages.slice(before).some((m) => /has retrieved some of your items/.test(m)), false, 'nothing new announced');
+  fight.end();
+
+  const elsewhere = fakePlayer();
+  elsewhere.setAttribute(Shared.ATTR.RETRIEVAL, { items: [[4151, 1]], paid: false });
+  died(elsewhere, false); // a safe death (a minigame)
+  assert.deepEqual(elsewhere.getAttribute(Shared.ATTR.RETRIEVAL).items, [[4151, 1]], 'a safe death keeps them');
+  died(elsewhere, true); // an unsafe one elsewhere, empty-handed
+  assert.equal(elsewhere.getAttribute(Shared.ATTR.RETRIEVAL), null, 'lost elsewhere');
+});
+
+test("a shrine death's own items stay held through the death that took them", () => {
+  const { Item } = PluginManager.getCoreApi();
+  const { player, fight } = startedFight();
+  player.location = new Location(2268, 3070, 0);
+  hooks.drops.forEach((handler) => handler({ player, item: new Item(4151, 1), dropEligible: true, shouldDropItems: true, handled: false }));
+  hooks.death.forEach((handler) => handler({ player, itemsLost: true, handled: false }));
+  (hooks.custom['player:died'] ?? []).forEach((handler) => handler({ player, itemsLost: true }));
+  assert.deepEqual(player.getAttribute(Shared.ATTR.RETRIEVAL).items, [[4151, 1]]);
+  assert.match(player.messages.at(-1), /Priestess Zul-Gwenwynig has retrieved some of your items/);
+  fight.end();
 });
 
 test('the boat asks first; Quick-Board goes straight to the shrine', () => {

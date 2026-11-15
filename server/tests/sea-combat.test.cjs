@@ -19,11 +19,14 @@ const { Inventory } = require("../dist/game/model/container/impl/Inventory");
 const { emptySailingState } = require("../dist/game/content/sailing/SailingState");
 const { TaskManager } = require("../dist/game/task/TaskManager");
 const { World } = require("../dist/game/World");
+const { TimerRepository } = require("../dist/util/timers/TimerRepository");
+const { TimerKey } = require("../dist/util/timers/TimerKey");
 const { NPC } = require("../dist/game/entity/impl/npc/NPC");
 const { Player } = require("../dist/game/entity/impl/player/Player");
 const { Skill } = require("../dist/game/model/Skill");
 const { CombatPosition } = require("../dist/game/content/combat/CombatPosition");
 const { CombatType } = require("../dist/game/content/combat/CombatType");
+const { FightType } = require("../dist/game/content/combat/FightType");
 const { NpcDefinitionLoader } = require("../dist/game/definition/loader/impl/NpcDefinitionLoader");
 
 const common = require("../plugins/skills/sailing/seacombat/Common.SeaCombat");
@@ -56,15 +59,17 @@ before(() => {
   content();
   const real = PluginManager.createApi("SeaCombatTest");
   api = { ...real, persistAttribute() {}, sendMultiChatboxPrompt: () => true };
-  require("../plugins/skills/sailing/Sailing.plugin").register(api);
-  require("../plugins/skills/sailing/Crew.plugin").register(api);
-  require("../plugins/skills/sailing/SeaCombat.plugin").register(api);
-  require("../plugins/skills/sailing/StaticShips.plugin").register(api);
-  require("../plugins/skills/sailing/PortTasks.plugin").register(api);
+  require("../plugins/skills/sailing/Panel.Sailing").register(api);
+  require("../plugins/skills/sailing/Crew.Sailing").register(api);
+  require("../plugins/skills/sailing/SeaCombat.Sailing").register(api);
+  require("../plugins/skills/sailing/StaticShipHooks.Sailing").register(api);
+  require("../plugins/skills/sailing/PortTasks.Sailing").register(api);
   require("../plugins/npcs/NpcDrops.plugin").register(api);
 });
 
 let nextIndex = 600;
+/** Every test player's timers, which tick() runs as the game loop does. */
+const playerTimers = [];
 /** A player on the real Mobile prototype, recording what they're sent, said and given. */
 function captain({ sailing = 99, ranged = 99 } = {}) {
   const player = Object.create(Mobile.prototype);
@@ -76,6 +81,8 @@ function captain({ sailing = 99, ranged = 99 } = {}) {
   const said = [];
   const xp = [];
   const anims = [];
+  const timers = new TimerRepository();
+  playerTimers.push(timers);
   const levels = new Map([["Sailing", sailing], ["Ranged", ranged]]);
   let location = new Location(3060, 2980, 0);
   let state = emptySailingState();
@@ -112,6 +119,7 @@ function captain({ sailing = 99, ranged = 99 } = {}) {
     setMobileInteraction() {},
     getLocalPlayers: () => [],
     getLocalNpcs: () => player.localNpcs ?? [],
+    getTimers: () => timers,
     getSailing: () => state,
     setSailing: (next) => { state = next; },
     getAttribute: (key) => attributes.get(key),
@@ -140,6 +148,7 @@ function captain({ sailing = 99, ranged = 99 } = {}) {
 function tick(count = 1) {
   for (let i = 0; i < count; i++) {
     World.processCycle += 1;
+    for (const timers of playerTimers) timers.process();
     TaskManager.process();
     Cannon.tick();
     Creatures.tick();
@@ -244,8 +253,16 @@ test("a player's cannon max hit: their ranged max hit with the cannon's and cann
   player.getSkillManager().setMaxLevel?.(Skill.RANGED, 99, false);
   const rune = common.cannonAt(59451);
   const ball = common.ballByItem(RUNE_CANNONBALL);
-  // 99 Ranged, no prayer, no gear: floor((107 * (26 + 201 + 64) + 320) / 640) = 49.
-  assert.equal(Cannon._test.playerMaxHit(player, rune, ball), 49);
+  // 99 Ranged, no prayer, no gear: floor((107 * (26 + 201 + 64) + 320) / 640) = 49. The Wiki's formula (Boat combat)
+  // has no attack-style term, so the captain's stance - Punch is Accurate, +3 - changes neither the max hit nor accuracy.
+  const { AccuracyFormulasDpsCalc } = require("../dist/game/content/combat/formula/AccuracyFormulasDpsCalc");
+  const rolls = [];
+  for (const stance of [FightType.UNARMED_PUNCH, FightType.UNARMED_KICK, FightType.UNARMED_BLOCK]) {
+    player.setFightType(stance);
+    assert.equal(Cannon._test.playerMaxHit(player, rune, ball), 49, `stance ${stance.name ?? stance}`);
+    rolls.push(AccuracyFormulasDpsCalc.rangedAttackRollWithBonus(player, 0));
+  }
+  assert.deepEqual(rolls, [107 * 64, 107 * 64, 107 * 64], "accuracy: (99 + 8) * 64 in every stance");
 });
 
 test("a crewmate's max hit: the captain's Sailing, scaled by Privateering (Wiki)", () => {
@@ -535,16 +552,47 @@ test("a Barracuda Trial's hazards sink a boat without its cargo going", () => {
   assert.equal(cargo.countIn(owned, ADAMANT_CANNONBALL), 100);
 });
 
-test("at 0 HP the boat is lost with all of its cargo, and the player escapes to shore", () => {
-  const player = captain();
-  const { owned } = aboardWithCannon(player, { type: "skiff", cannon: "adamant cannon" });
-  cargo.store(owned, ADAMANT_CANNONBALL, 100);
-  cargo.store(owned, cargo.REPAIR_KIT, 2);
-  ShipCombat.damagePlayerBoat(player, 10_000, { creature: new NPC(OSPREY, new Location(3000, 3000, 0)) });
-  assert.equal(Sailing.instanceAboard(player), undefined, "escaped");
-  assert.equal(owned.location.kind, "sunk", "until a shipwright recovers it");
-  assert.equal(owned.cargo.filter(Boolean).length, 0, "all cargo lost (Wiki)");
-});
+for (const attacker of ["creature", "ship"]) {
+  test("combat capsize by " + attacker + " selectively loses cargo and survives recovery/save", () => {
+    const player = captain();
+    const { owned } = aboardWithCannon(player);
+    const before = [
+      { id: ADAMANT_CANNONBALL, amount: 100 }, null,
+      { id: cargo.REPAIR_KIT, amount: 2 }, { id: 32307, amount: 37 },
+      { id: 32366, amount: 4 }, { id: 32435, amount: 3 },
+      { id: 32847, amount: 7 }, { id: 32845, amount: 11 },
+      { id: 32309, amount: 29 }, { id: 32368, amount: 2 },
+      { id: 11334, amount: 17 }, // Fish offcuts (distinct from fine offcuts)
+    ];
+    owned.cargo = structuredClone(before);
+    const expected = [...structuredClone(before.slice(0, 5)), null, null, null, null, null, { id: 11334, amount: 17 }];
+    for (const [slot, category] of [[0, "supplies"], [2, "supplies"], [3, "supplies"], [4, "supplies"],
+      [5, "cargo"], [6, "salvage"], [7, "bounty"], [8, "fish"], [9, "fish"], [10, "supplies"]]) {
+      assert.equal(cargo.categoryOf(before[slot].id), category, "cache item at slot " + slot);
+    }
+    ShipCombat.damagePlayerBoat(player, 10_000, attacker === "creature"
+      ? { creature: new NPC(OSPREY, new Location(3000, 3000, 0)) } : { ship: {} });
+    assert.equal(Sailing.instanceAboard(player), undefined, "escaped");
+    assert.equal(owned.location.kind, "sunk", "until a shipwright recovers it");
+    assert.deepEqual(owned.cargo, expected, "quantities and slots retained");
+    const { normalizeSailingState } = require("../dist/game/content/sailing/SailingState");
+    player.setSailing(normalizeSailingState(JSON.parse(JSON.stringify(player.getSailing()))));
+    const restored = player.getSailing().boats.find((boat) => boat.slot === owned.slot);
+    assert.deepEqual(restored.cargo, expected, "saved sunk state");
+    assert.equal(Sailing.recover(player, owned.slot, "the_pandemonium"), null);
+    cargo.dropLostOnRecovery(restored);
+    cargo.dropLostOnRecovery(restored);
+    assert.deepEqual(restored.cargo, expected, "repeated recovery policy is lossless");
+  });
+}
+
+/** Applies a repair kit from the player's inventory, as the inventory's Apply. */
+function applyKit(player, itemId) {
+  const event = { player, itemId, clickType: 1, handled: false };
+  assert.equal(Repairs.apply(event), true);
+  assert.equal(event.handled, true);
+  return event;
+}
 
 test("a repair kit's Apply repairs the boat as captured; its hitpoints by tier", () => {
   const player = captain();
@@ -553,17 +601,127 @@ test("a repair kit's Apply repairs the boat as captured; its hitpoints by tier",
   try {
     owned.damage = 30;
     player.inventory.add(new Item(31967, 1));
-    const event = { player, itemId: 31967, clickType: 1, handled: false };
-    assert.equal(Repairs.apply(event), true);
+    applyKit(player, 31967);
     assert.equal(owned.damage, 20, "an oak kit repairs 10");
     assert.equal(player.inventory.getAmount(31967), 0);
     assert.equal(player.anims.at(-1), 13252, "human_repairkit");
     assert.equal(player.messages().at(-1), "You use the repair kit to fix up the boat.");
     assert.equal(player.varbits.get(19181), BoatHp.hitpointsOf(owned));
+    assert.deepEqual(Object.values(cargo.REPAIR_KITS), [5, 10, 20, 30, 40, 45, 50], "wooden to rosewood");
     assert.equal(cargo.repairKitUses({ ...owned, cargo: [{ id: 31964, amount: 2 }, { id: 31982, amount: 1 }] }), 60,
       "the side panel counts the hold's kits by what they repair (5 per repair kit, rsprox)");
   } finally {
     leave(player);
+  }
+});
+
+test("a repair kit used ashore is refused with live's line and kept", () => {
+  const player = captain();
+  const { Item } = require("../dist/game/model/Item");
+  player.inventory.add(new Item(31976, 1));
+  applyKit(player, 31976);
+  assert.equal(player.messages().at(-1), "You need to be on a boat to use a repair kit.");
+  assert.equal(player.inventory.getAmount(31976), 1);
+  assert.deepEqual(player.anims, []);
+});
+
+test("a repair kit on a boat at full health is still used up", () => {
+  const player = captain();
+  const { owned } = aboardWithCannon(player, { type: "skiff", cannon: "adamant cannon" });
+  const { Item } = require("../dist/game/model/Item");
+  try {
+    owned.damage = 0;
+    player.inventory.add(new Item(31970, 1));
+    applyKit(player, 31970);
+    assert.equal(player.inventory.getAmount(31970), 0);
+    assert.equal(owned.damage, 0);
+    assert.equal(player.messages().at(-1), "You use the repair kit to fix up the boat.");
+  } finally {
+    leave(player);
+  }
+});
+
+test("repair kits carry the food delay: one every 3 ticks; clicks in between do nothing", () => {
+  const player = captain();
+  const { owned } = aboardWithCannon(player, { type: "skiff", cannon: "adamant cannon" });
+  const { Item } = require("../dist/game/model/Item");
+  try {
+    owned.damage = 100;
+    player.inventory.add(new Item(31964, 5));
+    const repaired = [];
+    for (let i = 0; i < 7; i++) {
+      const before = owned.damage;
+      applyKit(player, 31964);
+      if (owned.damage < before) repaired.push(i);
+      tick();
+    }
+    assert.deepEqual(repaired, [0, 3, 6]);
+    assert.equal(player.inventory.getAmount(31964), 2, "an ignored click keeps the kit");
+    assert.equal(player.messages().filter((text) => text === "You use the repair kit to fix up the boat.").length, 3);
+  } finally {
+    leave(player);
+  }
+});
+
+test("a repair kit and eating share one delay, both ways", () => {
+  const player = captain();
+  const { owned } = aboardWithCannon(player, { type: "skiff", cannon: "adamant cannon" });
+  const { Item } = require("../dist/game/model/Item");
+  const timers = player.getTimers();
+  try {
+    owned.damage = 100;
+    player.inventory.add(new Item(31964, 2));
+    timers.extendOrRegister(TimerKey.FOOD, 3); // a bite of ordinary food, as Food.plugin.js
+    applyKit(player, 31964);
+    assert.equal(owned.damage, 100, "a kit waits out the eat delay");
+    assert.equal(player.inventory.getAmount(31964), 2);
+    timers.cancel(TimerKey.FOOD);
+    applyKit(player, 31964);
+    assert.equal(owned.damage, 95);
+    assert.equal(timers.left(TimerKey.FOOD), 3, "food waits out the kit's delay (Food.plugin.js checks this timer)");
+  } finally {
+    leave(player);
+  }
+});
+
+test("at the helm a repair kit plays no repair animation", () => {
+  const player = captain();
+  const { boat, owned } = aboardWithCannon(player, { type: "skiff", cannon: "adamant cannon" });
+  const { Item } = require("../dist/game/model/Item");
+  const helm = boat.helmPlayerId;
+  try {
+    owned.damage = 30;
+    boat.helmPlayerId = player.getIndex();
+    player.inventory.add(new Item(31976, 1));
+    const anims = player.anims.length;
+    applyKit(player, 31976);
+    assert.equal(owned.damage, 0, "a camphor kit repairs 40, up to full");
+    assert.equal(player.anims.length, anims, "the helmsman's pose stays");
+    assert.ok(player.sent.some(([key, id]) => key === "sendSoundEffect" && id === 2101), "the repair sound still plays");
+  } finally {
+    boat.helmPlayerId = helm;
+    leave(player);
+  }
+});
+
+test("a guest aboard someone else's boat repairs it", () => {
+  const owner = captain();
+  const guest = captain();
+  const { owned } = aboardWithCannon(owner, { type: "sloop" });
+  const { Item } = require("../dist/game/model/Item");
+  try {
+    assert.equal(Sailing.boardAsGuest(guest, owner, "the_pandemonium", 8), null);
+    owned.damage = 50;
+    guest.inventory.add(new Item(31973, 1));
+    applyKit(guest, 31973);
+    assert.equal(owned.damage, 20, "a mahogany kit repairs 30");
+    assert.equal(guest.inventory.getAmount(31973), 0);
+    assert.equal(guest.messages().at(-1), "You use the repair kit to fix up the boat.");
+    assert.equal(guest.anims.at(-1), 13252);
+    assert.equal(owner.varbits.get(19181), BoatHp.hitpointsOf(owned), "the owner's side panel");
+    assert.equal(guest.varbits.get(19181), BoatHp.hitpointsOf(owned), "the guest's side panel");
+  } finally {
+    leave(owner);
   }
 });
 
@@ -667,7 +825,7 @@ test("from a deck: ranged and magic at sea creatures are allowed, melee isn't, n
 });
 
 test("the first heading after taking the helm sets sail; a heading with the sails lowered only turns (rsprox)", () => {
-  const helm = require("../plugins/skills/sailing/Helm.plugin");
+  const helm = require("../plugins/skills/sailing/Helm.Sailing");
   const player = captain();
   const { boat } = aboardWithCannon(player, { type: "skiff", cannon: "adamant cannon" });
   const listeners = [];
@@ -900,6 +1058,38 @@ test("crew following the captain take the captain's target when the captain atta
     assert.equal(player.said.at(-1), "Fire!");
   } finally {
     World.getNpcs().remove(tern);
+    leave(player);
+  }
+});
+
+test("looted runes go to the rune pouch first, under the Rune-picking setting (Wiki: Rune pouch)", () => {
+  const player = captain();
+  const { boat, owned, loc, hotspot } = aboardWithCannon(player);
+  const osprey = seaNpc(OSPREY, outboard(boat, owned, hotspot.id, loc, 1));
+  const AIR_RUNE = 556;
+  const asked = [];
+  const previous = PluginManager.emitCustomEvent;
+  PluginManager.emitCustomEvent = (name, payload) => {
+    if (name === "npc-drops:add") payload.drops.push({ itemId: AIR_RUNE, amount: 30 });
+    if (name === "rune-pouch:gather") {
+      asked.push({ ...payload });
+      if (payload.itemId === AIR_RUNE) payload.stored = payload.amount;
+    }
+    return previous.call(PluginManager, name, payload);
+  };
+  try {
+    PluginManager.emitNpcDeath({ killer: player, npc: osprey, npcId: OSPREY, location: {}, remains: null });
+    Loot.harvest({ player, npc: osprey, clickType: 1, handled: false });
+    tick(2);
+    assert.equal(Loot.corpses.has(osprey), false, "harvested");
+    const air = asked.find((request) => request.itemId === AIR_RUNE);
+    assert.ok(air, "the pouch was asked for the runes");
+    assert.equal(air.amount, 30);
+    assert.equal(air.runePicking, true, "only while Rune-picking is on");
+    assert.equal(player.inventory.getAmount(AIR_RUNE), 0, "what the pouch took isn't added again");
+  } finally {
+    PluginManager.emitCustomEvent = previous;
+    World.getNpcs().remove(osprey);
     leave(player);
   }
 });

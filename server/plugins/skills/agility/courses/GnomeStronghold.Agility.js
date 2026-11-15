@@ -9,7 +9,8 @@ const { pipe } = require("../shortcuts/Builders.Agility");
  */
 function obstaclePipe({ pos }) {
   const { x, y } = pos;
-  return [...pipe([x, y + 3], [x, y + 6]), { tele: [x, y + 7, 0] }];
+  // Finish the last squeeze outside the pipe, so exiting does not interrupt it with a teleport.
+  return pipe([x, y + 3], [x, y + 7]);
 }
 
 /**
@@ -21,6 +22,7 @@ module.exports = {
   key: "gnome",
   name: "Gnome Stronghold Agility",
   helper: 1, // the Agility helper's course (enum 3507: "Gnome Stronghold Course")
+  lootSource: 66, // the loot tracker's source (enum 4976)
   lapXp: 110.5,
   petBase: 35609, // Giant squirrel base chance (Wiki)
   diaryTask: {

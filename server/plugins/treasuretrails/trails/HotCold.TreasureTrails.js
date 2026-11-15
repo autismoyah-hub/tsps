@@ -7,8 +7,10 @@
 // row's fight, and digging again once it is beaten gives the next clue. The device is kept.
 const Runtime = require("./Runtime.TreasureTrails");
 const Dialogue = require("./Dialogue.TreasureTrails");
-// The beginner device's bands are the master device's too (Wiki "Treasure Trails/Guide/Hot Cold").
-const { temperature } = require("../beginner/Runtime.BeginnerTreasureTrails");
+const { playDig } = require("./Dig.TreasureTrails");
+// The beginner device's bands and Feel lines are the master device's too (Wiki "Treasure Trails/Guide/Hot
+// Cold", rsprox 236/3931).
+const { reading, playFeelSound } = require("../beginner/Runtime.BeginnerTreasureTrails");
 const MAKING_HISTORY = "making_history";
 const NO_HISTORY = "treasure-trails-master-when-player-has-not-completed-making-history";
 const WITHOUT_DEVICE = "treasure-trails-master-when-player-does-not-have-a-strange-device-in-their-inventory";
@@ -103,13 +105,12 @@ function feel(event, random = Math.random) {
   const trails = masterTrails(player);
   if (!trails.length) { player.sendMessage(NOT_YET); return true; }
   const trail = trails.find(entry => entry.state.hotcold != null);
-  if (!trail) { Dialogue.mesbox(player, INACTIVE); return true; }
+  // Live shows it as an item box with the device (rsprox 227/01710, 235/01042).
+  if (!trail) { Dialogue.itemBox(player, device(), INACTIVE); return true; }
   const target = Runtime.data(trail.tier).byRow.get(trail.state.hotcold);
   const current = distance(location(player), target.location);
-  const previous = trail.state.previous;
-  const comparison = previous == null ? "" : current < previous ? ", and warmer than last time" :
-    current > previous ? ", but colder than last time" : ", and the same temperature as last time";
-  player.sendMessage(`The device is ${temperature(current)}${comparison}.`);
+  player.sendMessage(reading(current, trail.state.previous));
+  playFeelSound(core, player, current);
   trail.item.setMetaValue(Runtime.metaKey(trail.tier), { ...trail.state, previous: current });
   player.getInventory().refreshItems();
   const damage = DAMAGE[0] + Math.floor(random() * (DAMAGE[1] - DAMAGE[0] + 1));
@@ -128,7 +129,7 @@ function dig(event) {
   });
   if (!trail) return;
   event.allow = false;
-  player.performAnimation(new core.Animation(core.CacheDefinitions.getSeqId("human_dig") ?? 830));
+  playDig(core, player);
   const target = Runtime.data(trail.tier).byRow.get(trail.state.hotcold);
   // Wiki: the dig summons the target's fight; dig again once it is beaten.
   if (target.encounter && trail.state.defeated !== true) {

@@ -1,4 +1,5 @@
 import { LocAnimated, type LocFrameSoundHandler } from "../loc/LocAnimated";
+import type { MultiLocReloadGroup } from "../loc/MultiLocVarps";
 import Denque from "denque";
 import { mat4, vec3 } from "gl-matrix";
 
@@ -28,7 +29,7 @@ import type { WorldEntityAnimator } from "../WorldEntityAnimator";
 import { pickSeaPoint, projectDeckToWorld, updateWorldEntityMotion } from "../render/worldEntityMotion";
 import { getServerTickPhaseNow } from "../../network/serverConnection/timing";
 import { WebGPUMapSquare, type SceneryDrawContext } from "./WebGPUMapSquare";
-import { resolveFogRange } from "../RenderDistancePolicy";
+import { fogSettings, resolveFogRange } from "../RenderDistancePolicy";
 import { WorldResources } from "./WorldResources";
 import { WebGPUActors } from "./actors/WebGPUActors";
 import { WebGPUInstances } from "./instances";
@@ -51,6 +52,8 @@ import { GPU_TEXTURE_USAGE, SCENE_DEPTH_FORMAT, SCENE_GROUP, WORLD_TEXTURES_GROU
 import { getControlledPlayerEcsIndex, updateFollowCamera } from "./camera";
 import { resolveWebGPULodDistance, resolveWebGPURenderDistance, updateWebGPUMapStreaming } from "./frameConfig";
 import { FxaaPass } from "./fxaa";
+import { ShaderFxPass } from "./shaderFxPass";
+import { PlayerMaskTarget } from "./playerMask";
 import { SceneMsaaTargets } from "./msaaTargets";
 import { WEBGPU_MSAA_SAMPLES } from "./multisample";
 import { EditorOverlays } from "./overlays/EditorOverlays";
@@ -59,6 +62,8 @@ import { WebGPUOverlays } from "./overlays/WebGPUOverlays";
 import { LocUpdates, type LocReloadGroup } from "./locUpdates";
 import { getClientCycle } from "../../network/ServerConnection";
 import { WebGPUUi } from "./ui/WebGPUUi";
+import { WebGPUHeldScene } from "./heldScene";
+import { SceneFrameHold } from "../SceneFrameHold";
 import type { UiRenderMetrics } from "./ui/WebGPUUi";
 
 interface QueuedMap {
@@ -122,6 +127,12 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
     /** The GPU plugin's anti-aliasing: multisampled world-pass targets, or FXAA on the base path. */
     private msaaTargets?: SceneMsaaTargets;
     private fxaa?: FxaaPass;
+    /** The Shader Effects plugin's pass on the base path (117 HD runs its own in the HDR chain). */
+    private shaderFxPass?: ShaderFxPass;
+    private playerMask?: PlayerMaskTarget;
+    /** The last world drawn, presented while the player's square builds (SceneFrameHold). */
+    private heldScene?: WebGPUHeldScene;
+    private readonly sceneFrameHold = new SceneFrameHold();
 
     private dataLoader = new SdMapDataLoader();
 
@@ -153,6 +164,7 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
     private readonly sceneBuilds = new Map<AbortController, { current: () => boolean; mapId?: number }>();
 
     private skyColor = new Float32Array([0, 0, 0]);
+    private skyColorOverride = false;
     private sceneHslOverride = new Float32Array([-1, -1, -1, 0]);
     private cameraPosUni = new Float32Array(2);
     readonly playerPosUni = new Float32Array(2);
@@ -219,7 +231,10 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
     static async probeAdapter(): Promise<GPUAdapter | undefined> {
         if (!isWebGPUSupported) return undefined;
         try {
-            return (await navigator.gpu.requestAdapter()) ?? undefined;
+            // On machines with both an integrated and a discrete GPU, the default adapter can be
+            // the integrated one while the compositor runs on the discrete GPU. The canvas then
+            // can't be shared across adapters and Chromium reads every frame back through the CPU.
+            return (await navigator.gpu.requestAdapter({ powerPreference: "high-performance" })) ?? undefined;
         } catch {
             return undefined;
         }
@@ -253,7 +268,7 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
             device: this.device,
             format: this.format,
             alphaMode: "premultiplied",
-            usage: GPU_TEXTURE_USAGE.RENDER_ATTACHMENT | GPU_TEXTURE_USAGE.COPY_SRC,
+            usage: GPU_TEXTURE_USAGE.RENDER_ATTACHMENT | GPU_TEXTURE_USAGE.COPY_SRC | GPU_TEXTURE_USAGE.COPY_DST,
         });
 
         this.ensureDepthTexture(this.canvas.width, this.canvas.height);
@@ -827,7 +842,21 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
         this.ui?.registerMinimapData(mapData);
     }
 
+    clearSkyColorOverride(): void {
+        this.skyColorOverride = false;
+    }
+
+    setSkyColor(r: number, g: number, b: number, explicit = false): void {
+        const unchanged = [r, g, b].every((value, i) => Math.round(value) === Math.round(this.skyColor[i] * 255));
+        if (unchanged && !explicit) return;
+        this.skyColorOverride = true;
+        this.skyColor[0] = r / 255;
+        this.skyColor[1] = g / 255;
+        this.skyColor[2] = b / 255;
+    }
+
     private updateSkyColor(deltaFrames: number = 1): void {
+        if (this.skyColorOverride) return;
         const playerX = this.playerPosUni[0];
         const playerZ = this.playerPosUni[1];
         // In an instance, the region its template chunk was copied from (environmentAt).
@@ -848,8 +877,8 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
 
         const renderDistance = resolveWebGPURenderDistance(this);
         // HD spreads haze over long views, as on WebGL (render/render/frame/render.ts).
-        const { fogEnd, fogDepth } = resolveFogRange({ renderDistance, autoFogDepth: true,
-            autoFogDepthFactor: AUTO_FOG_DEPTH_FACTOR, manualFogDepth: 0, hd: this.osrsClient.clientPlugins.hdEnabled() });
+        const { fogEnd, fogDepth } = resolveFogRange({ renderDistance, ...fogSettings({ osrsClient: this.osrsClient, autoFogDepth: true,
+            autoFogDepthFactor: AUTO_FOG_DEPTH_FACTOR, fogDepth: 0 }), hd: this.osrsClient.clientPlugins.hdEnabled() });
 
         const data = this.world.sceneData;
         data.set(camera.viewProjMatrix as Float32Array, 0);
@@ -887,6 +916,8 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
         const loggedIn = this.osrsClient.isLoggedIn();
         const scenePreview = !loggedIn && this.osrsClient.scenePreviewEnabled && !!this.osrsClient.loadedCache;
         const drawScene = loggedIn || scenePreview;
+        // A held world is of this session; the next login starts without one.
+        if (!loggedIn) this.heldScene?.invalidate();
         const sceneViewport = this.getSceneViewportWidgetRect();
         let restoreCamera: (() => void) | undefined;
 
@@ -978,6 +1009,25 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
         this.ui?.update(time, deltaTime);
 
         const encoder = this.device.createCommandEncoder();
+        const canvasTexture = this.context.getCurrentTexture();
+        const canvasView = canvasTexture.createView();
+        // While the player's square builds (after a teleport), the last world drawn is presented
+        // again with the interface over it, as OSRS draws its loading box over its last frame.
+        const playerSquareReady =
+            loggedIn &&
+            this.mapManager.isSquareReadyAt(this.playerPosUni[0], this.playerPosUni[1], this.stats.frameCount);
+        const holdScene =
+            loggedIn &&
+            this.sceneFrameHold.update(
+                this.heldScene?.isValidFor(canvasTexture) === true,
+                playerSquareReady,
+                performance.now(),
+            );
+        if (holdScene) {
+            this.heldScene!.present(encoder, canvasTexture);
+            this.encodeScreenPass(encoder, canvasTexture, canvasView, false, restoreCamera, width, height, sceneViewport);
+            return;
+        }
         const visible = drawScene ? this.mapManager.visibleMaps : [];
         const roofPlaneLimit = this.frameRoofPlaneLimit;
         const camera = this.osrsClient.camera;
@@ -993,8 +1043,6 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
             extension!.beforeScene?.(this, encoder);
         }
 
-        const canvasTexture = this.context.getCurrentTexture();
-        const canvasView = canvasTexture.createView();
         // An active extension that declares sceneColorFormat renders the world into the HDR
         // target and composites to the canvas in afterScene (HDR tonemapping, bloom, SSAO).
         const sceneExtension = world.extension;
@@ -1007,7 +1055,28 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
                 : undefined;
         // Without the extension's target, FXAA has the world drawn into its own and presents it.
         const fxaa = !hdrTarget && gpu?.fxaa ? (this.fxaa ??= new FxaaPass(this.device, this.format)) : undefined;
-        const sceneTarget = hdrTarget ?? fxaa?.ensure(width, height) ?? canvasView;
+        // The Shader Effects plugin without HD: the world draws into its own display-colour target,
+        // and the effects run from there into FXAA's target or the canvas. Idle, nothing changes.
+        const shaderFxPlugin = this.osrsClient.clientPlugins.shaderFx();
+        // Plugin off, or HD running its own pass: free this one rather than keep its textures.
+        if (this.shaderFxPass && (!shaderFxPlugin || hdrTarget)) {
+            this.shaderFxPass.dispose();
+            this.shaderFxPass = undefined;
+        }
+        // The prayer aura's silhouette target is kept only while the aura wants it.
+        if (this.playerMask && shaderFxPlugin?.wantsPlayerMask?.() !== true) {
+            this.playerMask.dispose();
+            this.playerMask = undefined;
+        }
+        const shaderFxRuntime = !hdrTarget && drawScene ? shaderFxPlugin : undefined;
+        const shaderFx = shaderFxRuntime
+            ? (this.shaderFxPass ??= new ShaderFxPass(this.device, this.format, true))
+            : undefined;
+        const shaderFxActive = shaderFx?.prepare(shaderFxRuntime) === true;
+        // The prayer aura follows the player's own model, so the silhouette is drawn first.
+        const shaderFxMask = shaderFxActive && shaderFxRuntime?.wantsPlayerMask?.() === true;
+        const sceneTarget = hdrTarget
+            ?? (shaderFxActive ? shaderFx!.ensureSource(width, height) : fxaa?.ensure(width, height) ?? canvasView);
         // MSAA draws into multisampled targets that resolve into sceneTarget as the pass ends.
         let msaa: SceneMsaaTargets | undefined;
         if (sampleCount > 1) {
@@ -1079,6 +1148,7 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
                     visible[i].drawAlpha(pass, roofPlaneLimit, this.frameScenery);
                 }
             }
+            this.overlays?.drawGroundItems(pass);
             this.actors?.drawAlpha(pass);
             this.overlays?.drawWorld(pass);
             this.editorOverlays.draw(pass, this.frameScenery);
@@ -1088,6 +1158,10 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
 
         // The extension's post passes read and depth-test against the single-sampled depth.
         if (msaa && hdrTarget) msaa.resolveDepth(encoder, this.depthView);
+        if (shaderFxActive) {
+            const mask = shaderFxMask ? this.encodePlayerMask(encoder, width, height) : undefined;
+            shaderFx!.encodeTo(encoder, shaderFx!.ensureSource(width, height), fxaa?.ensure(width, height) ?? canvasView, width, height, mask);
+        }
         fxaa?.encode(encoder, canvasView);
 
         if (hdrTarget) {
@@ -1100,7 +1174,30 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
             });
         }
 
+        if (playerSquareReady) {
+            (this.heldScene ??= new WebGPUHeldScene(this.device)).maybeSnapshot(
+                encoder,
+                canvasTexture,
+                this.stats.frameCount,
+            );
+        }
+
+        this.encodeScreenPass(encoder, canvasTexture, canvasView, drawScene, restoreCamera, width, height, sceneViewport);
+    }
+
+    /** Restores the camera, then draws the overlays and UI over the world and submits the frame. */
+    private encodeScreenPass(
+        encoder: GPUCommandEncoder,
+        canvasTexture: GPUTexture,
+        canvasView: GPUTextureView,
+        drawWorldOverlays: boolean,
+        restoreCamera: (() => void) | undefined,
+        width: number,
+        height: number,
+        sceneViewport: { x: number; y: number; width: number; height: number },
+    ): void {
         if (restoreCamera) {
+            const camera = this.osrsClient.camera;
             restoreCamera();
             camera.update(width, height, sceneViewport.x, sceneViewport.y, sceneViewport.width, sceneViewport.height);
             this.worldEntityAnimator?.compose(camera.viewMatrix as Float32Array);
@@ -1111,7 +1208,7 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
         const screenPass = encoder.beginRenderPass({
             colorAttachments: [{ view: canvasView, loadOp: "load", storeOp: "store" }],
         });
-        if (drawScene) {
+        if (drawWorldOverlays) {
             this.overlays?.drawScreen(screenPass);
         }
         this.ui?.draw(screenPass);
@@ -1138,6 +1235,26 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
                 map.drawDepth(pass, this.frameRoofPlaneLimit, visibility);
             }
         }
+    }
+
+    /**
+     * Draws the controlled player's posed model as a coverage mask the size of the frame, with
+     * the scene's camera, for the Shader Effects prayer aura. Undefined when there is no player.
+     */
+    encodePlayerMask(encoder: GPUCommandEncoder, width: number, height: number): GPUTextureView | undefined {
+        const playerIndex = getControlledPlayerEcsIndex(this);
+        if (!this.actors || playerIndex === undefined || width < 1 || height < 1) return undefined;
+        // Until the mask pipelines are built the aura keeps its generic figure.
+        if (!this.actors.playerMaskReady()) return undefined;
+        const target = (this.playerMask ??= new PlayerMaskTarget(this.device));
+        const view = target.ensure(width, height);
+        const pass = encoder.beginRenderPass({
+            label: "shaderfx player mask",
+            colorAttachments: [{ view, clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
+        });
+        this.actors.drawPlayerMask(pass, playerIndex);
+        pass.end();
+        return view;
     }
 
     drawActorDepth(pass: GPURenderPassEncoder): void {
@@ -1221,6 +1338,10 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
         this.actors?.registerNpcSpotAnimation(event);
     }
 
+    override clearNpcSpotAnimations(serverId: number): void {
+        this.actors?.clearNpcSpotAnimations(serverId);
+    }
+
     override registerWorldSpotAnimation(event: WorldSpotAnimationEvent): number | undefined {
         return this.actors?.registerWorldSpotAnimation(event);
     }
@@ -1249,9 +1370,9 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
         this.locUpdates.refreshGamemodeWorldLocs();
     }
 
-    protected override reloadMultiLocSquare(mapX: number, mapY: number): void {
+    protected override reloadMultiLocSquare(mapX: number, mapY: number, group: MultiLocReloadGroup): void {
         if (this.instanceActive) this.scheduleInstanceLocRebuild();
-        else this.locUpdates.scheduleReload(mapX, mapY, "full");
+        else this.locUpdates.scheduleReload(mapX, mapY, group);
     }
 
     override onRegionReplacement(payload: RegionReplacementEvent): void {
@@ -1356,5 +1477,11 @@ export class WebGPURenderer extends GameRenderer<WebGPUMapSquare> {
         this.msaaTargets = undefined;
         this.fxaa?.dispose();
         this.fxaa = undefined;
+        this.shaderFxPass?.dispose();
+        this.shaderFxPass = undefined;
+        this.playerMask?.dispose();
+        this.playerMask = undefined;
+        this.heldScene?.destroy();
+        this.heldScene = undefined;
     }
 }

@@ -9,13 +9,17 @@
  * - +2: "You carve out a place for the cell and carefully place it inside the guardian." (spam),
  *   gotr_chisel_guardian, sound 2586 x2.
  * - +4: the guardian rises at the pile (rift_guardian_spawn), which is gone for six ticks while it
- *   walks out; +5: the cell is used up, "The powers
+ *   walks out; 4 ticks after it rises, its first step carries sequence -1 (delay 95), ending the
+ *   spawn sequence; +5: the cell is used up, "The powers
  *   of the weak cell extend into the essence. A Guardian comes to life.", sound 956, 80 Crafting
  *   XP, the cell's Runecraft XP (30 weak, 250 overcharged) and the pile's energy (6/15/27/45).
- *   With ten guardians up: "The powers of the cell extend into the essence, but no guardian forms."
+ *   A limit reached during the assembly: "The powers of the cell extend into the essence, but no
+ *   guardian forms."
+ * - At the limit already: "There are already enough rift guardians in the room." and nothing is
+ *   taken (solo capture, limit 2).
  * - Without a charged cell: objectbox with a weak cell, "You will need a charged cell to power any
  *   rift guardians you create from this essence pile."
- * - The HUD counts the guardians up to the cap of 10.
+ * - The HUD counts the guardians against the limit: 2 solo, 10 on a busy world (Game.riftGuardianCap).
  * Wiki: a chisel is needed; the guardian's kind follows the pile and the cell (weak air or mind,
  * medium water or chaos, strong earth or death, overcharged fire or blood); every guardian and
  * creature dies at 100% power.
@@ -36,6 +40,15 @@ const PILES = [
  */
 const PILE_AWAY_TICKS = 6;
 const PILE_SIZE = 2;
+/**
+ * rsprox capture 20261020T162558 (63 of 64 guardians): a guardian rises for 4 ticks, then walks
+ * out, and its first step carries sequence -1 with delay 95, which ends rift_guardian_spawn. That
+ * sequence loops (frame step 16, 99 loops) at forced priority 10 with no movement setting. While it
+ * plays, the client holds the guardian's steps and drops its attack (6) and block (4) sequences.
+ * Without the reset, the guardian looks frozen at the pile while it fights (issue 3837).
+ */
+const RISE_TICKS = 4;
+const RISEN_RESET_DELAY = 95;
 /** Wiki: energy for a guardian, 2x+1 of the cell's strengthening value (6 for a weak cell). */
 const GUARDIAN_ENERGY = [0, 6, 15, 27, 45];
 const CRAFTING_XP = 80;
@@ -43,7 +56,6 @@ const SOUND = { SCRAPE: 942, CARVE: 2586, ALIVE: 956 };
 /** Ours: guardians hit 0-6 (rsprox captures), up by their cell's tier, every 4 ticks. */
 const MAX_HIT = [0, 3, 4, 5, 6];
 const ATTACK_TICKS = 4;
-const SIGHT = 10;
 const RANGED_REACH = 7;
 /** Where the guardians hold, between the barriers and the rift. */
 const POST = { minX: 3605, maxX: 3626, minY: 9512, maxY: 9517 };
@@ -66,6 +78,10 @@ function assemble(event) {
   const { player, objectId } = event;
   const pile = pileFor(objectId);
   if (!pile || !Shared.inTemple(player.getLocation()) || !Shared.questComplete(player) || !Game.isPlaying(player)) return false;
+  if (alive() >= Game.riftGuardianCap()) {
+    player.sendMessage("There are already enough rift guardians in the room.");
+    return true;
+  }
   if (Shared.count(player, "chisel") <= 0) {
     Shared.itemStatement(player, "chisel", "You need a chisel to carve the essence into a guardian.");
     return true;
@@ -74,10 +90,11 @@ function assemble(event) {
     Shared.itemStatement(player, Shared.ITEM.CELLS[0], "You will need a charged cell to power any rift guardians you create from this essence pile.");
     return true;
   }
+  // Live holds the player until the guardian rises: walking away doesn't cancel an assembly.
+  if (!Shared.startAction(player, "assemble", (ticks) => step(player, pile, ticks), { locked: true })) return true;
   Shared.spam(player, "You scrape together what usable components you can find.");
   Shared.animate(player, "human_pickupfloor");
   player.getPacketSender().sendSoundEffect(SOUND.SCRAPE, 2, 0);
-  Shared.startAction(player, "assemble", (ticks) => step(player, pile, ticks));
   return true;
 }
 
@@ -101,8 +118,7 @@ function finish(player, pile) {
   Shared.addXp(player, "CRAFTING", CRAFTING_XP);
   Shared.addXp(player, "RUNECRAFTING", Cells.CELL[tier].xp);
   Game.addEnergy(player, pile.type, GUARDIAN_ENERGY[tier]);
-  Game.addContribution(player, 10);
-  if (alive() >= Shared.RIFT_GUARDIAN_CAP) {
+  if (alive() >= Game.riftGuardianCap()) {
     player.sendMessage("The powers of the cell extend into the essence, but no guardian forms.");
     return;
   }
@@ -129,12 +145,22 @@ function spawn(pile, tier) {
   guardians.add(npc);
   npc.__gotrTier = tier;
   npc.__gotrNextAttack = 0;
+  npc.__gotrRising = true;
   // Guardians rise among the crowd at the pile; nothing standing there should pin them in.
   Shared.prepareNpc(npc, { walkThrough: true });
   npc.performAnimation(new (Shared.core().Animation)(Shared.seq("rift_guardian_spawn")));
-  Shared.later(2, () => npc.isRegistered() && Shared.core().PathFinder.calculateWalkRoute(npc,
-    Shared.random(POST.minX, POST.maxX), Shared.random(POST.minY, POST.maxY)));
+  Shared.later(RISE_TICKS, () => rise(npc));
   Game.setRiftGuardians(alive());
+}
+
+/** Risen: the spawn sequence ends, and the guardian walks out to its post (capture). */
+function rise(npc) {
+  // One killed while rising (full power, a creature) keeps its death animation.
+  if (!npc.isRegistered() || npc.getHitpoints() <= 0) return;
+  const { Animation, PathFinder } = Shared.core();
+  npc.__gotrRising = false;
+  npc.performAnimation(new Animation(Animation.DEFAULT_RESET_ANIMATION.getId(), RISEN_RESET_DELAY));
+  PathFinder.calculateWalkRoute(npc, Shared.random(POST.minX, POST.maxX), Shared.random(POST.minY, POST.maxY));
 }
 
 /** Full power: every guardian dies with the creatures (Wiki). */
@@ -145,12 +171,18 @@ function dismissAll() {
 }
 
 /**
- * A guardian goes for the nearest creature it can see. Capture 1840: elementals only ever fight
- * beside it with the melee sequences, catalytics only at range with the ranged ones.
+ * A guardian goes for the nearest creature in the temple. Capture 1840: elementals only ever fight
+ * beside it with the melee sequences, catalytics only at range with the ranged ones. rsprox
+ * capture 20261020T162558: guardians walk at creatures 11-26 tiles off (86 of 122 such steps
+ * closed in) and rarely stand with one over 10 tiles away, so there is no sight limit; one would
+ * leave the guardians at one end of their post idle while creatures broke the far barriers
+ * (issue 2698).
  */
 function guardianTurn(npc, now) {
+  // A guardian still rising stands at the pile (capture): its first step ends the spawn sequence.
+  if (npc.__gotrRising) return;
   const from = Creatures.tileOf(npc);
-  const target = Creatures.nearestCreature(from, Creatures.sizeOf(npc), SIGHT);
+  const target = Creatures.nearestCreature(from, Creatures.sizeOf(npc), Infinity);
   if (!target) return;
   const melee = Creatures.isElementalGuardian(npc);
   if (target.gap > (melee ? 1 : RANGED_REACH)) {

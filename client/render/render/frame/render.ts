@@ -35,6 +35,7 @@ import {
 } from "../../../network/ServerConnection";
 import { flushPackets } from "../../../network/packet";
 import { createTextureArray } from "../../../picogl/PicoTexture";
+import { drawShaderFx, drawShaderFxToTarget, prepareShaderFx } from "../shaderFx";
 import { RS_TO_RADIANS } from "../../../rs/MathConstants";
 import { CollisionFlag } from "../../../common/CollisionFlag";
 import {
@@ -164,7 +165,7 @@ import { DrawRange, NULL_DRAW_RANGE, newDrawRange } from "../../DrawRange";
 import { InteractType } from "../../InteractType";
 import { profiler } from "../../PerformanceProfiler";
 import { PlayerChatheadFactory } from "../../PlayerChatheadFactory";
-import { resolveFogRange } from "../../RenderDistancePolicy";
+import { fogSettings, resolveFogRange } from "../../RenderDistancePolicy";
 import { WebGLMapSquare } from "../../WebGLMapSquare";
 import { WorldEntityAnimator } from "../../WorldEntityAnimator";
 import { SceneBuffer } from "../../buffer/SceneBuffer";
@@ -346,6 +347,8 @@ export function render(host: WebGLOsrsRendererHost, time: number, deltaTime: num
         const scenePreview =
             !loggedIn && host.osrsClient.scenePreviewEnabled === true && !!host.osrsClient.loadedCache;
         if (!loggedIn && !scenePreview) {
+            // A held scene is of this session; the next login starts without one.
+            host.heldSceneFramebuffer = undefined;
             // Transfer click state for this frame ()
             inputManager.onFrameStart();
             const uiMetrics = host.computeUiRenderMetrics(host.app.width, host.app.height);
@@ -393,10 +396,11 @@ export function render(host: WebGLOsrsRendererHost, time: number, deltaTime: num
                         inputManager.saveClickY,
                         inputManager.clickMode3,
                     );
+                    const clickedLoginState = host.osrsClient.loginState;
                     const shouldRefocusMobileLoginInput =
                         isMobileMode &&
-                        host.osrsClient.loginState.loginIndex === LoginIndex.LOGIN_FORM &&
-                        host.osrsClient.loginState.virtualKeyboardVisible &&
+                        (clickedLoginState.extension ? clickedLoginState.extension.textInput?.() !== undefined :
+                            clickedLoginState.loginIndex === LoginIndex.LOGIN_FORM && clickedLoginState.virtualKeyboardVisible) &&
                         inputManager.isTouch;
                     if (shouldRefocusMobileLoginInput) {
                         host.syncMobileLoginInput(true);
@@ -508,6 +512,7 @@ export function render(host: WebGLOsrsRendererHost, time: number, deltaTime: num
 
         profiler.startPhase("input");
         host.handleInput(deltaTime);
+        host.osrsClient.updateGroundItemMeshHandoffs();
 
         // Tick mouse cross animation (OSRS-style visual feedback)
         ClientState.tickMouseCross();
@@ -564,7 +569,23 @@ export function render(host: WebGLOsrsRendererHost, time: number, deltaTime: num
         const effectiveSceneViewport = getCameraViewportRect(camera);
         const sceneFramebufferViewport = host.scaleViewportRectToSceneBuffer(effectiveSceneViewport);
         updateSkyColor(host);
-        host.clearSceneFramebuffer(sceneFramebufferViewport);
+        // While the player's square builds (after a teleport), the frame texture keeps the last
+        // scene drawn and is presented again with the interface over it (SceneFrameHold).
+        const playerSquareReady = host.mapManager.isSquareReadyAt(
+            host.playerPosUni[0],
+            host.playerPosUni[1],
+            frameCount,
+        );
+        const holdScene =
+            !scenePreview &&
+            host.sceneFrameHold.update(
+                host.heldSceneFramebuffer === host.textureFramebuffer &&
+                    host.heldSceneWidth === host.sceneRenderWidth &&
+                    host.heldSceneHeight === host.sceneRenderHeight,
+                playerSquareReady,
+                performance.now(),
+            );
+        if (!holdScene) host.clearSceneFramebuffer(sceneFramebufferViewport);
         // keep CS2-visible viewport zoom in sync with the viewport widget size
         // (Client.viewportZoom; i.e., Rasterizer3D.get3dZoom()) so scripts and widget models scale correctly.
         try {
@@ -628,9 +649,7 @@ export function render(host: WebGLOsrsRendererHost, time: number, deltaTime: num
         // Edge-based fog clamping causes over-aggressive fog collapse near stream boundaries.
         const { fogEnd, fogDepth } = resolveFogRange({
             renderDistance,
-            autoFogDepth: host.autoFogDepth,
-            autoFogDepthFactor: host.autoFogDepthFactor,
-            manualFogDepth: host.fogDepth,
+            ...fogSettings(host),
             hd: host.osrsClient.clientPlugins.hdEnabled(),
         });
 
@@ -704,11 +723,13 @@ export function render(host: WebGLOsrsRendererHost, time: number, deltaTime: num
             sceneFramebufferViewport.width,
             sceneFramebufferViewport.height,
         );
-        host.osrsClient.clientPlugins.beforeSceneRender(host, () => {
-            host.renderOpaqueActorPass(playerDataTextureIndex, playerDataTexture);
-            host.renderTransparentNpcPass(npcDataTextureIndex, npcDataTexture);
-            host.renderTransparentPlayerPass(playerDataTextureIndex, playerDataTexture);
-        });
+        if (!holdScene) {
+            host.osrsClient.clientPlugins.beforeSceneRender(host, () => {
+                host.renderOpaqueActorPass(playerDataTextureIndex, playerDataTexture);
+                host.renderTransparentNpcPass(npcDataTextureIndex, npcDataTexture);
+                host.renderTransparentPlayerPass(playerDataTextureIndex, playerDataTexture);
+            });
+        }
         profiler.endPhase();
 
         let opaqueIndices = 0;
@@ -724,62 +745,70 @@ export function render(host: WebGLOsrsRendererHost, time: number, deltaTime: num
         host.frameRoofFilteredRangeCount = 0;
         host.frameRoofTotalRangeCount = 0;
 
-        let passStartIndices = host._frameIndices;
-        let passStartBatches = host._frameBatches;
-        host.app.disable(PicoGL.BLEND);
-        profiler.startPhase("opaque");
-        passStartIndices = host._frameIndices;
-        passStartBatches = host._frameBatches;
-        host.renderOpaquePass();
-        opaqueIndices = Math.max(0, host._frameIndices - passStartIndices);
-        opaqueBatches = Math.max(0, host._frameBatches - passStartBatches);
-        profiler.endPhase();
-        profiler.startPhase("opaqueActor");
-        passStartIndices = host._frameIndices;
-        passStartBatches = host._frameBatches;
-        host.renderOpaqueActorPass(playerDataTextureIndex, playerDataTexture);
-        opaqueActorIndices = Math.max(0, host._frameIndices - passStartIndices);
-        opaqueActorBatches = Math.max(0, host._frameBatches - passStartBatches);
-        profiler.endPhase();
+        if (!holdScene) {
+            let passStartIndices = host._frameIndices;
+            let passStartBatches = host._frameBatches;
+            host.drawSkybox(camera);
+            host.app.disable(PicoGL.BLEND);
+            profiler.startPhase("opaque");
+            passStartIndices = host._frameIndices;
+            passStartBatches = host._frameBatches;
+            host.renderOpaquePass();
+            opaqueIndices = Math.max(0, host._frameIndices - passStartIndices);
+            opaqueBatches = Math.max(0, host._frameBatches - passStartBatches);
+            profiler.endPhase();
+            profiler.startPhase("opaqueActor");
+            passStartIndices = host._frameIndices;
+            passStartBatches = host._frameBatches;
+            host.renderOpaqueActorPass(playerDataTextureIndex, playerDataTexture);
+            opaqueActorIndices = Math.max(0, host._frameIndices - passStartIndices);
+            opaqueActorBatches = Math.max(0, host._frameBatches - passStartBatches);
+            profiler.endPhase();
 
-        host.app.enable(PicoGL.BLEND);
-        profiler.startPhase("transparent");
-        passStartIndices = host._frameIndices;
-        passStartBatches = host._frameBatches;
-        host.renderTransparentPass();
-        transparentIndices = Math.max(0, host._frameIndices - passStartIndices);
-        transparentBatches = Math.max(0, host._frameBatches - passStartBatches);
-        profiler.endPhase();
-        profiler.startPhase("transpNpc");
-        passStartIndices = host._frameIndices;
-        passStartBatches = host._frameBatches;
-        host.renderTransparentNpcPass(npcDataTextureIndex, npcDataTexture);
-        transparentNpcIndices = Math.max(0, host._frameIndices - passStartIndices);
-        transparentNpcBatches = Math.max(0, host._frameBatches - passStartBatches);
-        profiler.endPhase();
-        profiler.startPhase("transpPlayer");
-        passStartIndices = host._frameIndices;
-        passStartBatches = host._frameBatches;
-        host.renderTransparentPlayerPass(playerDataTextureIndex, playerDataTexture);
-        transparentPlayerIndices = Math.max(0, host._frameIndices - passStartIndices);
-        transparentPlayerBatches = Math.max(0, host._frameBatches - passStartBatches);
-        profiler.endPhase();
+            host.app.enable(PicoGL.BLEND);
+            profiler.startPhase("transparent");
+            passStartIndices = host._frameIndices;
+            passStartBatches = host._frameBatches;
+            host.renderTransparentPass();
+            transparentIndices = Math.max(0, host._frameIndices - passStartIndices);
+            transparentBatches = Math.max(0, host._frameBatches - passStartBatches);
+            profiler.endPhase();
+            profiler.startPhase("transpNpc");
+            passStartIndices = host._frameIndices;
+            passStartBatches = host._frameBatches;
+            host.renderTransparentNpcPass(npcDataTextureIndex, npcDataTexture);
+            transparentNpcIndices = Math.max(0, host._frameIndices - passStartIndices);
+            transparentNpcBatches = Math.max(0, host._frameBatches - passStartBatches);
+            profiler.endPhase();
+            profiler.startPhase("transpPlayer");
+            passStartIndices = host._frameIndices;
+            passStartBatches = host._frameBatches;
+            host.renderTransparentPlayerPass(playerDataTextureIndex, playerDataTexture);
+            transparentPlayerIndices = Math.max(0, host._frameIndices - passStartIndices);
+            transparentPlayerBatches = Math.max(0, host._frameBatches - passStartBatches);
+            profiler.endPhase();
 
-        profiler.startPhase("afterScene");
-        host.osrsClient.clientPlugins.afterSceneRender(host);
-        profiler.endPhase();
+            profiler.startPhase("afterScene");
+            host.osrsClient.clientPlugins.afterSceneRender(host);
+            profiler.endPhase();
 
-        try {
-            host.drawSceneTileOverlays(time, deltaTime);
-        } catch {}
+            try {
+                host.drawSceneTileOverlays(time, deltaTime);
+            } catch {}
+        }
 
         host.app.disable(PicoGL.SCISSOR_TEST);
 
         // Can't sample from the scene renderbuffer, so only blit when the scene pass
         // didn't already render directly into the texture framebuffer.
         profiler.startPhase("blit");
-        if (!directTextureScenePass) {
+        if (!directTextureScenePass && !holdScene) {
             resolveSceneFramebuffer(host);
+        }
+        if (!holdScene && playerSquareReady) {
+            host.heldSceneFramebuffer = host.textureFramebuffer;
+            host.heldSceneWidth = host.sceneRenderWidth;
+            host.heldSceneHeight = host.sceneRenderHeight;
         }
         host.app.viewport(0, 0, host.app.width | 0, host.app.height | 0);
         profiler.endPhase();
@@ -985,7 +1014,7 @@ export function render(host: WebGLOsrsRendererHost, time: number, deltaTime: num
                     );
                 }
             } catch {}
-            // Plugin text with the local player's overhead chat (the attack timer).
+            // Plugin text shares the local player's overhead chat stacking group.
             try {
                 host.osrsClient.clientPlugins.appendLocalPlayerOverheads(
                     host,
@@ -1402,7 +1431,7 @@ export function render(host: WebGLOsrsRendererHost, time: number, deltaTime: num
                     },
                     helpers: host.getOverlayHelpers(),
                 });
-                host.overlayManager?.draw(RenderPhase.ToFrameTexture, effectiveSceneViewport);
+                if (!holdScene) host.overlayManager?.draw(RenderPhase.ToFrameTexture, effectiveSceneViewport);
             }
         } catch {}
         profiler.endPhase();
@@ -1413,16 +1442,26 @@ export function render(host: WebGLOsrsRendererHost, time: number, deltaTime: num
         host.app.disable(PicoGL.BLEND);
 
         profiler.startPhase("present");
+        // The Shader Effects plugin: with FXAA on, the effects draw into their own target first
+        // and FXAA reads that; otherwise they draw straight to the screen in place of the copy.
+        const fxaaOn = !!host.frameFxaaDrawCall
+            && (host.osrsClient.clientPlugins.gpuSettings()?.fxaa ?? host.fxaaEnabled);
+        const shaderFxOn = prepareShaderFx(host);
+        let frameTexture = host.textureFramebuffer.colorAttachments[0];
+        if (shaderFxOn && fxaaOn) frameTexture = drawShaderFxToTarget(host, frameTexture);
+
         host.app.clearMask(PicoGL.COLOR_BUFFER_BIT | PicoGL.DEPTH_BUFFER_BIT);
         host.app.clearColor(host.skyColor[0], host.skyColor[1], host.skyColor[2], host.skyColor[3]);
         host.app.defaultDrawFramebuffer().clear();
 
-        if (host.frameFxaaDrawCall && (host.osrsClient.clientPlugins.gpuSettings()?.fxaa ?? host.fxaaEnabled)) {
-            host.frameFxaaDrawCall.uniform("u_resolution", host.resolutionUni);
-            host.frameFxaaDrawCall.texture("u_frame", host.textureFramebuffer.colorAttachments[0]);
-            host.frameFxaaDrawCall.draw();
+        if (fxaaOn) {
+            host.frameFxaaDrawCall!.uniform("u_resolution", host.resolutionUni);
+            host.frameFxaaDrawCall!.texture("u_frame", frameTexture);
+            host.frameFxaaDrawCall!.draw();
+        } else if (shaderFxOn) {
+            drawShaderFx(host, frameTexture);
         } else {
-            host.frameDrawCall.texture("u_frame", host.textureFramebuffer.colorAttachments[0]);
+            host.frameDrawCall.texture("u_frame", frameTexture);
             host.frameDrawCall.draw();
         }
         profiler.endPhase();
@@ -1706,7 +1745,14 @@ export function render(host: WebGLOsrsRendererHost, time: number, deltaTime: num
 
                     // Single source of truth: all interaction/height queries
                     // on this overlay map use the deck plane.
-                    overlayMap.interactionPlane = basePlane;
+                    if (overlayMap.interactionPlane !== basePlane) {
+                        overlayMap.interactionPlane = basePlane;
+                        // Its ground items were built with the square, before the deck plane
+                        // was known: lay them on the deck.
+                        if (host.rebuildGroundItemsForMap(overlayMap, host.groundItemStacks.get(overlayMapId))) {
+                            host.groundItemStackHashes.delete(overlayMapId);
+                        }
+                    }
 
                     if (overlay.deckHeight !== undefined && overlay.deckHeight !== 0) continue;
                     if (basePlane === 0) {

@@ -21,11 +21,15 @@ function emitCustomEvent(name, payload) {
   for (const listener of listeners.get(name) ?? []) listener(payload);
 }
 
+/** The specials' onCombatHitDamage hooks: PendingHit calls them with the roll before it caps it to the target's HP. */
+const hitDamageHooks = [];
+
 function load(file, overrides) {
   require(`../plugins/combat/specials/${file}.SpecialAttack`)({
     core: overrides ? { ...core, ...overrides } : core,
     registerCombatSpecial: CombatSpecial.register,
     emitCustomEvent,
+    onCombatHitDamage: (handler) => hitDamageHooks.push(handler),
   });
 }
 
@@ -267,6 +271,7 @@ test("Sanctuary boosts Defence immediately without a target and spends 100% ener
   assert.equal(player.skillManager.level("DEFENCE"), 58);
   assert.equal(player.energy, 0);
   assert.equal(player.activated, false);
+  assert.equal(player.calls.animations.at(-1).getId(), 1057, "sanctuary");
   assert.equal(special("excalibur").getCombatMethod().hits(player, null), null);
 });
 
@@ -440,10 +445,11 @@ test("Warstrike drains Defence, Strength, Prayer, Attack, Magic then Ranged by t
   });
   bandos.handleAfterHitEffects(hit(target, 100));
   const levels = target.skillManager;
-  assert.equal(levels.level("DEFENCE"), 1, "stats floor at 1");
-  assert.equal(levels.level("STRENGTH"), 1);
+  // Wiki (Bandos godsword): "the current stat that is being drained must hit 0".
+  assert.equal(levels.level("DEFENCE"), 0, "stats drain to 0");
+  assert.equal(levels.level("STRENGTH"), 0);
   assert.equal(levels.level("PRAYER"), 0, "prayer can reach 0");
-  assert.equal(levels.level("ATTACK"), 38, "100 - 19 - 49 - 20 = 12 left for Attack");
+  assert.equal(levels.level("ATTACK"), 40, "100 - 20 - 50 - 20 = 10 left for Attack");
   assert.equal(levels.level("MAGIC"), 50);
 
   const npc = npcTarget(60);
@@ -488,24 +494,40 @@ test("Healing Blade restores at least 10 Hitpoints and 5 Prayer, half and a quar
 
 test("Ice Cleave freezes for 32 ticks on a hit only", () => {
   const registered = [];
+  const targetGraphics = [];
   const target = {
     getTimers: () => ({ has: () => false, registers: (key, ticks) => registered.push(ticks) }),
     getSize: () => 1,
     hasFlag: () => false,
     getMovementQueue: () => ({ reset() {} }),
     isPlayer: () => false,
-    performGraphic() {},
+    performGraphic: (graphic) => targetGraphics.push(graphic.getId()),
   };
   const zgs = special("zamorak_godsword").getCombatMethod();
   zgs.handleAfterHitEffects(hit(target, 0, false));
   assert.equal(registered.length, 0);
+  assert.deepEqual(targetGraphics, [], "no ice block on a miss");
   zgs.handleAfterHitEffects(hit(target, 10, true));
   assert.equal(Math.round(registered[0]), 32);
+  assert.deepEqual(targetGraphics, [369], "issue 2007: the target is encased in the Ice Barrage block");
+});
+
+test("Ice Cleave plays the red slash on the attacker, not the target", () => {
+  const player = fakePlayer({ weaponId: ItemIdentifiers.ZAMORAK_GODSWORD });
+  const original = World.getPlayers;
+  World.getPlayers = () => [player];
+  try {
+    special("zamorak_godsword").getCombatMethod().start(player, npcTarget(99));
+  } finally {
+    World.getPlayers = original;
+  }
+  assert.equal(player.calls.animations[0].getId(), 7638);
+  assert.deepEqual(player.calls.graphics.map((graphic) => graphic.getId()), [1210], "issue 2007: wiki Ice_Cleave.gif");
 });
 
 test("Blood Sacrifice heals 15% of the target's max Hitpoints, capped at 25 on NPCs and 15 on players", () => {
   const ags = special("ancient_godsword").getCombatMethod();
-  const run = (target) => {
+  const run = (target, hitpoints = 100) => {
     tasks.length = 0;
     const healed = [];
     const pending = [];
@@ -518,7 +540,7 @@ test("Blood Sacrifice heals 15% of the target's max Hitpoints, capped at 25 on N
     };
     Object.assign(target, {
       isRegistered: () => true,
-      getHitpoints: () => 100,
+      getHitpoints: () => hitpoints,
       sendMessage() {},
       performGraphic() {},
       getCombat: () => ({ getHitQueue: () => ({ addPendingDamage: (hits) => pending.push(hits) }) }),
@@ -541,4 +563,46 @@ test("Blood Sacrifice heals 15% of the target's max Hitpoints, capped at 25 on N
     getSkillManager: () => ({ getMaxLevel: () => 99 }),
   };
   assert.deepEqual(run(player).healed, [14], "floor(99 * 0.15)");
+});
+
+test("Blood Sacrifice heals only the damage it does to a target with fewer than 25 Hitpoints left (Wiki)", () => {
+  const ags = special("ancient_godsword").getCombatMethod();
+  tasks.length = 0;
+  const healed = [];
+  const attacker = {
+    isPlayer: () => true,
+    isRegistered: () => true,
+    getHitpoints: () => 99,
+    calculateDistance: () => 1,
+    heal: (amount) => healed.push(amount),
+  };
+  const target = {
+    isPlayer: () => false,
+    isNpc: () => true,
+    getAsNpc() { return this; },
+    getMaxHitpoints: () => 500,
+    isRegistered: () => true,
+    getHitpoints: () => 6,
+    sendMessage() {},
+    performGraphic() {},
+    getCombat: () => ({ getHitQueue: () => ({ addPendingDamage() {} }) }),
+  };
+  ags.handleAfterHitEffects(hit(target, 30, true, attacker));
+  tasks[0].execute();
+  assert.deepEqual(healed, [6], "the sacrifice can only take the 6 Hitpoints left");
+});
+
+test("Healing Blade heals from the swing's potential damage, not what a low target had left (Wiki)", () => {
+  const sgs = special("saradomin_godsword").getCombatMethod();
+  const attacker = fakePlayer({ weaponId: ItemIdentifiers.SARADOMIN_GODSWORD, levels: { HITPOINTS: 99, PRAYER: 99 } });
+  attacker.skillManager.setLevel("HITPOINTS", 50);
+  attacker.skillManager.setLevel("PRAYER", 50);
+  attacker.isSpecialActivated = () => true;
+  attacker.getCombatSpecial = () => special("saradomin_godsword");
+  // Wiki: a 60 rolled on a target with only 2 Hitpoints heals 30 and restores 15.
+  const kill = hit({}, 2, true, attacker);
+  for (const hook of hitDamageHooks) hook({ attacker, hit: kill, damage: { getDamage: () => 60 } });
+  sgs.handleAfterHitEffects(kill);
+  assert.equal(attacker.skillManager.level("HITPOINTS"), 80, "30 from the 60 rolled");
+  assert.equal(attacker.skillManager.level("PRAYER"), 65, "15 from the 60 rolled");
 });

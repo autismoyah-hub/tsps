@@ -8,6 +8,9 @@
  *
  * Regenerate (General.LeaguePacts.js owns the roll) arrives as `league:pact-regenerated`
  * { player, kind, itemId, amount, combat }; heals go out as `league:pact-heal` { player, amount }.
+ * A rune's `amount` is every rune of that id the proc regenerated: the saved ones, the extra
+ * copies above 100% and those a staff supplied, so the rune pacts below count them all (the pact
+ * texts count per rune; ours).
  *
  * - talent_airrune_regen_prayer_restore (`league:pact-regenerated`, rune, combat): a N% roll per proc
  *   restores 1 Prayer per air rune regenerated, up to the base level (one roll a proc: our reading).
@@ -33,7 +36,8 @@
  * - talent_magic_attack_speed_traditional (onAttackSpeed): a spellbook combat spell N ticks faster,
  *   never below 2 (a faster one stays as it is).
  * - talent_air_spell_max_hit_prayer_bonus (`combat:hit-rolled`): an air spell's landed roll becomes
- *   the max hit with N% per worn prayer bonus, doubled against an NPC weak to air.
+ *   the max hit with N% per worn prayer bonus, doubled against an NPC weak to air (the shared
+ *   `elemental-spells:weakness`, so a spell counted as the target's weakness doubles it too).
  * - talent_fire_hp_consume_for_damage (`magic:cast-committed`; onCombatHitDamage): a fire cast burns
  *   up to 6% of max hitpoints (never the last one) as a hitsplat on the caster; that cast's landed
  *   hitsplats deal twice the burn more.
@@ -49,6 +53,7 @@
  * with the hitpoints fraction; the air rune prayer is one roll a proc.
  */
 const Common = require("./Common.LeaguePacts");
+const ElementalSpells = require("../../combat/elementalspells/Common.ElementalSpells");
 
 const BOOST_TICKS = 30;
 const EARTH_BOOST_CAP_FRACTION = 0.2;
@@ -127,7 +132,8 @@ function isPlayer(entity) {
 /** The element a player's spell counts as for the pacts, or null. */
 function elementOf(player, spell) {
   loadSpells();
-  const entry = spellElements.get(spell);
+  // A weapon's own spell names its element (`pactElement`: the Fang of the hound's Flames of Cerberus, fire).
+  const entry = spellElements.get(spell) ?? (typeof spell?.pactElement === "string" ? { element: spell.pactElement } : null);
   if (!entry || (entry.needs && !Common.effect(player, entry.needs))) return null;
   return entry.element;
 }
@@ -198,9 +204,13 @@ function maxHit(request) {
 function rolled(event) {
   if (event.combatType !== core.CombatType.MAGIC || !isPlayer(event.attacker)) return;
   const perPrayer = Common.effect(event.attacker, "talent_air_spell_max_hit_prayer_bonus");
-  if (!perPrayer || elementOf(event.attacker, selectedSpell(event.attacker)) !== "air") return;
+  const spell = selectedSpell(event.attacker);
+  if (!perPrayer || elementOf(event.attacker, spell) !== "air") return;
   const prayer = event.attacker.getBonusManager().getOtherBonus()[core.BonusManager.PRAYER] ?? 0;
-  const weak = event.target?.isNpc?.() && event.target.getAsNpc().getCurrentDefinition().getElementalWeakness()?.type === AIR_WEAKNESS;
+  // The shared weakness, so an effect that makes the spell count as the target's weakness (the
+  // Shadowflame quadrant's) counts here too (Wiki: it lets these pacts proc), as does a weakness
+  // added to every element (the Devil's element's).
+  const weak = ElementalSpells.elementWeakness(event.attacker, event.target, spell, AIR_WEAKNESS) > 0;
   const chance = perPrayer * prayer * (weak ? 2 : 1);
   if (chance > 0 && Math.random() * 100 < chance) event.damage = event.maximum;
 }

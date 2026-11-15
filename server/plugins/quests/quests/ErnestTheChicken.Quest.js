@@ -1,5 +1,6 @@
 /** Ernest the Chicken: revision240 Discord capture20260811T152500; cache241 IDs. */
 module.exports = function registerErnestTheChickenQuest(api) {
+  const { giveReward } = require("../QuestRuntime");
   const {
     GameObject,
     Location,
@@ -10,7 +11,7 @@ module.exports = function registerErnestTheChickenQuest(api) {
     NpcIdentifiers,
     ObjectIdentifiers,
     RegionManager,
-    Animation, Graphic, PrivateArea, Boundary, CountdownTask, TaskManager,
+    Animation, Graphic, GraphicHeight, PrivateArea, Boundary, CountdownTask, TaskManager,
     DialogueChainBuilder, PlayerDialogue, ActionDialogue,
   } = api.core;
   const { registerQuest, startTranscript } = require("../QuestRuntime");
@@ -76,6 +77,8 @@ module.exports = function registerErnestTheChickenQuest(api) {
 
   /** The 9 puzzle door base ids (137-145 are nameless in the cache), in DOOR_TILES order. */
   const PUZZLE_DOOR_IDS = [137, 138, 139, 140, 141, 142, 143, 144, 145];
+  /** iron_door_open (Wiki, List of sound IDs), as seen live with Visual Sounds (reported in #2270; no capture). */
+  const PUZZLE_DOOR_SOUND = 71;
   const DOORS = [...PUZZLE_DOOR_IDS, ObjectIdentifiers.DOOR_274];
   /** Resolved door variants: 11449 closed, 11450 ajar (offers Open). */
   const DOOR_CLOSED = ObjectIdentifiers.DOOR_273;
@@ -151,7 +154,8 @@ module.exports = function registerErnestTheChickenQuest(api) {
       const at = new Location(3111, 3366, 2);
       player.getPacketSender().sendGraphic(new Graphic(173), at);
       if (chicken) {
-        chicken.performGraphic(new Graphic(80, 45));
+        // stunned (80): height 124 with no delay in 148 of 164 recordings; this scene itself is not recorded.
+        chicken.performGraphic(new Graphic(80, GraphicHeight.SURGE_IMPACT));
         player.getPacketSender().sendProjectile(at, chicken.getLocation(), 0, 45, 174, 12, 0, chicken, 15, 0);
       }
       player.getPacketSender().sendSoundEffect(187, 2, 0);
@@ -460,36 +464,73 @@ module.exports = function registerErnestTheChickenQuest(api) {
     crossDoor(player, tile, CLOSET_THROUGH);
   }
 
+  /**
+   * As recorded (rsprox 3209, rev 232; four pulls of levers A and B): the message names the lever and
+   * where it went, then "You hear a clunk."; down is sequence 2140, up 2139; synth_sound 2400, then
+   * 1565 with delay 5 whether or not a door changes. Inspecting reports the position (cycles 10887, 10903).
+   */
   function useLever(player, index) {
     const bits = attr(player, LEVERS_ATTRIBUTE) ^ (1 << index);
+    const down = (bits & (1 << index)) !== 0;
     syncLevers(player, bits);
-    player.performAnimation(new Animation(2139));
+    player.sendMessage(`You pull lever ${"ABCDEF"[index]} ${down ? "down" : "up"}.`);
     player.sendMessage("You hear a clunk.");
+    player.performAnimation(new Animation(down ? 2140 : 2139));
+    const sender = player.getPacketSender();
+    sender.sendSoundEffect(2400, 1, 0);
+    sender.sendSoundEffect(1565, 1, 5);
   }
 
-  function usePuzzleDoor(player, tile) {
+  /** The second option reports the lever's position (recorded: "The lever is down." / "The lever is up."); it never pulls. */
+  function inspectLever(player, index) {
+    player.sendMessage((attr(player, LEVERS_ATTRIBUTE) & (1 << index)) !== 0 ? "The lever is down." : "The lever is up.");
+  }
+
+  /**
+   * The puzzle doors are shape-10 scenery with the wall on one edge of their tile. The cache
+   * map has face 0 (doors 1-5, wall on the west edge) and face 3 (doors 6-9, south edge). A door
+   * is crossed through that edge, so the crossing axis is the wall's, not the direction the
+   * player happens to be standing in. Other faces do not occur and are left alone.
+   */
+  const WALL_STEPS = new Map([[0, { x: -1, y: 0 }], [3, { x: 0, y: -1 }]]);
+
+  const puzzleDoorStep = (object) => WALL_STEPS.get(object?.getFace?.());
+
+  function usePuzzleDoor(player, tile, object) {
     const index = DOOR_TILES.findIndex(([x, y]) => x === tile.x && y === tile.y);
     const states = getErnestPuzzleDoorStates(attr(player, LEVERS_ATTRIBUTE));
     if (index < 0 || !states[index]) {
       player.sendMessage("The door is locked firmly in place.");
       return;
     }
-    crossDoor(player, tile);
+    const step = puzzleDoorStep(object);
+    if (!step) return;
+    const position = player.getLocation();
+    const wallSide = (position.getX() - tile.x) * step.x + (position.getY() - tile.y) * step.y > 0;
+    const direction = wallSide ? -1 : 1;
+    player.moveTo(new Location(tile.x + direction * step.x, tile.y + direction * step.y, tile.z ?? position.getZ()));
+    player.getPacketSender().sendSoundEffect(PUZZLE_DOOR_SOUND, 1, 0);
   }
 
   /**
-   * The puzzle doors are map scenery (shape 10) sitting next to wall pieces, so
-   * the walk-to-object reach check refuses one side of some. Route the click to
-   * the nearest walkable tile in front on the player's side instead; the
-   * interaction then runs and usePuzzleDoor crosses the door.
+   * Route the click to the walkable tile directly in front of the door on either side of its
+   * wall, the nearer to the player, so the interaction always runs from a tile that crosses the
+   * wall. The ordinary reach check refuses some sides, and a tile beside the door along its wall
+   * would otherwise be used as the starting side.
    */
   function routePuzzleDoor(event) {
     if (!DOORS.includes(event.objectId)) return;
     const tile = event.object?.getLocation?.();
     if (!tile) return;
+    const step = puzzleDoorStep(event.object);
+    if (!step) return;
     const position = event.player.getLocation();
     let best = null;
-    for (const [x, y] of [[tile.getX() + 1, tile.getY()], [tile.getX() - 1, tile.getY()], [tile.getX(), tile.getY() + 1], [tile.getX(), tile.getY() - 1]]) {
+    // The side away from the wall comes first, so from the door tile itself (a tie) the player
+    // is sent through the wall.
+    for (const direction of [-1, 1]) {
+      const x = tile.getX() + direction * step.x;
+      const y = tile.getY() + direction * step.y;
       const stand = new Location(x, y, tile.getZ());
       if (RegionManager.blocked(stand, event.player.getPrivateArea?.() ?? null)) continue;
       const distance = Math.max(Math.abs(x - position.getX()), Math.abs(y - position.getY()));
@@ -537,7 +578,7 @@ module.exports = function registerErnestTheChickenQuest(api) {
   }
 
   function reward(player) {
-    player.getInventory().adds(COINS, 300);
+    giveReward(player, COINS, 300);
   }
 
   function selectVariant({ npcId, player }) {
@@ -678,12 +719,13 @@ module.exports = function registerErnestTheChickenQuest(api) {
     }
 
     if (LEVER_IDS.has(objectId)) {
-      useLever(player, LEVER_IDS.get(objectId));
+      if (event.clickType === 2) inspectLever(player, LEVER_IDS.get(objectId));
+      else useLever(player, LEVER_IDS.get(objectId));
       event.handled = true;
       return;
     }
     if (DOORS.includes(objectId)) {
-      usePuzzleDoor(player, location);
+      usePuzzleDoor(player, location, event.object ?? MapObjects.get(objectId, new Location(location.x, location.y, location.z ?? 0), player.getPrivateArea?.() ?? null));
       event.handled = true;
       return;
     }
@@ -713,6 +755,18 @@ module.exports = function registerErnestTheChickenQuest(api) {
     }
   }
 
+  // The 3 November 2026 update's quest XP: lamps (plugins/items/QuestRewardLamps.plugin.js) (Wiki: Update:Quest Month Kick Off, TFA Tweaks & More),
+  // paid on completion; held back for a completion not played through (experience: false).
+  function grantCompletionLamps(player, _quest, options = {}) {
+    if (options.experience === false) return;
+    api.emitCustomEvent("quest-lamps:give", { player, lamp: "ERNEST_THE_CHICKEN", count: 1 });
+  }
+
+  function rewardOnCompletion(player, completed, options) {
+    reward(player, completed, options);
+    grantCompletionLamps(player, completed, options);
+  }
+
   quest = registerQuest(api, {
     key: "ernest_the_chicken",
     name: "Ernest the Chicken",
@@ -721,11 +775,12 @@ module.exports = function registerErnestTheChickenQuest(api) {
     startedValue: STAGE_STARTED,
     completionValue: STAGE_COMPLETE,
     questPoints: 4,
+    otherRewards: ["An antique lamp giving 500 XP"],
     scrollItemId: ItemIdentifiers.FEATHER,
     completionJingleId: 153,
     rewardItemLabel: "300 Coins",
     buildJournal,
-    onReward: reward,
+    onReward: rewardOnCompletion,
   });
 
   api.persistAttribute(FOUNTAIN_ATTRIBUTE, 0);

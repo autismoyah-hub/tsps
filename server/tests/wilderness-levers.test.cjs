@@ -10,6 +10,9 @@ const { CachePipeline } = require("../dist/game/cache/CachePipeline");
 const { CacheDefinitions } = require("../dist/game/cache/CacheDefinitions");
 const { ObjectDefinition } = require("../dist/game/definition/ObjectDefinition");
 const { PluginManager } = require("../dist/plugins/PluginManager");
+const { ObjectManager } = require("../dist/game/entity/impl/object/ObjectManager");
+const { MapObjects } = require("../dist/game/entity/impl/object/MapObjects");
+const { RegionManager } = require("../dist/game/collision/RegionManager");
 
 const Levers = require("../plugins/objects/Levers.plugin");
 
@@ -17,6 +20,7 @@ let core;
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
   ObjectDefinition.init();
+  RegionManager.init();
   core = PluginManager.getCoreApi();
 });
 
@@ -24,12 +28,12 @@ const loc = (name) => CacheDefinitions.getLocId(name);
 const varbit = (name) => CacheDefinitions.getVarbitId(name);
 
 /** Registers the plugin against a fake api, keeping its hooks and the tasks it submits. */
-function harness({ diaryComplete = false } = {}) {
+function harness({ diaryComplete = false, teleportSpy = () => {} } = {}) {
   const hooks = {};
   const tasks = [];
   const persisted = [];
   const api = {
-    core: { ...core, TeleportHandler: { ...core.TeleportHandler, checkReqs: () => true } },
+    core: { ...core, TeleportHandler: { ...core.TeleportHandler, checkReqs: () => true, teleport: teleportSpy } },
     // As TaskManager.submit: an immediate task runs once on the tick it is submitted.
     getTaskManager: () => ({ submit: (task) => { task.setRunning(true); if (task.isImmediate()) task.execute(); tasks.push(task); } }),
     persistAttribute: (key, value) => persisted.push([key, value]),
@@ -87,20 +91,37 @@ function player(varbits = {}) {
   return self;
 }
 
-/** Clicks `option` on the lever loc `name` at (x, y). */
-function use(h, who, name, option, x, y) {
+/** Clicks `option` on the lever loc `name` at (x, y), a wall decoration of `shape` and `face`. */
+function use(h, who, name, option, x, y, shape = 4, face = 0) {
   const objectId = loc(name);
   const definition = ObjectDefinition.forPlayer(objectId, who);
   const clickType = definition.getInteractions().indexOf(option) + 1;
   assert.ok(clickType > 0, `${name} shows ${option}`);
-  return h.hooks.Lever[option]({ player: who, objectId, object: { getLocation: () => new core.Location(x, y, 0) }, definition, clickType, location: { x, y, z: 0 } });
+  const object = mapLever(objectId, x, y)
+    ?? new core.GameObject(objectId, new core.Location(x, y, 0), shape, face, null);
+  return h.hooks.Lever[option]({ player: who, objectId, object, definition, clickType, location: { x, y, z: 0 } });
 }
 
-/** Runs the submitted tasks one tick at a time, the handler's own tick being 0. */
-function runTicks(h, who, ticks) {
+/** The cache map's own lever at (x, y), as a click hands it over, or null where there is none. */
+function mapLever(objectId, x, y) {
+  RegionManager.loadMapFiles(x, y, true);
+  return MapObjects.get(objectId, new core.Location(x, y, 0), null) ?? null;
+}
+
+/** The loc ids MapObjects (clipping, later clicks) holds on (x, y) in a wall-decoration shape. */
+function locsAt(x, y, shape) {
+  return (MapObjects.mapObjects.get(MapObjects.getHash(x, y, 0)) ?? []).filter((o) => o.getType() === shape).map((o) => o.getId());
+}
+
+/**
+ * Runs the submitted tasks one tick at a time, the handler's own tick being 0. A task submitted
+ * during a tick first runs on the next, as TaskManager does. `afterTick` sees each tick's end.
+ */
+function runTicks(h, who, ticks, afterTick = () => {}) {
   for (let tick = 1; tick <= ticks; tick++) {
     who.setTick(tick);
     for (const task of [...h.tasks]) if (task.isRunning()) task.execute();
+    afterTick(tick);
   }
 }
 
@@ -140,6 +161,74 @@ test("a pull plays the captured sequence: pull, the lever's click, the cast, lan
   assert.ok(who.log.some((entry) => entry[0] === 6 && entry[1] === "varbit" && entry[2] === busy && entry[3] === 0));
 });
 
+// Recordings 224/01444.txt (Edgeville and Keep levers), 224/01487.txt, 226/01630.txt and
+// 233/00454.txt (the bank pair): the lever's down loc a tick after the pull, as its click
+// sounds, and the lever back up four ticks later, as the player lands.
+for (const [name, down, x, y, shape, face] of [
+  ["edgeville_wildy_lever", "ikov_leverdown", 3090, 3475, 4, 0],
+  ["wildinlever", "ikov_leverdown", 2561, 3311, 4, 0],
+  ["wildoutlever", "ikov_leverdown", 3153, 3923, 5, 0],
+  ["magearena_lever_to_cellar", "magearena_lever_down", 3090, 3956, 4, 0],
+  ["magearena_lever_from_cellar", "magearena_lever_down", 2539, 4712, 4, 3],
+]) {
+  test(`${name} drops to ${down} a tick after the pull and is back up as the player lands`, () => {
+    const h = harness();
+    const who = player();
+    who.setAttribute("levers:skip-wilderness-warning", true);
+    const lever = mapLever(loc(name), x, y);
+    assert.ok(lever, `the map has ${name} at ${x},${y}`);
+    assert.deepEqual([lever.getType(), lever.getFace()], [shape, face], "shape and rotation as recorded");
+    assert.deepEqual(locsAt(x, y, shape), [loc(name)]);
+    use(h, who, name, "Pull", x, y, shape, face);
+    const seen = [];
+    runTicks(h, who, 8, () => seen.push(locsAt(x, y, shape)));
+    const pullTick = who.log.find((entry) => entry[1] === "anim")[0];
+    const soundTick = who.log.find((entry) => entry[1] === "sound" && entry[2] === 2400)[0];
+    const landTick = who.log.find((entry) => entry[1] === "tele")[0];
+    assert.equal(soundTick, pullTick + 1);
+    const downId = loc(down);
+    const downTicks = seen.map((ids, i) => ids.includes(downId) ? i + 1 : null).filter((t) => t !== null);
+    assert.deepEqual(downTicks, [pullTick + 1, pullTick + 2, pullTick + 3, pullTick + 4], "down from the click until the landing");
+    assert.equal(landTick, pullTick + 5);
+    assert.deepEqual(seen.at(-1), [loc(name)], "the lever is back up, with no down loc left behind");
+    assert.ok(seen.slice(pullTick, pullTick + 4).every((ids) => ids.length === 1 && ids[0] === downId),
+      "only the down loc while it is down");
+    // Pulled again: still one lever and nothing piled up.
+    who.setLocation(new core.Location(x, y, 0));
+    use(h, who, name, "Pull", x, y, shape, face);
+    runTicks(h, who, 8);
+    assert.deepEqual(locsAt(x, y, shape), [loc(name)], "a second pull leaves just the lever");
+    const lowered = h.tasks.find((task) => task.constructor.name === "TimedObjectReplacementTask");
+    assert.ok(lowered && !lowered.isRunning(), "the swap has finished");
+  });
+}
+
+test("a pull cut short by death still puts the lever back up", () => {
+  const h = harness();
+  const who = player();
+  use(h, who, "magearena_lever_to_cellar", "Pull", 3090, 3956);
+  runTicks(h, who, 2);
+  assert.deepEqual(locsAt(3090, 3956, 4), [loc("magearena_lever_down")]);
+  who.hitpoints = 0;
+  runTicks(h, who, 8);
+  assert.deepEqual(locsAt(3090, 3956, 4), [loc("magearena_lever_to_cellar")]);
+});
+
+test("a second player's pull while the lever is down does nothing", () => {
+  const h = harness();
+  const first = player();
+  const second = player();
+  use(h, first, "magearena_lever_to_cellar", "Pull", 3090, 3956);
+  runTicks(h, first, 2);
+  assert.deepEqual(locsAt(3090, 3956, 4), [loc("magearena_lever_down")]);
+  const tasks = h.tasks.length;
+  use(h, second, "magearena_lever_to_cellar", "Pull", 3090, 3956);
+  assert.equal(h.tasks.length, tasks, "no pull starts on the down lever");
+  runTicks(h, first, 8);
+  assert.deepEqual(second.log, []);
+  assert.deepEqual(locsAt(3090, 3956, 4), [loc("magearena_lever_to_cellar")]);
+});
+
 test("a pull cut short by death clears busy", () => {
   const h = harness();
   const who = player();
@@ -169,6 +258,7 @@ test("the Edgeville lever warns as live, lands beside the Keep lever and skips t
   runTicks(h, who, 8);
   assert.deepEqual(who.log.find((entry) => entry[1] === "tele"), [6, "tele", 3154, 3924], "pull a tick after the choice, land five after that");
   assert.equal(who.sent.get(varbit("wildoutlever_vis")), undefined, "no diary: the Keep lever stays Pull");
+  assert.deepEqual(h.diaryTasks, [[who, "wilderness", "enter-the-wilderness-from-the-ardougne-or-edgevi"]], "the Edgeville lever completes the easy Wilderness Diary task on landing, and no Ardougne one");
 
   who.dialogue = undefined;
   use(h, who, "edgeville_wildy_lever", "Pull", 3090, 3475);
@@ -216,7 +306,7 @@ test("the East Ardougne lever warns, lands beside the Keep lever and completes t
   assert.deepEqual(who.log.find((entry) => entry[1] === "tele"), [6, "tele", 3154, 3924]);
   assert.deepEqual(who.log.filter((entry) => entry[1] === "msg").map((entry) => entry[2]),
     ["You pull the lever...", "... and teleport into the Wilderness."]);
-  assert.deepEqual(h.diaryTasks, [[who, "ardougne", "use-the-ardougne-lever-to-teleport-to-the-wilder"]]);
+  assert.deepEqual(h.diaryTasks, [[who, "ardougne", "use-the-ardougne-lever-to-teleport-to-the-wilder"], [who, "wilderness", "enter-the-wilderness-from-the-ardougne-or-edgevi"]], "the easy Wilderness Diary task counts on landing too");
   assert.equal(who.sent.get(varbit("wildoutlever_vis")), 1, "the Keep lever shows its diary options");
 });
 
@@ -227,4 +317,28 @@ test("other levers fall through", () => {
   const definition = ObjectDefinition.forPlayer(objectId, who);
   assert.equal(h.hooks.Lever.Pull({ player: who, objectId, definition, clickType: 1, location: { x: 3104, y: 3956, z: 0 } }), false);
   assert.equal(h.tasks.length, 0);
+});
+
+test("lever:teleport hands its onArrival callback to the teleport, to run on landing", () => {
+  const calls = [];
+  const h = harness({ teleportSpy: (...args) => calls.push(args) });
+  const who = player();
+  const onArrival = () => {};
+  h.hooks["lever:teleport"]({ player: who, destination: new core.Location(3000, 3000, 0), onArrival });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][4], onArrival, "TeleportHandler.teleport's arrival callback");
+});
+
+test("All Settings' Deep Wilderness lever default option puts the Keep lever's Edgeville first", () => {
+  for (const [first, look] of [[0, 1], [1, 2]]) {
+    const h = harness({ diaryComplete: true });
+    const who = player({ [varbit("wilderness_lever_first_op")]: first });
+    who.sent.set(varbit("wilderness_lever_blockwarning_standard"), 1);
+    who.setAttribute("levers:skip-wilderness-warning", true);
+    use(h, who, "edgeville_wildy_lever", "Pull", 3090, 3475);
+    runTicks(h, who, 8);
+    assert.equal(who.sent.get(varbit("wildoutlever_vis")), look, first ? "Edgeville first, as recording 4155's player had it" : "Ardougne first");
+    const ops = ObjectDefinition.forPlayer(loc("wildoutlever"), who).getInteractions().slice(0, 2);
+    assert.deepEqual(ops, first ? ["Edgeville", "Ardougne"] : ["Ardougne", "Edgeville"]);
+  }
 });

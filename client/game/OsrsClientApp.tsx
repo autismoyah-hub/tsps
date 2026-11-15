@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+
 import { registerSerializer } from "threads";
 import WebFont from "webfontloader";
 
@@ -41,6 +42,9 @@ import { useSafariLandscapeLock } from "./useSafariLandscapeLock";
 import { useViewportCssVars } from "./useViewportCssVars";
 import { renderDataLoaderSerializer } from "./worker/RenderDataLoader";
 import { RenderDataWorkerPool } from "./worker/RenderDataWorkerPool";
+
+// A tool page, loaded only when the URL asks for it (?cache=1), so the game bundle is untouched.
+const CacheEditor = lazy(() => import("../custom/cache-editor/CacheEditor").then((module) => ({ default: module.CacheEditor })));
 
 registerSerializer(renderDataLoaderSerializer);
 
@@ -104,8 +108,8 @@ function OsrsClientApp() {
     const [graphicsLost, setGraphicsLost] = useState(false);
     const loginUnsubscribers = useMemo<Array<LoginUnsubscriber>>(() => [], []);
     useViewportCssVars();
-    // Phones only (not iPad): CSS-rotate when portrait + try orientation.lock.
-    // Enabled from login onward — portrait layout is unusable for the classic UI.
+    // Phones only (not iPad): CSS-rotate when portrait + try orientation.lock, unless the
+    // Portrait Mode plugin is on, which lays the game out upright instead.
     const safariLandscapeLock = useSafariLandscapeLock(checkMobile());
 
     // A lost WebGL context is never rebuilt, so the canvas goes blank while the game keeps
@@ -377,11 +381,12 @@ function OsrsClientApp() {
 
             const unsubLogin = subscribeLoginResponse((response) => {
                 if (response.success) {
-                    console.log("[OsrsClientApp] Login successful, sending handshake");
+                    console.log("[OsrsClientApp] Login successful");
                     client.onLoginAccepted(response.loginToken, response.displayName);
                     const username =
                         client.loginState?.username || response.displayName || "Player";
-                    sendHandshake(username);
+                    const handshake = () => sendHandshake(username);
+                    if (!client.clientPlugins.beforeLoginHandshake(handshake)) handshake();
                 } else {
                     console.log(
                         "[OsrsClientApp] Login failed:",
@@ -658,10 +663,20 @@ function OsrsClientApp() {
         .filter((name) => name.length > 0)
         .join(" ");
 
+    // The editor is an overlay, not a replacement: the client only finishes loading its cache once
+    // GameContainer has rendered, so hiding the game behind an early return leaves every preview
+    // waiting for loaders that never arrive.
+    const cacheEditor = new URLSearchParams(window.location.search).get("cache") === "1";
+
     return (
         <div className={appClassName}>
             {bannerWrapper}
             {content}
+            {cacheEditor ? (
+                <Suspense fallback={null}>
+                    <CacheEditor client={osrsClient} />
+                </Suspense>
+            ) : null}
         </div>
     );
 }

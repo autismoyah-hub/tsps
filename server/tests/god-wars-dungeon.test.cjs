@@ -148,3 +148,238 @@ test("every general's and bodyguard's projectile hit splats on the tick it lands
     Common.init({ core: previous });
   }
 });
+
+test("K'ril's prayer smash always lands 35-49 (Wiki: \"always dealing 35-49 damage\")", () => {
+  const previous = Common.core;
+  const applied = [];
+  const built = [];
+  const chain = { withAngle: () => chain, withProgress: () => chain, sendProjectile: () => {} };
+  Common.init({
+    core: {
+      ...previous,
+      CombatMethod: class {},
+      CombatType: { MELEE: "MELEE", RANGED: "RANGED", MAGIC: "MAGIC" },
+      CombatFactory: {
+        applyStyleDamage: (hit, maxHit, options) => applied.push({ hit, maxHit, options }),
+        inCombat: () => false,
+      },
+      PendingHit: class {
+        constructor(attacker, target, method, delayOrConfig) {
+          this.delay = typeof delayOrConfig === "number" ? delayOrConfig : delayOrConfig?.delay;
+          this.config = delayOrConfig;
+          built.push(this);
+        }
+      },
+      Animation: class {},
+      Graphic: class {},
+      Sound: class {},
+      Sounds: { sendSound: () => {} },
+      Misc: { randomInclusive: () => 0 },
+      PrayerHandler: { isActivated: () => true, PROTECT_FROM_MELEE: "melee" },
+      Projectile: { centreOf: () => ({ getDistance: () => 1 }), ticksToLand: () => 1, createProjectile: () => chain },
+    },
+  });
+  const providers = new Map();
+  const api = { registerNpcCombatMethodProvider: (id, Method) => providers.set(id, Method) };
+  try {
+    require("../plugins/bosses/godwars/Zamorak.GodWars").attachZamorak(api);
+    const general = Common.factionByKey("zamorak").general;
+    const Method = providers.get(general);
+    // The first roll picks melee over magic (non-zero), the second lands the one-in-nine smash.
+    let rolls = 0;
+    Common.init({ core: { ...Common.core, Misc: { randomInclusive: () => (rolls++ === 0 ? 1 : 0) } } });
+    const npc = {
+      getLocation: () => ({ getX: () => 2900, getY: () => 5300, getZ: () => 2 }),
+      getPlayersWithinDistance: () => [],
+      performAnimation: () => {}, performGraphic: () => {}, forceChat: () => {},
+      getDefinition: () => ({ getMaxHit: () => 30 }),
+    };
+    const target = { isPlayer: () => true, getLocation: () => ({ getX: () => 2901, getY: () => 5300, getZ: () => 2 }) };
+    const method = new Method();
+    method.start(npc, target);
+    assert.equal(method.attack.maxHit, 49);
+    assert.equal(method.attack.minHit, 35);
+    method.hits(npc, target);
+    assert.equal(built.length, 1);
+    assert.equal(built[0].config.rollAccuracy, false, "the smash skips the accuracy roll");
+    assert.equal(applied[0].maxHit, 49);
+    assert.equal(applied[0].options.minHit, 35);
+    assert.equal(applied[0].options.bypassProtectionPrayer, true, "it hits through Protect from Melee");
+  } finally {
+    Common.init({ core: previous });
+  }
+});
+
+test("an empty chamber resets the general's health and every drained stat, not just Defence", () => {
+  const previous = Common.core;
+  const skill = { ATTACK: "attack", STRENGTH: "strength", DEFENCE: "defence", RANGED: "ranged", MAGIC: "magic" };
+  const drained = new Map([
+    ["attack", 200], ["strength", 280], ["defence", 180], ["ranged", 300], ["magic", 60],
+  ]);
+  const npc = {
+    getId: () => 2215,
+    getPrivateArea: () => null,
+    getHitpoints: () => 90,
+    getMaxHitpoints: () => 255,
+    getLocation: () => at(2870, 5360, 2),
+    getCombat: () => ({ reset: () => {} }),
+    setHitpoints: (value) => { npc.hitpoints = value; },
+    getMaxLevel: (each) => ({ attack: 280, strength: 350, defence: 250, ranged: 350, magic: 80 })[each],
+    setCurrentLevels: (each, value) => drained.set(each, value),
+  };
+  Common.init({
+    core: {
+      ...previous,
+      Skill: skill,
+      World: { getNpcs: () => [npc] },
+    },
+  });
+  try {
+    const { resetChamber } = require("../plugins/bosses/godwars/Dungeon.GodWars");
+    resetChamber(Common.factionByKey("bandos"));
+    assert.equal(npc.hitpoints, 255, "healed to full");
+    assert.deepEqual(Object.fromEntries(drained), {
+      attack: 280, strength: 350, defence: 250, ranged: 350, magic: 80,
+    });
+  } finally {
+    Common.init({ core: previous });
+  }
+});
+
+test("climbing down the roped hole says \"You climb down the rope.\" on the spam channel (rsprox 230/02960.txt:14115)", () => {
+  require("../dist/Server").Server.installProductionPathResolver();
+  const { PluginManager } = require("../dist/plugins/PluginManager");
+  const core = PluginManager.getCoreApi();
+  const clicks = new Map();
+  const api = new Proxy({
+    core: { ...core, TaskManager: { submit: () => {} } },
+    onObjectFirstClick: (id, handler) => clicks.set(id, handler),
+  }, { get: (target, key) => target[key] ?? (() => {}) });
+  Common.init(api);
+  require("../plugins/bosses/godwars/Dungeon.GodWars").attachDungeon(api);
+  const typed = [];
+  const plain = [];
+  // Roped already, and Troll Stronghold past the stage the hole needs.
+  const attributes = new Map([[Common.ENTRANCE_ROPE_ATTRIBUTE, true], ["quest.troll_stronghold.stage", 99]]);
+  const player = {
+    getAttribute: (key) => attributes.get(key),
+    setAttribute: (key, value) => attributes.set(key, value),
+    getInventory: () => ({ contains: () => false }),
+    getPacketSender: () => ({ sendVarbit() {}, sendTypedMessage: (type, text) => typed.push([type, text]) }),
+    sendMessage: (text) => plain.push(text),
+    performAnimation() {},
+    getMovementQueue: () => ({ reset() {} }),
+  };
+  clicks.get(Common.data.entrance.hole)({ player });
+  assert.deepEqual(plain, [], "no game message");
+  assert.deepEqual(typed, [[core.ChatType.SPAM, "You climb down the rope."]]);
+});
+
+function crackHarness({ agility = 60, stage = 99, location = at(2899, 3713, 0) } = {}) {
+  require("../dist/Server").Server.installProductionPathResolver();
+  const { PluginManager } = require("../dist/plugins/PluginManager");
+  const core = PluginManager.getCoreApi();
+  const clicks = new Map();
+  const tasks = [];
+  const events = [];
+  class Task {
+    constructor(delay) {
+      this.delay = delay;
+    }
+    stop() {}
+  }
+  const api = new Proxy({
+    core: { ...core, Task, TaskManager: { submit: (task) => tasks.push(task) } },
+    onObjectFirstClick: (id, handler) => clicks.set(id, handler),
+    emitCustomEvent: (name, payload) => events.push([name, payload]),
+  }, { get: (target, key) => target[key] ?? (() => {}) });
+  Common.init(api);
+  require("../plugins/bosses/godwars/Dungeon.GodWars").attachDungeon(api);
+  const log = [];
+  const harness = { location, hitpoints: 99 };
+  const attributes = new Map([["quest.troll_stronghold.stage", stage]]);
+  const movement = { reset() { return movement; }, setBlockMovement: (blocked) => { log.push(["block", blocked]); return movement; } };
+  const sender = {
+    sendString: (text, uid) => { log.push(["text", uid, text]); return sender; },
+    sendSubInterface: (uid, id, type, options) => { log.push(["open", id, options]); return sender; },
+    closeSubInterface: (uid) => { log.push(["close", uid]); return sender; },
+  };
+  const player = {
+    getAttribute: (key) => attributes.get(key),
+    setAttribute: (key, value) => attributes.set(key, value),
+    getLocation: () => harness.location,
+    getHitpoints: () => harness.hitpoints,
+    getSkillManager: () => ({ getCurrentLevel: (skill) => (skill === core.Skill.AGILITY ? agility : 1) }),
+    getPacketSender: () => sender,
+    getMovementQueue: () => movement,
+    sendMessage: (text) => log.push(["message", text]),
+    performAnimation: (anim) => log.push(["anim", anim.getId?.() ?? anim.id]),
+    moveTo: (to) => log.push(["move", to.getX(), to.getY(), to.getZ()]),
+    isRegistered: () => true,
+  };
+  const click = (x, y) => clicks.get(Common.data.entrance.crack)({ player, location: { x, y, z: 0 }, objectId: 26382 });
+  /** Runs the queued tasks in tick order; returns what each tick sent. */
+  const run = () => {
+    const byTick = {};
+    for (const task of [...tasks].sort((a, b) => a.delay - b.delay)) {
+      const before = log.length;
+      task.execute();
+      (byTick[task.delay] ??= []).push(...log.slice(before));
+    }
+    return byTick;
+  };
+  return Object.assign(harness, { click, run, log, events, core, player });
+}
+
+test("the Little crack fades, crawls and teleports on the captured ticks (rsprox.net 224/01461 t167-174)", () => {
+  const { click, run, log, events } = crackHarness();
+  assert.equal(click(2900, 3713), true);
+  assert.deepEqual(log, [["block", true]], "no message, nothing else on the op tick");
+  const ticks = run();
+  assert.deepEqual(Object.keys(ticks).map(Number), [1, 3, 6, 7]);
+  assert.deepEqual(ticks[1][0], ["text", (174 << 16) | 4, ""], "the caption is cleared before the fade opens");
+  assert.equal(ticks[1][1][0], "open");
+  assert.equal(ticks[1][1][1], 174);
+  assert.deepEqual(ticks[1][1][2].postScripts, [{ scriptId: 948, args: [0, 255, 0, 0, 50] }]);
+  assert.deepEqual(events.map(([name]) => name), ["boss-hud:hide"]);
+  assert.deepEqual(ticks[3], [["anim", 7041]]);
+  assert.deepEqual(ticks[6], [["block", false], ["move", 2904, 3720, 0]]);
+  assert.equal(ticks[7][0][0], "close");
+  assert.ok(!log.some(([kind]) => kind === "message"));
+});
+
+test("run energy does not recover during the Little crack's crawl (Wiki: Energy; rsprox 224/01461 t167-174)", () => {
+  const ObstacleRunner = require("../plugins/skills/agility/ObstacleRunner.Agility");
+  const { click, player, core } = crackHarness();
+  const start = core.World.getProcessCycle();
+  const crossing = (offset) => ObstacleRunner.isCrossingAgilityObstacle(player, start + offset);
+  assert.equal(crossing(0), false);
+  click(2900, 3713);
+  for (let tick = 0; tick < 7; tick++) assert.equal(crossing(tick), true, `tick ${tick} of the crawl`);
+  assert.equal(crossing(7), false, "recovers again once the fade closes");
+});
+
+test("the Little crack's north side leads back to the south side", () => {
+  const { click, run } = crackHarness({ location: at(2904, 3720, 0) });
+  click(2904, 3719);
+  assert.deepEqual(run()[6], [["block", false], ["move", 2899, 3713, 0]]);
+});
+
+test("a player killed during the crawl is not pulled from the respawn point", () => {
+  const harness = crackHarness();
+  harness.click(2900, 3713);
+  harness.hitpoints = 0;
+  harness.location = at(2899, 3713, 0);
+  assert.deepEqual(harness.run()[6], [["block", false]]);
+  const respawned = crackHarness();
+  respawned.click(2900, 3713);
+  respawned.location = at(2657, 3439, 0);
+  assert.deepEqual(respawned.run()[6], [["block", false]]);
+});
+
+test("the Little crack needs 60 Agility (Wiki)", () => {
+  const { click, run, log } = crackHarness({ agility: 59 });
+  assert.equal(click(2900, 3713), true);
+  assert.deepEqual(log, [["message", "You need an Agility level of 60 to do that."]]);
+  assert.deepEqual(run(), {});
+});

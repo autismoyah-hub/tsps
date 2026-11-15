@@ -183,6 +183,28 @@ test("Bonds plugin registers its hooks and persists the membership expiry", () =
   assert.equal(handlers.tradeCompleted.length, 1);
 });
 
+test('native Account Bond Pouch buttons already reach the pouch and its stored bonds', t => {
+  const { PluginManager } = require('../dist/plugins/PluginManager');
+  const { InterfaceActionClickOpcode } = require('../dist/net/packet/impl/InterfaceActionClickOpcode');
+  const hookCount = PluginManager.interfaceActionClickHooks.length;
+  t.after(() => PluginManager.interfaceActionClickHooks.splice(hookCount));
+  const { api } = mockApi();
+  api.onInterfaceActionButton = PluginManager.createApi('BondsAccountRouteTest').onInterfaceActionButton;
+  require('../plugins/items/Bonds.plugin').register(api);
+  const player = makePlayer('alice');
+  player.getHitpoints = () => 10;
+  player.isTeleportingReturn = () => false;
+  player.setAttribute('bonds:pouch-tradeable', 3);
+  const press = (group, child) => InterfaceActionClickOpcode.handle(player, uid(group, child), 1,
+    { groupId: group, childId: child, opId: 1, slot: -1 });
+  assert.equal(press(109, 37), true);
+  assert.equal(player.getInterfaceId(), 861);
+  assert.equal(press(861, 8), true);
+  assert.equal(player.getInterfaceId(), 863);
+  assert.ok(player.sent.some(([kind, id, size, items]) => kind === 'inventory' &&
+    items.some(item => item?.id === TRADEABLE_BOND && item.amount === 3)));
+});
+
 test("a traded bond arrives untradeable, and only the traded amount converts", () => {
   const handlers = registerBonds();
   const player = makePlayer("alice");
@@ -325,6 +347,7 @@ test("confirming destroy re-checks the drop policy and refuses an untradeable bo
 
   let destroyPolicy;
   let yesHandler;
+  const destroyEvents = [];
   const emitItemDropPolicy = (event) => {
     for (const hook of [destroyPolicy, ...handlers.dropPolicy]) hook(event);
     return event.handled === true;
@@ -332,7 +355,8 @@ test("confirming destroy re-checks the drop policy and refuses an untradeable bo
   delete require.cache[require.resolve("../plugins/interface/DestroyItem.plugin")];
   require("../plugins/interface/DestroyItem.plugin").register({
     core: { PluginManager: { emitItemDropPolicy } },
-    registerCustomInterface() {},
+    onCustomEvent() {},
+    emitCustomEvent: (name) => destroyEvents.push(name),
     onItemDropPolicy: (handler) => {
       destroyPolicy = handler;
     },
@@ -376,6 +400,7 @@ test("confirming destroy re-checks the drop policy and refuses an untradeable bo
 
   yesHandler({ player, action: 1 });
   assert.equal(deleted, 0, "the confirmed destroy must not delete the bond");
+  assert.deepEqual(destroyEvents, ["destroy-item:prompt"], "the prompt opens but no destruction event is emitted");
   assert.ok(player.messages.some((message) => message.includes("cannot be dropped or destroyed")));
 });
 
@@ -419,7 +444,7 @@ test("the pouch deposits and withdraws, shows its counts and stops at 100 bonds"
 
   handlers.buttons.get(uid(109, 37))({ player });
   assert.deepEqual(player.sent.find(([kind]) => kind === "interface"), ["interface", 861]);
-  handlers.buttons.get(uid(861, 7))({ player });
+  handlers.buttons.get(uid(861, 8))({ player });
   assert.deepEqual(player.sent.filter(([kind]) => kind === "interface").at(-1), ["interface", 863]);
 
   for (let i = 0; i < 6; i++) player.getInventory().add(TRADEABLE_BOND, 1);
@@ -488,7 +513,7 @@ test("a stale Move-X amount does nothing after Back leaves the bond pouch", () =
   const press = (group, child) => handlers.buttons.get(uid(group, child))({ player, buttonId: uid(group, child) });
 
   press(109, 37); // Account tab: Bond Pouch
-  press(861, 7); // View Your Bonds
+  press(861, 8); // View Your Bonds
   press(863, 19); // X
   press(863, 12); // Move to Pouch
   const stale = player.amountAction;

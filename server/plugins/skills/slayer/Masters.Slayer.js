@@ -14,11 +14,24 @@
  * step. Transcripts can't wait on an interface, so after the pick the rest of that branch is
  * played again from the step after the interface (the line for the task's modifier, then the
  * tips/cancel menu). While a choice waits, the other masters refuse (Wiki).
+ *
+ * Where content offers a choice of tasks instead of the assignment (Offer.Slayer.js, a league
+ * relic), each assignment path (Assignment, the transcript's assignment step, Turael's
+ * replacement, a remote assignment) ends the talk and shows that choice.
+ *
+ * A new task is followed by the same menu at every master but Mortimer: "Got any tips for me?",
+ * "Can I cancel that task? (30 Points)" (only while the player can pay for it) and "Okay,
+ * great!" (Konar adds "Where is that area?" and closes with her own line). Talk-to's "I need another assignment." with no task plays that assignment for every
+ * master the same way, as the transcripts' own branches differ (some hold only the line, some
+ * no menu). There the master first says "Excellent, you're doing great." (not Konar or
+ * Krystilia, whose lines have their own form); Assignment gives only the task line.
  */
 const Data = require("./Data.Slayer");
 const State = require("./State.Slayer");
 const Tasks = require("./Tasks.Slayer");
 const Choice = require("./Choice.Slayer");
+const Offer = require("./Offer.Slayer");
+const Rewards = require("./Rewards.Slayer");
 
 /** Set when the player accepts Turael's offer to replace a task he wouldn't give. */
 const REPLACE_ATTRIBUTE = "slayer:replace-offered";
@@ -31,7 +44,22 @@ const ASSIGNMENT_VARIANT = "standard-dialogue-subsequent-visits-to-turael";
 const CHOICE_WAITING = "Hmm... It appears as though Mortimer has provided you with a task choice, you must go to them in order to pick.";
 /** Ours: the Wiki has no line for the Slayer XP modifier. */
 const XP_MODIFIER_LINE = "Your new task is to kill [amount] [task monster]. Creatures on this task will award increased Slayer experience.";
+const PRAISE = "Excellent, you're doing great.";
+const TIPS_OPTION = "Got any tips for me?";
+const CANCEL_TASK_OPTION = "Can I cancel that task? (30 Points)";
+const OKAY_OPTION = "Okay, great!";
+const GOOD_LUCK = "Good luck! Don't forget to come back when you need a new assignment.";
+/** Konar's menu also asks where the area is, and she closes with her own line (Wiki transcript). */
+const AREA_OPTION = "Where is that area?";
+const KONAR_GOOD_LUCK = "Once the balance has been served, return to me.";
+const TASK_CANCELLED = "Your task has been cancelled.";
+/** Krystilia's tip ends with this (Wiki transcript). */
+const WILDERNESS_TIP = "You've got to do the task in the Wilderness.";
+/** The menu's cancel option, played by action() (not a transcript action). */
+const CANCEL_ACTION = "slayer_cancel_task";
 const { MORTIMER, MODIFIER } = Data;
+/** Konar's master id (slayer-masters.json). */
+const KONAR = 8;
 
 let api = null;
 let core = null;
@@ -74,6 +102,20 @@ function waitingElsewhere(player, master) {
   return Choice.pending(player) && State.varbit(player, "slayer_choose_rolled_master") !== master.id;
 }
 
+/**
+ * Whether content offers this player a choice of tasks from this master now: no task, no other
+ * master's choice waiting, the master's levels met (Offer.Slayer.js).
+ */
+function offersChoice(player, master) {
+  if (Tasks.current(player) || waitingElsewhere(player, master) || !Tasks.meetsMaster(player, master)) return false;
+  return Offer.offerFor(player, master) != null;
+}
+
+/** Shows that choice once the talk has closed (closing it closes every interface, the menu included). */
+function offerLater(player, master, npcId) {
+  queueMicrotask(() => Offer.open(player, master, npcId));
+}
+
 /** Mortimer's task choice, or his line when he has none to offer. */
 function offerChoice(player, master, definition, npcId) {
   if (!Tasks.meetsMaster(player, master)) {
@@ -102,12 +144,85 @@ function assignmentClick(event) {
   const master = masterFor(event.definition);
   if (!master) return;
   event.handled = true;
+  spokeTo(event.player, master);
   if (master.id === MORTIMER && !Tasks.current(event.player)) {
     offerChoice(event.player, master, event.definition, event.definition.getId());
     return;
   }
+  if (!assignmentTalk(event.player, master) && offersChoice(event.player, master)) {
+    Offer.open(event.player, master, event.definition.getId());
+    return;
+  }
   if (assignmentTalk(event.player, master) && playAssignmentBranch(event)) return;
+  if (!Tasks.current(event.player) && playSteps(event.player, master, event.npc, event.definition.getId(), () => assignmentSteps(event.player, master, false))) return;
   say(event.player, event.definition, assignmentLine(event.player, master));
+}
+
+/**
+ * The master's answer to an assignment asked for with no task held, as transcript steps: the
+ * task line and the menu after it, or the refusal. Null when content offers a choice of tasks
+ * instead (the caller shows it once the talk has closed).
+ */
+function assignmentSteps(player, master, praise) {
+  const end = { type: "end" };
+  if (waitingElsewhere(player, master)) return [{ npc: CHOICE_WAITING }, end];
+  if (!Tasks.meetsMaster(player, master)) return [{ npc: tooWeak(master) }, end];
+  if (offersChoice(player, master)) return null;
+  const result = Tasks.assign(player, master);
+  if (!result.line) return [{ npc: result.refused }, end];
+  return [{ npc: praise ? `${PRAISE} ${result.line}` : result.line }, afterTaskMenu(player, master)];
+}
+
+/** Whether this master's Talk-to assignment starts with the praise (Konar and Krystilia word theirs apart). */
+function praises(master) {
+  return !master.locations && master.wilderness !== true;
+}
+
+/** "Okay, great!" and the master's closing line. */
+function okaySteps(master) {
+  return [{ player: OKAY_OPTION }, { npc: master.locations ? KONAR_GOOD_LUCK : GOOD_LUCK }, { type: "end" }];
+}
+
+/** The menu after a new task; cancelling is offered only while the player can pay for it. */
+function afterTaskMenu(player, master) {
+  const tip = { type: "action", action: "slayer_task_tip", target: master.names[0] };
+  const tips = [
+    { player: TIPS_OPTION },
+    tip,
+    ...(master.wilderness === true ? [{ npc: WILDERNESS_TIP }] : []),
+    { player: "Great, thanks!" },
+    { type: "end" },
+  ];
+  const options = [{ text: TIPS_OPTION, steps: tips }];
+  if (State.varbit(player, "slayer_points") >= Rewards.cancelPrice(player)) {
+    // Konar's transcript has the player ask; at the other masters the master answers the option.
+    const ask = master.locations ? [{ player: "Can I cancel that task?" }] : [];
+    options.push({ text: CANCEL_TASK_OPTION, steps: [...ask, { type: "action", action: CANCEL_ACTION, target: master.names[0] }] });
+  }
+  if (master.locations) options.push({ text: AREA_OPTION, steps: [{ player: AREA_OPTION }, tip, ...okaySteps(master)] });
+  options.push({ text: OKAY_OPTION, steps: okaySteps(master) });
+  return { type: "choice", options };
+}
+
+/**
+ * Plays steps through the dialogue engine as this master's talk (menus and stage directions
+ * work as in the transcripts). `build` runs only once the talk can start; when it gives null,
+ * the offered choice of tasks shows instead.
+ */
+function playSteps(player, master, npc, npcId, build) {
+  let offered = false;
+  const select = () => {
+    const steps = build();
+    if (!steps) offered = true;
+    return steps;
+  };
+  const request = { player, npc, npcId, select, handled: false };
+  api.emitCustomEvent("npc-dialogue:start", request);
+  if (offered) {
+    Offer.open(player, master, npcId);
+    return true;
+  }
+  return request.handled === true;
 }
 
 /**
@@ -149,6 +264,11 @@ function assignmentEvent(request) {
   }
   if (!Tasks.meetsMaster(request.player, master)) {
     request.line = tooWeak(master);
+    return;
+  }
+  // A remote assignment or a quest's: no line, the choice follows.
+  if (offersChoice(request.player, master)) {
+    offerLater(request.player, master, request.npcId ?? request.definitionId ?? null);
     return;
   }
   const result = Tasks.assign(request.player, master);
@@ -272,6 +392,23 @@ function action(request) {
     return;
   }
   if (master.id === MORTIMER && mortimerAction(request, master)) return;
+  if (request.action === "slayer_assignment" && !Tasks.current(player)) {
+    request.handled = true;
+    const steps = assignmentSteps(player, master, praises(master) && text.startsWith(PRAISE));
+    if (steps) request.steps = steps;
+    else {
+      request.end = true;
+      offerLater(player, master, request.npcId ?? request.definition.getId());
+    }
+    return;
+  }
+  if (request.action === CANCEL_ACTION) {
+    const cancel = { player, quiet: true, cancelled: false };
+    api.emitCustomEvent("slayer:cancel-task", cancel);
+    request.handled = true;
+    request.steps = cancel.cancelled ? [{ npc: TASK_CANCELLED }, ...okaySteps(master)] : [{ type: "end" }];
+    return;
+  }
   if (request.action === "open_shop" && request.target === "Slayer Rewards") {
     // End the talk first: closing it closes every interface, the Rewards one included.
     request.handled = true;
@@ -290,7 +427,12 @@ function action(request) {
   if (step?.type === "missing" && player.getAttribute(REPLACE_ATTRIBUTE) === master.id) {
     player.setAttribute(REPLACE_ATTRIBUTE, null);
     request.handled = true;
-    request.steps = [{ npc: replaceTask(player, master) }];
+    const line = replaceTask(player, master);
+    if (line) request.steps = Tasks.current(player) ? [{ npc: line }, afterTaskMenu(player, master)] : [{ npc: line }];
+    else {
+      request.end = true;
+      offerLater(player, master, request.npcId ?? request.definition.getId());
+    }
   }
 }
 
@@ -374,21 +516,57 @@ function findOption(steps, text) {
 function replaceTask(player, master) {
   Tasks.clear(player);
   State.setVarbit(player, "slayer_tasks_completed", 0);
+  // Null when content offers a choice instead (the caller shows it).
+  if (offersChoice(player, master)) return null;
   const result = Tasks.assign(player, master);
   return result.line ?? result.refused;
 }
 
+/** Ours (no capture sets it): having spoken to Konar unlocks her NPC Contact entry (cs2 9733 reads konar_spoken). */
+function spokeTo(player, master) {
+  if (master?.id === KONAR && State.varbit(player, "konar_spoken") === 0) State.setVarbit(player, "konar_spoken", 1);
+}
+
 function choice(event) {
   const master = masterFor(event.definition);
+  spokeTo(event.player, master);
   if (master?.id === MORTIMER) {
     // His introduction ends at the first menu; the next talk is the short greeting.
     if (State.varbit(event.player, "mortimer_introduction") === 0) State.setVarbit(event.player, "mortimer_introduction", 1);
     event.player.setAttribute(CANCEL_ATTRIBUTE, event.option === CANCEL_OPTION ? true : null);
     return;
   }
+  if (master && event.option === ASSIGNMENT_OPTION && talkToAssignment(event, master)) return;
   if (!master?.replacesTasks) return;
   const offered = event.option === "Yes, please." && Tasks.current(event.player) != null;
   event.player.setAttribute(REPLACE_ATTRIBUTE, offered ? master.id : null);
+}
+
+/**
+ * Talk-to's "I need another assignment." with no task: the player's line, then the assignment
+ * (action() answers its step). Krystilia's warning before a first Wilderness task stays her
+ * transcript's.
+ */
+function talkToAssignment(event, master) {
+  const { player } = event;
+  if (Tasks.current(player)) return false;
+  if (master.wilderness === true && State.varbit(player, "slayer_wilderness_tasks_completed") === 0) return false;
+  const steps = [
+    { player: ASSIGNMENT_OPTION },
+    { type: "action", action: "slayer_assignment", target: master.names[0], text: praises(master) ? PRAISE : "" },
+  ];
+  if (!playSteps(player, master, event.npc, event.npcId ?? event.definition.getId(), () => steps)) return false;
+  event.end = true;
+  return true;
+}
+
+/** Steve's Slayer-master form plays his master's talk; the wyvern-cave Steve keeps his own. */
+const STEVE_MASTER_VARIANT = "standard-dialogue-slayer-master";
+
+function dialogueVariant({ npcId, definition }) {
+  const id = definition?.getId?.() ?? npcId;
+  if (id == null || id !== core.CacheDefinitions.getNpcId("slayer_master_steve")) return null;
+  return STEVE_MASTER_VARIANT;
 }
 
 const EQUIPMENT_SHOP = "Slayer Equipment (shop)";
@@ -414,6 +592,7 @@ function attach(pluginApi) {
   pluginApi.onAnyNpcInteraction({ Trade: trade, Rewards: rewards });
   pluginApi.onNpcInteraction(assignmentClick);
   pluginApi.onNpcDialogueCondition(answerCondition);
+  pluginApi.onNpcDialogueVariant?.(dialogueVariant);
   pluginApi.onCustomEvent("slayer:assignment", assignmentEvent);
   pluginApi.onCustomEvent("slayer:task-tip", taskTipEvent);
   pluginApi.onCustomEvent("npc-dialogue:line", fillLine);
@@ -427,5 +606,6 @@ module.exports = {
   attach,
   assignmentLine,
   answerCondition,
+  dialogueVariant,
   replaceTask,
 };

@@ -26,6 +26,7 @@ const { NpcDialogue } = require('../dist/game/model/dialogues/entries/impl/NpcDi
 const { PlayerDialogue } = require('../dist/game/model/dialogues/entries/impl/PlayerDialogue');
 const { StatementDialogue } = require('../dist/game/model/dialogues/entries/impl/StatementDialogue');
 const { ItemStatementDialogue } = require('../dist/game/model/dialogues/entries/impl/ItemStatementDialogue');
+const { Dialogue } = require('../dist/game/model/dialogues/entries/Dialogue');
 const { EndDialogue } = require('../dist/game/model/dialogues/entries/impl/EndDialogue');
 const { ActionDialogue } = require('../dist/game/model/dialogues/entries/impl/ActionDialogue');
 
@@ -89,6 +90,8 @@ function harness(t, members = true) {
       WorldDefinition: { isMembersWorld: () => members }, World: { getProcessCycle: () => Math.floor(now / 600), forEachNetworkPlayer() {} },
       NpcDefinition: { forId: id => ({ getName: () => NPC_NAMES[id] }) },
       Animation, Graphic, Task, PlayerRights,
+      // The real manager mounts the combat tab (593) for the weapon; the events only need it re-mounted.
+      WeaponInterfaceManager: { assign: player => player.getPacketSender().sendTabInterface(0, 593) },
       DialogueChainBuilder, NpcDialogue, PlayerDialogue, StatementDialogue,
       ItemStatementDialogue, EndDialogue, ActionDialogue, GameObject: FakeGameObject, ObjectManager,
       MapObjects: { get: () => null, mapObjects, getHash: (x, y, z) => `${x},${y},${z}` } },
@@ -184,17 +187,23 @@ function harness(t, members = true) {
       getInterfaceId: () => p.interfaceId, setInterfaceId(id) { p.interfaceId = id; },
       sendMessage: text => messages.push(text), forceChat(text) { p.chat = text; },
       setNpcTransformationId(id) { p.transformation = id; },
-      performAnimation(animation) { p.animation = animation.getId(); },
+      performAnimation(animation) { p.animation = animation.getId(); p.animationDelay = animation.getDelay(); },
       setPositionToFace(location) { p.face = location; },
       moveTo(location) { p.location = location; }, setLocation(location) { p.location = location; },
       getEquipment: () => ({ containsNumber: () => false }),
       getBank: () => ({ containsNumber: () => false }),
       getDialogueManager: () => ({
-        startDialogues(builder) { p.dialogue = builder; },
+        startDialogues(builder) {
+          p.dialogue = builder;
+          // The box logs its own chat line as it opens, as the real one does.
+          const first = builder.getDialogues?.().get(0);
+          if (first instanceof StatementDialogue || first instanceof ItemStatementDialogue) Dialogue.sendBoxChatLine(p, first.getText());
+        },
         isActive: () => !!p.dialogue,
       }),
       getInventory: () => ({ get: slot => slots[slot], getItems: () => slots, getFreeSlots: () => p.free,
         containsNumber: id => slots.some(item => item?.getId() === id && item.getAmount() > 0),
+        getAmount: id => slots.reduce((sum, item) => sum + (item?.getId() === id ? item.getAmount() : 0), 0),
         getAddableAmount(item) {
           if (!item.getDefinition().isStackable()) return Math.min(item.getAmount(), p.free);
           const stack = slots.find(slot => slot?.getId() === item.getId());
@@ -212,11 +221,11 @@ function harness(t, members = true) {
       getSkillManager: () => ({ getMaxLevel: skill => levels.get(skill) ?? 1,
         getExperience: skill => xp.get(skill) ?? 0, getTotalLevel: () => p.totalLevel ?? 1,
         addExperience(skill, amount, multipliers) {
-          assert.equal(multipliers, false);
+          assert.equal(multipliers, true, 'reward XP takes the world and account rates (#3672)');
           if (!p.blockXp) xp.set(skill, Math.min(200_000_000, (xp.get(skill) ?? 0) + amount));
         } }),
       getSpellbook: () => ({ getInterfaceId: () => 218 }),
-      getPacketSender: () => ({ closeSubInterface() {}, sendTabInterface() {}, sendInterface(id) { p.interfaceId = id; },
+      getPacketSender: () => ({ closeSubInterface() {}, sendTabInterface() { return this; }, sendGameframeTabSetup() { return this; }, sendInterface(id) { p.interfaceId = id; },
         sendInterfaceRemoval() { p.interfaceId = -1; p.chatboxGroupId = -1; }, sendString(text, uid) {
           p.trayTitle = text; (p.strings ??= new Map()).set(uid, text);
         },
@@ -549,7 +558,8 @@ test('Grand Exchange footprint samples use the active cache plaza and paving, ex
   });
   assert.equal(terrain.tileAt(3164, 3487, 0).underlay, 55);
   assert.equal(terrain.tileAt(3145, 3489, 0).overlay.id, 173);
-  for (const [x, y] of [[3144, 3489], [3145, 3506]]) {
+  // Rev 242 paved new paths north-west of the plaza, (3145, 3506) among them; (3146, 3504) is still grass.
+  for (const [x, y] of [[3144, 3489], [3146, 3504]]) {
     const tile = terrain.tileAt(x, y, 0);
     assert.equal(tile.overlay, null);
     assert.notEqual(tile.underlay, 55, 'the grass corners are outside the plaza');
@@ -739,6 +749,27 @@ test('dismissal, expiry, distance, plane, instances, logout, death and shutdown 
   }
 });
 
+// No, Wave, Yawn, Angry and Ya boo sucks.
+const DISMISS_EMOTES = [856, 863, 2111, 859, 2110];
+
+test('Dismiss makes the owner play one of the five dismissive emotes, chosen at random', t => {
+  const h = harness(t), random = Math.random, seen = new Set();
+  t.after(() => { Math.random = random; });
+  DISMISS_EMOTES.forEach((emote, index) => {
+    const p = h.player(), npc = h.spawn(p, 1);
+    Math.random = () => (index + 0.5) / DISMISS_EMOTES.length;
+    h.hooks['Sandwich lady'].Dismiss({ player: p, npc });
+    Math.random = random;
+    assert.equal(p.animation, emote); assert.equal(p.animationDelay, 10); assert.equal(npc.removed, true);
+    seen.add(p.animation);
+  });
+  assert.equal(seen.size, DISMISS_EMOTES.length);
+  const owner = h.player(), stranger = h.player(), npc = h.spawn(owner);
+  h.hooks.Genie.Dismiss({ player: stranger, npc });
+  assert.equal(stranger.animation, undefined, 'only the owner can dismiss the event');
+  assert.equal(npc.removed, undefined);
+});
+
 function rub(h, p, slot = 3) {
   const item = new Item(I.LAMP, 1); p.slots[slot] = item;
   assert.equal(h.hooks.Lamp.Rub({ player: p, item, itemId: I.LAMP, slot, clickType: 1, handled: false }), true);
@@ -755,6 +786,20 @@ test('real Rub event reaches every skill, uses base level XP, exact slot and one
     assert.equal(confirm(h, skill), `Your wish has been granted!<br>You have been awarded 370 ${skill.getName()} XP!`);
     assert.equal(confirm(h, skill), null, 'once');
     assert.equal(p.xp.get(skill), 370, skill.getName()); assert.equal(p.slots[3], undefined);
+  }
+});
+
+test('the lamp leaves the chat line to the xpreward interface; the book has its own lines at 15 x level', t => {
+  const h = harness(t), skill = Skill.values()[0];
+  const lamp = h.player(); lamp.levels.set(skill, 37); rub(h, lamp);
+  confirm(h, skill);
+  assert.equal((lamp.typed ?? []).some(([type]) => type === 115), false, 'no second chat copy');
+  for (const [level, amount] of [[49, '735'], [85, '1,275']]) {
+    const p = h.player(); p.levels.set(skill, level);
+    const item = new Item(I.BOOK_OF_KNOWLEDGE, 1); p.slots[2] = item;
+    assert.equal(h.hooks['Book of Knowledge'].Read({ player: p, item, itemId: I.BOOK_OF_KNOWLEDGE, slot: 2, clickType: 1, handled: false }), true);
+    assert.equal(confirm(h, skill), `Your brain power serves you well!<br>You have been awarded ${amount} ${skill.getName()} experience!`);
+    assert.equal(p.slots[2], undefined);
   }
 });
 
@@ -1122,8 +1167,16 @@ test('gift events follow the captured overhead timeline, smoke and refusal lines
 const FROG_TOUCH = ["Very well, if a touch is all you need, I'll do it.", "Yes, I will touch you.",
   "Sure, I'll touch you.", "A touch? Yes, I'll do that."];
 const FROG_KISS = ["How about if we kiss?", "May I kiss you instead?", "Would a kiss be acceptable?"];
-const FROG_POLITE = ["I would prefer not to, sorry.", "I'm sorry, I'd prefer not to do that."];
-const FROG_BECOME = ["I'd rather become a frog too!", "What if I want to be a frog like you?"];
+const FROG_POLITE = ["I would prefer not to, sorry.", "I'm sorry, I'd prefer not to do that.",
+  "This really isn't a good time for me, sorry."];
+const FROG_BECOME = ["I'd rather become a frog too!", "What if I want to be a frog like you?",
+  "It looks better to be a frog. Make me one!"];
+
+// The chathead animation of each open dialogue page.
+function pageHeads(p) {
+  return [...p.dialogue.getDialogues().values()].filter(entry => entry.getText?.())
+    .map(entry => typeof entry.expression === 'number' ? entry.expression : entry.expression?.getExpression?.());
+}
 
 function frogEvent(t) {
   const h = harness(t), p = eventPlayer(h), before = h.npcs.length;
@@ -1158,6 +1211,43 @@ test('Kiss the frog: the kiss turns the frog back, pays the token and the royal 
   assert.notEqual(npc.removed, true);
   h.ticks(3);
   assert.ok(frogs.every(entry => entry.removed), 'the whole group leaves together');
+});
+
+// 1702 ticks 2008-2035 and the user's capture gotr/20261020T153228 ticks 1513-1556.
+test("Kiss the frog: every recorded line carries live's chathead", t => {
+  const { h, p, npc, frogs } = frogEvent(t);
+  h.hooks.Frog['Talk-to']({ player: p, npc, handled: false });
+  assert.deepEqual(pageTexts(p), ['Please help me. I was transformed into a frog by a well-meaning but sadly frog-obsessed old wizard. Only your touch can turn me back. Will you help me?']);
+  assert.deepEqual(pageHeads(p), [612], 'chatsad3');
+  const kiss = openOptions(h, p).options.findIndex(entry => FROG_KISS.includes(entry.label));
+  choose(h, p, kiss);
+  assert.deepEqual(pageHeads(p), [567], 'the kiss is chathap1');
+  endChat(p);
+  assert.deepEqual(pageTexts(p), ['Yes!']);
+  assert.deepEqual(pageHeads(p), [567], "the frog's Yes! is chathap1");
+  endChat(p);
+  h.ticks(4);
+  assert.match(pageTexts(p)[0], /^Thank you so much, Player\./);
+  assert.deepEqual(pageHeads(p), [570], 'the four-line thanks is chathap4 (1702 tick 2035)');
+  const speaker = frogs.find(entry => entry.definition.id === N.FROG_5);
+  const other = frogs.find(entry => entry.definition.id === N.FROG_6);
+  for (const frog of [speaker, other]) {
+    h.hooks.Frog['Talk-to']({ player: p, npc: frog, handled: false });
+    assert.deepEqual(pageHeads(p), [588], 'the other frogs are chatneu1');
+  }
+});
+
+test('Kiss the frog: the touch line is chatquiz1, and the menu holds the captured wordings', t => {
+  const { h, p, npc } = frogEvent(t);
+  // pick() takes the last wording of each list at a high roll.
+  const random = t.mock.method(Math, 'random', () => 0.99);
+  h.hooks.Frog['Talk-to']({ player: p, npc, handled: false });
+  const labels = openOptions(h, p).options.map(entry => entry.label);
+  random.mock.restore();
+  assert.ok(labels.includes("This really isn't a good time for me, sorry."));
+  assert.ok(labels.includes('It looks better to be a frog. Make me one!'));
+  choose(h, p, labels.findIndex(label => FROG_TOUCH.includes(label)));
+  assert.deepEqual(pageHeads(p), [554]);
 });
 
 test('Kiss the frog: a touch turns the frog back without the kiss animation', t => {
@@ -1214,6 +1304,27 @@ test('Kiss the frog: the other frogs give the live lines, by owner', t => {
   assert.deepEqual(pageTexts(q), ['The frogs do not need your help right now.']);
 });
 
+test('Kiss the frog: Dismiss on the crier or another chorus frog sends the whole event away', t => {
+  for (const id of [N.FROG_5, N.FROG_6]) {
+    const { h, p, npc, frogs } = frogEvent(t);
+    const frog = frogs.find(entry => entry.definition.id === id), q = h.player();
+    h.hooks.Frog.Dismiss({ player: q, npc: frog });
+    assert.equal(q.animation, undefined); assert.ok(frogs.every(entry => !entry.removed), 'only the owner can dismiss it');
+    h.hooks.Frog.Dismiss({ player: p, npc: frog });
+    assert.ok(DISMISS_EMOTES.includes(p.animation));
+    assert.equal(npc.removed, true); assert.ok(frogs.every(entry => entry.removed), 'the whole group leaves together');
+    assert.equal(Events.activeFor(p), null);
+  }
+  const { h, p, npc, frogs, prompt } = frogEvent(t);
+  choose(h, p, prompt.options.findIndex(entry => FROG_KISS.includes(entry.label)));
+  endChat(p); endChat(p);
+  h.hooks.Frog.Dismiss({ player: p, npc: frogs.find(entry => entry.definition.id === N.FROG_6) });
+  assert.equal(npc.removed, undefined, 'the turning-back scene carries on');
+  assert.equal(Events.activeFor(p)?.npc, npc);
+  h.ticks(4); endChat(p);
+  assert.deepEqual(p.rewards, [I.FROG_TOKEN], 'and still pays the token');
+});
+
 test('Thessalia exchanges a frog token for costume pieces, keeping the rest', t => {
   const h = harness(t), p = h.player();
   p.slots[0] = new Item(I.FROG_TOKEN, 1); p.slots[1] = new Item(I.FROG_TOKEN, 1);
@@ -1230,6 +1341,44 @@ test('Thessalia exchanges a frog token for costume pieces, keeping the rest', t 
   assert.deepEqual(pageTexts(p), ["I'll take the reward lamp, thanks."]);
   endChat(p);
   assert.equal(p.rewards.at(-1), I.LAMP);
+});
+
+// The royal sets are two pieces for one token: with no room for the second, the token is kept and nothing is lost.
+test('Thessalia keeps the token when a two-piece costume will not fit', t => {
+  const h = harness(t), p = h.player();
+  p.slots[0] = new Item(I.FROG_TOKEN, 1);
+  p.free = 0;
+  h.hooks.Thessalia['Talk-to']({ player: p, npc: {}, handled: false });
+  choose(h, p, 1);
+  endChat(p);
+  assert.ok(p.slots[0], 'the token is kept');
+  assert.deepEqual(p.rewards, [], 'no piece given');
+  assert.ok(p.messages.includes("You don't have enough inventory space."), p.messages.join(' | '));
+  p.free = 1;
+  h.hooks.Thessalia['Talk-to']({ player: p, npc: {}, handled: false });
+  choose(h, p, 1);
+  endChat(p);
+  assert.equal(p.rewards.length, 2, "the token's slot and one free slot hold both pieces");
+});
+
+// The frog token doesn't stack (cache), so each token has its own slot and using one always frees it.
+test('Thessalia: with two tokens, a full bag still takes the mask and one free slot a royal set', t => {
+  assert.equal(new Item(I.FROG_TOKEN, 1).getDefinition().isStackable(), false, 'the cache token is unstackable');
+  const h = harness(t), p = h.player();
+  p.slots[0] = new Item(I.FROG_TOKEN, 1); p.slots[1] = new Item(I.FROG_TOKEN, 1);
+  p.free = 0;
+  h.hooks.Thessalia['Talk-to']({ player: p, npc: {}, handled: false });
+  choose(h, p, 0);
+  endChat(p);
+  assert.deepEqual(p.rewards, [I.FROG_MASK], "the mask takes the used token's slot");
+  assert.ok(!p.messages.includes("You don't have enough inventory space."), p.messages.join(' | '));
+  p.slots[0] = new Item(I.FROG_TOKEN, 1);
+  p.free = 1;
+  h.hooks.Thessalia['Talk-to']({ player: p, npc: {}, handled: false });
+  choose(h, p, 2);
+  endChat(p);
+  assert.deepEqual(p.rewards.slice(1), [I.ROYAL_FROG_BLOUSE, I.ROYAL_FROG_SKIRT], "the token's slot and the free one");
+  assert.ok(!p.messages.includes("You don't have enough inventory space."), p.messages.join(' | '));
 });
 
 // A player whose packet sender records everything and chains like the real one, for the events
@@ -1478,12 +1627,31 @@ test('Quiz Master wrong answers only reset the streak and ask again', t => {
   answerQuiz(h, p, session.data.models.indexOf(session.data.odd));
   h.ticks(QUIZ_REPLY_TICKS);
   assert.equal(session.data.streak, 1);
+  assert.ok(sentWith(p, 'sendSound', 2309), 'a right answer plays its sound');
+  assert.ok(sentWith(p, 'sendInterfaceAnimation', (231 << 16) | 2, 569), 'chathap3 for a right answer');
+  p.sent.length = 0;
   answerQuiz(h, p, session.data.models.findIndex(model => model !== session.data.odd));
   assert.equal(session.data.streak, 0);
-  assert.match(p.strings.get((231 << 16) | 6), /<br>Okay, next question!$/);
+  const text = p.strings.get((231 << 16) | 6);
+  assert.match(text, /<br>Okay, next question!$/);
+  // User capture randomevents/quizmaster tick 626: sound 2277 and the sad head, by line count.
+  assert.ok(sentWith(p, 'sendSound', 2277), 'a wrong answer plays 2277');
+  assert.ok(!sentWith(p, 'sendSound', 2309), 'and not the right-answer sound');
+  const lines = text.split('<br>').length;
+  assert.ok(sentWith(p, 'sendInterfaceAnimation', (231 << 16) | 2, 610 + lines - 1), `chatsad${lines} for a wrong answer`);
   assert.equal(session.data.phase, 'reply');
   h.ticks(QUIZ_REPLY_TICKS);
   assert.equal(session.data.phase, 'question');
+});
+
+test("Quiz Master's recorded wrong reply keeps live's three lines", t => {
+  const h = harness(t), p = eventPlayer(h), npc = h.spawn(p, 11);
+  const session = startQuiz(h, p, npc);
+  t.mock.method(Math, 'random', () => 0);
+  answerQuiz(h, p, session.data.models.findIndex(model => model !== session.data.odd));
+  assert.equal(p.strings.get((231 << 16) | 6), "WRONG!<br>That's just WRONG!<br>Okay, next question!");
+  assert.ok(sentWith(p, 'sendClientScript', 600, 1, 1, 20, (231 << 16) | 6));
+  assert.ok(sentWith(p, 'sendInterfaceAnimation', (231 << 16) | 2, 612), 'chatsad3');
 });
 
 test('Quiz Master holds the player: tabs closed, seated, and a closed chatbox comes back', t => {
@@ -2187,6 +2355,18 @@ test('Evil twin: claw locs and camera move per click, the twin is caged, Molly p
   assert.equal(Teleports.sessionOf(p), undefined);
 });
 
+test("Evil twin: the claw panel's Close (277:6) closes it and hands the camera back", t => {
+  const h = harness(t), p = audited(h), npc = h.spawn(p, 18);
+  const session = enterEvilTwin(h, p, npc);
+  openClaw(h, p);
+  assert.equal(session.data.watching, true);
+  h.emit('InterfaceActionClick', { player: p, buttonId: (277 << 16) | 6, action: 1 });
+  assert.equal(session.data.watching, false);
+  assert.ok(sentWith(p, 'sendCameraReset'));
+  assert.ok(sentWith(p, 'closeSubInterface', (161 << 16) | 74));
+  assert.equal(session.data.attempts, 2, 'not a grab');
+});
+
 test('Evil twin: two wrong grabs earn a scolding and a fling; the door follows the transcript', t => {
   const h = harness(t), p = audited(h), npc = h.spawn(p, 18);
   const session = enterEvilTwin(h, p, npc);
@@ -2715,7 +2895,221 @@ test('Book of Knowledge grants 15 times the level and keeps itself when XP is bl
   const event = { player: p, item: p.slots[slot], itemId: I.BOOK_OF_KNOWLEDGE, slot, handled: false };
   assert.equal(h.hooks['Book of Knowledge'].Read(event), true);
   const request = h.xpRewards.at(-1);
-  assert.equal(request.onConfirm(Skill.values()[0]), 'You have been awarded 150 Attack XP!');
+  assert.equal(request.onConfirm(Skill.values()[0]), 'Your brain power serves you well!<br>You have been awarded 150 Attack experience!');
   assert.equal(p.xp.get(Skill.values()[0]), 150);
   assert.equal(p.slots[slot], undefined);
+});
+
+test('native random-event followers and Count Check use real movement, account mode and Bank PIN status', async t => {
+  const path = require('node:path');
+  const { CachePipeline } = require('../dist/game/cache/CachePipeline');
+  const { RegionManager } = require('../dist/game/collision/RegionManager');
+  const { NpcDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
+  const { PluginManager } = require('../dist/plugins/PluginManager');
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const { ClientConnection } = require('../dist/net/NetworkBuilder');
+  const core = PluginManager.getCoreApi();
+  await CachePipeline.initialize(path.resolve(__dirname, '..'));
+  new NpcDefinitionLoader().load(); RegionManager.init(); RegionManager.loadMapFiles(3222, 3218);
+  t.mock.method(core.WorldDefinition, 'isMembersWorld', () => true);
+  require('../plugins/interface/BankPin.plugin').register(PluginManager.createApi('native-random-bank-pin'));
+  require('../plugins/modes/Ironman.plugin').register(PluginManager.createApi('native-random-ironman'));
+  const api = PluginManager.createApi('native-random-events');
+  Plugin.register(api);
+  JekyllPlugin.register(PluginManager.createApi('native-random-jekyll'));
+  PlantPlugin.register(PluginManager.createApi('native-random-plant'));
+  Events.initialize(api);
+  t.after(() => Events.shutdown());
+  const Pin = require('../plugins/interface/bankpin/Common.BankPin');
+  let index = 1900;
+  function actor(test, mode = 'none', pin = false) {
+    const channel = { kind: 'test', isOpen: () => true, send: () => true, close() {}, onData() {}, onClose() {}, onError() {} };
+    const session = new PlayerSession(channel), p = new Player(session); session.setPlayer(p);
+    p.setUsername('native-random-' + index++);
+    p.setLocation(new Location(3222, 3218, 0)); p.setNeedsPlacement(false); p.setRunning(false);
+    const connection = new ClientConnection(channel); connection.player = p;
+    session.setTurnPacketProcessor(() => connection.processTurnPackets());
+    // Keep account-file login/logout I/O outside this offline world fixture.
+    test.mock.method(p, 'onAdd', () => {}); test.mock.method(p, 'onRemove', () => {});
+    assert.equal(core.World.getPlayers().add(p), true); core.World.refreshActiveRegions();
+    const messages = []; p.sendMessage = text => messages.push(text);
+    api.emitCustomEvent('ironman:set-mode', { player: p, mode });
+    if (pin) p.setAttribute(Pin.ATTRIBUTES.hash, Pin.hash(p, '1234'));
+    test.after(() => {
+      Events.logoutCleanup({ player: p }); core.TaskManager.cancelTasks(p.getIndex());
+      core.World.getPlayers().remove(p); core.World.refreshActiveRegions();
+    });
+    return { p, connection, session, messages };
+  }
+  const catalog = [];
+  function spawn(f, kind) {
+    const entry = typeof kind === 'string' ? catalog.find(row => row.kind === kind) : kind;
+    assert.ok(entry, kind);
+    Events.spawnCommand({ player: f.p, parts: ['randevt', String(entry.index)] });
+    const active = Events.activeFor(f.p);
+    assert.ok(active, f.messages.join('\n'));
+    active.npc.setNeedsPlacement(false); // Initial NPC sync has placed it.
+    return active.npc;
+  }
+  function turn() {
+    core.World.process();
+  }
+  async function talk(f, npc) {
+    await f.connection.dispatch([{ type: 'npc_option', index: npc.getIndex(), clickType: 1 }]);
+    f.connection.processTurnPackets();
+    for (let tick = 0; tick < 5; tick++) turn(f, npc);
+  }
+  // Discover the real command's current catalog; membership changes its numeric indices.
+  const catalogOwner = actor(t);
+  Events.spawnCommand({ player: catalogOwner.p, parts: ['randevt', 'help'] });
+  const lastIndex = Number(/\(0-(\d+);/.exec(catalogOwner.messages.at(-1))[1]);
+  for (let index = 0; index <= lastIndex; index++) {
+    Events.spawnCommand({ player: catalogOwner.p, parts: ['randevt', String(index)] });
+    const active = Events.activeFor(catalogOwner.p);
+    if (active) catalog.push({ index, kind: active.definition.kind, stationary: active.definition.stationary === true });
+  }
+  Events.logoutCleanup({ player: catalogOwner.p }); core.World.getPlayers().remove(catalogOwner.p);
+  core.World.refreshActiveRegions();
+  assert.ok(['genie', 'countcheck', 'beekeeper'].every(kind => catalog.some(row => row.kind === kind)));
+  for (const entry of catalog.filter(row => !row.stationary)) {
+    await t.test(`${entry.kind}/${entry.index} actually follows a walking owner in World ticks and native sync`, async test => {
+      const f = actor(test), npc = spawn(f, entry), origin = npc.getLocation().clone();
+      f.p.getMovementQueue().requestWalk(new Location(3228, 3218, 0));
+      for (let tick = 0; tick < 10; tick++) turn(f, npc);
+      assert.ok(f.p.getLocation().equals(new Location(3228, 3218, 0)));
+      assert.ok(npc.getLocation().getDistance(origin) >= 3, 'the actual NPC movement tick consumed its follow route');
+      assert.ok(npc.getLocation().getDistance(f.p.getLocation()) <= 1);
+      assert.equal(npc.getFollowing(), f.p);
+      assert.ok(f.p.getLocalNpcs().includes(npc), 'the world visibility pass keeps the invitation in view');
+      const tile = f.session.npcSyncState.lastTiles.get(npc.getIndex());
+      assert.deepEqual(tile, { x: npc.getLocation().getX(), y: npc.getLocation().getY(), level: 0 }, 'native NPC_INFO encoded the walked tile');
+      const dismiss = npc.getCurrentDefinition(f.p).getActions().indexOf('Dismiss') + 1;
+      assert.ok(dismiss > 0, 'the cache supplies the Dismiss option');
+      const played = [], perform = f.p.performAnimation.bind(f.p);
+      f.p.performAnimation = animation => { played.push([animation.getId(), animation.getDelay()]); return perform(animation); };
+      await f.connection.dispatch([{ type: 'npc_option', index: npc.getIndex(), clickType: dismiss }]);
+      f.connection.processTurnPackets();
+      for (let tick = 0; tick < 5; tick++) turn();
+      assert.equal(npc.isRegistered(), false, 'dismissal removes the actual invitation from world scheduling');
+      assert.equal(played.length, 1, 'the owner plays one dismissive emote');
+      assert.ok(DISMISS_EMOTES.includes(played[0][0]), `emote ${played[0][0]} is No, Wave, Yawn, Angry or Ya boo sucks`);
+      assert.equal(played[0][1], 10);
+      const retiredTile = npc.getLocation().clone();
+      f.p.getMovementQueue().requestWalk(new Location(3222, 3218, 0));
+      for (let tick = 0; tick < 8; tick++) turn();
+      assert.ok(npc.getLocation().equals(retiredTile), 'retired NPCs no longer move with the owner');
+    });
+  }
+  for (const entry of catalog.filter(row => row.stationary)) await t.test(`${entry.kind} keeps its stationary event policy`, test => {
+    const f = actor(test), npc = spawn(f, entry), at = npc.getLocation().clone();
+    f.p.getMovementQueue().requestWalk(new Location(3228, 3218, 0));
+    for (let tick = 0; tick < 10; tick++) turn();
+    assert.equal(npc.getFollowing() == null, true);
+    assert.ok(npc.getLocation().equals(at));
+  });
+  for (const [mode, pin, lamps] of [['none', false, 0], ['none', true, 1], ['ironman', false, 0], ['ultimate', false, 1]]) {
+    await t.test(`Count Check: ${mode}, configured PIN=${pin}, rewards ${lamps} lamp`, async test => {
+      const f = actor(test, mode, pin), outsider = actor(test), npc = spawn(f, 'countcheck');
+      const status = { player: f.p, set: false }; api.emitCustomEvent('bank-pin:status', status);
+      assert.equal(status.set, pin, 'the real BankPin owner answers its configured state');
+      await talk(outsider, npc);
+      assert.equal(outsider.p.getInventory().getAmount(I.LAMP), 0, 'another player cannot take this event');
+      await talk(f, npc);
+      assert.equal(f.p.getInventory().getAmount(I.LAMP), lamps);
+      if (!lamps) assert.equal(Events.activeFor(f.p), null, 'a failed check still retires the invitation');
+      f.p.getDialogueManager().reset();
+      await talk(f, npc);
+      assert.equal(f.p.getInventory().getAmount(I.LAMP), lamps, 'repeat interaction cannot award again');
+    });
+  }
+  await t.test('Count Check settles a real pending PIN and does not accept one still in its waiting period', async test => {
+    for (const matured of [false, true]) {
+      const f = actor(test), npc = spawn(f, 'countcheck');
+      f.p.setAttribute(Pin.ATTRIBUTES.pendingHash, Pin.hash(f.p, '1234'));
+      f.p.setAttribute(Pin.ATTRIBUTES.pendingAt, Pin.now() + (matured ? -1 : 86_400_000));
+      await talk(f, npc);
+      assert.equal(Boolean(f.p.getAttribute(Pin.ATTRIBUTES.hash)), matured);
+      assert.equal(f.p.getInventory().getAmount(I.LAMP), matured ? 1 : 0);
+      Events.logoutCleanup({ player: f.p }); core.World.getPlayers().remove(f.p);
+      core.World.refreshActiveRegions();
+    }
+  });
+  await t.test('the actual cache Beekeeper drag/Confirm bytes complete the native session and reward once', async test => {
+    const { decodeClientPackets } = require('../dist/net/protocol/ClientProtocol');
+    RegionManager.loadMapFiles(1927, 5044);
+    test.mock.method(Math, 'random', () => 0.99);
+    const f = actor(test), npc = spawn(f, 'beekeeper');
+    async function input(packets) {
+      f.connection.inject(packets); await f.connection.idle(); f.connection.processTurnPackets();
+    }
+    async function advanceDialogue() {
+      for (let pages = 0; pages < 16 && f.p.getDialogueManager().isActive(); pages++) {
+        const dialogue = f.p.getDialogueManager().getCurrent();
+        const group = dialogue instanceof core.PlayerDialogue ? 217 : 231;
+        await input([{ type: 'dialogue_continue', widgetId: (group << 16) | 5, childIndex: -1 }]);
+      }
+      assert.equal(f.p.getDialogueManager().isActive(), false);
+    }
+    await talk(f, npc); await advanceDialogue();
+    const returnTile = f.p.getLocation().clone();
+    assert.ok(core.MultiChatboxPrompt.getPending(f.p));
+    await input([{ type: 'dialogue_continue', widgetId: (219 << 16) | 1, childIndex: 1 }]);
+    await advanceDialogue();
+    const stay = Teleports.sessionOf(f.p);
+    assert.equal(stay?.kind, 'beekeeper'); assert.equal(f.p.getInterfaceId(), 420);
+    assert.deepEqual(stay.data.slots, [1, 2, 3, 4, 0, 0, 0, 0]);
+    // Rev241 cache DOM/InputManager drag completion and Confirm emitted these IF_BUTTOND/IF_BUTTON1 bytes.
+    const packets = [
+      '01ffff0f00a401ffffff7f000a01a4ffff', '01ffff1100a401ffffff7f000b01a4ffff',
+      '01ffff1300a401ffffff7f000c01a4ffff', '01ffff1500a401ffffff7f000d01a4ffff',
+      '1701a40016ffffffff',
+    ].map(hex => decodeClientPackets(Buffer.from(hex, 'hex')));
+    for (const packet of packets) await input(packet);
+    assert.deepEqual(stay.data.slots, [0, 0, 0, 0, 1, 2, 3, 4]);
+    assert.equal(stay.data.state, 'talking'); assert.equal(f.p.getInterfaceId(), -1);
+    assert.match(f.p.getDialogueManager().getCurrent().getText(), /That's perfect!/);
+    await input(packets.at(-1)); // A double Confirm while the success dialogue is open.
+    await advanceDialogue();
+    for (let tick = 0; tick < 3; tick++) turn();
+    const rewards = () => [25129, 25131, 25133, 25135, 25137, I.LAMP].map(id => f.p.getInventory().getAmount(id));
+    const received = rewards();
+    assert.equal(received.slice(0, 5).reduce((sum, amount) => sum + amount, 0), 1);
+    assert.equal(received[5], 1);
+    assert.equal(Teleports.sessionOf(f.p), undefined);
+    assert.ok(f.p.getLocation().equals(returnTile), 'returns to the actual invitation-acceptance tile');
+    await input(packets.at(-1));
+    for (let tick = 0; tick < 3; tick++) turn();
+    assert.deepEqual(rewards(), received, 'a stale Confirm after return cannot award again');
+  });
+});
+
+test('spoken dialogue preserves text for native wrapping and spacing', () => {
+  // Cache 241 chat_left:6 and chat_right:6 both use a 16-pixel line height.
+  const strings = [], scripts = [], flags = [];
+  const sender = {
+    sendChatboxInterface() { return this; }, sendNpcHeadOnInterface() { return this; },
+    sendPlayerHeadOnInterface() { return this; }, sendInterfaceAnimation() { return this; },
+    sendString(...args) { strings.push(args); return this; },
+    sendClientScript(...args) { scripts.push(args); return this; },
+    sendInterfaceFlagsRange(...args) { flags.push(args); return this; },
+  };
+  const player = { getPacketSender: () => sender, getDisplayName: () => 'AgentWhisky' };
+  const texts = ['Hello.', 'Hey, AgentWhisky, can you come and help me with some pheasants?',
+    'First line.<br>Second line.<br>Third line.', 'One.<br>Two.<br>Three.<br>Four.',
+    '<col=ff0000>' + 'A long authored dialogue page. '.repeat(10) + '</col><br>Last authored line.',
+    "WOW! This is INCREDIBLE! I didn't expect anyone to ever understand me again!"];
+  for (const [group, make] of [
+    [231, text => new NpcDialogue(0, N.FREAKY_FORESTER_2, text, 'Freaky Forester')],
+    [217, text => new PlayerDialogue(0, text)],
+    [217, text => new NpcDialogue(0, N.FREAKY_FORESTER_2, text, 'Freaky Forester', undefined, 217)],
+  ]) {
+    for (const text of texts) {
+      strings.length = scripts.length = flags.length = 0;
+      make(text).send(player);
+      assert.deepEqual(scripts, [[600, 1, 1, 16, (group << 16) | 6]]);
+      assert.equal(strings.find(([, uid]) => uid === ((group << 16) | 6))?.[0], text);
+      assert.deepEqual(flags, [[(group << 16) | 5, -1, -1, 1]]);
+    }
+  }
 });

@@ -93,13 +93,15 @@ function deposit(player, objectId, itemId) {
 
 // --- The oven.
 
+/** Cook on a clay oven: servery food here; anything else falls through to ordinary Cooking. */
 function cookFromOven({ player }) {
   for (const recipe of Recipes.COOKS) {
     if (player.getInventory().contains(recipe.raw)) {
       Recipes.cook(player, recipe);
-      return;
+      return true;
     }
   }
+  return false;
 }
 
 // --- The buffet tables.
@@ -118,6 +120,7 @@ function serve(player, itemId) {
   Shared.applyServe(session, dish);
   player.getSkillManager().addExperiences(Shared.core().Skill.COOKING, xp);
   Shared.syncHud(player, session);
+  Shared.syncViewers(session, player);
   player.sendMessage(`You serve the ${dish.name}.`);
   return true;
 }
@@ -196,7 +199,7 @@ function eweseyCondition({ npcId, player, text }) {
 // --- The Mess's HUD and cleanup.
 
 function enterMess({ player }) {
-  Shared.openHud(player, Shared.sessionOf(player));
+  Shared.openHud(player, Shared.watch(player));
 }
 
 function leaveMess({ player }) {

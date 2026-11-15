@@ -36,6 +36,12 @@ function wornHelm(player) {
   return item && chargedIds.has(item.getId()) ? item : null;
 }
 
+/** Observes the existing charged-item owner without upkeep, timer refresh or scale payment. */
+function protectionQuery(request) {
+  const helm = wornHelm(request.player);
+  request.active = !!helm && helm.getAmount() > 0 && charges(helm) > 0;
+}
+
 function refresh(player) {
   player.getInventory().refreshItems();
   player.getEquipment().refreshItems();
@@ -77,18 +83,33 @@ function processUpkeep(player) {
   player.setAttribute(COMBAT_CHARGE_TICK_ATTRIBUTE, cycle);
 }
 
-function venomChance(player, combatType) {
+function itemName(itemId) {
+  return String(core.ItemDefinition.forId(itemId)?.getName?.() ?? "").toLowerCase();
+}
+
+function venomChance(player, combatType, hit = null) {
   const weaponId = Number(player.getEquipment().get(core.Equipment.WEAPON_SLOT)?.getId?.() ?? -1);
-  const name = String(core.ItemDefinition.forId(weaponId)?.getName?.() ?? "").toLowerCase();
-  if (GUARANTEED_WEAPON_NAMES.has(name)) return 1;
-  // Read the selected projectile, including quiver and self-ammo weapons.
+  const name = itemName(weaponId);
+  // An ornamented copy (the blazing blowpipe, an ItemAliases alias of the toxic blowpipe) counts as its base.
+  const baseId = core.ItemAliases?.baseOf?.(weaponId) ?? null;
+  if (GUARANTEED_WEAPON_NAMES.has(name) || (baseId !== null && GUARANTEED_WEAPON_NAMES.has(itemName(baseId)))) return 1;
+  // The worn projectile: the ammunition slot only when the weapon fires from it (a bow or crossbow,
+  // Ammunition.firesFromAmmoSlot); otherwise the weapon itself (a thrown weapon, a chinchompa, a
+  // crystal bow or another self-ammo weapon), whatever (p) ammo is left in the slot.
+  // Combat.getAmmunition() reports a (p) arrow or bolt as its plain entry, so its id never names the poison.
   if (combatType === core.CombatType.RANGED) {
-    const ammoId = player.getCombat().getAmmunition()?.getItemId();
-    const ammoName = String(core.ItemDefinition.forId(ammoId ?? -1)?.getName?.() ?? "").toLowerCase();
-    return /\(p(?:\+\+?)?\)$/.test(ammoName) ? 0.5 : 0;
+    // The shot as fired (PendingHit.getFiredRangedShot): its last (p) arrow or knife is paid before it lands.
+    const fired = hit?.getFiredRangedShot?.() ?? null;
+    const shotId = fired ? Number(fired.projectile?.getId?.() ?? -1) : core.Ammunition.firesFromAmmoSlot(player)
+      ? Number(player.getEquipment().get(core.Equipment.AMMUNITION_SLOT)?.getId?.() ?? -1)
+      : weaponId;
+    const shotName = String(core.ItemDefinition.forId(shotId)?.getName?.() ?? "").toLowerCase();
+    return /\(p(?:\+\+?)?\)$/.test(shotName) ? 0.5 : 0;
   }
   if (combatType !== core.CombatType.MELEE) return 0;
-  if (name === "noxious halberd" || /^abyssal tentacle(?: \(or\))?$/.test(name) || /\(p(?:\+\+?)?\)$/.test(name)) return 0.5;
+  // The halberd's own 1/3 roll (CombatPoisonData) follows this one, so 1/4 here makes the Wiki's 1/2.
+  if (name === "noxious halberd") return 0.25;
+  if (/^abyssal tentacle(?: \(or\))?$/.test(name) || /\(p(?:\+\+?)?\)$/.test(name)) return 0.5;
   return 1 / 6;
 }
 
@@ -100,7 +121,7 @@ function onHitResolved({ attacker, target, hit }) {
   if (!wornHelm(player) || !target?.isNpc?.() || target.isVenomed?.()) {
     return;
   }
-  if (Math.random() >= venomChance(player, hit.getCombatType())) {
+  if (Math.random() >= venomChance(player, hit.getCombatType(), hit)) {
     return;
   }
   core.CombatFactory.poisonEntity(target, VENOM_SEVERITY, 2);
@@ -178,11 +199,13 @@ function attach(api) {
     api.onItemOnItem("Zulrah's scales", `${name} (uncharged)`, chargeHelm, { noted: false });
   }
   api.onCombatHitResolved(onHitResolved);
+  api.onCustomEvent("serpentine-helm:protection", protectionQuery);
   api.onPlayerProcess(processPlayer);
 }
 
 module.exports = {
   name: "SerpentineHelm",
+  description: "Charges the serpentine helm with Zulrah's scales for poison and venom immunity and a chance to envenom targets, spending scales in combat.",
   members: true,
   _test: { charges, wornHelm, processUpkeep, venomChance, onHitResolved, chargeHelm, uncharge, MAX_CHARGES },
   register(api) {

@@ -2,18 +2,20 @@
  * Pickpocketing, driven by plugins/skills/data/pickpocketing.json (OSRS Wiki: Thieving#Pickpocketing,
  * each target's page, Coin pouch, Rogue equipment, Gloves of silence, Dodgy necklace, Thieving cape).
  *
- * The click sends the attempt message and starts the two-tick cooldown. On the next tick a success
- * plays the animation with its loot; a failure sends its message, and the 9-tick stun (8 without
+ * The click sends the attempt message and starts the two-tick cooldown. Most successes resolve on
+ * the next tick; the workman's recorded success takes three. A failure sends its message, and the 9-tick stun (8 without
  * pickpocketing) lands a tick later, the stun message and damage a tick after that.
- * Not modelled: the Wealthy citizen's urchin distraction, the H.A.M. camp's concussion and
- * ejection on a failure, and the Ardougne diary's +10% success and 56/84/140 coin pouches (its
- * medium tier is scoped to Ardougne, and nothing here defines that region yet).
+ * The Ardougne Diary's +10% success and 56/84/140 coin pouches answer "thieving:pickpocket-target"
+ * from plugins/items/diaryrewards/Pickpocketing.DiaryRewards.js.
+ * Not modelled: the Wealthy citizen's urchin distraction and the H.A.M. camp's concussion and
+ * ejection on a failure.
  *
  * rsprox captures (recordings 335, 338, 339, 691, 2601, 3059, 3228 and Leagues/Grid Master 95,
  * 1723, 3275): every line is a spam message except a target's own `channel` (the Digsite
  * workman's are game messages); the success line is followed by the loot's own lines: the
  * Master Farmer counts his seeds (`lootLines: "count"`), an entry's `steal` names its item,
- * and a clue scroll is always announced.
+ * and a clue scroll is always announced. Too low a level is a message box with its mesbox line.
+ * A success reports its loot to the client's loot tracker (script 7192) after the sound.
  */
 const fs = require("fs");
 const path = require("path");
@@ -43,6 +45,8 @@ const DODGY_NECKLACE_ATTRIBUTE = "thieving.dodgy-necklace-charges";
 const SHADOW_VEIL_CHANCE = 0.15;
 // Wiki (Rogue equipment): 15% double loot per piece; all five always double.
 const ROGUE_PIECES = ["rogue mask", "rogue top", "rogue trousers", "rogue gloves", "rogue boots"];
+/** The full Rogue kit in the equipment effects panel (enum 3047). */
+const ROGUE_SET_TEXT = 22;
 const ROGUE_SLOTS = ["HEAD_SLOT", "BODY_SLOT", "LEG_SLOT", "HANDS_SLOT", "FEET_SLOT"];
 const ROGUE_CHANCE_PER_PIECE = 0.15;
 const FIRE_CAPES = new Set(["fire cape", "fire max cape", "infernal cape", "infernal max cape"]);
@@ -71,7 +75,11 @@ const POUCH_COINS = new Map(TARGETS.filter((t) => t.coinPouch).map((t) => [t.coi
  * timestamp rather than a flag, so a lost stun can never lock pickpocketing for good.
  */
 const caughtAt = new WeakMap();
+// The newest admitted attempt owns interaction cleanup and any requested repeat.
+const latestAttempt = new WeakMap();
 const CAUGHT_HOLD_TICKS = 3;
+/** The hits a failed attempt dealt: dying to one doesn't set Retribution off (Wiki: Retribution). */
+const stunHits = new WeakSet();
 
 let core;
 let pluginApi;
@@ -229,6 +237,17 @@ function rogueDoubleChance(player) {
 }
 
 /**
+ * Wiki (Gem bag): an open bag takes gems stolen from people too, TzHaar-Hur and Vyre among them.
+ * Transcript:Gem bag gives the find line first, and alone when the bag has no room (`announce`).
+ */
+function storedGems(player, id, amount) {
+  if (!String(core.ItemDefinition.forId(id)?.getName?.() ?? "").startsWith("Uncut ")) return 0;
+  const request = { player, itemId: id, amount, stored: 0, announce: true };
+  pluginApi.emitCustomEvent("storage:gather", request);
+  return request.stored;
+}
+
+/**
  * Hands the loot over: coins as the target's coin pouch; the rogue outfit may double it, and
  * content's `multiplier` (a league fragment's double loot) multiplies it again. Clues are never more.
  * What the inventory has no room for (a doubled pouch's coins, a doubled item) falls to the floor.
@@ -241,18 +260,63 @@ function giveLoot(player, target, loot, random = Math.random, multiplier = 1) {
   for (const item of loot) {
     const { id, amount, clue } = item;
     if (id === core.ItemIdentifiers.COINS && target.coinPouch) {
-      inventory.adds(target.coinPouch.id, 1);
-      // Wiki (Coin pouch): a doubled pouch gives one pouch plus its coins directly.
-      const coins = (times - 1) * (Array.isArray(target.coinPouch.coins) ? target.coinPouch.coins[0] : target.coinPouch.coins);
+      // The full-inventory check ran at the click; worn gear taken off before this resolves can fill the last slot.
+      inventory.forceAdd(player, new core.Item(target.coinPouch.id, 1));
+      // Wiki (Coin pouch): a doubled pouch gives one pouch plus its coins directly - "the normal amount", so a ranged
+      // pouch's extra coins are rolled like an opened pouch's, not its minimum.
+      let coins = 0;
+      for (let extra = 1; extra < times; extra++) coins += roll(target.coinPouch.coins, random);
       if (coins > 0) inventory.forceAdd(player, new core.Item(core.ItemIdentifiers.COINS, coins));
-      given.push({ ...item, amount: 1 });
+      const tracked = [[target.coinPouch.id, 1]];
+      if (coins > 0) tracked.push([core.ItemIdentifiers.COINS, coins]);
+      given.push({ ...item, amount: 1, tracked });
       continue;
     }
     const total = clue ? amount : amount * times;
-    inventory.forceAdd(player, new core.Item(id, total));
+    const left = total - storedGems(player, id, total);
+    // Wiki (Seed box): "Seeds pickpocketed from Master Farmers will now be directly placed into an open seed box."
+    const request = { player, itemId: id, amount: left, stored: 0 };
+    if (target.key === "master_farmer") pluginApi.emitCustomEvent("seed-box:gather", request);
+    // Wiki (Rune pouch), 25 February 2026: stolen runes go into the pouch when it already holds them and has room.
+    else pluginApi.emitCustomEvent("rune-pouch:gather", request);
+    if (left > request.stored) inventory.forceAdd(player, new core.Item(id, left - request.stored));
     given.push({ ...item, amount: total });
   }
   return given;
+}
+
+/**
+ * Wiki (Gloves of silence): Check names the wear, which belongs to the player (every pair shows the same), by the
+ * failures left: each line from 62, 61, 33, 19, 9 and 1 left down to the next (the table keeps each line's lowest).
+ */
+const GLOVES_CONDITION = [
+  [GLOVES_OF_SILENCE_FAILURES, "Your gloves are new."],
+  [34, "Your gloves are in good condition."],
+  [20, "Your gloves are starting to look quite shabby."],
+  [10, "Your gloves are starting to need repair."],
+  [2, "Your gloves are in need of repair!"],
+  [1, "Your gloves are about to fall apart!"],
+];
+
+function glovesFailuresLeft(player) {
+  return GLOVES_OF_SILENCE_FAILURES - (Number(player.getAttribute(GLOVES_OF_SILENCE_ATTRIBUTE)) || 0);
+}
+
+function checkGloves({ player }) {
+  const left = glovesFailuresLeft(player);
+  player.sendMessage((GLOVES_CONDITION.find(([atLeast]) => left >= atLeast) ?? GLOVES_CONDITION.at(-1))[1]);
+}
+
+/** The necklace's charges, the player's own (Wiki: "all dodgy necklaces will show the same charge when checked"). */
+function dodgyNecklaceCharges(player) {
+  const stored = player.getAttribute(DODGY_NECKLACE_ATTRIBUTE);
+  return stored === undefined || stored === null ? DODGY_NECKLACE_CHARGES : Number(stored);
+}
+
+/** Check, carried or worn. No recording or Wiki quote gives the line: it follows the protect line's wording. */
+function checkDodgyNecklace({ player }) {
+  const charges = dodgyNecklaceCharges(player);
+  player.sendMessage(`Your dodgy necklace has ${charges} charge${charges === 1 ? "" : "s"} left.`);
 }
 
 function wearOutGloves(player) {
@@ -260,6 +324,8 @@ function wearOutGloves(player) {
   const failures = (Number(player.getAttribute(GLOVES_OF_SILENCE_ATTRIBUTE)) || 0) + 1;
   if (failures < GLOVES_OF_SILENCE_FAILURES) {
     player.setAttribute(GLOVES_OF_SILENCE_ATTRIBUTE, failures);
+    // Wiki (Gloves of silence): with one failure left, a chatbox warning.
+    if (failures === GLOVES_OF_SILENCE_FAILURES - 1) player.sendMessage("Your gloves of silence are going to fall apart!");
     return;
   }
   player.setAttribute(GLOVES_OF_SILENCE_ATTRIBUTE, 0);
@@ -271,8 +337,7 @@ function wearOutGloves(player) {
 /** Wiki (Dodgy necklace): one charge per stun it prevents; the last one crumbles it. */
 function dodgyNecklaceProtects(player, random = Math.random) {
   if (wornName(player, core.Equipment.AMULET_SLOT) !== "dodgy necklace" || random() >= DODGY_NECKLACE_CHANCE) return false;
-  const stored = player.getAttribute(DODGY_NECKLACE_ATTRIBUTE);
-  const charges = (stored === undefined || stored === null ? DODGY_NECKLACE_CHARGES : Number(stored)) - 1;
+  const charges = dodgyNecklaceCharges(player) - 1;
   if (charges <= 0) {
     player.setAttribute(DODGY_NECKLACE_ATTRIBUTE, DODGY_NECKLACE_CHARGES);
     player.getEquipment().set(core.Equipment.AMULET_SLOT, new core.Item(-1));
@@ -285,31 +350,34 @@ function dodgyNecklaceProtects(player, random = Math.random) {
   return true;
 }
 
-function succeed(player, npc, target, name) {
+function succeed(player, npc, target, name, npcId) {
   player.performAnimation(new core.Animation(target.pickpocketAnimation ?? THIEVING_ANIMATION));
   // Content may change the loot before it is handed over ("thieving:loot", a league relic's doubled or noted loot),
   // or multiply it as the rogue outfit does (`multiplier`, a league fragment's double loot).
   const loot = { player, npc, target: target.name, loot: rollLoot(player, target), multiplier: 1 };
   pluginApi.emitCustomEvent("thieving:loot", loot);
-  const given = giveLoot(player, target, loot.loot, Math.random, loot.multiplier);
+  // RuneLite snapshots the inventory when it sees the success message.
   say(player, target, target.successLine ?? `You pick ${name}'s pocket.`);
+  const given = giveLoot(player, target, loot.loot, Math.random, loot.multiplier);
   for (const item of given) {
     const line = lootLine(target, item);
     if (line) say(player, target, line);
   }
   core.Sounds.sendSound(player, core.Sound.THIEVING_PICKPOCKET);
+  // The client's loot tracker gets the loot as it landed, one entry per success.
+  pluginApi.emitCustomEvent("loot-tracker:add-npc", { player, npcId, items: given.flatMap((item) => item.tracked ?? [[item.id, item.amount]]) });
   player.getSkillManager().addExperiences(core.Skill.THIEVING, target.xp);
   pluginApi.emitCustomEvent("thieving:success", { player, skill: core.Skill.THIEVING, petBase: target.petBase, method: "pickpocket", target: target.name });
 }
 
 /** Caught: the message and the NPC's line now (no pickpocket animation); the stun follows. */
-function fail(player, npc, target, name) {
+function fail(player, npc, target, name, npcId) {
   if (core.ArceuusSpells.hasShadowVeil(player) && Math.random() < SHADOW_VEIL_CHANCE) {
     player.sendMessage("Your shadow veil prevents you from being noticed.");
     return;
   }
   say(player, target, `You fail to pick ${name}'s pocket.`);
-  npc.forceChat(target.catchLine ?? DEFAULT_CATCH_LINE);
+  npc.forceChat(target.catchLines?.[npcId] ?? target.catchLine ?? DEFAULT_CATCH_LINE);
   wearOutGloves(player);
   caughtAt.set(player, core.World.getProcessCycle());
   core.TaskManager.submit(caughtTask(player, npc, target));
@@ -340,7 +408,11 @@ function caughtTask(player, npc, target) { return new (class extends core.Task {
     }
     if (this.stunned) {
       player.getPacketSender().sendTypedMessage(core.ChatType.SPAM, "You've been stunned!");
-      if (!target.painless) player.getCombat().getHitQueue().addPendingDamage([new core.HitDamage(roll(target.stunDamage), core.HitMask.RED)]);
+      if (!target.painless) {
+        const hit = new core.HitDamage(roll(target.stunDamage), core.HitMask.RED);
+        stunHits.add(hit);
+        player.getCombat().getHitQueue().addPendingDamage([hit]);
+      }
       this.stop();
       return;
     }
@@ -360,7 +432,7 @@ function caughtTask(player, npc, target) { return new (class extends core.Task {
   }
 })(player, npc, target); }
 
-/** The attempt message goes out on the click; the outcome follows a tick later. */
+/** The attempt message goes out on the click; successful outcomes may take longer. */
 function pickpocketTask(player, npc, target, name, event) { return new (class extends core.Task {
   constructor(player, npc, target, name, event) {
     // Not keyed to the player: a new click cancels the player's keyed tasks, but OSRS still
@@ -374,39 +446,52 @@ function pickpocketTask(player, npc, target, name, event) { return new (class ex
   }
 
   execute() {
-    this.stop();
     const { player, npc, target, name, event } = this;
-    if (!player.isRegistered() || !npc.isRegistered() || player.getHitpoints() <= 0) return;
+    if (!player.isRegistered() || !npc.isRegistered() || player.getHitpoints() <= 0) {
+      this.stop();
+      if (latestAttempt.get(player) === this) latestAttempt.delete(player);
+      return;
+    }
+    // The workman capture establishes a delayed success, but does not establish failure timing.
+    if (this.succeeded === undefined) this.succeeded = Math.random() < successChance(player, target);
+    if (this.succeeded && (this.ticks = (this.ticks ?? 0) + 1) < (target.successTicks ?? 1)) return;
+    this.stop();
+    const succeeded = this.succeeded;
+    if (succeeded) succeed(player, npc, target, name, event.npcId);
+    else fail(player, npc, target, name, event.npcId);
+    // Content may ask for another go ("thieving:done", a league relic that keeps pickpocketing): the same click, a tick later.
+    const done = { player, kind: "pickpocket", npc, succeeded, again: false };
+    pluginApi.emitCustomEvent("thieving:done", done);
+    if (latestAttempt.get(player) !== this) return;
+    latestAttempt.delete(player);
+    // Leagues VI captures (recs 1104-1106, Larcenist): the player keeps facing the NPC and follows it as it
+    // wanders, with no clicks of their own, an attempt every 2 ticks for hundreds of attempts. The repeat is the
+    // player's action, keyed by their index, so any click (MovementQueue.walkToReset) ends the chain; and only
+    // while the player still tracks this NPC, since a click between the attempt and this outcome (a Walk) has
+    // already cleared that, and this task, not keyed to the player, still resolves.
+    if (done.again && player.getInteractingMobile?.() === npc) {
+      core.TaskManager.submit(new core.CountdownTask(player.getIndex(), 1, () => pickpocketAgain(event)));
+      return;
+    }
     // Capture (a hero): with the outcome the player stops tracking the NPC and keeps facing the
     // tile it stood on, so a walking NPC isn't followed round.
     if (player.getInteractingMobile?.() === npc) player.setMobileInteraction(null);
     player.setPositionToFace(npc.getLocation());
-    const succeeded = Math.random() < successChance(player, target);
-    if (succeeded) succeed(player, npc, target, name);
-    else fail(player, npc, target, name);
-    // Content may ask for another go ("thieving:done", a league relic that keeps pickpocketing): the same click, a tick later.
-    const done = { player, kind: "pickpocket", npc, succeeded, again: false };
-    pluginApi.emitCustomEvent("thieving:done", done);
-    // A repeat only while neither has moved: the player on the tile they pickpocketed from, the NPC still within reach.
-    const inReach = event && samePlace(player.getLocation(), event.from) && npc.getLocation().getDistance?.(player.getLocation()) <= Math.max(1, npc.getSize?.() ?? 1);
-    // Keyed by the player's index, as their other actions: walking off (MovementQueue.walkToReset) cancels it; and
-    // checked again when it fires, in case they moved another way.
-    if (done.again && inReach) core.TaskManager.submit(new core.CountdownTask(player.getIndex(), 1, () => {
-      const stillThere = samePlace(player.getLocation(), event.from) && npc.isRegistered()
-        && npc.getLocation().getDistance?.(player.getLocation()) <= Math.max(1, npc.getSize?.() ?? 1);
-      if (stillThere && player.getMovementQueue?.()?.isMovings?.() !== true) pickpocket({ ...event, repeat: true });
-    }));
   }
 })(player, npc, target, name, event); }
 
-/** Where something stands, as plain coordinates. */
-function tile(location) {
-  return { x: location?.getX?.(), y: location?.getY?.(), z: location?.getZ?.() };
+/**
+ * The next attempt of a repeating pickpocket: walk up to the NPC wherever it has wandered and try
+ * again on arrival (the same tick when one step does it, so the 2-tick cadence holds). Ends when
+ * the NPC is gone or can't be reached (walkToEntity's own checks) or the attempt is refused.
+ */
+function pickpocketAgain(event) {
+  event.player.getMovementQueue().walkToEntity(event.npc, () => pickpocket({ ...event, repeat: true }));
 }
 
-function samePlace(location, from) {
-  const here = tile(location);
-  return !!from && here.x !== undefined && here.x === from.x && here.y === from.y && here.z === from.z;
+/** Too low a level: a message box, with its text as a mesbox line in the chat history. */
+function levelRefusal(player, text) {
+  player.getDialogueManager().startDialogues(new core.DialogueChainBuilder().add(new core.StatementDialogue(0, text)));
 }
 
 function pickpocket(event) {
@@ -420,8 +505,9 @@ function pickpocket(event) {
   event.handled = true;
 
   if (!event.repeat && !player.getClickDelay().elapsedTime(PICKPOCKET_COOLDOWN_MS)) return;
+  const name = messageName(target, npcName, event.npcId);
   if (player.getSkillManager().getCurrentLevel(core.Skill.THIEVING) < target.level) {
-    player.sendMessage(`You need a Thieving level of at least ${target.level} to do this.`);
+    levelRefusal(player, `You need level ${target.level} thieving to pick ${name}'s pocket.`);
     return;
   }
   const missing = requirementMessage(player, target);
@@ -452,7 +538,6 @@ function pickpocket(event) {
   request.onAttempt?.();
   player.getMovementQueue().reset();
   player.setPositionToFace(npc.getLocation());
-  const name = messageName(target, npcName, event.npcId);
   say(player, target, target.attemptLine ?? `You attempt to pick ${name}'s pocket.`);
   player.getClickDelay().reset();
   npc.getTimers().registers(core.TimerKey.ATTACK_IMMUNITY, 10);
@@ -460,7 +545,9 @@ function pickpocket(event) {
   // `chanceBonus` raises the success chance by that percent and `painless` stuns without the damage (a league fragment).
   const tuned = request.chanceBonus > 0 || request.painless ? { ...target, chanceBonus: Math.max(0, request.chanceBonus | 0), painless: request.painless === true } : target;
   const rolled = request.unconscious ? { ...tuned, low: 256, high: 256, coinPouch: null } : request.alwaysSucceeds ? { ...tuned, low: 256, high: 256 } : tuned;
-  core.TaskManager.submit(pickpocketTask(player, npc, rolled, name, { ...event, from: event.from ?? tile(player.getLocation()) }));
+  const task = pickpocketTask(player, npc, rolled, name, event);
+  latestAttempt.set(player, task);
+  core.TaskManager.submit(task);
 }
 
 /** Coins in one pouch of this kind (a range rolls per pouch). */
@@ -469,11 +556,29 @@ function pouchCoins(pouchId, random = Math.random) {
   return coins === undefined ? 0 : roll(coins, random);
 }
 
+/** "retribution:trigger": a death from a failed pickpocket doesn't set Retribution off. */
+function stunDeathSkipsRetribution(check) {
+  if (stunHits.has(check.hit)) check.allow = false;
+}
+
+function addRogueSetText(request) {
+  const player = request?.player;
+  if (!player?.getEquipment || !core) return;
+  if (ROGUE_SLOTS.every((slot, i) => wornName(player, core.Equipment[slot]) === ROGUE_PIECES[i])) request.setTexts?.push(ROGUE_SET_TEXT);
+}
+
 function register(api) {
   core = api.core;
   pluginApi = api;
+  api.onCustomEvent("retribution:trigger", stunDeathSkipsRetribution);
+  api.onCustomEvent("equipment:effects", addRogueSetText);
+  // The gloves' wear and the necklace's charges outlast a relog (Wiki: both wear out on use, not per session).
+  api.persistAttribute(GLOVES_OF_SILENCE_ATTRIBUTE, 0);
+  api.persistAttribute(DODGY_NECKLACE_ATTRIBUTE, DODGY_NECKLACE_CHARGES);
   api.onNpcsInteraction([...new Set(TARGETS.filter((t) => !t.option).flatMap((t) => t.npcs))], { Pickpocket: pickpocket });
   api.onNpcInteraction("Digsite workman", { "Steal-from": pickpocket });
+  api.onItemAction("Dodgy necklace", { Check: checkDodgyNecklace });
+  api.onItemAction("Gloves of silence", { Check: checkGloves });
 }
 
 module.exports = {
@@ -482,5 +587,5 @@ module.exports = {
   POUCH_COINS,
   TARGETS,
   targetFor,
-  _test: { pickpocket, successChance, rollLoot, giveLoot, lootLine, targetFor, messageName, dodgyNecklaceProtects, wearOutGloves, rateOf },
+  _test: { addRogueSetText, stunHits, stunDeathSkipsRetribution, pickpocket, successChance, rollLoot, giveLoot, lootLine, targetFor, messageName, dodgyNecklaceProtects, wearOutGloves, checkGloves, checkDodgyNecklace, rateOf },
 };

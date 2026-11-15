@@ -1,4 +1,5 @@
 export type WidgetServerPayload =
+    | { action: "inventory_stop_transmit"; inventoryId: number }
     | {
           action: "close" | "open";
           groupId: number;
@@ -105,19 +106,19 @@ export type WidgetServerPayload =
           zoom: number;
       }
     | {
+          /** IF_SETROTATESPEED: the model's x and y rotation speeds per graphics cycle. */
+          action: "set_rotate_speed";
+          uid: number;
+          speedX: number;
+          speedY: number;
+      }
+    | {
           action: "set_model";
           uid: number;
           modelId?: number;
           itemId?: number;
           itemQuantity?: number;
           modelOrthog?: boolean;
-      }
-    | {
-          action: "set_quest_list";
-          groups: Array<{
-              title: string;
-              quests: Array<{ key: string; slot: number; displayName: string; status: number }>;
-          }>;
       };
 
 export type WidgetActionClientPayload = {

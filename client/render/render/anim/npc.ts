@@ -1,4 +1,5 @@
 import Denque from "denque";
+import { getNpcMovementSeqSet } from "../../../rs/config/npctype/NpcType";
 import { mat4, vec2, vec3, vec4 } from "gl-matrix";
 import { button, folder } from "leva";
 import { Schema } from "leva/dist/declarations/src/types";
@@ -232,12 +233,12 @@ export function resolveNpcMovementSequenceIds(host: WebGLOsrsRendererHost,
         }
 
         try {
-            const npcType = host.osrsClient.npcTypeLoader.load(npcTypeId | 0);
+            const npcType = host.getEffectiveNpcType(npcTypeId | 0);
             if (!npcType) {
                 return { movementSeqId, idleSeqId, walkSeqId };
             }
 
-            const movementSet = Object.assign(npcType.getMovementSeqSet(host.osrsClient.basTypeLoader), ecs.getMovementOverrides(ecsId));
+            const movementSet = Object.assign(getNpcMovementSeqSet(npcType, host.osrsClient.npcTypeLoader.load(npcTypeId | 0), host.osrsClient.basTypeLoader), ecs.getMovementOverrides(ecsId));
             idleSeqId = movementSet.idle | 0;
             walkSeqId = movementSet.walk | 0;
             const pathLength = ecs.getPathLengthLike?.(ecsId) | 0;

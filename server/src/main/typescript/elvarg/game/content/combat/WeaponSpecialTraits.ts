@@ -6,6 +6,7 @@ export type SpecialAttackRounding = "floor" | "ceil";
 export const SpecialAttackMaximumHitSource = Object.freeze({
     Standard: "standard",
     PhysicalMelee: "physical_melee",
+    Ranged: "ranged",
     Magic: "magic",
     VisibleMagic: "visible_magic",
 } as const);
@@ -23,6 +24,8 @@ export interface SpecialAttackTargeting {
     readonly pattern: SpecialAttackTargetPattern;
     /** Odd number of tiles across the forward line, centred on the primary target. Unused by "surrounding". */
     readonly width: number;
+    /** "surrounding" only: tiles from the attacker to a candidate's footprint. Default 1 (the ring of neighbours). */
+    readonly radius?: number;
     /** Total target cap, including the primary target. */
     readonly maxTargets: number;
     readonly requiresMultiCombat?: boolean;
@@ -57,11 +60,12 @@ export interface SpecialAttackFirstSuccessfulRange extends SpecialAttackDamageRa
 export interface WeaponSpecialTraits {
     // --- hit shape -------------------------------------------------------
     readonly hitCount?: number;
-    /** Splits the final maximum hit across this many sequential hits. */
-    readonly maximumHitSplitCount?: number;
     /** Extra reveal delays for each hit, relative to the normal hit delay. */
     readonly hitDelayTicks?: readonly number[];
-    /** Replaces this swing's next-attack delay after special energy is consumed. */
+    /**
+     * Replaces this swing's next-attack delay after special energy is consumed. With
+     * bypassAttackDelay it only extends a cooldown already running, never shortens it.
+     */
     readonly attackSpeedTicks?: number;
     /** Lets an offensive special bypass the normal weapon attack-delay check. */
     readonly bypassAttackDelay?: boolean;

@@ -37,6 +37,12 @@ function syncZeal({ player }) {
   player.getPacketSender().sendVarbit(ZEAL_UNLOCKED_VARBIT, player.getAttribute(ZEAL_UNLOCKED_ATTRIBUTE) === true ? 1 : 0);
 }
 
+/** Wiki transcript: the horn's Inspect points the player at Camelot. */
+function inspectHorn({ player }) {
+  player.sendMessage("You inspect the horn-like item...");
+  player.sendMessage("You notice a small symbol, similar to the one you've seen the Knights of the Round Table wear.");
+}
+
 /** Wiki: "Upon entering Camelot, a cutscene begins" - the cutscene is not built, a message stands in. */
 function enterCamelot(mobile) {
   const player = mobile.isPlayer?.() ? mobile.getAsPlayer() : null;
@@ -67,7 +73,8 @@ function zealRequirements(event) {
   if (event.prayer !== core.PrayerData.ZEAL) return;
   const skills = event.player.getSkillManager();
   const { Skill } = core;
-  if (event.player.getAttribute(ZEAL_UNLOCKED_ATTRIBUTE) !== true) {
+  // A game that hands out every prayer (Last Man Standing) puts Zeal in the book unearned.
+  if (!core.PrayerHandler.zealReplacesPiety(event.player)) {
     event.message = "You have not unlocked that prayer.";
   } else if (skills.getMaxLevel(Skill.ATTACK) < ZEAL_ATTACK || skills.getMaxLevel(Skill.STRENGTH) < ZEAL_STRENGTH
     || skills.getMaxLevel(Skill.DEFENCE) < ZEAL_DEFENCE) {
@@ -115,13 +122,13 @@ function readFolio({ player, item }) {
   }
   const target = new core.Location(LOBBY.x, LOBBY.y, LOBBY.z);
   if (!core.TeleportHandler.checkReqs(player, target, WILDERNESS_LIMIT)) return;
-  core.TeleportHandler.teleport(player, target, core.TeleportType.NORMAL, false, () => {
-    const slot = slotOf(player, item);
+  core.TeleportHandler.confirm(player, target, (carried) => core.TeleportHandler.teleport(player, target, core.TeleportType.NORMAL, false, () => {
+    const slot = slotOf(player, carried);
     if (slot < 0) return;
     const left = itemCharges(player.getInventory().getItems()[slot]) - 1;
     setCharges(player, slot, left);
     player.sendMessage(`Your folio has ${plural(Math.max(0, left))} left.`);
-  });
+  }), WILDERNESS_LIMIT, { item });
 }
 
 function chargeFolio({ player, item }) {
@@ -148,10 +155,11 @@ module.exports = function registerFracturedArchiveRewards(api) {
   api.persistAttribute(ZEAL_UNLOCKED_ATTRIBUTE, false);
   api.onPlayerLogin(syncZeal);
   api.onPrayerDisabled(zealRequirements);
+  api.onItemAction("Horn of Bran", { Inspect: inspectHorn });
   api.registerArea(createCamelotArea(api));
   for (const folio of ["Archivist's folio", "Archivist's folio (inert)"]) {
     api.onItemAction(folio, { Read: readFolio, Charge: chargeFolio, Check: checkFolio });
     api.onItemOnItem("Ascension shards", folio, chargeWithShards);
   }
 };
-module.exports._test = { zealRequirements, readFolio, chargeFolio, enterCamelot, chargeWithShards };
+module.exports._test = { zealRequirements, readFolio, chargeFolio, enterCamelot, inspectHorn, chargeWithShards };

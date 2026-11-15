@@ -1,3 +1,5 @@
+import { getCustomDefinitionKey } from "../../../custom/definitions/CustomDefinitionStore";
+import { isDefinitionDataset, loadFromPayload } from "../../../common/gamemode/GamemodeContentStore";
 import { applyClanChannelDelta, applyClanSettingsDelta } from "../../../common/social/Clans";
 import { ClientState } from "../../../game/ClientState";
 import {
@@ -16,7 +18,7 @@ import { handleShopPayload } from "../domain/shop";
 import { handleSmithingPayload } from "../domain/smithing";
 import { emitPlayerSync, emitSkills } from "../domain/skills";
 import { handleTradePayload } from "../domain/trade";
-import { markChatTransmit, markItemDefinitionsChanged } from "../../../game/TransmitCycles";
+import { markChatTransmit, markItemDefinitionsChanged, markMiscTransmit } from "../../../game/TransmitCycles";
 import { CustomItemRegistry } from "../../../custom/items/CustomItemRegistry";
 import { getDefinitionArchiveKey } from "../../../custom/archives/ArchivedDefinitionStore";
 import { getClientCycle } from "../timing";
@@ -103,6 +105,7 @@ export function handleInboundUi(msg: any): boolean {
         } else if (payload.kind === "slot") {
             const capacityHint = state.lastBankState?.capacity ?? BANK_SLOT_COUNT_FALLBACK;
             const slot = sanitizeBankSlotMessage(payload.slot, capacityHint);
+            state.lastBankState ??= { capacity: capacityHint, slots: [] };
             if (state.lastBankState) {
                 const idx = state.lastBankState.slots.findIndex((s) => (s.slot | 0) === (slot.slot | 0));
                 if (idx >= 0) state.lastBankState.slots[idx] = { ...slot };
@@ -209,6 +212,14 @@ export function handleInboundUi(msg: any): boolean {
         return true;
     }
     if (msg.type === "widget") {
+        if (msg.payload.action === "inventory_stop_transmit") {
+            const id = msg.payload.inventoryId;
+            if (id === 93) state.lastInventorySnapshot = undefined;
+            if (id === 95) state.lastBankState = undefined;
+            if (id === 620) state.lastCollectionLogSnapshot = undefined;
+            // 516 stops the native looting bag; the legacy shop channel owns its
+            // replay state through explicit shop open/close/slot payloads.
+        }
         if (msg.payload.action !== "set_text" && (msg.payload as any).uid !== 10616865) {
             console.log("[ServerConnection] recv widget", msg.payload);
         }
@@ -283,27 +294,34 @@ export function handleInboundUi(msg: any): boolean {
             if (g.__osrsClient) g.__osrsClient.worldMapPlayers = datasets[0].rows;
             return true;
         }
+        if (datasets?.length === 1 && datasets[0].key === "hitpointsXpRate") {
+            // The rate this player's Hitpoints XP is paid at (world x league), for predicted hits.
+            const rate = Number(datasets[0].rows?.[0]);
+            const g: any = (typeof window !== "undefined" ? window : globalThis) as any;
+            if (g.__osrsClient && Number.isFinite(rate) && rate > 0) g.__osrsClient.hitpointsXpRate = rate;
+            return true;
+        }
         try {
-            const { loadFromPayload } = require("../../../common/gamemode/GamemodeContentStore");
             const itemRevision = CustomItemRegistry.revision;
             const archiveKey = getDefinitionArchiveKey();
+            const definitionsKey = getCustomDefinitionKey();
             loadFromPayload(msg.payload);
             const g: any = (typeof window !== "undefined" ? window : globalThis) as any;
             const mv = g?.__osrsClient;
-            if (msg.payload?.datasets?.some((dataset: any) =>
-                dataset.key === "customItems" || dataset.key === "customModels" ||
-                dataset.key === "definitionArchives")) {
+            if (datasets?.some((dataset: any) =>
+                dataset.key === "customItems" || dataset.key === "customModels" || isDefinitionDataset(dataset))) {
                 mv?.objTypeLoader?.clearCache();
                 mv?.objModelLoader?.clearCache();
-                if (datasets?.some((dataset: any) => dataset.key === "definitionArchives")) {
+                if (datasets?.some(isDefinitionDataset)) {
                     mv?.npcTypeLoader?.clearCache();
                     mv?.locTypeLoader?.clearCache();
+                    mv?.seqTypeLoader?.clearCache();
                     mv?.renderer?.invalidateDefinitionCaches();
                 }
                 mv?.workerPool?.runAll((worker: any) => worker.setCustomContent(msg.payload))
                     .catch((error: unknown) => console.error("Custom worker content failed", error));
             }
-            if (CustomItemRegistry.revision !== itemRevision || getDefinitionArchiveKey() !== archiveKey) {
+            if (CustomItemRegistry.revision !== itemRevision || getDefinitionArchiveKey() !== archiveKey || getCustomDefinitionKey() !== definitionsKey) {
                 markItemDefinitionsChanged();
             }
             if (mv && typeof mv.refreshGamemodeWorldLocs === "function") {
@@ -325,13 +343,8 @@ export function handleInboundUi(msg: any): boolean {
         const raw = Number(payload?.remainingCentis);
         const remainingCentis = Number.isFinite(raw) ? Math.max(0, Math.floor(raw)) : 0;
         state.lastSystemUpdate = { remainingCentis, receivedAtMs: Date.now() };
-        for (const cb of state.systemUpdateListeners) {
-            try {
-                cb({ remainingCentis });
-            } catch (err) {
-                console.warn("system update listener error", err);
-            }
-        }
+        // Start the native chatbox countdown; script 664 keeps it refreshed while active.
+        markMiscTransmit();
         return true;
     }
     return false;

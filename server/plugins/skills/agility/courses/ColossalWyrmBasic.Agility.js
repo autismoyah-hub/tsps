@@ -7,12 +7,13 @@ const { Loc, WyrmAnim, FIRST_PAUSE, LONGJUMP_SOUND, tightrope, hurdles, ledge, z
  * first tightrope (with the edges jumped straight after it) are shared with the advanced course
  * (ColossalWyrmAdvanced.Agility.js), and both end on the same zipline. XP per obstacle: the course page's
  * table since the 2026 rework; edges and the rope's jumps need no click, so they go with the
- * obstacle before them. Termites and blessed bone shards are not given yet.
+ * obstacle before them. Termites and blessed bone shards: plugins/areas/ColossalWyrmAgility.plugin.js.
  */
 module.exports = {
   key: "wyrm-basic",
   name: "Colossal Wyrm Agility Course (Basic)",
   helper: 22, // the Agility helper's course (enum 3507: "Colossal Wyrm Agility Course")
+  lootSource: 124, // the loot tracker's source (enum 4976)
   lapXp: 601.6,
   // varlamore_wyrm_agility_basic_progress: the obstacle the lap has reached, 1-6, and 0 with the
   // lap (rsprox 1106).

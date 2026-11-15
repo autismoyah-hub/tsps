@@ -52,15 +52,21 @@ function loadNode(comboEatChance, profileId) {
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
     module,
     Math,
+    // The real module sees these; without them a debug switch or Date call reads as undefined.
+    process,
+    Date,
+    console,
     require: (name) => {
       if (name.endsWith('/PvpAssignment.PlayerBots')) {
         const { getPvpProfile } = localRequire(name);
         return { getPvpProfile: () => ({ ...getPvpProfile(profileId), comboEatChance }) };
       }
-      if (name.endsWith('/state/State.PlayerBots')) return {
-        computeEatThreshold: (maxHp, ratio, f2p) =>
-          f2p ? Math.min(24, Math.max(1, maxHp - 1)) : Math.max(1, Math.ceil(maxHp * ratio)),
-      };
+      // Delegate to the real threshold so these tests follow the implementation instead of
+      // restating the F2P constant, which let a 24 -> 36 change pass them silently.
+      if (name.endsWith('/state/State.PlayerBots')) {
+        const { computeEatThreshold } = localRequire(name);
+        return { computeEatThreshold };
+      }
       if (name.endsWith('/NodeContext.PlayerBots')) return { resolveBotNodeContext: (ctx) => ctx };
       return localRequire(name);
     },
@@ -78,6 +84,7 @@ function buildHarness(comboEatChance = 0, profileId = 'standard') {
   const delays = [];
   const attributes = new Map();
   const combat = { getTarget: () => target, getAttacker: () => attacker, delayAttack: ticks => delays.push(ticks) };
+  let runEnergy = 50;
   const player = {
     getSkillManager: () => ({ getCurrentLevel: () => hp, getMaxLevel: () => 60, stopSkillable() {} }),
     getCombat: () => combat,
@@ -90,12 +97,17 @@ function buildHarness(comboEatChance = 0, profileId = 'standard') {
         if ((item.getAmount?.() ?? 1) > 1) item.setAmount(item.getAmount() - 1);
         else foodItems[slot] = null;
       },
+      // Bite foods rewrite their slot (a pizza becomes a half), so the harness needs this too.
+      setItem: (slot, item) => { foodItems[slot] = item; },
       refreshItems: () => {},
     }),
     getTimers: () => timers,
-    getPacketSender: () => ({ sendInterfaceRemoval() {}, sendConfig() {} }),
+    getPacketSender: () => ({ sendInterfaceRemoval() {}, sendConfig() {}, sendRunEnergy() {} }),
     performAnimation: () => {},
     setHitpoints: value => { hp = value; },
+    // Purple sweets also restore run energy (ConsumableEffects.restoreRunEnergy, since 4b1eb224c).
+    getRunEnergy: () => runEnergy,
+    setRunEnergy: value => { runEnergy = value; },
     getAttribute: key => attributes.get(key),
     setAttribute: (key, value) => attributes.set(key, value),
     isPlayerBot: () => true,
@@ -128,7 +140,7 @@ function buildHarness(comboEatChance = 0, profileId = 'standard') {
 test('F2P bot only eats once engaged and after HP actually drops', () => {
   const h = buildHarness();
 
-  h.setHp(30);
+  h.setHp(40);
   assert.equal(h.tick(), 'failure', 'above the F2P threshold nothing happens');
   assert.equal(h.state.pvp.f2pFoodPending, false);
 
@@ -146,8 +158,8 @@ test('F2P bot only eats once engaged and after HP actually drops', () => {
 
   h.setHp(15);
   assert.equal(h.tick(), 'failure', 'HP drop proceeds to eat (fails here on empty inventory)');
-  assert.equal(h.state.pvp.f2pFoodPending, false);
-  assert.equal(h.state.pvp.f2pFoodPendingHp, null);
+  assert.equal(h.state.pvp.f2pFoodPending, true, 'no bite landed, so the wait stays satisfied');
+  assert.equal(h.state.pvp.f2pFoodPendingHp, 20);
   assert.equal(h.state.virtualFoodChargesRemaining, 0, 'empty inventory zeroes the retreat budget');
 });
 
@@ -193,7 +205,72 @@ test('low HP reacts with a real shark and karambwan in one turn, preserving food
   assert.ok(h.timers.has(core.TimerKey.KARAMBWAN));
 });
 
-test('two normal foods cannot be combo eaten, and eating permissions/cooldowns still apply', () => {
+test('F2P bots cross above a possible max hit, so the one-hit wait cannot leave them on fumes', () => {
+  const { computeEatThreshold } = localRequire('../../state/State.PlayerBots');
+  // An F2P max hit is around 21 (rune 2h, ~90 Strength), so arming at 24 meant eating at 3 HP.
+  assert.equal(computeEatThreshold(99, 0.4, true), 36, 'crosses 15 above a max hit');
+  assert.equal(computeEatThreshold(30, 0.4, true), 29, 'never arms at or above full HP');
+  // Members keep the ratio.
+  assert.equal(computeEatThreshold(99, 0.4, false), 40);
+});
+
+test('half a pizza is followed by a swordfish on the next tick, never the same one', () => {
+  // comboEatChance 0 rules out the karambwan branch.
+  const h = buildHarness(0, 'standard');
+  h.setItems([ItemIdentifiers.ANCHOVY_PIZZA, ItemIdentifiers.SWORDFISH]);
+  h.setHp(20);
+  assert.equal(h.tick(), 'failure', 'first crossing only arms');
+  h.setHp(10);
+  assert.equal(h.tick(), 'success');
+  assert.equal(h.getHp(), 19, 'half a pizza heals 9');
+  assert.equal(h.state.pvp.f2pComboPending, true, 'the other half of the combo is queued');
+
+  // The pizza half still sets the food timer for a tick, so the same tick cannot eat again.
+  assert.equal(h.tick(), 'failure', 'one bite per tick, as the food timer enforces');
+  assert.equal(h.getHp(), 19);
+
+  h.timers.process();
+  assert.equal(h.tick(), 'success', 'the follow-up does not wait for another hit');
+  assert.equal(h.getHp(), 33, 'a swordfish (14) rather than the pizza half (9)');
+  assert.equal(h.state.pvp.f2pComboPending, false, 'the queue is spent');
+});
+
+test('a half pizza with nothing else eats its own other half next tick', () => {
+  const h = buildHarness(0, 'standard');
+  h.setItems([ItemIdentifiers.ANCHOVY_PIZZA]);
+  h.setHp(20);
+  assert.equal(h.tick(), 'failure', 'first crossing only arms');
+  h.setHp(10);
+  assert.equal(h.tick(), 'success');
+  assert.equal(h.getHp(), 19);
+
+  h.timers.process();
+  assert.equal(h.tick(), 'success');
+  assert.equal(h.getHp(), 28, 'the remaining half heals 9');
+  assert.equal(h.state.virtualFoodChargesRemaining, 0);
+});
+
+test('a queued follow-up does not survive the heal that cleared the threshold', () => {
+  // A queued bite left set after healing above the threshold made the next fight eat on its first
+  // crossing, skipping the one-hit reaction delay this change deliberately keeps.
+  const h = buildHarness(0, 'standard');
+  h.setItems([ItemIdentifiers.ANCHOVY_PIZZA, ItemIdentifiers.SWORDFISH]);
+  h.setHp(20);
+  assert.equal(h.tick(), 'failure', 'first crossing only arms');
+  h.setHp(10);
+  assert.equal(h.tick(), 'success');
+  assert.equal(h.state.pvp.f2pComboPending, true, 'the follow-up is queued');
+
+  h.setHp(40);
+  assert.equal(h.tick(), 'failure', 'above the threshold there is nothing to eat');
+  assert.equal(h.state.pvp.f2pComboPending, false, 'the queue is dropped, not carried over');
+
+  h.setHp(30);
+  assert.equal(h.tick(), 'failure', 'the next crossing arms and waits again');
+  assert.equal(h.getHp(), 30, 'no early bite');
+});
+
+test('a slow first food is not followed in the same tick, and eating permissions/cooldowns still apply', () => {
   const h = buildHarness(1, 'veteran');
   h.state.pvp.loadoutId = 'edge_main_melee';
   h.setHp(5);
@@ -223,7 +300,7 @@ test('a combo food can save a low-HP bot while normal food is on cooldown', () =
 
 
 function prayerHarness({ prayer = 99, defence = 99, confidenceTier = 2 } = {}) {
-  const player = new Player(null);
+  const player = new Player(null, new core.Location(3243, 3526));
   const sender = new Proxy({}, { get: () => () => sender });
   player.getPacketSender = () => sender;
   player.sendMessage = () => {};
@@ -345,13 +422,67 @@ test('Edgeville Smite respects the level threshold and depleted prayer points', 
   assert.equal(drained.player.getPrayerActive()[PrayerHandler.SMITE], true);
 });
 
+test('Edgeville visitors use Smite regardless of missing, stale or different spawn assignments', () => {
+  for (const [x, y] of [[3036, 3486], [3090, 3490], [3068, 3531], [3135, 3583]]) {
+    for (const hotspotId of [null, 'edge_mains', 'varrock_ditch']) {
+      for (const confidenceTier of [1, 2, 3, 4]) {
+        const f = prayerHarness({ prayer: 52, confidenceTier });
+        f.player.setLocation(new core.Location(x, y));
+        f.state.pvp.hotspotId = hotspotId;
+        f.node.resolveProtectionPrayer = () => assert.fail('location must override the spawn assignment');
+        f.player.getPrayerActive()[PrayerHandler.PROTECT_FROM_MELEE] = true;
+        f.review();
+        assert.deepEqual(PrayerHandler.OVERHEAD_PRAYERS.filter(id => f.player.getPrayerActive()[id]),
+          [PrayerHandler.SMITE], `${x},${y}/${hotspotId}/${confidenceTier}`);
+      }
+    }
+  }
+});
+
+test('the location rule stops at Edgeville region boundaries and the surface plane', () => {
+  const { usesSmiteOnlyPrayers } = require('../plugins/bots/behaviours/pvp/WildernessHotspotRegistry.PlayerBots');
+  const f = prayerHarness();
+  for (const [x, y, z, expected] of [[3008, 3456, 0, true], [3135, 3583, 0, true],
+    [3007, 3490, 0, false], [3136, 3490, 0, false], [3090, 3455, 0, false],
+    [3090, 3584, 0, false], [3090, 3490, 1, false]]) {
+    f.player.setLocation(new core.Location(x, y, z));
+    assert.equal(usesSmiteOnlyPrayers(f.player, f.state), expected, `${x},${y},${z}`);
+  }
+});
+
+test('idle Edgeville visitors immediately clear existing protection without disabling other prayers', () => {
+  const { ReplenishAfterKillNode } = require('../plugins/bots/behaviours/nodes/pvp/ReplenishAfterKillNode.PlayerBots');
+  for (const prayerId of PrayerHandler.PROTECTION_PRAYERS) {
+    const f = prayerHarness();
+    f.player.setLocation(new core.Location(3090, 3531));
+    PrayerHandler.activatePrayerPrayerId(f.player, PrayerHandler.PIETY);
+    PrayerHandler.activatePrayerPrayerId(f.player, PrayerHandler.PROTECT_ITEM);
+    PrayerHandler.activatePrayerPrayerId(f.player, prayerId);
+    assert.equal(PrayerHandler.isActivated(f.player, prayerId), true);
+    Object.assign(f.state.pvp, { replenishPrayerId: prayerId, replenishPrayerUntil: Date.now() + 10000,
+      nextPrayerReviewAt: Date.now() + 10000 });
+    const node = Object.create(ReplenishAfterKillNode.prototype);
+    node.PrayerHandler = PrayerHandler;
+    node.eatFoodActionNode = { tick() { assert.fail('idle cleanup must not eat'); } };
+    node.tick(f);
+    assert.deepEqual(PrayerHandler.PROTECTION_PRAYERS.filter(id => f.player.getPrayerActive()[id]), []);
+    assert.equal(f.player.getPrayerActive()[PrayerHandler.PIETY], true);
+    assert.equal(f.player.getPrayerActive()[PrayerHandler.PROTECT_ITEM], true);
+    assert.equal(f.state.pvp.replenishPrayerId, null);
+    assert.equal(f.state.pvp.replenishPrayerUntil, 0);
+    assert.equal(f.state.pvp.nextPrayerReviewAt, 0, 'the next combat review can enable Smite immediately');
+  }
+});
+
 test('post-kill protection is disabled at Edgeville and retained at other sites', () => {
   const { ReplenishAfterKillNode } = require('../plugins/bots/behaviours/nodes/pvp/ReplenishAfterKillNode.PlayerBots');
   const { getEnabledWildernessHotspots } = require('../plugins/bots/behaviours/pvp/WildernessHotspotRegistry.PlayerBots');
   const spots = getEnabledWildernessHotspots().filter(spot => spot.smiteOnly);
-  for (const site of [...spots, { id: 'varrock_ditch', smiteOnly: false }]) {
+  for (const site of [...spots, { id: 'varrock_ditch', smiteOnly: false },
+    { id: null, smiteOnly: true, location: new core.Location(3090, 3531) }]) {
     for (const profileId of ['veteran', 'elite']) {
       const f = prayerHarness();
+      if (site.location) f.player.setLocation(site.location);
       Object.assign(f.state.pvp, { hotspotId: site.id, profileId, replenishAfterKillPending: true });
       const node = Object.create(ReplenishAfterKillNode.prototype);
       node.PrayerHandler = PrayerHandler;
@@ -464,4 +595,77 @@ test('restore timing follows bot skill and a one-Prayer pure never wastes a dose
   pure.player.getInventory().setItem(0, new core.Item(ItemIdentifiers.SUPER_RESTORE_4_));
   assert.equal(pure.node.drinkPrayerPotion(pure.player, getPvpProfile('elite')), false);
   assert.equal(pure.player.getInventory().getItems()[0].getId(), ItemIdentifiers.SUPER_RESTORE_4_);
+});
+
+test('F2P critical crossing eats immediately at the existing combo threshold', () => {
+  for (const hp of [15, 18]) {
+    const h = buildHarness();
+    h.setItems([ItemIdentifiers.SWORDFISH]);
+    h.setHp(hp);
+    assert.equal(h.tick(), 'success', 'critical HP must not arm a fresh hit wait');
+    assert.equal(h.getHp(), hp + 14);
+    assert.equal(h.state.pvp.f2pFoodPending, false);
+    assert.equal(h.state.pvp.f2pFoodPendingHp, null);
+  }
+});
+
+test('F2P failed eating retries at unchanged HP without another hit', () => {
+  for (const block of ['permission', 'food timer', 'stun']) {
+    const h = buildHarness();
+    h.setItems([ItemIdentifiers.SWORDFISH]);
+    h.setHp(30);
+    assert.equal(h.tick(), 'failure', 'ordinary crossing arms');
+    h.setHp(25);
+    if (block === 'permission') h.player.canEat = false;
+    else h.timers.extendOrRegister(block === 'stun' ? core.TimerKey.STUN : core.TimerKey.FOOD, 3);
+    assert.equal(h.tick(), 'failure', block);
+    assert.equal(h.state.pvp.f2pFoodPending, true, 'failed attempt keeps the original crossing');
+    assert.equal(h.state.pvp.f2pFoodPendingHp, 30);
+    h.player.canEat = true;
+    h.timers.cancel(core.TimerKey.FOOD);
+    h.timers.cancel(core.TimerKey.STUN);
+    assert.equal(h.tick(), 'success', 'retry needs no further HP drop');
+    assert.equal(h.getHp(), 39);
+    assert.equal(h.state.pvp.f2pFoodPending, false);
+    assert.equal(h.state.pvp.f2pFoodPendingHp, null);
+  }
+});
+
+test('F2P pending reaction resets after healing, disengagement and state cleanup', () => {
+  const { setModeRoaming } = localRequire('../../state/State.PlayerBots');
+  for (const reset of ['heal', 'disengage', 'state']) {
+    const h = buildHarness();
+    h.setItems([ItemIdentifiers.SWORDFISH]);
+    h.setHp(30);
+    assert.equal(h.tick(), 'failure');
+    h.state.pvp.f2pComboPending = true;
+    if (reset === 'heal') h.setHp(40);
+    if (reset === 'disengage') h.engage(false);
+    if (reset === 'state') setModeRoaming(null, h.state, { ROAMING: 'roaming' });
+    else h.tick();
+    assert.equal(h.state.pvp.f2pFoodPending, false, reset);
+    assert.equal(h.state.pvp.f2pFoodPendingHp, null, reset);
+    assert.equal(h.state.pvp.f2pComboPending, false, reset);
+    h.state.mode = 'pvp';
+    h.engage(true);
+    h.setHp(30);
+    assert.equal(h.tick(), 'failure', 'a new ordinary crossing still waits');
+    assert.equal(h.state.pvp.f2pFoodPending, true);
+  }
+});
+
+test('ordinary F2P crossings still wait while other modes eat immediately', () => {
+  for (const mode of ['f2p', 'members', 'training']) {
+    const h = buildHarness();
+    h.setItems([ItemIdentifiers.SWORDFISH]);
+    h.setHp(20);
+    if (mode === 'members') h.state.pvp.loadoutId = 'edge_main_melee';
+    if (mode === 'training') h.state.mode = 'training';
+    assert.equal(h.tick(), mode === 'f2p' ? 'failure' : 'success', mode);
+    if (mode === 'f2p') {
+      assert.equal(h.tick(), 'failure', 'unchanged ordinary HP keeps waiting');
+      h.setHp(19);
+      assert.equal(h.tick(), 'success', 'one extra hit satisfies the ordinary wait');
+    }
+  }
 });

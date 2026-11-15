@@ -20,6 +20,10 @@ let core;
 let pluginApi;
 const CHINCHOMPAS = ["CHINCHOMPA_2", "RED_CHINCHOMPA_2", "BLACK_CHINCHOMPA"];
 let method;
+/** Players whose swing is between start() and finished(): their throw is paid once it is rolled. */
+const swinging = new WeakSet();
+/** The throw a swing fired, paid in finished(). */
+const pendingThrows = new WeakMap();
 
 function wieldedChinchompa(player) {
   const weapon = player?.getEquipment?.()?.get?.(core.Equipment.WEAPON_SLOT);
@@ -33,10 +37,32 @@ function nearbyMobiles(player) {
 function createMethod() {
   const { CombatFactory, PendingHit, RangedCombatMethod } = core;
   return new (class ChinchompaCombatMethod extends RangedCombatMethod {
+    start(character, target) {
+      const player = character.getAsPlayer();
+      payPendingThrow(player);
+      swinging.add(player);
+      super.start(character, target);
+    }
+
+    finished(character, target) {
+      super.finished(character, target);
+      const player = character.getAsPlayer();
+      swinging.delete(player);
+      payPendingThrow(player);
+    }
+
+    onCombatEnded(character, target) {
+      // A swing stopped before finished() (no hits) still threw its chinchompa.
+      const player = character.getAsPlayer();
+      swinging.delete(player);
+      payPendingThrow(player);
+      super.onCombatEnded(character, target);
+    }
+
     hits(character, target) {
       const hits = super.hits(character, target);
       const first = hits[0];
-      if (!first?.isAccurate() || !CombatFactory.multiCombatBetween(character, target)) {
+      if (!first?.isAccurate() || !CombatFactory.areaAttackSpreads(character, target)) {
         return hits;
       }
       for (const candidate of nearbyMobiles(character.getAsPlayer())) {
@@ -63,58 +89,62 @@ function fuseAccuracy(attacker, target, attackRoll) {
     return null;
   }
   const fuse = FUSE_BY_CHILD_ID[attacker.getAsPlayer().getFightType().getChildId()];
-  const distance = attacker.getLocation().getDistance(target.getLocation());
+  const distance = core.CombatPosition.distance(attacker, target);
   const band = distance <= 3 ? 0 : distance <= 6 ? 1 : 2;
   return fuse ? Math.floor((attackRoll * FUSE_ACCURACY[fuse][band]) / 100) : null;
 }
 
-/** One chinchompa per throw, gone for good: no floor drop, no Ava's recovery. */
-function consumeChinchompa(player, pos, amount, delayTicks = 0) {
-  const { Equipment, Flag, Item, Task, TaskManager, WeaponInterfaceManager } = core;
+function payPendingThrow(player) {
+  const pay = pendingThrows.get(player);
+  if (!pay) return;
+  pendingThrows.delete(player);
+  pay();
+}
+
+/**
+ * One chinchompa per throw, gone for good: no floor drop, no Ava's recovery. Paid on the throw's tick, as worn ammo
+ * is (rsprox_transcripts/237/01156.txt), so moving the stack mid-flight (unwield, bank, drop, trade) cannot make the
+ * throw free. During a swing it waits for finished(): the throw is rolled with the chinchompa still in the hand (its
+ * hit delay, fuse accuracy, ranged bonuses and blast). Nothing is left to do on landing.
+ */
+function consumeChinchompa(player, _pos, amount) {
   const weapon = wieldedChinchompa(player);
   if (!weapon) {
     return false;
   }
   // Content may keep some throws from costing a chinchompa (a league relic), as core asks for quiver ammunition.
-  const saving = { player, itemId: weapon.getId(), amount, saved: 0 };
+  // `extra`: throws given back on top (Demonic Pacts' Regenerate above 100%), added to the same stack.
+  const saving = { player, itemId: weapon.getId(), amount, saved: 0, extra: 0 };
   pluginApi.emitCustomEvent("ranged:ammo-saving", saving);
   const thrown = amount - Math.min(amount, Math.max(0, saving.saved | 0));
-  const apply = () => {
-    // A swap mid-flight moved this stack out of the slot; leave the new one alone.
-    if (player.getEquipment().get(Equipment.WEAPON_SLOT) !== weapon) {
-      return;
-    }
-    if (thrown <= 0) {
-      return;
-    }
-    weapon.decrementAmountBy(thrown);
-    if (weapon.getAmount() <= 0) {
-      player.sendMessage("You have run out of ammunition!");
-      player.getEquipment().set(Equipment.WEAPON_SLOT, new Item(-1));
-      WeaponInterfaceManager.assign(player);
-      player.getUpdateFlag().flag(Flag.APPEARANCE);
-    }
-    player.getEquipment().refreshItems();
-  };
-  if (delayTicks > 0) {
-    TaskManager.submit(new (class extends Task {
-      constructor() {
-        super(delayTicks);
-      }
-
-      execute() {
-        apply();
-        this.stop();
-      }
-    })());
-  } else {
-    apply();
+  const extra = Math.max(0, saving.extra | 0);
+  if (thrown <= 0 && extra <= 0) {
+    return true;
   }
+  const pay = () => payThrow(player, weapon, thrown, extra);
+  if (swinging.has(player)) pendingThrows.set(player, pay);
+  else pay();
   return true;
+}
+
+function payThrow(player, weapon, thrown, extra) {
+  const { Equipment, Flag, Item, WeaponInterfaceManager } = core;
+  if (thrown > 0) weapon.decrementAmountBy(thrown);
+  if (extra > 0) weapon.incrementAmountBy(extra);
+  // The hand is cleared only if it still holds this stack (a throw paid late, after a swing with no hits).
+  if (weapon.getAmount() <= 0 && player.getEquipment().get(Equipment.WEAPON_SLOT) === weapon) {
+    player.sendMessage("You have run out of ammunition!");
+    player.getEquipment().set(Equipment.WEAPON_SLOT, new Item(-1));
+    WeaponInterfaceManager.assign(player);
+    player.getUpdateFlag().flag(Flag.APPEARANCE);
+  }
+  player.getEquipment().refreshItems();
 }
 
 module.exports = {
   name: "Chinchompas",
+  description: "Chinchompa weapons: fuse-based accuracy by distance, area explosion hitting nearby targets in multicombat, and one chinchompa used per throw.",
+  _test: { consumeChinchompa },
   members: true,
   register(api) {
     core = api.core;

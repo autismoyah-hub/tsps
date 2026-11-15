@@ -15,6 +15,8 @@ test('real normal rewards persist recorded world kills and best times once witho
   assert.equal(writes.length, 1);
   assert.ok(writes[0].kills > 0);
   assert.equal(writes[0].bestTicks, 1);
+  // rsprox 227/00100.txt:78155: "Fight duration: <col=ff0000>0:34.20</col> (new personal best)".
+  assert.ok(h.messages.includes("Fight duration: <col=ff0000>0:00.60</col> (new personal best)"), h.messages.join(" | "));
   h.dispatch('onNpcDeath', { npc: h.fight.boss, killer: h.p });
   assert.equal(writes.length, 1);
 });
@@ -25,10 +27,11 @@ function slayerState(h) {
   const State = require('../plugins/skills/slayer/State.Slayer');
   const Tasks = require('../plugins/skills/slayer/Tasks.Slayer');
   const SlaughterBracelet = require('../plugins/skills/slayer/SlaughterBracelet.Slayer');
+  const ExpeditiousBracelet = require("../plugins/skills/slayer/ExpeditiousBracelet.Slayer");
   h.p.getSession = () => ({ sendClientPacket: () => true, write() {} });
   const sender = new PacketSender(h.p);
   h.p.getPacketSender = () => sender;
-  for (const unit of [Data, State, Tasks, SlaughterBracelet]) unit.init(h.api);
+  for (const unit of [Data, State, Tasks, SlaughterBracelet, ExpeditiousBracelet]) unit.init(h.api);
   const [bossId] = [...Data.get().bosses].find(([id]) => Data.isBossNpc(id, 'The Leviathan'));
   return {
     attach: () => Tasks.attach(h.api),

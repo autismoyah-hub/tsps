@@ -223,6 +223,12 @@
       "variants": [
         "preparations-for-rescue-talking-to-aggie"
       ]
+    },
+    {
+      "page": "Transcript:Secret santa present",
+      "variants": [
+        "unlocking-green-talking-to-aggie"
+      ]
     }
   ],
   "121": [
@@ -267,6 +273,12 @@
       "page": "Transcript:Prince Ali Rescue/Historical",
       "variants": [
         "preparations-for-rescue-talking-to-aggie"
+      ]
+    },
+    {
+      "page": "Transcript:Secret santa present",
+      "variants": [
+        "unlocking-green-talking-to-aggie"
       ]
     }
   ],
@@ -6126,6 +6138,7 @@
         "finding-filliman-using-a-mirror-on-filliman-again",
         "finding-filliman-subsequent-dialogue-with-filliman-2",
         "talking-to-filliman",
+        "talking-to-filliman-brown-stone",
         "talking-to-filliman-grey-stone",
         "talking-to-filliman-talking-to-filliman-again-on-the-orange-stone",
         "talking-to-filliman-talking-to-filliman-outside-the-grove-again",
@@ -6160,6 +6173,7 @@
         "finding-filliman-using-a-mirror-on-filliman-again",
         "finding-filliman-subsequent-dialogue-with-filliman-2",
         "talking-to-filliman",
+        "talking-to-filliman-brown-stone",
         "talking-to-filliman-grey-stone",
         "talking-to-filliman-talking-to-filliman-again-on-the-orange-stone",
         "talking-to-filliman-talking-to-filliman-outside-the-grove-again",
@@ -6692,7 +6706,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -6750,7 +6764,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -6808,7 +6822,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -6866,7 +6880,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -6924,7 +6938,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -7701,6 +7715,7 @@
       "page": "Transcript:Biohazard",
       "variants": [
         "getting-started-talking-to-elena",
+        "getting-started-talking-to-elena-again",
         "infiltrating-the-mourner-hq-talking-to-elena-without-the-distillator",
         "delivering-the-samples-talking-to-elena-with-the-distillator",
         "delivering-the-samples-talking-to-elena-again-before-visiting-the-chemist",
@@ -10090,7 +10105,8 @@
         "starting-off-talking-to-seth-groats",
         "starting-off-talking-to-seth-again-after-receiving-the-picture-for-the-first-time",
         "returning-to-fred-with-the-decorations-talking-to-seth-groats-after-collecting-each-item",
-        "the-spook-a-thon-contest"
+        "the-spook-a-thon-contest",
+        "the-spook-a-thon-contest-talking-to-fred-again-before-finishing-the-cutscene"
       ]
     },
     {
@@ -13376,6 +13392,12 @@
         "talking-to-malignius-mortifer",
         "talking-to-malignius-mortifer-talking-to-malignius-again-before-getting-the-skull",
         "talking-to-malignius-mortifer-talking-to-malignius-again-after-learning-how-to-kill-the-tanglefoot"
+      ]
+    },
+    {
+      "page": "Transcript:Secret santa present",
+      "variants": [
+        "unlocking-gold-talking-to-malignius-mortifer"
       ]
     },
     {
@@ -20773,6 +20795,12 @@
       ]
     },
     {
+      "page": "Transcript:The Lost Tribe",
+      "variants": [
+        "a-hole-in-the-wall-asking-father-aereck"
+      ]
+    },
+    {
       "page": "Transcript:The Restless Ghost",
       "variants": [
         "starting-out",
@@ -25528,6 +25556,25 @@
         "after-curse-of-the-empty-lord",
         "speaking-to-the-wrong-rennard"
       ]
+    },
+    {
+      "page": "Transcript:Curse of the Empty Lord",
+      "variants": [
+        "talking-to-any-mysterious-ghost-without-a-ghostspeak-amulet",
+        "talking-to-any-mysterious-ghost-in-the-wrong-location",
+        "talking-to-valdez",
+        "talking-to-valdez-talking-to-valdez-again",
+        "talking-to-rennard",
+        "talking-to-rennard-talking-to-rennard-again",
+        "talking-to-kharrim",
+        "talking-to-kharrim-talking-to-kharrim-again",
+        "talking-to-lennissa",
+        "talking-to-lennissa-talking-to-lennissa-again",
+        "talking-to-dhalak",
+        "talking-to-dhalak-talking-to-dhalak-again",
+        "talking-to-viggora",
+        "talking-to-viggora-talking-to-viggora-again"
+      ]
     }
   ],
   "3451": [
@@ -25537,6 +25584,25 @@
         "without-a-ghostspeak-amulet",
         "after-curse-of-the-empty-lord",
         "speaking-to-the-wrong-dhalak"
+      ]
+    },
+    {
+      "page": "Transcript:Curse of the Empty Lord",
+      "variants": [
+        "talking-to-any-mysterious-ghost-without-a-ghostspeak-amulet",
+        "talking-to-any-mysterious-ghost-in-the-wrong-location",
+        "talking-to-valdez",
+        "talking-to-valdez-talking-to-valdez-again",
+        "talking-to-rennard",
+        "talking-to-rennard-talking-to-rennard-again",
+        "talking-to-kharrim",
+        "talking-to-kharrim-talking-to-kharrim-again",
+        "talking-to-lennissa",
+        "talking-to-lennissa-talking-to-lennissa-again",
+        "talking-to-dhalak",
+        "talking-to-dhalak-talking-to-dhalak-again",
+        "talking-to-viggora",
+        "talking-to-viggora-talking-to-viggora-again"
       ]
     }
   ],
@@ -25548,6 +25614,25 @@
         "after-curse-of-the-empty-lord",
         "speaking-to-the-wrong-valdez"
       ]
+    },
+    {
+      "page": "Transcript:Curse of the Empty Lord",
+      "variants": [
+        "talking-to-any-mysterious-ghost-without-a-ghostspeak-amulet",
+        "talking-to-any-mysterious-ghost-in-the-wrong-location",
+        "talking-to-valdez",
+        "talking-to-valdez-talking-to-valdez-again",
+        "talking-to-rennard",
+        "talking-to-rennard-talking-to-rennard-again",
+        "talking-to-kharrim",
+        "talking-to-kharrim-talking-to-kharrim-again",
+        "talking-to-lennissa",
+        "talking-to-lennissa-talking-to-lennissa-again",
+        "talking-to-dhalak",
+        "talking-to-dhalak-talking-to-dhalak-again",
+        "talking-to-viggora",
+        "talking-to-viggora-talking-to-viggora-again"
+      ]
     }
   ],
   "3453": [
@@ -25558,6 +25643,25 @@
         "after-curse-of-the-empty-lord",
         "speaking-to-the-wrong-kharrim"
       ]
+    },
+    {
+      "page": "Transcript:Curse of the Empty Lord",
+      "variants": [
+        "talking-to-any-mysterious-ghost-without-a-ghostspeak-amulet",
+        "talking-to-any-mysterious-ghost-in-the-wrong-location",
+        "talking-to-valdez",
+        "talking-to-valdez-talking-to-valdez-again",
+        "talking-to-rennard",
+        "talking-to-rennard-talking-to-rennard-again",
+        "talking-to-kharrim",
+        "talking-to-kharrim-talking-to-kharrim-again",
+        "talking-to-lennissa",
+        "talking-to-lennissa-talking-to-lennissa-again",
+        "talking-to-dhalak",
+        "talking-to-dhalak-talking-to-dhalak-again",
+        "talking-to-viggora",
+        "talking-to-viggora-talking-to-viggora-again"
+      ]
     }
   ],
   "3454": [
@@ -25567,6 +25671,25 @@
         "without-a-ghostspeak-amulet",
         "after-curse-of-the-empty-lord",
         "speaking-to-the-wrong-lennissa"
+      ]
+    },
+    {
+      "page": "Transcript:Curse of the Empty Lord",
+      "variants": [
+        "talking-to-any-mysterious-ghost-without-a-ghostspeak-amulet",
+        "talking-to-any-mysterious-ghost-in-the-wrong-location",
+        "talking-to-valdez",
+        "talking-to-valdez-talking-to-valdez-again",
+        "talking-to-rennard",
+        "talking-to-rennard-talking-to-rennard-again",
+        "talking-to-kharrim",
+        "talking-to-kharrim-talking-to-kharrim-again",
+        "talking-to-lennissa",
+        "talking-to-lennissa-talking-to-lennissa-again",
+        "talking-to-dhalak",
+        "talking-to-dhalak-talking-to-dhalak-again",
+        "talking-to-viggora",
+        "talking-to-viggora-talking-to-viggora-again"
       ]
     }
   ],
@@ -25579,6 +25702,25 @@
         "speaking-to-the-wrong-viggora",
         "treasure-trails-master-with-no-inventory-space-available",
         "treasure-trails-master-with-inventory-space"
+      ]
+    },
+    {
+      "page": "Transcript:Curse of the Empty Lord",
+      "variants": [
+        "talking-to-any-mysterious-ghost-without-a-ghostspeak-amulet",
+        "talking-to-any-mysterious-ghost-in-the-wrong-location",
+        "talking-to-valdez",
+        "talking-to-valdez-talking-to-valdez-again",
+        "talking-to-rennard",
+        "talking-to-rennard-talking-to-rennard-again",
+        "talking-to-kharrim",
+        "talking-to-kharrim-talking-to-kharrim-again",
+        "talking-to-lennissa",
+        "talking-to-lennissa-talking-to-lennissa-again",
+        "talking-to-dhalak",
+        "talking-to-dhalak-talking-to-dhalak-again",
+        "talking-to-viggora",
+        "talking-to-viggora-talking-to-viggora-again"
       ]
     }
   ],
@@ -38943,6 +39085,7 @@
       "page": "Transcript:Biohazard",
       "variants": [
         "getting-started-talking-to-elena",
+        "getting-started-talking-to-elena-again",
         "infiltrating-the-mourner-hq-talking-to-elena-without-the-distillator",
         "delivering-the-samples-talking-to-elena-with-the-distillator",
         "delivering-the-samples-talking-to-elena-again-before-visiting-the-chemist",
@@ -40380,7 +40523,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -46605,6 +46748,7 @@
         "witchaven-talking-to-mayor-hobb",
         "witchaven-talking-to-mayor-hobb-2",
         "witchaven-talking-to-mayor-hobb-again",
+        "the-pages-mayor-hobb-leaving-the-church",
         "the-imposing-door-opening-the-door-with-the-runes-and-commorb",
         "the-imposing-door-reentering-the-fight",
         "the-imposing-door-after-killing-the-slug-prince"
@@ -46618,6 +46762,7 @@
         "witchaven-talking-to-mayor-hobb",
         "witchaven-talking-to-mayor-hobb-2",
         "witchaven-talking-to-mayor-hobb-again",
+        "the-pages-mayor-hobb-leaving-the-church",
         "the-imposing-door-opening-the-door-with-the-runes-and-commorb",
         "the-imposing-door-reentering-the-fight",
         "the-imposing-door-after-killing-the-slug-prince"
@@ -46750,7 +46895,8 @@
       "variants": [
         "witchaven-talking-to-jeb",
         "witchaven-talking-to-jeb-after-holgart-says-to-ask-him-about-a-boat",
-        "witchaven-talking-to-jeb-at-the-fishing-platform"
+        "witchaven-talking-to-jeb-at-the-fishing-platform",
+        "witchaven-talking-to-jeb-before-holgart-mentions-the-boat"
       ]
     }
   ],
@@ -46768,7 +46914,8 @@
       "variants": [
         "witchaven-talking-to-jeb",
         "witchaven-talking-to-jeb-after-holgart-says-to-ask-him-about-a-boat",
-        "witchaven-talking-to-jeb-at-the-fishing-platform"
+        "witchaven-talking-to-jeb-at-the-fishing-platform",
+        "witchaven-talking-to-jeb-before-holgart-mentions-the-boat"
       ]
     }
   ],
@@ -47952,10 +48099,14 @@
       "page": "Transcript:The Slug Menace",
       "variants": [
         "starting-off-contact-with-commorb-v2",
+        "witchaven-savant-asking-to-scan-the-mayor",
+        "witchaven-scanning-the-mayor",
+        "witchaven-contacting-the-commorb-while-investigating-witchaven",
         "the-shrine-contacting-commorb-before-scanning-the-shrine",
         "the-shrine-scanning-the-commorb-near-the-door",
         "the-shrine-scanning-commorb-near-the-door",
         "the-shrine-contacting-the-commorb-after-scanning-the-doors",
+        "the-shrine-picking-up-the-dead-sea-slug",
         "the-pages-talking-to-jorral",
         "the-pages-after-talking-to-jorral",
         "the-pages-contacting-the-commorb-after-learning-about-mother-mallum",
@@ -50035,7 +50186,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -50250,7 +50401,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -50308,7 +50459,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -50366,7 +50517,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -50424,7 +50575,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -50482,7 +50633,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -52140,6 +52291,12 @@
         "standard-dialogue",
         "standard-dialogue-overhead-dialogue"
       ]
+    },
+    {
+      "page": "Transcript:Secret santa present",
+      "variants": [
+        "unlocking-black-talking-to-benny"
+      ]
     }
   ],
   "5217": [
@@ -52937,7 +53094,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -52995,7 +53152,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -53191,7 +53348,7 @@
       "variants": [
         "a-hole-in-the-wall-the-duke-s-adviser",
         "a-hole-in-the-wall-the-duke-s-adviser-talking-to-sigmund-again-after-starting-the-quest",
-        "a-hole-in-the-wall-asking-bob-talking-to-sigmund-after-talking-to-bob",
+        "a-hole-in-the-wall-talking-to-the-npc-who-saw-the-goblin-talking-to-sigmund-after-talking-to-who-saw-the-goblin",
         "a-hole-in-the-wall-convincing-horacio",
         "a-hole-in-the-wall-convincing-horacio-talking-to-sigmund-again",
         "a-hole-in-the-wall-opening-the-tunnel-talking-to-the-duke-after-opening-the-tunnel",
@@ -79578,6 +79735,7 @@
       "page": "Transcript:Biohazard",
       "variants": [
         "getting-started-talking-to-elena",
+        "getting-started-talking-to-elena-again",
         "infiltrating-the-mourner-hq-talking-to-elena-without-the-distillator",
         "delivering-the-samples-talking-to-elena-with-the-distillator",
         "delivering-the-samples-talking-to-elena-again-before-visiting-the-chemist",
@@ -79666,6 +79824,7 @@
       "page": "Transcript:Biohazard",
       "variants": [
         "getting-started-talking-to-elena",
+        "getting-started-talking-to-elena-again",
         "infiltrating-the-mourner-hq-talking-to-elena-without-the-distillator",
         "delivering-the-samples-talking-to-elena-with-the-distillator",
         "delivering-the-samples-talking-to-elena-again-before-visiting-the-chemist",
@@ -79754,6 +79913,7 @@
       "page": "Transcript:Biohazard",
       "variants": [
         "getting-started-talking-to-elena",
+        "getting-started-talking-to-elena-again",
         "infiltrating-the-mourner-hq-talking-to-elena-without-the-distillator",
         "delivering-the-samples-talking-to-elena-with-the-distillator",
         "delivering-the-samples-talking-to-elena-again-before-visiting-the-chemist",
@@ -79842,6 +80002,7 @@
       "page": "Transcript:Biohazard",
       "variants": [
         "getting-started-talking-to-elena",
+        "getting-started-talking-to-elena-again",
         "infiltrating-the-mourner-hq-talking-to-elena-without-the-distillator",
         "delivering-the-samples-talking-to-elena-with-the-distillator",
         "delivering-the-samples-talking-to-elena-again-before-visiting-the-chemist",
@@ -79930,6 +80091,7 @@
       "page": "Transcript:Biohazard",
       "variants": [
         "getting-started-talking-to-elena",
+        "getting-started-talking-to-elena-again",
         "infiltrating-the-mourner-hq-talking-to-elena-without-the-distillator",
         "delivering-the-samples-talking-to-elena-with-the-distillator",
         "delivering-the-samples-talking-to-elena-again-before-visiting-the-chemist",
@@ -80018,6 +80180,7 @@
       "page": "Transcript:Biohazard",
       "variants": [
         "getting-started-talking-to-elena",
+        "getting-started-talking-to-elena-again",
         "infiltrating-the-mourner-hq-talking-to-elena-without-the-distillator",
         "delivering-the-samples-talking-to-elena-with-the-distillator",
         "delivering-the-samples-talking-to-elena-again-before-visiting-the-chemist",
@@ -80106,6 +80269,7 @@
       "page": "Transcript:Biohazard",
       "variants": [
         "getting-started-talking-to-elena",
+        "getting-started-talking-to-elena-again",
         "infiltrating-the-mourner-hq-talking-to-elena-without-the-distillator",
         "delivering-the-samples-talking-to-elena-with-the-distillator",
         "delivering-the-samples-talking-to-elena-again-before-visiting-the-chemist",
@@ -81139,6 +81303,7 @@
       "page": "Transcript:Biohazard",
       "variants": [
         "getting-started-talking-to-elena",
+        "getting-started-talking-to-elena-again",
         "infiltrating-the-mourner-hq-talking-to-elena-without-the-distillator",
         "delivering-the-samples-talking-to-elena-with-the-distillator",
         "delivering-the-samples-talking-to-elena-again-before-visiting-the-chemist",
@@ -84436,6 +84601,7 @@
       "page": "Transcript:Biohazard",
       "variants": [
         "getting-started-talking-to-elena",
+        "getting-started-talking-to-elena-again",
         "infiltrating-the-mourner-hq-talking-to-elena-without-the-distillator",
         "delivering-the-samples-talking-to-elena-with-the-distillator",
         "delivering-the-samples-talking-to-elena-again-before-visiting-the-chemist",
@@ -91485,7 +91651,8 @@
         "spooky-wall-lamp-talking-to-death",
         "spooky-wall-lamp-talking-to-death-after-finishing-the-quiz",
         "spooky-wall-lamp-talking-to-death-again-after-receiving-the-lamp-for-the-first-time",
-        "the-spook-a-thon-contest"
+        "the-spook-a-thon-contest",
+        "the-spook-a-thon-contest-talking-to-fred-again-before-finishing-the-cutscene"
       ]
     }
   ],
@@ -93308,10 +93475,15 @@
       ]
     },
     {
+      "page": "Transcript:Secret santa present",
+      "variants": [
+        "unlocking-blue-talking-to-bob"
+      ]
+    },
+    {
       "page": "Transcript:The Lost Tribe",
       "variants": [
-        "a-hole-in-the-wall-asking-bob",
-        "a-hole-in-the-wall-asking-bob-talking-to-bob-again"
+        "a-hole-in-the-wall-asking-bob"
       ]
     }
   ],
@@ -129635,6 +129807,12 @@
       "variants": [
         "interacting-with-archibald"
       ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
+      ]
     }
   ],
   "15587": [
@@ -129643,6 +129821,12 @@
       "variants": [
         "interacting-with-archibald"
       ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
+      ]
     }
   ],
   "15588": [
@@ -129650,6 +129834,12 @@
       "page": "Transcript:Archibald",
       "variants": [
         "interacting-with-archibald"
+      ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
       ]
     },
     {
@@ -129665,6 +129855,12 @@
       "variants": [
         "interacting-with-archibald"
       ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
+      ]
     }
   ],
   "15591": [
@@ -129672,6 +129868,12 @@
       "page": "Transcript:Archibald",
       "variants": [
         "interacting-with-archibald"
+      ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
       ]
     }
   ],
@@ -129681,6 +129883,12 @@
       "variants": [
         "interacting-with-archibald"
       ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
+      ]
     }
   ],
   "15593": [
@@ -129688,6 +129896,12 @@
       "page": "Transcript:Archibald",
       "variants": [
         "interacting-with-archibald"
+      ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
       ]
     }
   ],
@@ -129697,6 +129911,12 @@
       "variants": [
         "interacting-with-archibald"
       ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
+      ]
     }
   ],
   "15595": [
@@ -129704,6 +129924,12 @@
       "page": "Transcript:Archibald",
       "variants": [
         "interacting-with-archibald"
+      ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
       ]
     }
   ],
@@ -129713,6 +129939,12 @@
       "variants": [
         "interacting-with-archibald"
       ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
+      ]
     }
   ],
   "15597": [
@@ -129720,6 +129952,12 @@
       "page": "Transcript:Archibald",
       "variants": [
         "interacting-with-archibald"
+      ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
       ]
     }
   ],
@@ -129729,6 +129967,12 @@
       "variants": [
         "interacting-with-archibald"
       ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
+      ]
     }
   ],
   "15599": [
@@ -129737,6 +129981,12 @@
       "variants": [
         "interacting-with-archibald"
       ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
+      ]
     }
   ],
   "15600": [
@@ -129744,6 +129994,12 @@
       "page": "Transcript:Archibald",
       "variants": [
         "interacting-with-archibald"
+      ]
+    },
+    {
+      "page": "Transcript:2026 Easter event",
+      "variants": [
+        "the-hunt-for-archibald-talking-to-the-easter-bunny-with-archibald-in-your-inventory"
       ]
     }
   ],

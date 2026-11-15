@@ -3,6 +3,13 @@ import type { HitDamage } from "./hit/HitDamage";
 import type { CombatType } from "./CombatType";
 
 export type HitModifier = (entity: Mobile, baseHit: number) => number;
+/** Magic damage bonus in permille; `spell` is the spell whose max hit is being worked out, if any. */
+export type MagicDamageBonusModifier = (entity: Mobile, permille: number, spell?: unknown) => number;
+/**
+ * Percentage points the Wiki DPS calculator adds together before they scale the magic attack
+ * roll once (salve amulet (i)/(ei), smoke staves); `spell` is the spell being cast, if any.
+ */
+export type MagicAccuracyPercentModifier = (entity: Mobile, percent: number, spell?: unknown) => number;
 export interface CombatEffectiveLevelContext {
   combatType: CombatType;
   purpose: "accuracy" | "damage";
@@ -10,8 +17,17 @@ export interface CombatEffectiveLevelContext {
 export type CombatEffectiveLevelModifier = (entity: Mobile, level: number, context: CombatEffectiveLevelContext) => number;
 export type MeleeStrengthPercentModifier = (entity: Mobile, percent: number) => number;
 export type MeleeStrengthBonusModifier = (entity: Mobile, strengthBonus: number) => number;
-export type RunEnergyRestoreModifier = (entity: Mobile, delayMs: number) => number;
+/** Returns the energy units regained this tick (graceful raises them). */
+export type RunEnergyRestoreModifier = (entity: Mobile, units: number) => number;
 export type RunEnergyDrainModifier = (entity: Mobile, amount: number) => number;
+/** Fills in the run-energy status the client needs beyond the energy value itself. */
+export type RunEnergyStatusModifier = (entity: Mobile, status: RunEnergyStatus) => void;
+export interface RunEnergyStatus {
+    /** Ticks of stamina effect left, 0 when none. */
+    staminaTicks: number;
+    /** 1 while the stamina potion's effect is active (the client marks it active). */
+    staminaMultiplier: number;
+}
 export type SpecialEnergyRestoreModifier = (entity: Mobile, delayTicks: number) => number;
 export type SpecialEnergyCostModifier = (entity: Mobile, cost: number) => number;
 export interface IncomingDamageContext {
@@ -35,7 +51,8 @@ const meleeStrengthPercentModifiers: MeleeStrengthPercentModifier[] = [];
 const meleeStrengthBonusModifiers: MeleeStrengthBonusModifier[] = [];
 const rangedHitModifiers: HitModifier[] = [];
 const magicHitModifiers: HitModifier[] = [];
-const magicDamageBonusModifiers: HitModifier[] = [];
+const magicDamageBonusModifiers: MagicDamageBonusModifier[] = [];
+const magicAccuracyPercentModifiers: MagicAccuracyPercentModifier[] = [];
 const meleeAttackAccuracyModifiers: HitModifier[] = [];
 const meleeDefenseModifiers: HitModifier[] = [];
 const rangedAttackAccuracyModifiers: HitModifier[] = [];
@@ -44,11 +61,39 @@ const magicAttackAccuracyModifiers: HitModifier[] = [];
 const magicDefenseModifiers: HitModifier[] = [];
 const runEnergyRestoreModifiers: RunEnergyRestoreModifier[] = [];
 const runEnergyDrainModifiers: RunEnergyDrainModifier[] = [];
+const runEnergyStatusModifiers: RunEnergyStatusModifier[] = [];
 const specialEnergyRestoreModifiers: SpecialEnergyRestoreModifier[] = [];
 const specialEnergyCostModifiers: SpecialEnergyCostModifier[] = [];
 const incomingDamageModifiers: IncomingDamageModifier[] = [];
 const prayerDrainModifiers: PrayerDrainModifier[] = [];
 const prayerDrainRateModifiers: PrayerDrainRateModifier[] = [];
+
+let hitVictimScope: { attacker: Mobile; victim: Mobile } | null = null;
+
+/**
+ * Runs `build` with `victim` as the target of `attacker`'s hit, so target-sensitive modifiers see the
+ * real victim of an area hit (Dinh's bulwark sweep) and not the attacker's primary combat target.
+ */
+export function withHitVictim<T>(attacker: Mobile, victim: Mobile | null | undefined, build: () => T): T {
+  if (!victim) return build();
+  const previous = hitVictimScope;
+  hitVictimScope = { attacker, victim };
+  try {
+    return build();
+  } finally {
+    hitVictimScope = previous;
+  }
+}
+
+/** The victim of the hit being computed for `attacker`, or null outside a hit (use the combat target then). */
+export function hitVictimOf(attacker: Mobile): Mobile | null {
+  return hitVictimScope?.attacker === attacker ? hitVictimScope.victim : null;
+}
+
+/** Who `attacker`'s hit is judged against: the victim of the hit being computed, else its combat target. */
+export function hitTargetOf(attacker: Mobile): Mobile | null {
+  return hitVictimOf(attacker) ?? attacker?.getCombat?.()?.getTarget?.() ?? null;
+}
 
 const applyModifiers = (modifiers: HitModifier[], entity: Mobile, baseHit: number): number =>
   modifiers.reduce((damage, modifier) => {
@@ -115,8 +160,16 @@ export function registerMagicHitModifier(modifier: HitModifier): void {
   registerModifier(magicHitModifiers, modifier);
 }
 
-export function registerMagicDamageBonusModifier(modifier: HitModifier): void {
-  registerModifier(magicDamageBonusModifiers, modifier);
+export function registerMagicDamageBonusModifier(modifier: MagicDamageBonusModifier): void {
+  if (typeof modifier === "function") {
+    magicDamageBonusModifiers.push(modifier);
+  }
+}
+
+export function registerMagicAccuracyPercentModifier(modifier: MagicAccuracyPercentModifier): void {
+  if (typeof modifier === "function") {
+    magicAccuracyPercentModifiers.push(modifier);
+  }
 }
 
 export function registerMeleeAttackAccuracyModifier(modifier: HitModifier): void {
@@ -153,6 +206,12 @@ export function registerRunEnergyRestoreModifier(modifier: RunEnergyRestoreModif
 export function registerRunEnergyDrainModifier(modifier: RunEnergyDrainModifier): void {
   if (typeof modifier === "function") {
     runEnergyDrainModifiers.push(modifier);
+  }
+}
+
+export function registerRunEnergyStatusModifier(modifier: RunEnergyStatusModifier): void {
+  if (typeof modifier === "function") {
+    runEnergyStatusModifiers.push(modifier);
   }
 }
 
@@ -201,8 +260,19 @@ export function applyMagicHitModifiers(entity: Mobile, baseHit: number): number 
 }
 
 /** The magic damage bonus in permille, after effects that add to it. */
-export function applyMagicDamageBonusModifiers(entity: Mobile, permille: number): number {
-  return applyModifiers(magicDamageBonusModifiers, entity, permille);
+export function applyMagicDamageBonusModifiers(entity: Mobile, permille: number, spell?: unknown): number {
+  return magicDamageBonusModifiers.reduce((value, modifier) => {
+    const next = modifier(entity, value, spell);
+    return Number.isFinite(next) ? next : value;
+  }, permille);
+}
+
+/** The additive magic accuracy percentage for this cast (0 when nothing adds to it). */
+export function applyMagicAccuracyPercentModifiers(entity: Mobile, spell?: unknown): number {
+  return magicAccuracyPercentModifiers.reduce((value, modifier) => {
+    const next = modifier(entity, value, spell);
+    return Number.isFinite(next) ? next : value;
+  }, 0);
 }
 
 export function applyMeleeAttackAccuracyModifiers(entity: Mobile, value: number): number {
@@ -229,15 +299,23 @@ export function applyMagicDefenseModifiers(entity: Mobile, value: number): numbe
   return applyModifiers(magicDefenseModifiers, entity, value);
 }
 
-/** Milliseconds between run-energy points; modifiers divide by the restore-rate bonus. */
-export function applyRunEnergyRestoreModifiers(entity: Mobile, delayMs: number): number {
-  return runEnergyRestoreModifiers.reduce((delay, modifier) => {
-    const next = modifier(entity, delay);
-    return Number.isFinite(next) && next > 0 ? next : delay;
-  }, delayMs);
+/** Energy units regained per tick, after restore-rate modifiers (the graceful set raises it). */
+export function applyRunEnergyRestoreModifiers(entity: Mobile, units: number): number {
+  return runEnergyRestoreModifiers.reduce((value, modifier) => {
+    const next = modifier(entity, value);
+    return Number.isFinite(next) && next >= 0 ? next : value;
+  }, units);
 }
 
-/** Run energy spent for a movement step, after drain modifiers (the endurance ring skips 15%). */
+/** Run-energy status besides the value itself (the stamina effect's remaining time). */
+export function applyRunEnergyStatusModifiers(entity: Mobile, status: RunEnergyStatus): RunEnergyStatus {
+  for (const modifier of runEnergyStatusModifiers) {
+    modifier(entity, status);
+  }
+  return status;
+}
+
+/** Run energy spent for one running tick, after drain modifiers (the endurance ring scales it to 85%). */
 export function applyRunEnergyDrainModifiers(entity: Mobile, amount: number): number {
   return runEnergyDrainModifiers.reduce((value, modifier) => {
     const next = modifier(entity, value);

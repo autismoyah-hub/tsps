@@ -5,6 +5,7 @@ import { PlayerStatus } from "../../PlayerStatus";
 import { ItemDefinition } from "../../../definition/ItemDefinition";
 import { StackType, MAX_STACK_AMOUNT } from "../StackType";
 import { Equipment } from "./Equipment";
+import { getWorldDefinition } from "../../../definition/WorldDefinition";
 import { GameConstants } from "../../../GameConstants";
 import { WeaponInterfaceManager } from "../../../content/combat/WeaponInterfaceManager";
 import { Inventory } from "./Inventory";
@@ -13,13 +14,30 @@ import { BonusManager } from "../../equipment/BonusManager";
 import { EnteredSyntaxAction } from "../../EnteredSyntaxAction";
 import { Sound } from "../../../Sound";
 import { Sounds } from "../../../Sounds";
+import { ChatType } from "../../../../net/protocol/ClientProtocol";
+import { examineItem } from "../../../content/ExaminePrice";
 const getPluginManager = () =>
     require("../../../../plugins/PluginManager").PluginManager as typeof import("../../../../plugins/PluginManager").PluginManager;
 
 /** Live OSRS's wording (rsprox recordings 454, 3066, 4151, 3467, 1059). */
+// Both are spam on bank clicks in every recording (e.g. 224/01463.txt:7863, 231/03063.txt:9533); shops send the first as a game message.
 const INVENTORY_FULL_MESSAGE = "You don't have enough inventory space.";
 const WITHDRAW_PARTIAL_MESSAGE = "You don't have enough inventory space to withdraw that many.";
 const NEW_TAB_MESSAGE = "To create a new tab, drag items from your bank onto this tab.";
+
+type BankDragPacket = {
+    sourceWidgetId: number; sourceSlot: number; sourceItemId: number;
+    targetWidgetId: number; targetSlot: number;
+};
+
+type BankWidgetPacket = {
+    groupId: number;
+    childId: number;
+    buttonNum: number;
+    option?: string;
+    slot?: number;
+    itemId?: number;
+};
 
 export class Bank extends ItemContainer {
     full(): ItemContainer {
@@ -82,6 +100,35 @@ export class Bank extends ItemContainer {
     public static readonly WITHDRAWN_ITEMS_EVENT = "bank:withdrawn-items";
     /** `{ player }` after the open bank redraws its items and the side panel's inventory. */
     public static readonly REFRESHED_EVENT = "bank:refreshed";
+    public static readonly PLACEHOLDER_IDENTITY_EVENT = "bank:placeholder-identity";
+
+    public static placeholderIdentity(itemId: number): { placeholderId: number; itemIds: number[] } | null {
+        if (!Number.isInteger(itemId) || itemId < 0) return null;
+        const event = { itemId, placeholderId: -1, itemIds: [] as number[] };
+        getPluginManager().emitCustomEvent(Bank.PLACEHOLDER_IDENTITY_EVENT, event);
+        if (!Number.isInteger(event.placeholderId) || event.placeholderId < 0) return null;
+        const ids = [...new Set([event.itemId, event.placeholderId, ...(Array.isArray(event.itemIds) ? event.itemIds : [])])]
+            .filter((id) => Number.isInteger(id) && id >= 0);
+        return { placeholderId: event.placeholderId, itemIds: ids };
+    }
+
+    public static placeholderFamily(itemId: number): number[] {
+        return Bank.placeholderIdentity(itemId)?.itemIds ?? [itemId];
+    }
+
+    public static sharesPlaceholder(a: number, b: number): boolean {
+        if (a === b) return true;
+        if (a < 0 || b < 0) return false;
+        return Bank.placeholderFamily(a).includes(b);
+    }
+
+    public static placeholderBankId(itemId: number): number {
+        if (!Number.isInteger(itemId) || itemId < 0) return -1;
+        if (ItemDefinition.forId(itemId).getPlaceholderId() >= 0) return itemId;
+        const identity = Bank.placeholderIdentity(itemId);
+        if (!identity) return -1;
+        return ItemDefinition.forId(identity.placeholderId).getPlaceholderId() >= 0 ? identity.placeholderId : -1;
+    }
 
     /** Ends the client's bank search, as OSRS does on closing the bank or picking a tab. */
     public static closeSearch(player: Player): void {
@@ -89,7 +136,11 @@ export class Bank extends ItemContainer {
     }
     public static readonly ITEMS_CHILD = 12;
     public static readonly SIDE_ITEMS_CHILD = 3;
-    /** bankside:wornops, the worn items shown in place of the inventory; op 1 banks the item. */
+    /**
+     * bankside:wornops, the "Show worn items" view of the backpack (inv 93): the cache's bankside_build draws it from
+     * the inventory and bankside_worn_drawitem gives each item its own Wear/Wield as op 1, Deposit as op 9 and
+     * Examine as op 10, so gear can be put on without closing the bank (Wiki: Bank).
+     */
     public static readonly SIDE_WORN_CHILD = 4;
     /** Its slots as live enables them (rsprox, rev 241): ops 1, 9 and 10, DEPTH1 and DRAGTARGET. */
     public static readonly SIDE_WORN_FLAGS = (1 << 1) | (1 << 9) | (1 << 10) | (1 << 17) | (1 << 20);
@@ -104,8 +155,22 @@ export class Bank extends ItemContainer {
     /** bank_requestedquantity: the remembered X amount. */
     public static readonly REQUESTED_QUANTITY_VARBIT = 3960;
     public static readonly PLACEHOLDER_CHILD = 40; // bankmain:placeholder
+    public static readonly DEPOSIT_CONTAINERS_CHILD = 45; // bankmain:depositcontainers
     public static readonly DEPOSIT_INVENTORY_CHILD = 47; // bankmain:depositinv
     public static readonly DEPOSIT_WORN_CHILD = 49; // bankmain:depositworn
+    /**
+     * bankmain:wornslot0..wornslot13 (12:68-78), the worn-equipment panel, in enum 2777's slot order. The cache's
+     * wear_updateslot (script 546) gives each op 1 Remove (ClientConnection's equipment route), op 2 Bank and
+     * op 10 Examine (rsprox_transcripts/239/04254.txt: op 10 answers with examine_item).
+     */
+    public static readonly WORN_SLOT_FIRST_CHILD = 68;
+    public static readonly WORN_SLOT_LAST_CHILD = 78;
+    public static readonly WORN_SLOT_BANK_OP = 2;
+    public static readonly WORN_SLOT_EXAMINE_OP = 10;
+    /** bankmain:incinerator_target (0x36), a drop target that destroys the dragged bank stack. */
+    public static readonly INCINERATOR_CHILD = 54;
+    /** `{ player, item, tab, slot, handled }`: a bank stack dropped on the incinerator. */
+    public static readonly INCINERATE_EVENT = "bank:incinerate";
     /** Drops on the empty space after tab N's items report item-grid slot 1428 + N. */
     public static readonly TAB_DROP_SLOT_OFFSET = 1410 + 9 * 2;
     /**
@@ -193,13 +258,14 @@ export class Bank extends ItemContainer {
         return Math.min(super.getFreeSlots() + Bank.MAX_SLOTS - this.items.length, this.roomLeft());
     }
 
-    /** Banked items always stack: a full bank still takes more of an item it holds (same metadata). */
+    /** A full bank accepts reserved placeholders or live stacks with matching metadata. */
     public canTake(item: Item): boolean {
         if (this.getFreeSlots() > 0) return true;
         const id = ItemDefinition.forId(item.getId()).unNote();
         const meta = JSON.stringify(item.getMeta() ?? null);
-        return this.items.some((held) => held != null && held.getId() === id
-            && JSON.stringify(held.getMeta() ?? null) === meta);
+        return this.items.some((held) => held != null && (
+            (held.getId() === id && (held.getAmount() === 0 || JSON.stringify(held.getMeta() ?? null) === meta))
+            || (held.getAmount() === 0 && Bank.sharesPlaceholder(held.getId(), id))));
     }
 
     public isEmpty(): boolean {
@@ -359,10 +425,12 @@ export class Bank extends ItemContainer {
     /**
      * Moves up to `amount` of the inventory item in `slot` into `bank`, each
      * item as itself so it keeps its metadata (charges, contents). A stack
-     * moves from the clicked slot only; unstackable items start there and
-     * continue through the other bankable slots holding the same item.
+     * moves from the clicked slot only. Unstackable items go from the first
+     * (top-left) bankable slot holding the same item onward, wherever the
+     * click landed, as in OSRS; a dragged item (`fromClickedSlot`) starts at
+     * the slot it was dragged from.
      */
-    private static depositFromSlots(player: Player, bank: Bank, slot: number, amount: number) {
+    private static depositFromSlots(player: Player, bank: Bank, slot: number, amount: number, fromClickedSlot = false) {
         const inventory = player.getInventory();
         const clicked = inventory.getItems()[slot];
         if (clicked.getDefinition().isStackable()) {
@@ -370,7 +438,8 @@ export class Bank extends ItemContainer {
             return;
         }
         const id = clicked.getId();
-        const slots = [slot, ...inventory.getItems().map((_, index) => index).filter((index) => index !== slot)];
+        const indexes = inventory.getItems().map((_, index) => index);
+        const slots = fromClickedSlot ? [slot, ...indexes.filter((index) => index !== slot)] : indexes;
         let moved = 0;
         for (const index of slots) {
             if (moved >= amount) break;
@@ -467,7 +536,10 @@ export class Bank extends ItemContainer {
     public static displayItemId(item: Item): number {
         if (item.getAmount() > 0) return item.getId();
         const placeholderId = item.getDefinition().getPlaceholderId();
-        return placeholderId >= 0 ? placeholderId : item.getId();
+        if (placeholderId >= 0) return placeholderId;
+        const bankId = Bank.placeholderBankId(item.getId());
+        const familyPlaceholder = bankId >= 0 ? ItemDefinition.forId(bankId).getPlaceholderId() : -1;
+        return familyPlaceholder >= 0 ? familyPlaceholder : item.getId();
     }
 
     /** Removes the placeholder in `slot` of `tab`. */
@@ -491,7 +563,10 @@ export class Bank extends ItemContainer {
         player.getBank(tab).refreshItems();
     }
 
-    /** Moves every item in `tab` (placeholders included) into the main tab. */
+    /**
+     * Moves every item in `tab` (placeholders included) into the main tab. Each keeps its own slot, as a
+     * dragged item does (bank fillers stay one per slot); an item whose placeholder is in the main tab fills it.
+     */
     public static collapseTab(player: Player, tab: number): void {
         if (tab <= 0 || tab > Bank.getTabCount(player)) return;
         const items = player.getBank(tab).getValidItems();
@@ -499,9 +574,12 @@ export class Bank extends ItemContainer {
             player.sendMessage("You don't have enough free slots in your main tab to do that.");
             return;
         }
+        // Gaps left by released placeholders are closed first, so the items join after the last one.
+        const main = player.getBank(0).sortItems();
         Bank.withoutLimit(player, () => {
             for (const item of items) {
-                player.getBank(0).add(item.clone(), false);
+                if (Bank.hasPlaceholderFor(main, item)) main.add(item.clone(), false);
+                else main.setItem(Bank.endSlot(main), item.clone());
             }
         });
         player.getBank(tab).resetItems();
@@ -511,6 +589,12 @@ export class Bank extends ItemContainer {
         }
         player.getBank(0).refreshItems();
         GameConstants.PLAYER_PERSISTENCE.requestSave(player, "bank-tab-collapse");
+    }
+
+    /** Whether `bank` holds a placeholder that `item` (a real stack) would fill. */
+    private static hasPlaceholderFor(bank: Bank, item: Item): boolean {
+        return item.getAmount() > 0 && bank.getItems().some((held) => held != null && held.getId() >= 0
+            && held.getAmount() === 0 && Bank.sharesPlaceholder(held.getId(), item.getId()));
     }
 
     /** Removes the placeholders in `tab`, or in every tab for "all items" (0). */
@@ -532,15 +616,35 @@ export class Bank extends ItemContainer {
      * Handles a drag (IF_BUTTOND) within the bank or its inventory panel.
      * Returns false for drags the bank doesn't own.
      */
-    public static handleDrag(player: Player, drag: {
-        sourceWidgetId: number; sourceSlot: number; sourceItemId: number;
-        targetWidgetId: number; targetSlot: number;
-    }): boolean {
+    public static handleDrag(player: Player, drag: BankDragPacket): boolean {
+        return Bank.abortingPrompt(player, () => Bank.dragBankWidget(player, drag));
+    }
+
+    private static dragBankWidget(player: Player, drag: BankDragPacket): boolean {
         const sourceGroup = drag.sourceWidgetId >>> 16, sourceChild = drag.sourceWidgetId & 0xffff;
         const targetGroup = drag.targetWidgetId >>> 16, targetChild = drag.targetWidgetId & 0xffff;
         const fromBank = sourceGroup === Bank.MAIN_INTERFACE_ID && sourceChild === Bank.ITEMS_CHILD;
         const fromInventory = sourceGroup === Bank.SIDE_INTERFACE_ID && sourceChild === Bank.SIDE_ITEMS_CHILD;
-        if (!(fromBank || fromInventory) || !Bank.isOpen(player)) return false;
+        const fromTab = sourceGroup === Bank.MAIN_INTERFACE_ID && sourceChild === Bank.TABS_CHILD;
+        if (!(fromBank || fromInventory || fromTab) || !Bank.isOpen(player)) return false;
+
+        if (fromTab) {
+            const from = drag.sourceSlot - Bank.TAB_BUTTON_SLOT_OFFSET;
+            const to = drag.targetSlot - Bank.TAB_BUTTON_SLOT_OFFSET;
+            const count = Bank.getTabCount(player);
+            // Cache script 512 accepts populated custom tabs only, not the main or new-tab slots.
+            if (targetGroup !== Bank.MAIN_INTERFACE_ID || targetChild !== Bank.TABS_CHILD
+                || !Number.isInteger(from) || !Number.isInteger(to)
+                || from < 1 || to < 1 || from > count || to > count || from === to) return true;
+            const source = player.getBank(from);
+            player.setBank(from, player.getBank(to));
+            player.setBank(to, source);
+            const viewed = player.getCurrentBankTab();
+            if (viewed === from || viewed === to) Bank.viewTab(player, viewed === from ? to : from);
+            else player.getBank(0).refreshItems();
+            GameConstants.PLAYER_PERSISTENCE.requestSave(player, "bank-tab-reorder");
+            return true;
+        }
 
         let tab: number | undefined;
         if (targetGroup === Bank.MAIN_INTERFACE_ID && targetChild === Bank.TABS_CHILD) {
@@ -551,8 +655,24 @@ export class Bank extends ItemContainer {
         }
         if (tab !== undefined && (tab < 0 || tab > 9)) return true;
 
+        if (targetGroup === Bank.MAIN_INTERFACE_ID && targetChild === Bank.INCINERATOR_CHILD) {
+            // The incinerator destroys bank stacks only. A dragged inventory item must not fall
+            // through to the deposit branch and disappear into the bank instead.
+            if (fromBank) Bank.incinerateDragged(player, drag.sourceSlot, drag.sourceItemId);
+            return true;
+        }
+
         if (fromInventory && targetGroup === Bank.SIDE_INTERFACE_ID && targetChild === Bank.SIDE_ITEMS_CHILD) {
-            player.getInventory().swap(drag.sourceSlot, drag.targetSlot).refreshItems();
+            const inventory = player.getInventory();
+            // Both slots inside the backpack, as SwitchItemSlotPacketListener checks: the client's target is a
+            // 16-bit slot, and a swap past capacity() left the item outside the inventory and an empty slot behind.
+            const capacity = inventory.capacity();
+            if (!Number.isInteger(drag.sourceSlot) || !Number.isInteger(drag.targetSlot)
+                || drag.sourceSlot < 0 || drag.targetSlot < 0 || drag.sourceSlot >= capacity || drag.targetSlot >= capacity) return true;
+            // Legacy slot-only requests omit the ID or use a negative/16-bit sentinel.
+            if (drag.sourceItemId != null && drag.sourceItemId >= 0 && drag.sourceItemId !== 0xffff
+                && inventory.getItems()[drag.sourceSlot]?.getId() !== drag.sourceItemId) return true;
+            inventory.swap(drag.sourceSlot, drag.targetSlot).refreshItems();
         } else if (fromInventory && targetGroup === Bank.MAIN_INTERFACE_ID) {
             Bank.depositDragged(player, drag.sourceSlot, drag.sourceItemId, tab);
         } else if (fromBank && tab !== undefined) {
@@ -564,8 +684,32 @@ export class Bank extends ItemContainer {
         return true;
     }
 
+    /** Publishes the bank stack a drag released on the incinerator for the destroy confirmation. */
+    private static incinerateDragged(player: Player, clientSlot: number, itemId: number): void {
+        let entry: { tab: number; slot: number; item: Item } | undefined;
+        if (player.isSearchingBank()) {
+            // Search results are their own display list, not the bank layout: find the actual
+            // stack whose identity the displayed result cloned. Aggregated/ambiguous results
+            // stay unresolved rather than guessing a slot.
+            const searched = player.getBank(Bank.BANK_SEARCH_TAB_INDEX).getItems()[clientSlot];
+            if (!searched || searched.getId() !== itemId || searched.getAmount() <= 0) return;
+            entry = Bank.layout(player).find(({ item }) => item.equals(searched));
+        } else {
+            entry = Bank.resolveDisplaySlot(player, clientSlot) ?? undefined;
+            if (!entry || Bank.displayItemId(entry.item) !== itemId || entry.item.getAmount() <= 0) return;
+        }
+        if (!entry) return;
+        getPluginManager().emitCustomEvent(Bank.INCINERATE_EVENT, {
+            player,
+            item: entry.item,
+            tab: entry.tab,
+            slot: entry.slot,
+            handled: false,
+        });
+    }
+
     /** The slot after `bank`'s last item, where a moved item joins the tab; -1 if full. */
-    private static endSlot(bank: Bank): number {
+    public static endSlot(bank: Bank): number {
         const items = bank.getItems();
         let last = -1;
         items.forEach((item, slot) => {
@@ -593,7 +737,7 @@ export class Bank extends ItemContainer {
         if (target === undefined) {
             target = tab === undefined ? Bank.getTabForItem(player, itemId) : Bank.dropTab(player, tab);
         }
-        Bank.depositFromSlots(player, player.getBank(target), slot, item.getDefinition().isStackable() ? item.getAmount() : 1);
+        Bank.depositFromSlots(player, player.getBank(target), slot, item.getDefinition().isStackable() ? item.getAmount() : 1, true);
         player.getBank(target).refreshItems();
         player.getInventory().refreshItems();
     }
@@ -742,14 +886,25 @@ export class Bank extends ItemContainer {
         EquipPacketListener.equip(player, itemId, slot, Inventory.INTERFACE_ID);
     }
 
-    public static handleWidgetAction(player: Player, packet: {
-        groupId: number;
-        childId: number;
-        buttonNum: number;
-        option?: string;
-        slot?: number;
-        itemId?: number;
-    }): boolean {
+    public static handleWidgetAction(player: Player, packet: BankWidgetPacket): boolean {
+        return Bank.abortingPrompt(player, () => Bank.handleBankWidget(player, packet));
+    }
+
+    /**
+     * Captures (rsprox_transcripts/235/00960.txt cycle 4244, a click; 237/04064.txt line 15732, a
+     * drag): another bank op with the "Enter amount:" prompt still open runs, then the server aborts
+     * the prompt. An op that asks for an amount again replaces it instead.
+     */
+    private static abortingPrompt(player: Player, op: () => boolean): boolean {
+        const pending = player.getEnteredAmountAction?.();
+        const handled = op();
+        if (handled && pending && player.getEnteredAmountAction?.() === pending) {
+            player.getPacketSender().abortInputPrompt();
+        }
+        return handled;
+    }
+
+    private static handleBankWidget(player: Player, packet: BankWidgetPacket): boolean {
         if (!Bank.isOpen(player)) return false;
 
         // Capture (bank search): picking a tab heading switches to that tab and ends the search.
@@ -764,8 +919,7 @@ export class Bank extends ItemContainer {
             const entry = Bank.resolveDisplaySlot(player, packet.slot);
             if (!entry || (packet.itemId != null && packet.itemId !== Bank.displayItemId(entry.item))) return true;
             if (packet.buttonNum === Bank.EXAMINE_OP) {
-                const definition = ItemDefinition.forId(entry.item.getId());
-                player.sendMessage(definition.getExamine() || definition.getName());
+                examineItem(player, entry.item.getId(), entry.item.getAmount());
                 return true;
             }
             if (entry.item.getAmount() === 0) {
@@ -794,11 +948,17 @@ export class Bank extends ItemContainer {
             return true;
         }
 
-        // The worn items view: the slot is the item's place in the list, so the item names it.
-        if (packet.groupId === Bank.SIDE_INTERFACE_ID && packet.childId === Bank.SIDE_WORN_CHILD
-            && packet.buttonNum === 1 && packet.itemId != null) {
-            const itemId = packet.itemId;
-            Bank.depositItems(player, player.getEquipment(), false, (item) => item.getId() === itemId);
+        // The worn items view lists the backpack: its slot is the inventory slot.
+        if (packet.groupId === Bank.SIDE_INTERFACE_ID && packet.childId === Bank.SIDE_WORN_CHILD && packet.slot != null) {
+            const item = player.getInventory().getItems()[packet.slot];
+            if (!item || item.getId() < 0 || (packet.itemId != null && packet.itemId !== item.getId())) return true;
+            if (packet.buttonNum === 1) {
+                Bank.equipFromSide(player, item.getId(), packet.slot);
+            } else if (packet.buttonNum === 9) {
+                Bank.deposits(player, item.getId(), packet.slot, item.getAmount());
+            } else if (packet.buttonNum === 10) {
+                examineItem(player, item.getId(), item.getAmount());
+            }
             return true;
         }
 
@@ -845,10 +1005,18 @@ export class Bank extends ItemContainer {
         // Capture: Search switches to the main tab (the client runs the search itself).
         if (packet.groupId === Bank.MAIN_INTERFACE_ID && packet.childId === Bank.SEARCH_CHILD) {
             if (player.getCurrentBankTab() !== 0) Bank.viewTab(player, 0);
+            // The search box the client just opened replaced the count prompt; an abort would close
+            // it (script 138 closes meslayer mode 11). No recording shows Search under the prompt,
+            // so its answer is only dropped here.
+            player.setEnteredAmountAction(null);
             return true;
         }
 
         if (packet.groupId !== Bank.MAIN_INTERFACE_ID) return false;
+        if (packet.childId >= Bank.WORN_SLOT_FIRST_CHILD && packet.childId <= Bank.WORN_SLOT_LAST_CHILD) {
+            Bank.wornSlotAction(player, packet.childId, packet.buttonNum);
+            return true;
+        }
         const sender = player.getPacketSender();
         if (packet.childId === Bank.FRAME_CHILD) sender.sendInterfaceRemoval();
         else if (packet.childId === Bank.SWAP_INSERT_CHILD) {
@@ -866,10 +1034,23 @@ export class Bank extends ItemContainer {
         } else if (packet.childId === Bank.PLACEHOLDER_CHILD) {
             player.setPlaceholders(!player.isPlaceholders());
             sender.sendVarbit(3755, player.isPlaceholders() ? 1 : 0);
+        } else if (packet.childId === Bank.DEPOSIT_CONTAINERS_CHILD) {
+            getPluginManager().emitCustomEvent("bank:empty-containers", { player });
         } else if (packet.childId === Bank.DEPOSIT_INVENTORY_CHILD) Bank.depositItems(player, player.getInventory(), false);
         else if (packet.childId === Bank.DEPOSIT_WORN_CHILD) Bank.depositItems(player, player.getEquipment(), false);
         else return false;
         return true;
+    }
+
+    /** Op 2 banks just that worn item (as Deposit worn items does for all); op 10 examines it. */
+    private static wornSlotAction(player: Player, childId: number, op: number): void {
+        const { EquipPacketListener } = require("../../../../net/packet/impl/EquipPacketListener") as
+            typeof import("../../../../net/packet/impl/EquipPacketListener");
+        const slot = EquipPacketListener.resolveEquipmentSlot(Bank.MAIN_INTERFACE_ID, childId);
+        const item = slot >= 0 ? player.getEquipment().getItems()[slot] : undefined;
+        if (!item || item.getId() < 0 || item.getAmount() <= 0) return;
+        if (op === Bank.WORN_SLOT_EXAMINE_OP) examineItem(player, item.getId(), item.getAmount());
+        else if (op === Bank.WORN_SLOT_BANK_OP) Bank.depositItems(player, player.getEquipment(), false, slot);
     }
 
     /**
@@ -967,19 +1148,8 @@ export class Bank extends ItemContainer {
                             if (empty) {
                                 return true;
                             }
-                            let items: Item[] = player.getBank(bankId).getValidItems();
-                            if (player.getBank(0).getFreeSlots() < items.length) {
-                                player.sendMessage("You don't have enough free slots in your Main tab to do that.");
-                                return true;
-                            }
-                            let noteWithdrawal: boolean = player.withdrawAsNote();
-                            player.setNoteWithdrawal(false);
-                            for (let item of items) {
-                                player.getBank(bankId).switchsItem(player.getInventory(), item.clone(), player.getBank(bankId).getSlotForItemId(item.getId()), false, false);
-                            }
-                            player.setNoteWithdrawal(noteWithdrawal);
-                            this.reconfigureTabs(player);
-                            player.getBank(player.getCurrentBankTab()).refreshItems();
+                            // The same collapse as the tab menu: each stack moves to the main tab as it is.
+                            Bank.collapseTab(player, bankId);
                         } else {
                             if (!empty || bankId === 0) {
                                 player.setCurrentBankTab(bankId);
@@ -1038,8 +1208,8 @@ export class Bank extends ItemContainer {
         }
         return false;
     }
-    /** Banks [from]'s items, or only those [only] picks (one worn item). */
-    public static depositItems(player: Player, from: ItemContainer, ignoreReqs: boolean, only?: (item: Item) => boolean) {
+    /** Banks [from]'s items, or only the one in [onlySlot] (a worn panel slot's Bank op). */
+    public static depositItems(player: Player, from: ItemContainer, ignoreReqs: boolean, onlySlot?: number) {
         if (!ignoreReqs) {
             if (!Bank.isOpen(player)) {
                 return;
@@ -1047,11 +1217,13 @@ export class Bank extends ItemContainer {
         }
         let movedAny = false;
         for (let item of from.getValidItems()) {
-            if (only && !only(item)) continue;
+            const slot = from.getItems().indexOf(item);
+            if (onlySlot !== undefined && slot !== onlySlot) continue;
             if (getPluginManager().emitCanBankItem(player, item) === false) {
                 continue;
             }
-            from.switchItems(player.getBank(Bank.getTabForItem(player, item.getId())), item.clone(),false, false);
+            // By slot: a delete by id would take a preset stack in a lower slot instead of this one.
+            from.switchItem(player.getBank(Bank.getTabForItem(player, item.getId())), item.clone(), false, slot, false);
             movedAny = true;
         }
         from.refreshItems();
@@ -1142,6 +1314,19 @@ export class Bank extends ItemContainer {
             }
         }
 
+        const family = Bank.placeholderFamily(itemID).filter((id) => id !== itemID);
+        if (family.length > 0) {
+            for (let k = 0; k < this.TOTAL_BANK_TABS; k++) {
+                if (k === this.BANK_SEARCH_TAB_INDEX) {
+                    continue;
+                }
+                if (player.getBank(k).getItems().some((held) => held.getId() !== itemID
+                    && held.getAmount() === 0 && family.includes(held.getId()))) {
+                    return k;
+                }
+            }
+        }
+
         // Find empty bank slot
         if (player.getBank(player.getCurrentBankTab()).getFreeSlots() > 0) {
             return player.getCurrentBankTab();
@@ -1157,9 +1342,16 @@ export class Bank extends ItemContainer {
         return 0;
     }
 
+    /** Whether the bank holds at least `item`'s amount of its id (a note's item), in every tab together. */
     public static contains(player: Player, item: Item): boolean {
-        let tab = this.getTabForItem(player, item.getId());
-        return player.getBank(tab).getAmount(item.getId()) >= item.getAmount();
+        const definition = ItemDefinition.forId(item.getId());
+        const id = definition.isNoted() ? definition.unNote() : item.getId();
+        let amount = 0;
+        for (let tab = 0; tab < this.TOTAL_BANK_TABS; tab++) {
+            // The search tab only shows copies of the other tabs' items; placeholders add 0.
+            if (tab !== this.BANK_SEARCH_TAB_INDEX) amount += player.getBank(tab).getAmount(id);
+        }
+        return amount >= item.getAmount();
     }
 
     /** This tab's slots so far (it grows); the player's space is getCapacity. */
@@ -1177,6 +1369,7 @@ export class Bank extends ItemContainer {
             return this;
         }
         const opening = !Bank.isOpen(this.getPlayer());
+        if (opening) this.getPlayer().setNoteWithdrawal(false);
 
         // Update player status
         this.getPlayer().setStatus(PlayerStatus.BANKING);
@@ -1197,7 +1390,6 @@ export class Bank extends ItemContainer {
             3959: player.insertModeReturn() ? 1 : 0,
             [Bank.REQUESTED_QUANTITY_VARBIT]: player.getBankCustomQuantity(),
             4150: player.getCurrentBankTab(),
-            4170: 0,
             5450: 1,
             6590: player.getBankQuantityMode(),
         };
@@ -1219,7 +1411,7 @@ export class Bank extends ItemContainer {
             .sendInterfaceFlagsRange((Bank.SIDE_INTERFACE_ID << 16) | 3, 0, 27, 3278846)
             .sendInterfaceFlagsRange((Bank.SIDE_INTERFACE_ID << 16) | Bank.SIDE_WORN_CHILD, 0, 27, Bank.SIDE_WORN_FLAGS)
             .sendVarbit(12393, 1)
-            .sendString(`Bank of ${GameConstants.NAME}`, (Bank.MAIN_INTERFACE_ID << 16) | 3);
+            .sendString(`Bank of ${getWorldDefinition().name}`, (Bank.MAIN_INTERFACE_ID << 16) | 3);
         // Captured: the bank opens on the inventory, not a container left in view last time.
         if (opening && sender.getVarbit(Bank.VIEW_CONTAINER_VARBIT) !== 0) {
             sender.sendVarbit(Bank.VIEW_CONTAINER_VARBIT, 0).sendConfig(Bank.VIEW_CONTAINER_OBJ_VARP, -1);
@@ -1272,7 +1464,7 @@ export class Bank extends ItemContainer {
         // Make sure we have enough space in the other container
         if (to.getFreeSlots() <= 0 && (!(to.contains(item.getId()) && item.getDefinition().isStackable()))
                 && !(this.getPlayer().withdrawAsNote() && canWithdrawAsNote && to.contains(noteId))) {
-            if (to instanceof Inventory) this.getPlayer().sendMessage(INVENTORY_FULL_MESSAGE);
+            if (to instanceof Inventory) this.getPlayer().getPacketSender().sendTypedMessage(ChatType.SPAM, INVENTORY_FULL_MESSAGE);
             else to.full();
             return this;
         }
@@ -1293,7 +1485,7 @@ export class Bank extends ItemContainer {
                 }
             }
         }
-        if (shortened) this.getPlayer().sendMessage(WITHDRAW_PARTIAL_MESSAGE);
+        if (shortened) this.getPlayer().getPacketSender().sendTypedMessage(ChatType.SPAM, WITHDRAW_PARTIAL_MESSAGE);
 
         // Make sure we aren't taking more than we have.
         if (item.getAmount() > this.getAmount(item.getId())) {
@@ -1305,7 +1497,7 @@ export class Bank extends ItemContainer {
             const checkId = withdrawAsNote ? noteId : item.getId();
             if (to.getAmount(checkId) + item.getAmount() > MAX_STACK_AMOUNT
                     || to.getAmount(checkId) + item.getAmount() <= 0) {
-                item.setAmount(MAX_STACK_AMOUNT - (to.getAmount(item.getId())));
+                item.setAmount(MAX_STACK_AMOUNT - to.getAmount(checkId));
                 if (item.getAmount() <= 0) {
                     this.getPlayer().sendMessage("You cannot withdraw that entire amount into your inventory.");
                         return this;
@@ -1318,6 +1510,24 @@ export class Bank extends ItemContainer {
             return this;
         }
 
+        // The room checks above go by id: a stack of the same id with other metadata (a preset copy) is not one this
+        // item joins, so with no free slot the add below would fail after the bank's stack was already taken.
+        const arriving = item.clone();
+        if (this.getPlayer().withdrawAsNote() && canWithdrawAsNote) arriving.setId(noteId);
+        const room = to.getAddableAmount(arriving);
+        if (room <= 0) {
+            if (to instanceof Inventory) this.getPlayer().getPacketSender().sendTypedMessage(ChatType.SPAM, INVENTORY_FULL_MESSAGE);
+            else to.full();
+            return this;
+        }
+        if (room < item.getAmount()) item.setAmount(room);
+
+        if (to instanceof Inventory && this.getPlayer().isPlaceholders()
+                && item.getAmount() >= this.getItems()[slot].getAmount()
+                && Bank.placeholderBankId(item.getId()) < 0) {
+            // rsprox_transcripts/227/00549.txt: a spam-filtered game message.
+            this.getPlayer().getPacketSender().sendTypedMessage(ChatType.SPAM, "This item cannot leave a placeholder.");
+        }
         this.deleteItemContainer(item, slot, to instanceof Inventory ? false : refresh, to);
 
 

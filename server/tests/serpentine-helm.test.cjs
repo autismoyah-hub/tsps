@@ -10,10 +10,14 @@ const { CombatType } = require("../dist/game/content/combat/CombatType");
 const { ItemIds } = require("../dist/util/IdEnums");
 
 const SerpentineHelm = require("../plugins/items/SerpentineHelm.plugin");
+const { ItemAliases } = require("../dist/game/model/ItemAliases");
+// As ToxicBlowpipe.plugin.js registers it: the ornament kit only changes the look.
+ItemAliases.register(ItemIds.BLAZING_BLOWPIPE, ItemIds.TOXIC_BLOWPIPE);
 
 const poisoned = [];
 let cycle = 100;
 let hitResolved;
+let protectionQuery;
 const weaponNames = new Map([
   [1001, "Rune scimitar"],
   [1002, "Rune dagger(p++)"],
@@ -25,6 +29,8 @@ const weaponNames = new Map([
   [ItemIds.EMERALD_BOLTS_E_, "Emerald bolts (e)"],
   [ItemIds.NOXIOUS_HALBERD, "Noxious halberd"],
   [ItemIds.TOXIC_BLOWPIPE, "Toxic blowpipe"],
+  [ItemIds.BLAZING_BLOWPIPE, "Blazing blowpipe"],
+  [ItemIds.DRYGORE_BLOWPIPE, "Drygore blowpipe"],
   [ItemIds.TRIDENT_OF_THE_SWAMP_E_, "Trident of the Swamp (e)"],
 ]);
 SerpentineHelm.register({
@@ -32,22 +38,28 @@ SerpentineHelm.register({
     ItemIdentifiers: ItemIds,
     Equipment, CombatType,
     Item: require("../dist/game/model/Item").Item,
+    ItemAliases,
     World: { getProcessCycle: () => cycle },
     ItemDefinition: { forId: (id) => ({ getName: () => weaponNames.get(id) ?? "" }) },
     CombatFactory: { poisonEntity: (target, severity, orb) => poisoned.push({ target, severity, orb }) },
+    // These players' ranged weapons fire from the ammo slot (bows and crossbows).
+    Ammunition: { firesFromAmmoSlot: () => true },
   },
   persistAttribute() {},
   onItemAction() {},
   onItemOnItem() {},
   onCombatHitResolved(handler) { hitResolved = handler; },
+  onCustomEvent(name, handler) { if (name === "serpentine-helm:protection") protectionQuery = handler; },
   onPlayerProcess() {},
 });
 
 function item(id, meta = {}) {
   return {
     id,
+    amount: 1,
     meta: { ...meta },
     getId() { return this.id; },
+    getAmount() { return this.amount; },
     setId(next) { this.id = next; },
     getMetaValue(key) { return this.meta[key]; },
     setMetaValue(key, next) {
@@ -61,6 +73,7 @@ function createPlayer({ helm = null, weapon = 0, inCombat = true, scales = 0, am
   const equipment = new Array(14).fill(null).map(() => item(0));
   if (helm) equipment[Equipment.HEAD_SLOT] = helm;
   if (weapon) equipment[Equipment.WEAPON_SLOT] = item(weapon);
+  if (ammo) equipment[Equipment.AMMUNITION_SLOT] = item(ammo);
   const attributes = new Map();
   const immunity = { starts: 0, protectBriefly(seconds, venom) { assert.equal(seconds, 2); assert.equal(venom, true); this.starts++; } };
   const messages = [];
@@ -77,7 +90,7 @@ function createPlayer({ helm = null, weapon = 0, inCombat = true, scales = 0, am
       addItem: () => {},
       refreshItems: () => {},
     }),
-    getCombat: () => ({ getTarget: () => (inCombat ? {} : null), getAttacker: () => defending ? {} : null, getAmmunition: () => ammo == null ? null : { getItemId: () => ammo }, getPoisonImmunityTimer: () => immunity }),
+    getCombat: () => ({ getTarget: () => (inCombat ? {} : null), getAttacker: () => defending ? {} : null, getPoisonImmunityTimer: () => immunity }),
     getAttribute: (key) => attributes.get(key),
     setAttribute: (key, value) => attributes.set(key, value),
     sendMessage: (message) => messages.push(message),
@@ -113,6 +126,11 @@ test("the envenom chance depends on the weapon: 1/6 plain, 1/2 poisoned, 100% to
   assert.equal(SerpentineHelm._test.venomChance(poisonedWeapon, CombatType.MELEE), 0.5);
   const toxic = createPlayer({ helm: item(ItemIds.SERPENTINE_HELM, { "serpentine-helm": 100 }), weapon: ItemIds.TOXIC_BLOWPIPE });
   assert.equal(SerpentineHelm._test.venomChance(toxic, CombatType.RANGED), 1);
+  const blazing = createPlayer({ helm: item(ItemIds.SERPENTINE_HELM, { "serpentine-helm": 100 }), weapon: ItemIds.BLAZING_BLOWPIPE });
+  assert.equal(SerpentineHelm._test.venomChance(blazing, CombatType.RANGED), 1, "the blazing blowpipe is an ornamented toxic blowpipe");
+  // The drygore blowpipe is a separate league weapon that burns (Wiki); it is not guaranteed.
+  const drygore = createPlayer({ helm: item(ItemIds.SERPENTINE_HELM, { "serpentine-helm": 100 }), weapon: ItemIds.DRYGORE_BLOWPIPE });
+  assert.notEqual(SerpentineHelm._test.venomChance(drygore, CombatType.RANGED), 1);
 });
 
 test("a successful hit on a monster can envenom it, but never a player", () => {
@@ -185,7 +203,13 @@ test("ordinary ranged and magic hits cannot use the helm's basic melee venom cha
   assert.equal(resolve({ roll: 1 / 6 }), 0);
 });
 
-for (const weapon of [ItemIds.NOXIOUS_HALBERD, ItemIds.ABYSSAL_TENTACLE, ItemIds.ABYSSAL_TENTACLE_OR_]) {
+// The halberd's own 1/3 melee roll follows the helm's: 1/4 + 3/4 * 1/3 = the Wiki's 1/2.
+test("the noxious halberd's helm roll is 1/4, making 1/2 with its own 1/3", () => {
+  assert.equal(resolve({ weapon: ItemIds.NOXIOUS_HALBERD, roll: 0.24 }), 1);
+  assert.equal(resolve({ weapon: ItemIds.NOXIOUS_HALBERD, roll: 0.25 }), 0);
+});
+
+for (const weapon of [ItemIds.ABYSSAL_TENTACLE, ItemIds.ABYSSAL_TENTACLE_OR_]) {
   test(`poisonous melee weapon ${weapon} has a 50% helm chance`, () => {
     assert.equal(resolve({ weapon, roll: 0.49 }), 1);
     assert.equal(resolve({ weapon, roll: 0.5 }), 0);
@@ -272,4 +296,27 @@ test("charging reports total scales and percentage as in recording 1074", () => 
   assert.equal(removed, 11000);
   assert.equal(SerpentineHelm._test.charges(helm), 11000);
   assert.equal(player.messages.at(-1), "Scales: <col=007f00>11,000 (100.0%)</col>");
+});
+
+test('the registered protection query observes positive worn charges without upkeep or a timer refresh', () => {
+  assert.equal(typeof protectionQuery, 'function');
+  for (const id of [ItemIds.SERPENTINE_HELM, ItemIds.TANZANITE_HELM, ItemIds.MAGMA_HELM]) {
+    const helm = item(id, { 'serpentine-helm': 100 });
+    const player = { getEquipment: () => ({ get: slot => slot === Equipment.HEAD_SLOT ? helm : null }),
+      getCombat() { throw new Error('a read-only query must not refresh immunity or run upkeep'); },
+      setAttribute() { throw new Error('a read-only query must not change the upkeep phase'); } };
+    for (let i = 0; i < 3; i++) {
+      const query = { player, active: false }; protectionQuery(query);
+      assert.equal(query.active, true);
+      assert.equal(SerpentineHelm._test.charges(helm), 100, 'no extra scales are spent');
+    }
+    helm.setMetaValue('serpentine-helm', 0);
+    const empty = { player, active: true }; protectionQuery(empty); assert.equal(empty.active, false);
+    helm.setMetaValue('serpentine-helm', 100); helm.amount = 0;
+    const ghost = { player, active: true }; protectionQuery(ghost); assert.equal(ghost.active, false);
+  }
+  for (const helm of [null, item(ItemIds.SERPENTINE_HELM_UNCHARGED_), item(ItemIds.RUNE_SCIMITAR, { 'serpentine-helm': 100 })]) {
+    const query = { player: { getEquipment: () => ({ get: () => helm }) }, active: true };
+    protectionQuery(query); assert.equal(query.active, false);
+  }
 });

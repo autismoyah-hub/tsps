@@ -23,7 +23,7 @@ function bounceCycles(from, to) {
 }
 
 function buildRuneThrownaxeSpecialAttack(api) {
-  const { Animation, CombatFactory, CombatSpecial, Equipment, Graphic, ItemIdentifiers, Misc, PendingHit, Projectile, RangedCombatMethod, Skill, Sound, Sounds, WeaponProfiles } = api.core;
+  const { Animation, CombatFactory, CombatPosition, CombatSpecial, Equipment, Graphic, ItemIdentifiers, Misc, PendingHit, Projectile, RangedCombatMethod, Skill, Sound, Sounds } = api.core;
   const BonusManager = api.core.BonusManager;
 
   const DRAIN = 10;
@@ -71,8 +71,8 @@ function buildRuneThrownaxeSpecialAttack(api) {
         .withAngle(0).withProgress(11).sendProjectile();
       Sounds.sendSound(character, CHAINHIT_SOUND);
       const player = character.getAsPlayer();
-      const distance = character.getLocation().getDistance(target.getLocation());
-      const delay = WeaponProfiles.hitDelays(player, distance)[0] + (target.isNpc() ? 1 : 0);
+      // The ammo goes when the hit lands: hits() is edge-based (landingDelays), so a large NPC isn't paid a tick late.
+      const delay = RangedCombatMethod.landingDelays(character, target)[0] + (target.isNpc() ? 1 : 0);
       CombatFactory.decrementAmmo(player, target.getLocation(), 1, delay);
       character.performAnimation(SPECIAL_ANIMATION);
       character.performGraphic(SPECIAL_VFX);
@@ -84,7 +84,7 @@ function buildRuneThrownaxeSpecialAttack(api) {
       const maxHit = chainhitMaxHit(player);
       const first = hits[0];
       CombatFactory.applyStyleDamage(first, maxHit);
-      if (!CombatFactory.multiCombatBetween(player, target)) {
+      if (!CombatFactory.areaAttackSpreads(player, target)) {
         return hits;
       }
       const struck = new Set([target]);

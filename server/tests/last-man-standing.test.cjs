@@ -110,6 +110,50 @@ test('the stash keeps the player\'s own things and levels, and gives them back',
   assert.equal(Stash.stashed(p), null);
 });
 
+test("the player's own antifire is held back for the game and comes back with its tier; the game's stays behind", (t) => {
+  const Dragonfire = require('../plugins/combat/DragonfireProtection');
+  const p = realPlayer(t);
+  Dragonfire.setDragonfireProtection(p, { tier: Dragonfire.DragonfireProtectionTier.ANTIFIRE, seconds: 300, label: 'antifire potion' });
+  Stash.save(p);
+  assert.equal(Dragonfire.getDragonfireProtectionTier(p), Dragonfire.DragonfireProtectionTier.NONE, 'not active during the game');
+  Dragonfire.setDragonfireProtection(p, { tier: Dragonfire.DragonfireProtectionTier.SUPER_ANTIFIRE, seconds: 360, label: 'extended super antifire' });
+  assert.ok(Stash.restore(p));
+  assert.equal(Dragonfire.getDragonfireProtectionTier(p), Dragonfire.DragonfireProtectionTier.ANTIFIRE, 'their own antifire, not the game super antifire');
+});
+
+test("a Tele Block from the game stays in it; the player's own antifire waits outside and comes back", (t) => {
+  const p = realPlayer(t);
+  const combat = p.getCombat();
+  combat.getFireImmunityTimer().start(300); // their own antifire, from before the game
+  Stash.save(p);
+  assert.equal(combat.getFireImmunityTimer().secondsRemaining(), 0, 'the game starts without it');
+  combat.getTeleblockTimer().start(300); // teleblocked in the game
+  combat.getFireImmunityTimer().start(360); // an antifire from the game's supplies
+  assert.ok(Stash.restore(p));
+  assert.equal(combat.getTeleblockTimer().secondsRemaining(), 0, "the game's Tele Block stays behind");
+  const fire = combat.getFireImmunityTimer().secondsRemaining();
+  assert.ok(fire > 290 && fire <= 300, `their own antifire back (${fire}s)`);
+});
+
+test("a Vengeance or divine potion from the game stays in it; the player's own cooldown and divine potion come back", (t) => {
+  const DIVINE = 'potions:divine:state';
+  const own = { endsAt: Date.now() + 200000, targets: [] };
+  const p = realPlayer(t);
+  p.getVengeanceTimer().start(20);
+  p.setAttribute(DIVINE, own);
+  Stash.save(p);
+  assert.equal(p.getVengeanceTimer().secondsRemaining(), 0, 'the game starts with no cooldown');
+  assert.equal(p.getAttribute(DIVINE), null, 'nor their own divine potion');
+  p.getVengeanceTimer().start(30); // cast in the game
+  p.setHasVengeance(true);
+  p.setAttribute(DIVINE, { endsAt: Date.now() + 300000, targets: [] }); // a divine potion from the game's supplies
+  assert.ok(Stash.restore(p));
+  const left = p.getVengeanceTimer().secondsRemaining();
+  assert.ok(left > 15 && left <= 20, `their own cooldown back, not the game's 30 (${left}s)`);
+  assert.equal(p.hasVengeanceReturn(), false, "the game's Vengeance stays behind");
+  assert.deepEqual(p.getAttribute(DIVINE), own, "their own divine potion back, not the game's");
+});
+
 test('a build\'s load-out: the captured Max/Med kit with 5,000 bolts', (t) => {
   const p = realPlayer(t);
   Loadouts.equip(p, 0);
@@ -336,6 +380,7 @@ test('a withdrawal fills only what the coin stack can hold, and the coffer keeps
     core,
     getPluginConfig: (_key, fallback) => fallback,
     getSkillManager: () => require('../dist/game/content/skill/SkillManager').SkillManager,
+    emitCustomEvent() {},
     ...extra,
   });
   initWith({ sendMultiChatboxPrompt: () => {} });
@@ -354,6 +399,58 @@ test('a withdrawal fills only what the coin stack can hold, and the coffer keeps
   withdrawing(5000);
   assert.equal(p.getInventory().getAmount(id('coins')), 2147483000, 'the stack has no room for a whole 1,000');
   assert.equal(Profile.coffer(p), 4000, 'nothing taken, nothing deducted');
+});
+
+test('a withdrawal answered after a High Stakes fee was paid can take only what is left', (t) => {
+  const Coffer = require('../plugins/minigames/lms/Coffer.LastManStanding');
+  const p = realPlayer(t);
+  const initWith = (extra) => Common.init({
+    core,
+    getPluginConfig: (_key, fallback) => fallback,
+    getSkillManager: () => require('../dist/game/content/skill/SkillManager').SkillManager,
+    emitCustomEvent() {},
+    ...extra,
+  });
+  initWith({ sendMultiChatboxPrompt: () => {} });
+  t.after(() => initWith({}));
+  let entered;
+  t.mock.method(p, 'setEnteredAmountAction', (action) => { entered = action; });
+  Profile.setCoffer(p, 500000);
+  Coffer.withdraw(p); // the prompt opens with 500,000 stored
+  assert.equal(Coffer.pay(p, 500000), true, 'meanwhile a High Stakes game takes its fee from the coffer');
+  entered.execute(500000);
+  assert.equal(p.getInventory().getAmount(id('coins')), 0, 'nothing left to withdraw');
+  assert.equal(Profile.coffer(p), 0, 'and the coffer is not overdrawn');
+});
+
+test('Justine explains the win requirement and refuses tradeable purchases before a win', (t) => {
+  const Rewards = require('../plugins/minigames/lms/Rewards.LastManStanding');
+  const p = realPlayer(t);
+  let dialogue;
+  t.mock.method(p.getDialogueManager(), 'startDialogues', (chain) => { dialogue = chain; });
+  const event = { player: p, shopId: Rewards.SHOP_ID, allow: true };
+  Rewards.canShop(event);
+  assert.equal(event.allow, false, 'the native rewards interface replaces the generic shop');
+  assert.ok(dialogue, 'a player without a win gets the explanation first');
+  assert.match(dialogue.getDialogues().get(0).getText(), /browse.*win.*buy tradeable rewards/);
+  const interfaces = [];
+  t.mock.method(p.getPacketSender(), 'sendSubInterface', (...args) => interfaces.push(args));
+  dialogue.getDialogues().get(1).send(p);
+  assert.ok(interfaces.some(([, group]) => group === Common.interfaceId('br_reward_shop')), 'Continue opens the shop for browsing');
+
+  p.setAttribute(Common.POINTS_ATTRIBUTE, 10);
+  const slot = Common.data.shop.stock.findIndex((entry) => entry && entry[0] === 'rune_arrow');
+  Rewards.confirm({ player: p, slot });
+  assert.deepEqual(p.messages, [Common.message('tradeableNeedsWin')]);
+  assert.equal(Common.points(p), 10);
+  assert.equal(p.getInventory().getAmount(id('rune_arrow')), 0);
+
+  const untradeable = Common.data.shop.stock.findIndex((entry) => entry && entry[0] === 'br_deadman_body');
+  const entry = Common.data.shop.stock[untradeable];
+  p.setAttribute(Common.POINTS_ATTRIBUTE, entry[1]);
+  Rewards.confirm({ player: p, slot: untradeable });
+  assert.equal(Common.points(p), 0, 'untradeable rewards remain available without a win');
+  assert.equal(p.getInventory().getAmount(id(entry[0])), 1);
 });
 
 test('Justine\'s purchase: a stack that cannot take the whole set refuses it and keeps the points', (t) => {
@@ -386,4 +483,218 @@ test('Justine\'s purchase: the set is added in full when the stack has the room,
   entered.execute(1);
   assert.equal(Common.points(p), 7);
   assert.equal(p.getInventory().getAmount(id('rune_arrow')), 2147483300);
+});
+
+test("Justine's purchase records its own collection-log items only when it succeeds", (t) => {
+  const Rewards = require('../plugins/minigames/lms/Rewards.LastManStanding');
+  const CollectionLog = require('../plugins/achievements/CollectionLog.plugin');
+  const Progress = require('../plugins/achievements/collectionlog/Progress.CollectionLog');
+  const listeners = new Map();
+  const bus = new Proxy({
+    core,
+    persistAttribute() {},
+    onCustomEvent(name, handler) { listeners.set(name, [...(listeners.get(name) ?? []), handler]); },
+    emitCustomEvent(name, request) { for (const handler of listeners.get(name) ?? []) handler(request); },
+    getTaskManager: () => ({ submit() {} }),
+  }, { get: (target, key) => target[key] ?? (() => {}) });
+  Common.init(bus);
+  CollectionLog.register(bus);
+  t.after(() => Common.init({
+    core,
+    getPluginConfig: (_key, fallback) => fallback,
+    getSkillManager: () => require('../dist/game/content/skill/SkillManager').SkillManager,
+    emitCustomEvent() {},
+  }));
+
+  const p = realPlayer(t);
+  const entry = Common.data.shop.stock.find((row) => row && row[0] === 'br_deadman_body');
+  const slot = Common.data.shop.stock.indexOf(entry);
+  const itemId = id('br_deadman_body');
+  const boltEntry = Common.data.shop.stock.find((row) => row && row[0] === 'barrows_karil_ammo');
+  const boltSlot = Common.data.shop.stock.indexOf(boltEntry);
+  const boltId = id('barrows_karil_ammo');
+
+  p.setAttribute(Common.POINTS_ATTRIBUTE, boltEntry[1]);
+  Rewards.confirm({ player: p, slot: boltSlot });
+  assert.equal(Common.points(p), boltEntry[1], 'a tradeable reward without a win is refused');
+  assert.equal(Progress.obtained(p, boltId), 0, 'a denied purchase is not logged');
+
+  p.setAttribute(Common.POINTS_ATTRIBUTE, 0);
+  p.setAttribute(Common.ATTRIBUTES.wins, 1);
+  Rewards.confirm({ player: p, slot });
+  assert.equal(Progress.obtained(p, itemId), 0, 'no points: nothing delivered or logged');
+
+  p.setAttribute(Common.POINTS_ATTRIBUTE, entry[1]);
+  for (let i = 0; i < p.getInventory().capacity(); i++) p.getInventory().add(new core.Item(id('br_deadman_legs'), 1), false);
+  Rewards.confirm({ player: p, slot });
+  assert.equal(Common.points(p), entry[1], 'a full inventory costs no points');
+  assert.equal(Progress.obtained(p, itemId), 0, 'a refused purchase is not logged');
+
+  p.getInventory().resetItems();
+  Rewards.confirm({ player: p, slot });
+  assert.equal(Common.points(p), 0);
+  assert.equal(p.getInventory().getAmount(itemId), 1);
+  assert.equal(Progress.obtained(p, itemId), 1, 'the actual purchase path records the item once');
+
+  let entered;
+  t.mock.method(p, 'setEnteredAmountAction', (action) => { entered = action; });
+  p.setAttribute(Common.POINTS_ATTRIBUTE, boltEntry[1]);
+  Rewards.confirm({ player: p, slot: boltSlot });
+  entered.execute(1);
+  assert.equal(Common.points(p), 0);
+  assert.equal(p.getInventory().getAmount(boltId), 200, 'the set is delivered in full');
+  assert.equal(Progress.obtained(p, boltId), 0, 'Bolt racks belong to Barrows, not the LMS log');
+});
+
+// Issue 2701: a chest house on Desert Island's west edge has a strip of open ground between its
+// fence and the map's edge. Start tiles were any standable tile near a chest, so a player could
+// begin in that strip with no way out.
+test('starts and crates go only on the island\'s connected ground, never behind a fence', (t) => {
+  require('../dist/game/definition/ObjectDefinition').ObjectDefinition.init();
+  for (const map of Common.data.maps) {
+    t.mock.method(Common, 'pick', (list) => (list === Common.data.maps ? map : list[0]));
+    const game = new Match.Game(new Array(24).fill(0).map(() => ({ getAttribute: () => 0 })));
+    t.mock.restoreAll();
+    const ground = game.ground();
+    const onGround = (tile) => ground.has(game.groundKey(tile.getX(), tile.getY()));
+    assert.ok(ground.size > 9000, `${map.name}: the island is one walkable region (${ground.size})`);
+    for (const zone of map.safezones) assert.ok(onGround(game.area.at([...zone.centre, 0])), `${map.name}: ${zone.name}`);
+    if (map.name === 'Desert Island') {
+      const strip = game.area.at([3392, 5798, 0]);
+      assert.ok(Common.standable(strip.getX(), strip.getY(), 0, game.area), 'the strip is open ground');
+      assert.ok(!onGround(strip), 'but nothing joins it to the island');
+    }
+    for (let round = 0; round < 20; round++) {
+      for (const tile of game.spawnTiles()) assert.ok(onGround(tile), `${map.name}: start ${game.area.templateOf(tile)}`);
+      for (const spot of game.chestSpots) {
+        const tile = game.openTileNear(spot, 10);
+        if (tile) assert.ok(onGround(tile), `${map.name}: crate ${game.area.templateOf(tile)}`);
+      }
+    }
+    game.area.destroy();
+  }
+});
+
+// Issue 2701: in a game the client draws Zeal in Piety's slot without the unlock (cs2 10157 ->
+// 10194), as live players use it. The server turned Piety on there, so the drawn Zeal never
+// went off again when Rigour or Augury did.
+test('in a game Piety\'s slot is Zeal without the unlock, and Augury puts it out', (t) => {
+  const { PrayerHandler } = require('../dist/game/content/PrayerHandler');
+  const hooks = new Map();
+  Match.attachMatch(new Proxy({}, { get: (_, key) => (key === 'onCustomEvent' ? (name, fn) => hooks.set(name, fn) : () => {}) }));
+  t.mock.method(PluginManager, 'emitCustomEvent', (name, payload) => hooks.get(name)?.(payload));
+  t.mock.method(Common, 'later', () => {});
+  t.mock.method(Common, 'every', () => {});
+  t.mock.method(require('../plugins/minigames/lms/Lobby.LastManStanding'), 'openOverlay', () => {});
+  const choose = (p) => {
+    for (const skill of ['ATTACK', 'STRENGTH', 'DEFENCE', 'PRAYER', 'HITPOINTS']) {
+      p.getSkillManager().setMaxLevel(core.Skill[skill], 99);
+      p.getSkillManager().setCurrentLevel(core.Skill[skill], 99, false);
+    }
+    return p;
+  };
+  const PIETY_SLOT = 35, AUGURY_SLOT = 36;
+
+  const outside = choose(realPlayer(t));
+  PrayerHandler.togglePrayer(outside, PIETY_SLOT);
+  assert.equal(outside.getPrayerActive()[PrayerHandler.PIETY], true, 'outside a game, no unlock: Piety');
+
+  const p = choose(realPlayer(t));
+  const game = new Match.Game([p]);
+  game.build = 0;
+  game.enter(p, game.area.at([...game.zone.centre, 0]));
+  PrayerHandler.togglePrayer(p, PIETY_SLOT);
+  assert.equal(p.getPrayerActive()[PrayerHandler.ZEAL], true);
+  assert.ok(!p.getPrayerActive()[PrayerHandler.PIETY]);
+  PrayerHandler.togglePrayer(p, AUGURY_SLOT);
+  assert.equal(p.getPrayerActive()[PrayerHandler.AUGURY], true);
+  assert.ok(!p.getPrayerActive()[PrayerHandler.ZEAL]);
+  assert.equal(p.varbits.get(16577), 0, 'prayer_zeal goes out on the client');
+
+  // Quick prayers: the set {Piety's slot} turns Zeal on, and stays on while another prayer
+  // comes and goes (Zeal has no quick-prayer slot of its own).
+  const { PrayerData } = require('../dist/game/content/PrayerHandler');
+  const orb = core.CacheDefinitions.getComponentId('orbs:prayerbutton');
+  const quick = p.getQuickPrayers();
+  PrayerHandler.deactivatePrayers(p);
+  quick.setPrayers(Object.assign([], { [PrayerHandler.PIETY]: PrayerData.PIETY }));
+  quick.handleWidgetAction(orb >>> 16, orb & 0xffff, 1);
+  assert.equal(p.getPrayerActive()[PrayerHandler.ZEAL], true, 'the quick set turns Zeal on');
+  assert.equal(quick.enabled, true);
+  const PROTECT_FROM_MELEE_SLOT = 23;
+  PrayerHandler.togglePrayer(p, PROTECT_FROM_MELEE_SLOT);
+  PrayerHandler.togglePrayer(p, PROTECT_FROM_MELEE_SLOT);
+  assert.equal(quick.enabled, true, 'another prayer on and off leaves the quick set on');
+  quick.handleWidgetAction(orb >>> 16, orb & 0xffff, 1);
+  assert.ok(!p.getPrayerActive()[PrayerHandler.ZEAL], 'the next orb click puts Zeal out');
+  game.area.destroy();
+});
+
+test('a forfeit answered Yes after the game has started leaves the player in it, stash untouched', (t) => {
+  const p = realPlayer(t);
+  const casual = Lobby.modeOf('casual');
+  const inside = [casual.waiting[0], casual.waiting[1]]; // the waiting box is [x0, y0, x1, y1]
+  const hooks = {};
+  const prompts = [];
+  Common.api.sendMultiChatboxPrompt = (player, title, ...pairs) => prompts.push(pairs);
+  t.after(() => { delete Common.api.sendMultiChatboxPrompt; });
+  const fake = new Proxy({}, { get: (_, key) =>
+    (key === 'onObjectFirstClick' ? (ids, fn) => { if (ids.includes(Common.locId(casual.entrance))) hooks.barrier = fn; } : () => {}) });
+  Lobby.attachLobby(fake);
+  p.setLocation(new core.Location(inside[0], inside[1], casual.plane));
+  assert.equal(Lobby.waiting(p, casual), true, 'in the casual waiting room');
+  const entrance = { getId: () => Common.locId(casual.entrance), getLocation: () => p.getLocation() };
+  hooks.barrier({ player: p, object: entrance });
+  assert.equal(prompts.length, 1, 'the forfeit question');
+  // The match fills and starts while the question is open.
+  t.mock.method(Match, 'gameOf', () => ({}));
+  const restore = t.mock.method(Stash, 'restore', () => {});
+  const at = p.getLocation();
+  prompts[0][1]();
+  assert.equal(restore.mock.callCount(), 0, 'no stash handed back mid-game');
+  assert.equal(p.getLocation(), at, 'not moved out of the game');
+});
+
+test("Lisa's mode menu answered after a game has taken the player does nothing, stash untouched", (t) => {
+  const p = realPlayer(t);
+  const casual = Lobby.modeOf('casual');
+  const hooks = {};
+  const fake = new Proxy({}, { get: (_, key) =>
+    (key === 'onNpcThirdClick' ? (ids, fn) => { hooks.joinLisa = fn; } : () => {}) });
+  Lobby.attachLobby(fake);
+  Profile.finishTutorial(p);
+  hooks.joinLisa({ player: p });
+  const manager = p.getDialogueManager();
+  assert.equal(manager.isActive(), true, "Lisa's mode menu is open");
+  // The player is in a game (arena plane, no stash yet) when the answer arrives.
+  t.mock.method(Match, 'gameOf', () => ({}));
+  const save = t.mock.method(Stash, 'save', () => {});
+  const at = p.getLocation();
+  manager.handleResume(core.MultiChatboxPrompt.OPTIONS_WIDGET_ID, 3); // the native resume for "Casual"
+  assert.equal(save.mock.callCount(), 0, 'nothing stashed from inside a game');
+  assert.equal(p.getLocation(), at, 'not moved to the waiting room');
+  assert.equal(Lobby.waiting(p, casual), false);
+});
+
+test("a prayer the game bans, left on from the lobby, goes off as the game starts (Wiki: Smite can't be used in a game)", (t) => {
+  const { PrayerHandler } = require('../dist/game/content/PrayerHandler');
+  const hooks = new Map();
+  Match.attachMatch(new Proxy({}, { get: (_, key) => (key === 'onCustomEvent' ? (name, fn) => hooks.set(name, fn) : () => {}) }));
+  t.mock.method(PluginManager, 'emitCustomEvent', (name, payload) => hooks.get(name)?.(payload));
+  t.mock.method(Common, 'later', () => {});
+  t.mock.method(Common, 'every', () => {});
+  t.mock.method(require('../plugins/minigames/lms/Lobby.LastManStanding'), 'openOverlay', () => {});
+  const p = realPlayer(t);
+  for (const skill of ['ATTACK', 'STRENGTH', 'DEFENCE', 'PRAYER', 'HITPOINTS']) {
+    p.getSkillManager().setMaxLevel(core.Skill[skill], 99);
+    p.getSkillManager().setCurrentLevel(core.Skill[skill], 99, false);
+  }
+  PrayerHandler.activatePrayerPrayerId(p, PrayerHandler.SMITE);
+  PrayerHandler.activatePrayerPrayerId(p, PrayerHandler.STEEL_SKIN);
+  assert.equal(p.getPrayerActive()[PrayerHandler.SMITE], true, 'on in the lobby');
+  const game = new Match.Game([p]);
+  game.build = 0;
+  game.enter(p, game.area.at([...game.zone.centre, 0]));
+  assert.ok(!p.getPrayerActive()[PrayerHandler.SMITE], 'Smite is off in the game');
+  assert.equal(p.getPrayerActive()[PrayerHandler.STEEL_SKIN], true, 'an allowed prayer stays on');
 });

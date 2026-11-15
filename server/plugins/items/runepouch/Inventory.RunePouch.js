@@ -13,14 +13,18 @@ function useRuneOnPouch(event) {
   const rune = pouch === usedItem ? usedWithItem : usedItem;
   if (!pouch || !Pouch.isRune(rune?.getId?.())) return;
   event.handled = true;
+  if (!Pouch.isPlainRune(rune)) {
+    player.sendMessage(Pouch.MESSAGE.PRESET);
+    return;
+  }
   const runeId = rune.getId();
   const inventory = player.getInventory();
-  const moved = Pouch.store(player, runeId, inventory.getAmount(runeId));
+  const moved = Pouch.store(player, runeId, Pouch.plainInInventory(player, runeId));
   if (moved <= 0) {
     player.sendMessage(Pouch.MESSAGE.CANT_HOLD);
     return;
   }
-  inventory.deleteNumber(runeId, moved);
+  Pouch.takeFromInventory(player, runeId, moved);
   inventory.refreshItems();
 }
 
@@ -41,7 +45,7 @@ function empty({ player }) {
   let stuck = false;
   Pouch.slots(player).forEach((entry, slot) => {
     if (!entry) return;
-    if (!Pouch.inventoryFits(player, entry.id)) {
+    if (!Pouch.inventoryFits(player, entry.id, entry.amount)) {
       stuck = true;
       return;
     }
@@ -63,6 +67,19 @@ function consumeSpellRunes(player, missingItems) {
   for (const item of missingItems) Pouch.spend(player, item.getId(), item.getAmount());
 }
 
+/**
+ * `magic:rune-refund` { player, runeId, amount, stored }: runes a spell gives back (a league's
+ * Regenerate) go to the carried pouch's slot already holding that rune, up to 16,000, and `stored`
+ * says how many. A full slot takes none; the caller places the rest. Ours: an empty slot is never
+ * filled.
+ */
+function refundSpellRunes(refund) {
+  const { player, runeId } = refund ?? {};
+  const wanted = Math.max(0, Math.floor(refund?.amount ?? 0) - Math.max(0, refund?.stored | 0));
+  if (!player || !(wanted > 0) || !Pouch.findPouch(player)) return;
+  refund.stored = Math.max(0, refund.stored | 0) + Pouch.refill(player, runeId, wanted);
+}
+
 function login({ player }) {
   Pouch.login(player);
 }
@@ -75,6 +92,7 @@ module.exports = function attach(api) {
   api.onItemOnItem(useRuneOnPouch);
   for (const { name } of Pouch.POUCHES) api.onItemAction(name, { Empty: empty });
   api.registerSpellRuneSource({ check: checkSpellRunes, consume: consumeSpellRunes });
+  api.onCustomEvent("magic:rune-refund", refundSpellRunes);
 };
 
-module.exports._test = { useRuneOnPouch, empty, checkSpellRunes, consumeSpellRunes };
+module.exports._test = { useRuneOnPouch, empty, checkSpellRunes, consumeSpellRunes, refundSpellRunes };

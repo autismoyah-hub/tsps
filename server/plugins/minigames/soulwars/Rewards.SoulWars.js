@@ -105,6 +105,18 @@ function xpPerToken(player, row) {
   return level < rewards().xpMinLevel ? 0 : Math.floor((level * level) / 600) * multiplier;
 }
 
+/**
+ * The shop's buttons answer only while it is open (mounted in the main modal): a click on them with the shop closed,
+ * anywhere in the world, bought and imbued with no Nomad there.
+ */
+function whileOpen(handler) {
+  return function openShopOnly(event) {
+    const group = Common.core.CacheDefinitions.getInterfaceId(rewards().interface);
+    if (!event?.player?.getPacketSender?.()?.isSubInterfaceOpen?.(group)) return true;
+    return handler(event);
+  };
+}
+
 /** A list click: only X needs the server (the amount). */
 function xpList({ player, slot }) {
   const column = XP_TOKEN_CHILDREN[slot % XP_CHILDREN];
@@ -128,7 +140,7 @@ function buyXp({ player, slot }) {
   const [skill] = rewards().xpRows[row];
   Common.addVarp(player, "zeal_tokens", -cost);
   const xp = per * cost;
-  player.getSkillManager().addExperience(Common.core.Skill[skill], xp, false);
+  player.getSkillManager().addExperience(Common.core.Skill[skill], xp, true);
   const name = skill.charAt(0) + skill.slice(1).toLowerCase();
   player.sendMessage(message("xp", { xp: xp.toLocaleString("en-GB"), skill: name }));
   synth(player, "bought");
@@ -203,12 +215,17 @@ function buyOther({ player, slot }) {
   const count = quantity * (enumOf("otherBatch").get(item) ?? 1);
   const inventory = player.getInventory();
   const stackable = Common.core.ItemDefinition.forId(item)?.isStackable?.() === true;
-  const room = stackable ? (inventory.contains(item) || inventory.getFreeSlots() > 0) : inventory.getFreeSlots() >= count;
+  const room = stackable
+    ? (inventory.contains(item) ? inventory.getAddableAmount(new Common.core.Item(item, count)) >= count : inventory.getFreeSlots() > 0)
+    : inventory.getFreeSlots() >= count;
   if (!room) return refuse(player, message("noRoom"));
   Common.addVarp(player, "zeal_tokens", -cost);
+  const before = inventory.getAmount(item);
   if (stackable) inventory.add(new Common.core.Item(item, count), false);
   else for (let i = 0; i < count; i++) inventory.add(new Common.core.Item(item, 1), false);
   inventory.refreshItems?.();
+  const credited = Math.max(0, inventory.getAmount(item) - before);
+  if (credited > 0) Common.api.emitCustomEvent("collection-log:obtain", { player, itemId: item, amount: credited });
   player.sendMessage(message("bought", { name: lineName(name), cost }));
   synth(player, "bought");
   choiceOf(player).quantity = 1;
@@ -232,11 +249,11 @@ function findNomad() {
 
 function attachRewards(api) {
   api.onCanShop(canShop);
-  api.onInterfaceActionButton(uid("xp_rewards"), xpList);
-  api.onInterfaceActionButton(uid("confirm_xp"), buyXp);
-  api.onInterfaceActionButton(uid("confirm_imbue"), imbue);
-  api.onInterfaceActionButton(uid("other_rewards"), otherList);
-  api.onInterfaceActionButton(uid("confirm_other"), buyOther);
+  api.onInterfaceActionButton(uid("xp_rewards"), whileOpen(xpList));
+  api.onInterfaceActionButton(uid("confirm_xp"), whileOpen(buyXp));
+  api.onInterfaceActionButton(uid("confirm_imbue"), whileOpen(imbue));
+  api.onInterfaceActionButton(uid("other_rewards"), whileOpen(otherList));
+  api.onInterfaceActionButton(uid("confirm_other"), whileOpen(buyOther));
   Common.every(findNomad);
 }
 

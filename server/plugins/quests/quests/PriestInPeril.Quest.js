@@ -10,6 +10,8 @@
  * Saved stages (quest.priest_in_peril.stage): 10 started, 20 guardian killed,
  * 30 told King Roald, 40 met Drezel, 43 cell unlocked, 46 vampyre sealed,
  * 50 asked to meet in the mausoleum, 55 repairing the barrier, 60 complete.
+ * Live sends 60 with the last essence and 61 once Drezel blesses the player at the end of
+ * the same conversation (AWAITING_BLESSING_ATTRIBUTE holds the gap after completion).
  * The client sees OSRS's own varp 302 values (see wireValue); saves made before
  * 43/46/55 existed keep their meaning (an old 50 had the vampyre sealed).
  */
@@ -18,6 +20,8 @@ module.exports = function registerPriestInPerilQuest(api) {
     Skill, ItemIdentifiers, NpcIdentifiers, ObjectIdentifiers, Location,
     StatementDialogue, ItemStatementDialogue, DoubleItemStatementDialogue, DialogueChainBuilder,
     HitDamage, HitMask, Item, ItemDefinition,
+    CombatMethod, MeleeCombatMethod, MagicCombatMethod, CombatSpells, Projectile, Animation, Graphic, GraphicHeight,
+    Sounds, Sound,
   } = api.core;
   const { registerQuest, startTranscript, startDialogue, refreshQuestList } = require("../QuestRuntime");
 
@@ -31,6 +35,12 @@ module.exports = function registerPriestInPerilQuest(api) {
     NpcIdentifiers.KING_ROALD_6,
     NpcIdentifiers.KING_ROALD_7,
   ]);
+  const SHIELD_OF_ARRAV_HAND_IN_STAGE = 4;
+  const SHIELD_OF_ARRAV_COMPLETE_STAGE = 7;
+  const SHIELD_OF_ARRAV_HAND_IN_ITEMS = [
+    ItemIdentifiers.CERTIFICATE, ItemIdentifiers.BROKEN_SHIELD, ItemIdentifiers.BROKEN_SHIELD_2,
+    ItemIdentifiers.HALF_CERTIFICATE, ItemIdentifiers.HALF_CERTIFICATE_2,
+  ];
   /** Both Drezels (cell 9804, mausoleum 9805) resolve to 9636; their tile tells them apart. */
   const DREZEL_NPC_ID = NpcIdentifiers.DREZEL;
   /** The world guardian 3487 resolves to the attackable 7620 at varp 302 values 0-2. */
@@ -53,12 +63,13 @@ module.exports = function registerPriestInPerilQuest(api) {
    * Varp 302 as live OSRS sends it (Quest Helper's PriestInPeril steps; the cache's
    * transforms key on the same values): 1 started, 2 agreed to kill the dog,
    * 3 dog killed, 4 King told, 5 met Drezel, 6 cell unlocked, 7 coffin sealed,
-   * 8 meet in the mausoleum, 10-59 essence (60 minus the essence still owed), 61 done.
+   * 8 meet in the mausoleum, 10-60 essence (60 minus the essence still owed: 60 with the last
+   * hand-in, capture 2026-11-02 tick 13457), 60 complete, 61 blessed for Morytania (tick 13629).
    * The guardian 3487 shows at 0-2, the cell Drezel at 4-8, the mausoleum Drezel at 8-61.
    */
   function wireValue(stage, player) {
-    if (stage >= STAGE_COMPLETE) return 61;
-    if (stage >= STAGE_REPAIRING_BARRIER) return 10 + Math.min(ESSENCE_REQUIRED - 1, essenceHandedIn(player));
+    if (stage >= STAGE_COMPLETE) return awaitingBlessing(player) ? 60 : 61;
+    if (stage >= STAGE_REPAIRING_BARRIER) return 10 + Math.min(ESSENCE_REQUIRED, essenceHandedIn(player));
     if (stage >= STAGE_MEET_IN_MAUSOLEUM) return 8;
     if (stage >= STAGE_VAMPYRE_SEALED) return 7;
     if (stage >= STAGE_CELL_UNLOCKED) return 6;
@@ -90,6 +101,14 @@ module.exports = function registerPriestInPerilQuest(api) {
   const FINAL_ESSENCE_MESSAGE_ID = "4daSZa";
   /** "Drezel inspects the water. He then says some sort of prayer." */
   const BLESSING_MESSAGE_ID = "feQ9cD";
+  /** "Drezel blesses you, allowing you to pass through the barrier into Morytania." (both copies). */
+  const PLAYER_BLESSING_MESSAGE_IDS = new Set(["R9VGgf", "ab5TxS"]);
+  /** Drezel's post-quest "receive" step that hands back a lost Wolfbane. */
+  const WOLFBANE_RETURN_ACTION_ID = "cb-Z4u";
+  const WOLFBANE_ITEM_IDS = [ItemIdentifiers.WOLFBANE, ItemIdentifiers.WOLFBANE_2];
+  const POST_QUEST_DREZEL_VARIANT = "standard-dialogue-after-priest-in-peril";
+  /** Set at "Quest complete!" and cleared by Drezel's blessing: varp 302 shows 60 until then. */
+  const AWAITING_BLESSING_ATTRIBUTE = "priest-in-peril:awaiting-blessing";
   const ESSENCE_REMAINING_BLANK = "[1-50]";
   const ESSENCE_HANDED_ATTRIBUTE = "priest-in-peril:essence-handed-in";
   /** How many times Drezel has blessed water: his "first time" lines follow the first blessing. */
@@ -97,7 +116,7 @@ module.exports = function registerPriestInPerilQuest(api) {
   /** Bit per monument (MONUMENTS index) whose golden souvenir has been swapped out. */
   const SOUVENIRS_ATTRIBUTE = "priest-in-peril:souvenirs";
   /** Transcript message shown only below the recommended combat level. */
-  const COMBAT_WARNING_STEP_ID = "0cBLcT";
+  const COMBAT_WARNING_STEP_ID = "gtY6Dq";
   const RECOMMENDED_COMBAT_LEVEL = 15;
 
   // The mausoleum trapdoors, closed and open: 1579/1581 north of the temple (over the
@@ -119,13 +138,6 @@ module.exports = function registerPriestInPerilQuest(api) {
   const COFFIN_ID = ObjectIdentifiers.COFFIN_7; // 3480 at 3413,3486,2
   const WELL_ID = ObjectIdentifiers.WELL_6; // 3485 at 3423,9890,0
   const MYSTERIOUS_VOICE_NPC_ID = 12240;
-  /**
-   * The large doors' wall is on the east edge of x 3408: the temple is east of it. Live
-   * swings them open and shut again two ticks later (rsprox.net #365), so one player
-   * opening them never lets the next one in; the quest walks the player through instead.
-   */
-  const TEMPLE_DOOR_OUTSIDE_X = 3408;
-  const TEMPLE_DOOR_INSIDE_X = 3409;
   /** The temple's ground floor (Quest Helper's temple zones). */
   const TEMPLE_GROUND_FLOOR = { minX: 3409, maxX: 3419, minY: 3483, maxY: 3494 };
   const DOOR_ANSWERED_ATTRIBUTE = "priest-in-peril:door-answered";
@@ -152,6 +164,10 @@ module.exports = function registerPriestInPerilQuest(api) {
       golden: ItemIdentifiers.GOLDEN_CANDLE, study: "Saradomin is the light that shines throughout our lives." },
   ];
 
+  const MONUMENT_WINDOW_GROUP_ID = 272;
+  const MONUMENT_WINDOW_TEXT_UID = (MONUMENT_WINDOW_GROUP_ID << 16) | 7;
+  const MONUMENT_WINDOW_ITEM_UID = (MONUMENT_WINDOW_GROUP_ID << 16) | 8;
+
   const NORTH_TRAPDOOR_LOCATION = { x: 3405, y: 3507, z: 0 };
   const CHURCH_TRAPDOOR_LOCATION = { x: 3422, y: 3485, z: 0 };
   const CELL_GATE_LOCATION = { x: 3415, y: 3489, z: 2 };
@@ -166,9 +182,25 @@ module.exports = function registerPriestInPerilQuest(api) {
   /** The voice's last line before the player agrees to deal with the dog. */
   const DOG_REQUEST_LINE = "Then please, deal with that dog for me.";
   const HOLY_BARRIER_LANDING = new Location(3423, 3485, 0);
-  /** The cell gate's wall is on the east edge of its tile: Drezel's cell is east of it. */
-  const CELL_OUTSIDE = new Location(3415, 3489, 2);
-  const CELL_INSIDE = new Location(3416, 3489, 2);
+  /** "You use the key to unlock the cell gate." plays this (capture 2026-11-02 tick 11429). */
+  const CELL_UNLOCK_SOUND_ID = 2419;
+  // Rev 241 capture 2026-11-02. Drezel's blessings (water tick 11453, the player tick 13629):
+  // heal_casting on the player at height 120, Drezel's human_castentangle and synth 166.
+  const BLESSING_GFX_ID = 84;
+  const BLESSING_GFX_HEIGHT = 120;
+  const BLESSING_SEQ_ID = 710;
+  const BLESSING_SOUND_ID = 166;
+  // Bucket on the well (tick 11068): the player's human_pickuptable and synth 2615.
+  const WELL_FILL_SEQ_ID = 832;
+  const WELL_FILL_SOUND_ID = 2615;
+  // Blessed water on the coffin (tick 11568): throw_bucketofwater, priestperil_coffin_spell on
+  // both coffin tiles 34 cycles on, and synth 1733 30 cycles on.
+  const COFFIN_POUR_SEQ_ID = 1077;
+  const COFFIN_SPELL_GFX_ID = 272;
+  const COFFIN_SPELL_GFX_DELAY = 34;
+  const COFFIN_SPELL_TILES = [new Location(3413, 3486, 2), new Location(3413, 3487, 2)];
+  const COFFIN_POUR_SOUND_ID = 1733;
+  const COFFIN_POUR_SOUND_DELAY = 30;
   /** Drezel's cell spawn is on the temple's top floor; the mausoleum one is underground. */
   const MAUSOLEUM_MIN_Y = 9000;
 
@@ -225,6 +257,14 @@ module.exports = function registerPriestInPerilQuest(api) {
 
   function showStatement(player, text) {
     StatementDialogue.send(player, text);
+  }
+
+  function showMonumentWindow(player, monument) {
+    player.getPacketSender()
+      .sendInterface(MONUMENT_WINDOW_GROUP_ID)
+      .sendString(monument.study, MONUMENT_WINDOW_TEXT_UID)
+      .sendItemOnInterfaces(MONUMENT_WINDOW_ITEM_UID,
+        monument.key ? IRON_KEY_ITEM_ID : monument.golden, 1);
   }
 
   function showItemStatement(player, itemId, text) {
@@ -340,10 +380,10 @@ module.exports = function registerPriestInPerilQuest(api) {
   }
 
   function kingRoaldVariant(stage, player) {
-    // Shield of Arrav also finishes at King Roald; defer to its handler once the
-    // player has joined a gang (otherwise its certificate branch is unreachable).
+    // Yield only when Shield of Arrav has a hand-in conversation to claim.
     const shieldStage = Number(player.getAttribute("quest.shield_of_arrav.stage")) || 0;
-    if (shieldStage >= 4) return null;
+    if (shieldStage >= SHIELD_OF_ARRAV_HAND_IN_STAGE && shieldStage < SHIELD_OF_ARRAV_COMPLETE_STAGE
+      && SHIELD_OF_ARRAV_HAND_IN_ITEMS.some((id) => held(player, id))) return null;
     if (stage >= STAGE_COMPLETE) {
       return { page: "King Roald", variant: "standard-dialogue-after-priest-in-peril" };
     }
@@ -368,7 +408,7 @@ module.exports = function registerPriestInPerilQuest(api) {
 
   /** The Drezel in the mausoleum takes the essence once the vampyre is sealed. */
   function mausoleumDrezelVariant(stage, player) {
-    if (stage >= STAGE_COMPLETE) return { page: DREZEL_PAGE, variant: "standard-dialogue-after-priest-in-peril" };
+    if (stage >= STAGE_COMPLETE) return { page: DREZEL_PAGE, variant: POST_QUEST_DREZEL_VARIANT };
     if (stage >= STAGE_REPAIRING_BARRIER) {
       // Paid in full: talkToPaidMausoleumDrezel resumes after the hand-in.
       if (essenceAllHandedIn(player)) return FINAL_ESSENCE_VARIANT;
@@ -452,6 +492,32 @@ module.exports = function registerPriestInPerilQuest(api) {
       (steps) => steps.slice(steps.findIndex((step) => step?.id === FINAL_ESSENCE_MESSAGE_ID) + 1), npc);
   }
 
+  /**
+   * Ours (not captured): complete but walked off before the blessing (varp 302 still 60).
+   * Talking to the mausoleum Drezel resumes the final conversation after "Quest complete!".
+   */
+  function talkToUnblessedDrezel(event) {
+    const { player, npc, npcId, clickType } = event;
+    if (npcId !== DREZEL_NPC_ID || clickType !== 1 || !inMausoleum(npc)) return;
+    if (!quest.isComplete(player) || !awaitingBlessing(player)) return;
+    event.handled = startTranscript(api, player, DREZEL_NPC_ID, PAGE, FINAL_ESSENCE_VARIANT,
+      (steps) => steps.slice(steps.findIndex((step) => step?.id === COMPLETE_ACTION_ID) + 1), npc);
+  }
+
+  /**
+   * Drezel's post-quest page (Transcript:Drezel) opens with "If the player has lost their
+   * wolfbane dagger:", but once the quest is done Nature Spirit's variants answer his Talk-to.
+   * Ours (entry point): with the dagger lost, the Talk-to plays his page, whose lost-dagger
+   * branch comes first, so it can be had back before, during and after Nature Spirit.
+   */
+  function talkToDrezelLostWolfbane(event) {
+    const { player, npc, npcId, clickType } = event;
+    if (event.handled || npcId !== DREZEL_NPC_ID || clickType !== 1) return;
+    if (!quest.isComplete(player) || awaitingBlessing(player) || ownsWolfbane(player)) return;
+    event.handled = startTranscript(api, player, DREZEL_NPC_ID, DREZEL_PAGE, POST_QUEST_DREZEL_VARIANT,
+      undefined, npc);
+  }
+
   /** Which transcript variant the speaker plays. */
   function selectVariant({ npcId, npc, player }) {
     const stage = quest.getStage(player);
@@ -463,13 +529,18 @@ module.exports = function registerPriestInPerilQuest(api) {
   }
 
   /** Answer the page's prose conditions. */
-  function answerCondition({ player, text }) {
+  function answerCondition({ player, npcId, text }) {
     const value = String(text).toLowerCase();
     if (value.includes("attempts to use magic spells on the guardian")) return true;
     if (value.includes("doesn't have murky water")) return !held(player, MURKY_WATER_ITEM_ID);
     if (value.includes("has murky water")) return held(player, MURKY_WATER_ITEM_ID);
     // Asked right after the blessing message, so the blessing just given counts.
     if (value.includes("first time blessing water")) return blessings(player) <= 1;
+    if (npcId !== DREZEL_NPC_ID || !quest.isComplete(player)) return null;
+    // Drezel's post-quest page opens with these (see talkToDrezelLostWolfbane).
+    if (value.includes("has lost their wolfbane dagger")) return !ownsWolfbane(player);
+    if (value.includes("inventory isn't full")) return !player.getInventory().isFull();
+    if (value.includes("inventory is full")) return player.getInventory().isFull();
     return null;
   }
 
@@ -479,13 +550,40 @@ module.exports = function registerPriestInPerilQuest(api) {
   }
 
   /** Drezel blesses every bucket of murky water the player carries. */
-  function blessWater(player) {
+  function blessWater(player, npc) {
     const inventory = player.getInventory();
     const amount = inventory.getAmount(MURKY_WATER_ITEM_ID);
     if (amount <= 0) return;
     inventory.deleteNumber(MURKY_WATER_ITEM_ID, amount);
     inventory.adds(BLESSED_WATER_ITEM_ID, amount);
     player.setAttribute(BLESSINGS_ATTRIBUTE, blessings(player) + 1);
+    playBlessing(player, npc);
+  }
+
+  /** Drezel's prayer, for the water and for the player alike (see BLESSING_GFX_ID). */
+  function playBlessing(player, npc) {
+    player.performGraphic(new Graphic(BLESSING_GFX_ID, 0, BLESSING_GFX_HEIGHT));
+    npc?.performAnimation?.(new Animation(BLESSING_SEQ_ID));
+    Sounds.sendSound(player, new Sound(BLESSING_SOUND_ID, 1, 0, 0));
+  }
+
+  function awaitingBlessing(player) {
+    return player.getAttribute(AWAITING_BLESSING_ATTRIBUTE) === true;
+  }
+
+  /** "Drezel blesses you...": varp 302 goes from 60 to 61 (capture 2026-11-02 tick 13629). */
+  function blessPlayer(player, npc) {
+    if (!quest.isComplete(player) || !awaitingBlessing(player)) return;
+    player.setAttribute(AWAITING_BLESSING_ATTRIBUTE, false);
+    player.getPacketSender().sendConfig(VARP_PRIEST_IN_PERIL, wireValue(quest.getStage(player), player));
+    playBlessing(player, npc);
+  }
+
+  /** Wolfbane anywhere the player keeps it: inventory, worn or banked. */
+  function ownsWolfbane(player) {
+    return WOLFBANE_ITEM_IDS.some((itemId) => held(player, itemId)
+      || (player.getEquipment?.()?.getAmount?.(itemId) ?? 0) > 0
+      || inBank(player, itemId));
   }
 
   function blessings(player) {
@@ -503,7 +601,18 @@ module.exports = function registerPriestInPerilQuest(api) {
     }
     if (npcId !== DREZEL_NPC_ID) return;
     if (kind === "message" && stepId === BLESSING_MESSAGE_ID) {
-      if (quest.getStage(player) === STAGE_CELL_UNLOCKED) blessWater(player);
+      if (quest.getStage(player) === STAGE_CELL_UNLOCKED) blessWater(player, event.npc);
+      return;
+    }
+    if (kind === "message" && PLAYER_BLESSING_MESSAGE_IDS.has(stepId)) {
+      blessPlayer(player, event.npc);
+      return;
+    }
+    if (stepId === WOLFBANE_RETURN_ACTION_ID) {
+      if (quest.isComplete(player) && !ownsWolfbane(player) && !player.getInventory().isFull()) {
+        player.getInventory().adds(ItemIdentifiers.WOLFBANE, 1);
+      }
+      event.handled = true;
       return;
     }
     if (kind === "message" && ESSENCE_MESSAGE_IDS.has(stepId)) {
@@ -513,6 +622,8 @@ module.exports = function registerPriestInPerilQuest(api) {
     }
     if (stepId !== COMPLETE_ACTION_ID) return;
     if (quest.getStage(player) === STAGE_REPAIRING_BARRIER && essenceHandedIn(player) >= ESSENCE_REQUIRED) {
+      // Set first, so completing keeps 60; the blessing a few lines on sends 61.
+      player.setAttribute(AWAITING_BLESSING_ATTRIBUTE, true);
       quest.complete(player);
     }
   }
@@ -544,6 +655,135 @@ module.exports = function registerPriestInPerilQuest(api) {
     if (stage < STAGE_TOLD_KING_ROALD || stage >= STAGE_VAMPYRE_SEALED) return;
     api.getItemOnGroundManager().registerLocation(killer, new Item(GOLDEN_KEY_ITEM_ID, 1),
       new Location(location.x, location.y, location.z));
+    // Live tells the killer about the untradeable drop (rev 241 capture, 2026-11-02).
+    killer.sendMessage("<col=ef1020>Untradeable drop: Golden key</col>");
+  }
+
+  /**
+   * The temple's Monks of Zamorak punch every 4 ticks and now and then cast a spell instead
+   * (rev 241 captures, 2026-10-17 and 2026-11-02). Casts seen per monk: 3484 Weaken and
+   * Curse, 3485 Weaken and Confuse, 3486 Fire Bolt; a small sample, so a spell they never
+   * cast in it is not ruled out. Cast animation, projectile, launch and end cycle, the cast
+   * (92) and impact (124) graphic heights and the landing tick are the captured ones: every
+   * cast was from the next tile, Weaken ending at cycle 60 and landing 2 ticks after the cast,
+   * Confuse, Curse and Fire Bolt ending at 90 and landing after 3. Their attack range is 1, so
+   * no other distance occurs.
+   * A splash, and a landed Weaken/Confuse/Curse, show no hitsplat, as live; a landed Fire Bolt
+   * hits, up to the Wiki infobox's max hit of 5 (one captured hit, 4).
+   * A landed Weaken/Confuse/Curse drains 5% of the level plus 1 (strength 63 -> 59, 28 -> 26,
+   * attack 27 -> 25, defence 1 -> 0 in the captures) and says "You feel weakened.". The
+   * floor-plus-one split of that rule could not be told from a ceiling in the data.
+   * Not from the captures: the cast share (the captured share of swings, a small sample),
+   * an even pick between a monk's two spells, and leaving an already lowered skill alone
+   * (every captured drain was from a full level; the standard curses' rule).
+   */
+  // Sequence, projectile and graphic ids as captured (the cache's names in the comments).
+  const SEQ_CAST_WEAKEN = 11426; // human_castweaken_walkmerge
+  const SEQ_CAST_CONFUSE = 11424; // human_castconfuse_walkmerge
+  const SEQ_CAST_CURSE = 11428; // human_castcurse_walkmerge
+  const SEQ_CAST_STRIKE = 9144; // human_caststrike_walkmerge
+  const PROJ_WEAKEN = 106; // weaken_travel
+  const PROJ_CONFUSE = 103; // confuse_travel
+  const PROJ_CURSE = 109; // curse_travel
+  const PROJ_FIRE_BOLT = 127; // firebolt_travel
+  const GFX_WEAKEN_CAST = 105; // weaken_casting
+  const GFX_WEAKEN_IMPACT = 107; // weaken_impact
+  const GFX_CONFUSE_CAST = 102; // confuse_casting
+  const GFX_CONFUSE_IMPACT = 104; // confuse_impact
+  const GFX_CURSE_CAST = 108; // curse_casting
+  const GFX_CURSE_IMPACT = 110; // curse_impact
+  const GFX_FIRE_BOLT_CAST = 126; // firebolt_casting
+  const GFX_FIRE_BOLT_IMPACT = 128; // firebolt_impact
+  /** Monk of Zamorak (Paterdomus) infobox: one max hit, 5, for all three monks. */
+  const MONK_MAX_HIT = 5;
+  const MONK_SPELL_DEFS = {
+    weaken: { base: () => CombatSpells.WEAKEN, anim: SEQ_CAST_WEAKEN, projectile: PROJ_WEAKEN, launch: 44, end: 60,
+      cast: GFX_WEAKEN_CAST, impact: GFX_WEAKEN_IMPACT, skill: Skill.STRENGTH },
+    confuse: { base: () => CombatSpells.CONFUSE, anim: SEQ_CAST_CONFUSE, projectile: PROJ_CONFUSE, launch: 61, end: 90,
+      cast: GFX_CONFUSE_CAST, impact: GFX_CONFUSE_IMPACT, skill: Skill.ATTACK },
+    curse: { base: () => CombatSpells.CURSE, anim: SEQ_CAST_CURSE, projectile: PROJ_CURSE, launch: 51, end: 90,
+      cast: GFX_CURSE_CAST, impact: GFX_CURSE_IMPACT, skill: Skill.DEFENCE },
+    firebolt: { base: () => CombatSpells.FIRE_BOLT, anim: SEQ_CAST_STRIKE, projectile: PROJ_FIRE_BOLT, launch: 51, end: 90,
+      cast: GFX_FIRE_BOLT_CAST, impact: GFX_FIRE_BOLT_IMPACT, skill: null },
+  };
+
+  /**
+   * Per monk (3484/3485/3486, and the 16271-16273 variants the world shows): spells and the
+   * share of swings that are casts, as counted in the captures (3 of 26, 5 of 20, 2 of 4).
+   */
+  const MONK_CASTERS = new Map([
+    [NpcIdentifiers.MONK_OF_ZAMORAK_4, { spells: ["weaken", "curse"], chance: 3 / 26 }],
+    [NpcIdentifiers.MONK_OF_ZAMORAK_5, { spells: ["weaken", "confuse"], chance: 5 / 20 }],
+    [NpcIdentifiers.MONK_OF_ZAMORAK_6, { spells: ["firebolt"], chance: 2 / 4 }],
+    [NpcIdentifiers.MONK_OF_ZAMORAK_15, { spells: ["weaken", "curse"], chance: 3 / 26 }],
+    [NpcIdentifiers.MONK_OF_ZAMORAK_16, { spells: ["weaken", "confuse"], chance: 5 / 20 }],
+    [NpcIdentifiers.MONK_OF_ZAMORAK_17, { spells: ["firebolt"], chance: 2 / 4 }],
+  ]);
+  const monkSpellCache = new Map();
+
+  function drainWeakened(target, skill) {
+    if (!skill || !target?.isPlayer?.()) return;
+    const skills = target.getSkillManager();
+    const current = skills.getCurrentLevel(skill);
+    // Not captured (see above): like the standard curses, a lowered skill is left alone.
+    if (current < skills.getMaxLevel(skill)) return;
+    skills.setCurrentLevelCombat(skill, Math.max(0, current - (Math.floor(current * 0.05) + 1)));
+    skills.updateSkill(skill);
+    target.sendMessage("You feel weakened.");
+  }
+
+  function monkSpell(name) {
+    if (monkSpellCache.has(name)) return monkSpellCache.get(name);
+    const def = MONK_SPELL_DEFS[name];
+    const spell = Object.create(def.base());
+    spell.castAnimation = () => new Animation(def.anim);
+    spell.startGraphic = () => new Graphic(def.cast, GraphicHeight.SURGE_CAST);
+    spell.endGraphic = () => new Graphic(def.impact, GraphicHeight.SURGE_IMPACT);
+    spell.castProjectile = (source, target) => Projectile.createProjectile(source, target, def.projectile, def.launch,
+      def.end, 43, 31);
+    // The hit lands on the first tick after the projectile ends (60 -> 2 ticks, 90 -> 3).
+    spell.hitDelay = () => Projectile.ticksToLand(def.end);
+    if (def.skill) spell.spellEffect = (_source, target) => drainWeakened(target, def.skill);
+    else spell.maximumHit = () => MONK_MAX_HIT;
+    spell.__monkEffectOnly = !!def.skill;
+    monkSpellCache.set(name, spell);
+    return spell;
+  }
+
+  class MonkOfZamorakCombat extends CombatMethod {
+    constructor() {
+      super();
+      this.melee = new MeleeCombatMethod();
+      this.magic = new MagicCombatMethod();
+      this.active = this.melee;
+    }
+    type() { return this.active.type(); }
+    start(npc, target) {
+      const caster = MONK_CASTERS.get(npc.getId()) ?? MONK_CASTERS.get(npc.getRealId?.());
+      if (caster && Math.random() < caster.chance) {
+        npc.getCombat().setCastSpell(monkSpell(caster.spells[Math.floor(Math.random() * caster.spells.length)]));
+        this.active = this.magic;
+      } else {
+        this.active = this.melee;
+      }
+      this.active.start(npc, target);
+    }
+    hits(npc, target) {
+      const hits = this.active.hits(npc, target);
+      if (this.active !== this.magic) return hits;
+      const spell = npc.getCombat().getSelectedSpell();
+      // Live shows no splat for a splash, nor for a curse, which works on landing instead.
+      for (const hit of hits) if (!hit.isAccurate() || spell?.__monkEffectOnly) hit.withoutHitsplat();
+      return hits;
+    }
+    handleAfterHitEffects(hit) { this.active.handleAfterHitEffects(hit); }
+    finished(npc, target) {
+      this.active.finished(npc, target);
+      npc.getCombat().setCastSpell(null);
+    }
+    // They close in to punch range; every captured cast was from the next tile.
+    attackDistance() { return 1; }
+    attackSpeed(npc) { return this.melee.attackSpeed(npc); }
   }
 
   /**
@@ -572,26 +812,22 @@ module.exports = function registerPriestInPerilQuest(api) {
       return true;
     }
     player.moveTo(HOLY_BARRIER_LANDING.clone());
-    player.sendMessage("You pass through the holy barrier.");
+    // rsprox: a spam line in every recording (226/01637.txt:36515, 237/01108.txt:95706, ...).
+    player.getPacketSender().sendTypedMessage(api.core.ChatType.SPAM, "You pass through the holy barrier.");
     return true;
   }
 
   /**
    * Knocking the large door: the Mysterious Voice asks about the dog before the
-   * kill and thanks the player after it. Once the King has been told, the door
-   * just opens (the doors plugin's normal toggle). Before the quest nobody
-   * answers and the door stays shut.
+   * kill and thanks the player after it. Once the King has been told, and for anyone
+   * inside, the doors open: Doors swings them, walks the player through and shuts
+   * them two ticks later, as captured (its PASS_THROUGH_GATES).
    */
   function handleLargeDoor(request) {
     if (!LARGE_DOOR_IDS.has(request.objectId)) return;
     const { player } = request;
     const stage = quest.getStage(player);
-    const inside = inTemple(player);
-    if (stage >= STAGE_TOLD_KING_ROALD || inside) {
-      crossTempleDoor(player, inside);
-      request.handled = true;
-      return;
-    }
+    if (stage >= STAGE_TOLD_KING_ROALD || inTemple(player)) return;
     if (stage < STAGE_STARTED) {
       startTranscript(api, player, MYSTERIOUS_VOICE_NPC_ID, PAGE, "pre-quest-at-the-temple-before-starting-the-quest");
       request.handled = true;
@@ -612,9 +848,20 @@ module.exports = function registerPriestInPerilQuest(api) {
       && location.getY() >= TEMPLE_GROUND_FLOOR.minY && location.getY() <= TEMPLE_GROUND_FLOOR.maxY;
   }
 
-  function crossTempleDoor(player, inside) {
-    const location = player.getLocation();
-    player.moveTo(new Location(inside ? TEMPLE_DOOR_OUTSIDE_X : TEMPLE_DOOR_INSIDE_X, location.getY(), location.getZ()));
+  /**
+   * The two voices behind the door wear monks' chat heads (rev 241 captures, 2026-11-02): the
+   * guard "Mysterious Voice" shows 3484's head, "Mysterious Voice 2" (who calls himself Drevil)
+   * shows 3486's. The names already come from the transcript's speakers.
+   */
+  const VOICE_HEADS = new Map([
+    ["Mysterious Voice", NpcIdentifiers.MONK_OF_ZAMORAK_4],
+    ["Mysterious Voice 2", NpcIdentifiers.MONK_OF_ZAMORAK_6],
+  ]);
+
+  function showVoiceHeads(event) {
+    if (event.npcId !== MYSTERIOUS_VOICE_NPC_ID || event.speakerId != null) return;
+    const head = VOICE_HEADS.get(event.step?.speaker);
+    if (head != null) event.speakerId = head;
   }
 
   /**
@@ -658,36 +905,48 @@ module.exports = function registerPriestInPerilQuest(api) {
     return (player.getBanks?.() ?? []).some((bank) => bank?.contains?.(itemId));
   }
 
-  function crossCellGate(player) {
-    const inside = player.getLocation().getX() >= CELL_INSIDE.getX();
-    player.moveTo((inside ? CELL_OUTSIDE : CELL_INSIDE).clone());
+  /** Doors swings the unlocked gate open, walks the player across and shuts it (PASS_THROUGH_GATES). */
+  function passCellGate(player, object) {
+    if (object) api.emitCustomEvent("door:open", { player, object, handled: false });
   }
 
+  /**
+   * Live leaves the player outside the cell: the gate is only unlocked, and the iron key is
+   * used up (capture 2026-11-02 tick 11429 clears its inventory slot).
+   */
   function unlockCellGate(player) {
+    player.getInventory().deleteNumber(IRON_KEY_ITEM_ID, 1);
     quest.setStage(player, STAGE_CELL_UNLOCKED);
-    crossCellGate(player);
+    Sounds.sendSound(player, new Sound(CELL_UNLOCK_SOUND_ID, 1, 0, 0));
     playPage(player, UNLOCK_VARIANT);
   }
 
-  /** The cell gate: locked until the iron key opens it, then a plain gate. */
+  /**
+   * The cell gate. Locked, its Open talks to Drezel through it (capture 2026-11-02 tick 11168: the
+   * meeting starts there, with no Talk-to); with the iron key held it unlocks the gate instead
+   * (tick 11429). Once unlocked it opens and shuts like a door.
+   */
   function openCellGate(event) {
-    const { player, objectId, location } = event;
+    const { player, objectId, location, object } = event;
     if (objectId !== CELL_GATE_ID || !sameTile(location, CELL_GATE_LOCATION)) return false;
     const stage = quest.getStage(player);
     if (stage >= STAGE_CELL_UNLOCKED) {
-      crossCellGate(player);
+      passCellGate(player, object);
     } else if (stage >= STAGE_MET_DREZEL && held(player, IRON_KEY_ITEM_ID)) {
       unlockCellGate(player);
+    } else if (stage >= STAGE_TOLD_KING_ROALD) {
+      playPage(player, cellDrezelVariant(stage, player));
     } else {
       playPage(player, "pre-quest-attempting-to-open-the-gate");
     }
     return true;
   }
 
-  function useItemOnCellGate(player, itemId) {
+  function useItemOnCellGate(player, itemId, object) {
     const stage = quest.getStage(player);
     if (itemId === IRON_KEY_ITEM_ID) {
-      if (stage >= STAGE_CELL_UNLOCKED) crossCellGate(player);
+      // Ours: the key on the unlocked gate opens it, as its Open does.
+      if (stage >= STAGE_CELL_UNLOCKED) passCellGate(player, object);
       else if (stage >= STAGE_MET_DREZEL) unlockCellGate(player);
       else return false;
       return true;
@@ -715,6 +974,11 @@ module.exports = function registerPriestInPerilQuest(api) {
       player.getInventory().deleteNumber(BLESSED_WATER_ITEM_ID, 1);
       player.getInventory().adds(BUCKET_ITEM_ID, 1);
       quest.setStage(player, STAGE_VAMPYRE_SEALED);
+      player.performAnimation(new Animation(COFFIN_POUR_SEQ_ID));
+      for (const tile of COFFIN_SPELL_TILES) {
+        player.getPacketSender().sendGlobalGraphic(new Graphic(COFFIN_SPELL_GFX_ID, COFFIN_SPELL_GFX_DELAY), tile);
+      }
+      Sounds.sendSound(player, new Sound(COFFIN_POUR_SOUND_ID, 1, COFFIN_POUR_SOUND_DELAY, 0));
       playPage(player, "talking-to-drezel-with-the-iron-key-pouring-blessed-water-on-the-coffin");
       return true;
     }
@@ -747,6 +1011,8 @@ module.exports = function registerPriestInPerilQuest(api) {
     if (itemId !== BUCKET_ITEM_ID || quest.isComplete(player)) return false;
     player.getInventory().deleteNumber(BUCKET_ITEM_ID, 1);
     player.getInventory().adds(MURKY_WATER_ITEM_ID, 1);
+    player.performAnimation(new Animation(WELL_FILL_SEQ_ID));
+    Sounds.sendSound(player, new Sound(WELL_FILL_SOUND_ID, 1, 0, 0));
     playPage(player, "talking-to-drezel-with-the-iron-key-filling-a-bucket-from-the-well");
     return true;
   }
@@ -764,9 +1030,11 @@ module.exports = function registerPriestInPerilQuest(api) {
     const monument = monumentFor(event.objectId);
     if (!monument) return false;
     const { player } = event;
-    showStatement(player, quest.isStarted(player) && monumentsGuarded(player)
-      ? monument.study
-      : "A monument dedicated to the fallen.");
+    if (quest.isStarted(player) && monumentsGuarded(player)) {
+      showMonumentWindow(player, monument);
+    } else {
+      showStatement(player, "A monument dedicated to the fallen.");
+    }
     return true;
   }
 
@@ -832,9 +1100,9 @@ module.exports = function registerPriestInPerilQuest(api) {
   }
 
   function handleItemOnObject(event) {
-    const { player, objectId, itemId, location } = event;
+    const { player, objectId, itemId, location, object } = event;
     let handled = false;
-    if (objectId === CELL_GATE_ID && sameTile(location, CELL_GATE_LOCATION)) handled = useItemOnCellGate(player, itemId);
+    if (objectId === CELL_GATE_ID && sameTile(location, CELL_GATE_LOCATION)) handled = useItemOnCellGate(player, itemId, object);
     else if (objectId === COFFIN_ID && sameTile(location, COFFIN_LOCATION)) handled = useItemOnCoffin(player, itemId);
     else if (objectId === WELL_ID && sameTile(location, WELL_LOCATION)) handled = useItemOnWell(player, itemId);
     else handled = useItemOnMonument(player, objectId, itemId);
@@ -888,6 +1156,7 @@ module.exports = function registerPriestInPerilQuest(api) {
   api.persistAttribute(BLESSINGS_ATTRIBUTE, 0);
   api.persistAttribute(SOUVENIRS_ATTRIBUTE, 0);
   api.persistAttribute(MAUSOLEUM_GATE_UNLOCKED_ATTRIBUTE, false);
+  api.persistAttribute(AWAITING_BLESSING_ATTRIBUTE, false);
 
   api.registerArea(new GuardianRoomArea([GUARDIAN_ROOM]));
   api.onNpcDialogueVariant(selectVariant);
@@ -898,11 +1167,15 @@ module.exports = function registerPriestInPerilQuest(api) {
   api.onCustomEvent("door:toggle", handleLargeDoor);
   api.onCustomEvent("door:toggle", handleMausoleumGate);
   api.onCustomEvent("npc-dialogue:line", agreeToKillDog);
+  api.onCustomEvent("npc-dialogue:line", showVoiceHeads);
   api.onCustomEvent("ladders:climb", claimNorthTrapdoorClimb);
   api.onNpcDeath(handleGuardianDeath);
   api.onNpcDeath(handleHoodedMonkDeath);
+  api.registerNpcCombatMethodProvider([...MONK_CASTERS.keys()], MonkOfZamorakCombat, { singleton: false });
   api.onNpcInteraction(talkToUnlockedDrezel);
   api.onNpcInteraction(talkToPaidMausoleumDrezel);
+  api.onNpcInteraction(talkToUnblessedDrezel);
+  api.onNpcInteraction(talkToDrezelLostWolfbane);
   api.onObjectRoute(handleTrapdoorRoute);
   api.onObjectInteraction("Holy barrier", { "Pass-through": handleHolyBarrier });
   api.onObjectInteraction("Cell gate", { Open: openCellGate });

@@ -1,6 +1,8 @@
 /** Romeo & Juliet: captured handovers, potion effects and private scenes. See docs/f2p-varrock-parity.md. */
+const CameraShake = require("../../interface/CameraShake.plugin");
+
 module.exports = function registerRomeoAndJulietQuest(api) {
-  const { Animation, Graphic, Location, World, TaskManager, CountdownTask, TemplatedInstanceArea, DialogueChainBuilder, ActionDialogue, StatementDialogue, ItemIdentifiers, NpcIdentifiers } = api.core;
+  const { Animation, Graphic, PathFinder, Location, World, TaskManager, CountdownTask, TemplatedInstanceArea, DialogueChainBuilder, ActionDialogue, StatementDialogue, ItemIdentifiers, NpcIdentifiers } = api.core;
   const { registerQuest, startTranscript } = require("../QuestRuntime");
 
   const ROMEO_NPC_ID = NpcIdentifiers.ROMEO;
@@ -306,7 +308,11 @@ module.exports = function registerRomeoAndJulietQuest(api) {
       if(text==="Right...bottoms up!")current?.performAnimation(new Animation(3284));
       if(text==="Urk!")current?.performAnimation(new Animation(836));
       if(text==="What's all that screaming?") { actor(scene,DRAUL_NPC_ID,3158,3427);camera(player,scene,[3156,3421,425],[3157,3426,125],5); }
-      if(text==="Hi Romeo...I'm Phillipa!") {const cousin=actor(scene,PHILLIPA_NPC_ID,2331,4645);cousin?.getMovementQueue().addSteps(scene.sourceTile(2325,4644));}
+      // Straight queued steps cross the crypt's walls before reaching these scripted destinations.
+      if(text==="Hi Romeo...I'm Phillipa!") {
+        const cousin=actor(scene,PHILLIPA_NPC_ID,2331,4645),to=scene.sourceTile(2325,4644);
+        if(cousin)PathFinder.calculateWalkRoute(cousin,to.getX(),to.getY());
+      }
     };
     if(scene.kind==="crypt"&&text==="Oh, be quiet...")event.after=()=>{
       frozenDialogue(player);
@@ -321,7 +327,9 @@ module.exports = function registerRomeoAndJulietQuest(api) {
       later(scene,16,()=>resume(player,ROMEO_NPC_ID,CRYPT_VARIANT,text));
     };
     if(scene.kind==="crypt"&&text==="Ohhh, ok then...")event.after=()=>{
-      frozenDialogue(player);scene.actors.get(ROMEO_NPC_ID)?.getMovementQueue().addSteps(scene.sourceTile(2323,4643));
+      frozenDialogue(player);
+      const romeo=scene.actors.get(ROMEO_NPC_ID),to=scene.sourceTile(2323,4643);
+      if(romeo)PathFinder.calculateWalkRoute(romeo,to.getX(),to.getY());
       later(scene,1,()=>camera(player,scene,[2322,4639,300],[2328,4654,25]));
       later(scene,14,()=>resume(player,ROMEO_NPC_ID,CRYPT_VARIANT,text));
     };
@@ -447,7 +455,9 @@ module.exports = function registerRomeoAndJulietQuest(api) {
     constructor(player,kind) {
       super(4,4);this.owner=player;this.kind=kind;this.origin=kind==="juliet"?[3144,3416,1]:[2320,4632,0];
       this.returnTile=kind==="juliet"?new Location(3157,3425,1):player.getLocation().clone();this.actors=new Map();
-      for(let x=0;x<4;x++)for(let y=0;y<4;y++)this.setChunk(this.origin[2],x,y,{sourceChunkX:this.origin[0]/8+x,sourceChunkY:this.origin[1]/8+y,sourcePlane:this.origin[2],rotation:0});
+      for(let plane=0;plane<=this.origin[2];plane++) {
+        for(let x=0;x<4;x++)for(let y=0;y<4;y++)this.setChunk(plane,x,y,{sourceChunkX:this.origin[0]/8+x,sourceChunkY:this.origin[1]/8+y,sourcePlane:plane,rotation:0});
+      }
     }
     sourceTile(x,y) { return this.tile(x-this.origin[0],y-this.origin[1],this.origin[2]); }
     canTeleport(){return false;} canAttack(){return false;}
@@ -482,7 +492,7 @@ module.exports = function registerRomeoAndJulietQuest(api) {
     const scene=new RomanceScene(player,kind);scenes.set(player,scene);
     player.getMovementQueue().reset().setBlockMovement(true);player.setUntargetable(true);
     player.getPacketSender().sendVarbit(6719,2).sendVarbit(12393,1);fade(player,true);frozenDialogue(player);
-    for(let axis=0;axis<5;axis++)player.getPacketSender().sendCameraShake(axis,0,0,0);
+    for(let axis=0;axis<5;axis++)CameraShake.send(player.getPacketSender(), "atmospheric", axis,0,0,0);
     later(scene,3,()=>{
       const spawn=kind==="juliet"?[3157,3425]:[2333,4646];player.moveTo(scene.sourceTile(...spawn));scene.enter(player);fade(player,false);
       if(kind==="juliet") {
@@ -526,7 +536,7 @@ module.exports = function registerRomeoAndJulietQuest(api) {
       if(!held(player,CADAVA_POTION_ITEM_ID)){clearTimed(player);return;}
       player.getInventory().deleteNumber(CADAVA_POTION_ITEM_ID,1);player.getInventory().adds(ItemIdentifiers.VIAL,1);player.performAnimation(new Animation(829));
     });
-    later(key,4,()=>player.getPacketSender().sendCameraShake(3,0,20,2));
+    later(key,4,()=>CameraShake.send(player.getPacketSender(), "atmospheric", 3,0,20,2));
     later(key,7,()=>{player.performAnimation(new Animation(836));timedSpeech(player,null,"Urk!");});
     later(key,13,()=>{player.sendMessage("Oh dear...you are nearly dead.");fade(player,true);});
     later(key,16,()=>player.performAnimation(Animation.DEFAULT_RESET_ANIMATION));
@@ -553,6 +563,13 @@ module.exports = function registerRomeoAndJulietQuest(api) {
   }
   function restoreJuliet({player}) { player.getPacketSender().sendVarbit(JULIET_VARBIT,quest.isComplete(player)?2:quest.getStage(player)>=STAGE_JULIET_IN_CRYPT?1:0); }
 
+  // The 3 November 2026 update's quest XP: lamps (plugins/items/QuestRewardLamps.plugin.js) (Wiki: Update:Quest Month Kick Off, TFA Tweaks & More),
+  // paid on completion; held back for a completion not played through (experience: false).
+  function grantCompletionLamps(player, _quest, options = {}) {
+    if (options.experience === false) return;
+    api.emitCustomEvent("quest-lamps:give", { player, lamp: "ROMEO_AND_JULIET", count: 1 });
+  }
+
   quest = registerQuest(api, {
     key: "romeo_and_juliet",
     name: "Romeo & Juliet",
@@ -560,11 +577,13 @@ module.exports = function registerRomeoAndJulietQuest(api) {
     startedValue: STAGE_SPOKEN_TO_ROMEO,
     completionValue: STAGE_COMPLETE,
     questPoints: 5,
+    otherRewards: ["An antique lamp giving 500 XP"],
     completionJingleId: 154,
     xpRewards: [],
     scrollItemId: CADAVA_POTION_ITEM_ID,
     rewardItemLabel: "Cadava potion",
     buildJournal,
+    onReward: grantCompletionLamps,
   });
 
   api.onNpcDialogueVariant(selectVariant);

@@ -141,6 +141,7 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
   // ==========================================================================
 
   const STAGE_VARBIT = 11210; // doti
+  const VARBIT_FINAL_FIGHT = 11258; // doti_final_fight, varp 4402 bits 25-27
   const VARBIT_MET_XOCOTLA = 11211;
   const VARBIT_MET_COZYAC = 11212;
   const VARBIT_MET_PAVO = 11213;
@@ -509,6 +510,7 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
       if (varbit) sender.sendVarbit(varbit, hasFlag(player, name) ? 1 : 0);
     }
     sender.sendVarbit(VARBIT_MASK_ASSIGNMENT, maskAssignment(player));
+    sender.sendVarbit(VARBIT_FINAL_FIGHT, Number(player.getAttribute(FINAL_FIGHT_ATTRIBUTE)) || 0);
     if (quest.isComplete(player)) {
       sender.sendVarbit(VARBIT_ALDARIN_PENDANT, hasFlag(player, "icon.found") ? 1 : 0);
       sender.sendVarbit(
@@ -1313,7 +1315,8 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
     const boxes = {
       '0NeKgL': [UNIFORM_TOP, UNIFORM_BOTTOM],
       '5z2Lhi': [WINE_LABELS], SsD2Fw: [THREATENING_NOTE], Adb65_: [DRINKING_FLASK], XXxTM6: [SHIPPING_CONTRACT],
-      JwtSTS: [WINE_LABELS, DRINKING_FLASK], FTSXlx: [CHEST_KEY], '1XIQ80': [ICON],
+      // rsprox 226/01695.txt:124649-124651: the hand-over's objectbox_double shows doti_flask (29925) and doti_letter (29926).
+      JwtSTS: [DRINKING_FLASK, THREATENING_NOTE], FTSXlx: [CHEST_KEY], '1XIQ80': [ICON],
     };
     if (boxes[stepId]) { event.handled = true; event.box = { items: boxes[stepId] }; }
     if (boxes[stepId]?.some(id => EVIDENCE_ITEMS.includes(id)) && stepId !== 'JwtSTS' && player.getInventory().getFreeSlots() < 1) {
@@ -2033,7 +2036,8 @@ module.exports = function registerDeathOnTheIsleQuest(api) {
   api.onNpcDeath(handleNpcDeath);
   api.onNpcBeforeDeath(preventAdalaDeath);
   api.onCombatHitResolved(fightHit);
-  api.registerCombatMethodResolver({ resolve: resolveStageCombat });
+  // Outranks weapon resolvers (twin weapons, macuahuitl), which load earlier from plugins/combat and plugins/items.
+  api.registerCombatMethodResolver({ resolve: resolveStageCombat, overridesWeapon: true });
   api.onPlayerBeforeDeath(handlePlayerBeforeDeath);
   api.onPlayerLogin(handleLogin);
   api.onPlayerLogout(handleLogout);

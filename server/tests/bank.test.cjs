@@ -12,6 +12,8 @@ const { Bank } = require("../dist/game/model/container/impl/Bank");
 const { World } = require("../dist/game/World");
 const { PlayerStatus } = require("../dist/game/model/PlayerStatus");
 const { EquipPacketListener } = require("../dist/net/packet/impl/EquipPacketListener");
+const { ChatType } = require("../dist/net/protocol/ClientProtocol");
+const { PluginManager } = require("../dist/plugins/PluginManager");
 
 const TRIDENT = 11907;
 const LAVA_BATTLESTAFF = 3053;
@@ -19,6 +21,10 @@ const MYSTIC_LAVA_STAFF = 3054;
 // In the cache this note belongs to 3053, not to 3054 (its id minus one).
 const LAVA_BATTLESTAFF_NOTE = 3055;
 const LAVA_BATTLESTAFF_PLACEHOLDER = 90053;
+const FAMILY_CHARGED = 7000;
+const FAMILY_PLACEHOLDER = 7001;
+const FAMILY_EMPTY = 7002;
+const UNRELATED = 7003;
 
 // Item definitions normally come from the cache; stub the few this test uses.
 const DEFINITIONS = {
@@ -28,6 +34,9 @@ const DEFINITIONS = {
   [LAVA_BATTLESTAFF]: { name: "Lava battlestaff", placeholder: LAVA_BATTLESTAFF_PLACEHOLDER },
   [MYSTIC_LAVA_STAFF]: { name: "Mystic lava staff" },
   [LAVA_BATTLESTAFF_NOTE]: { name: "Lava battlestaff", stackable: true, noteOf: LAVA_BATTLESTAFF },
+  [FAMILY_CHARGED]: { name: "Family item", placeholder: FAMILY_PLACEHOLDER },
+  [FAMILY_EMPTY]: { name: "Family item (empty)" },
+  [UNRELATED]: { name: "Unrelated item" },
 };
 ItemDefinition.forId = (id) => {
   const def = DEFINITIONS[id] ?? { name: "null" };
@@ -58,7 +67,9 @@ function createPlayer() {
         ? (id, value) => { varbits.push([id, value]); return sender; }
         : prop === "sendEnterAmountPrompt"
           ? (title) => { prompts.push(title); return sender; }
-          : () => sender,
+          : prop === "sendTypedMessage"
+            ? (type, text) => { messages.push(`${type}:${text}`); return sender; }
+            : () => sender,
   });
   let currentTab = 0;
   const messages = [];
@@ -96,6 +107,50 @@ function createPlayer() {
   return player;
 }
 
+test("unsupported placeholders warn only when a successful withdrawal empties the stack", () => {
+  const player = createPlayer();
+  player.placeholders = true;
+  player.getBank().add(new Item(MYSTIC_LAVA_STAFF, 2), false);
+  Bank.withdraw(player, MYSTIC_LAVA_STAFF, 0, 1, 0);
+  assert.deepEqual(player.messages, []);
+  Bank.withdraw(player, MYSTIC_LAVA_STAFF, 0, 1, 0);
+  assert.deepEqual(player.messages, [`${ChatType.SPAM}:This item cannot leave a placeholder.`]);
+  assert.equal(player.getInventory().getAmount(MYSTIC_LAVA_STAFF), 2);
+  assert.equal(player.getBank().contains(MYSTIC_LAVA_STAFF), false);
+  player.getBank().add(new Item(LAVA_BATTLESTAFF, 1), false);
+  Bank.withdraw(player, LAVA_BATTLESTAFF, 0, 1, 0);
+  assert.equal(player.messages.length, 1, "supported items leave their placeholder silently");
+  assert.equal(player.getBank().getItems()[0].getAmount(), 0);
+});
+
+test('a new bank opening resets noted withdrawal while an open-bank refresh preserves it', async t => {
+  const { CachePipeline } = require('../dist/game/cache/CachePipeline');
+  await CachePipeline.initialize(process.cwd());
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const player = new Player(null);
+  player.setUsername('bankreset');
+  t.mock.method(player, 'getSession', () => ({ sendClientPacket: () => true }));
+  player.setNoteWithdrawal(true);
+  const world = require('../dist/game/definition/WorldDefinition');
+  t.mock.method(world, 'getWorldDefinition', () => ({ name: 'Solaris RSPS' }));
+  const titles = [];
+  const sender = player.getPacketSender();
+  const sendString = sender.sendString.bind(sender);
+  sender.sendString = (text, uid) => { titles.push(text); return sendString(text, uid); };
+  player.getBank(0).open();
+  assert.ok(titles.includes('Bank of Solaris RSPS'));
+  assert.equal(player.withdrawAsNote(), false);
+  assert.equal(player.getPacketSender().getVarbit(3958), 0);
+  player.setNoteWithdrawal(true);
+  player.getBank(0).open();
+  assert.equal(player.withdrawAsNote(), true, 'refreshing the same bank does not reset the current selection');
+  player.getPacketSender().sendInterfaceRemoval();
+  assert.equal(Bank.isOpen(player), false);
+  player.getBank(0).open();
+  assert.equal(player.withdrawAsNote(), false);
+  assert.equal(player.getPacketSender().getVarbit(3958), 0);
+});
+
 test("depositing a note banks the item it notes, not the item before it", () => {
   const player = createPlayer();
   player.getInventory().add(new Item(LAVA_BATTLESTAFF_NOTE, 2), false);
@@ -120,6 +175,65 @@ test("depositing everything banks notes as the item they note", () => {
   assert.equal(player.getInventory().getAmount(LAVA_BATTLESTAFF_NOTE), 0);
 });
 
+for (const [route, deposit] of [
+  ["Deposit-All", (player, amount) => Bank.deposits(player, LAVA_BATTLESTAFF_NOTE, 0, amount)],
+  ["Deposit inventory", (player, amount) => player.getInventory().switchItems(
+    player.getBank(), new Item(LAVA_BATTLESTAFF_NOTE, amount), false, false)],
+]) {
+  for (const [boundary, held, offered] of [
+    ["near cap", 2147483645, 5],
+    ["full stack", 2147483647, 5],
+    ["exact fit", 2147483645, 2],
+  ]) {
+    test(`${route} preserves noted items at ${boundary}`, () => {
+      const player = createPlayer();
+      player.getBank().add(new Item(LAVA_BATTLESTAFF, held), false);
+      player.getInventory().add(new Item(LAVA_BATTLESTAFF_NOTE, offered), false);
+
+      deposit(player, offered);
+
+      const remaining = player.getInventory().getAmount(LAVA_BATTLESTAFF_NOTE);
+      const banked = player.getBank().getAmount(LAVA_BATTLESTAFF);
+      assert.equal(remaining + banked, offered + held, "deposit must preserve the whole item family");
+      assert.ok(remaining >= 0 && remaining <= 2147483647);
+      assert.ok(banked >= 0 && banked <= 2147483647);
+      assert.equal(player.getBank().getAmount(LAVA_BATTLESTAFF_NOTE), 0);
+      if (boundary === "full stack") assert.equal(remaining, offered);
+      if (boundary === "exact fit") assert.equal(remaining, 0);
+    });
+  }
+}
+
+for (const [boundary, held, offered] of [
+  ["near cap", 2147483645, 5],
+  ["full stack", 2147483647, 5],
+  ["exact fit", 2147483645, 2],
+]) {
+  test(`noted withdrawal preserves items at ${boundary}`, t => {
+    const forId = ItemDefinition.forId;
+    t.mock.method(ItemDefinition, "forId", id => {
+      const definition = forId(id);
+      if (id === LAVA_BATTLESTAFF) definition.getNoteId = () => LAVA_BATTLESTAFF_NOTE;
+      return definition;
+    });
+    const player = createPlayer();
+    player.withdrawAsNote = () => true;
+    player.getInventory().add(new Item(LAVA_BATTLESTAFF_NOTE, held), false);
+    player.getBank().add(new Item(LAVA_BATTLESTAFF, offered), false);
+
+    Bank.withdraw(player, LAVA_BATTLESTAFF, 0, -1, 0);
+
+    const carried = player.getInventory().getAmount(LAVA_BATTLESTAFF_NOTE);
+    const remaining = player.getBank().getAmount(LAVA_BATTLESTAFF);
+    assert.equal(carried + remaining, held + offered, "withdrawal must preserve the whole item family");
+    assert.ok(carried >= 0 && carried <= 2147483647);
+    assert.ok(remaining >= 0 && remaining <= 2147483647);
+    assert.equal(player.getInventory().getAmount(LAVA_BATTLESTAFF), 0);
+    if (boundary === "full stack") assert.equal(remaining, offered);
+    if (boundary === "exact fit") assert.equal(remaining, 0);
+  });
+}
+
 function metas(container) {
   return container.getValidItems().map((item) => [item.getAmount(), item.getMeta()]);
 }
@@ -131,8 +245,18 @@ test("depositing items keeps each one's metadata", () => {
 
   Bank.deposit(player, TRIDENT, 1, 2, true);
 
-  assert.deepEqual(metas(player.getBank(0)), [[1, { charges: 1200 }], [1, { charges: 5 }]]);
+  assert.deepEqual(metas(player.getBank(0)), [[1, { charges: 5 }], [1, { charges: 1200 }]]);
   assert.equal(player.getInventory().getValidItems().length, 0);
+});
+
+test("depositing one of several identical unstackable items takes the top-left slot, not the clicked one", () => {
+  const player = createPlayer();
+  for (const charges of [1, 2, 3]) player.getInventory().add(new Item(TRIDENT, 1, { charges }), false);
+
+  Bank.deposit(player, TRIDENT, 2, 1, true);
+
+  assert.deepEqual(metas(player.getBank(0)), [[1, { charges: 1 }]]);
+  assert.deepEqual(player.getInventory().getItems().slice(0, 3).map((item) => item.getId()), [-1, TRIDENT, TRIDENT]);
 });
 
 test("inventory bank options count matching unnoted items across slots", () => {
@@ -162,7 +286,7 @@ test("inventory bank options count matching unnoted items across slots", () => {
     assert.equal(player.getBank().getAmount(TRIDENT), expected);
     assert.equal(player.getInventory().getAmount(TRIDENT), 4 - expected);
     assert.equal(player.getInventory().getAmount(LAVA_BATTLESTAFF), 1);
-    assert.deepEqual(player.getBank().getValidItems()[0].getMeta(), { charges: 1200 });
+    assert.deepEqual(player.getBank().getValidItems()[0].getMeta(), { charges: 5 }, "deposits start at the top-left matching slot, not the clicked one");
   }
 });
 
@@ -381,7 +505,8 @@ test("as captured: withdrawing into a full inventory says there is no space", ()
 
   Bank.withdraw(player, TRIDENT, 0, 1, 0);
 
-  assert.deepEqual(player.messages, ["You don't have enough inventory space."]);
+  // Spam on bank clicks: 224/01463.txt:7863, 231/03063.txt:9533.
+  assert.deepEqual(player.messages, [`${ChatType.SPAM}:You don't have enough inventory space.`]);
   assert.equal(player.getBank(0).getAmount(TRIDENT), 3);
 });
 
@@ -392,7 +517,7 @@ test("as captured: withdrawing more than the free slots takes what fits and says
 
   Bank.withdraw(player, TRIDENT, 0, 5, 0);
 
-  assert.deepEqual(player.messages, ["You don't have enough inventory space to withdraw that many."]);
+  assert.deepEqual(player.messages, [`${ChatType.SPAM}:You don't have enough inventory space to withdraw that many.`]);
   assert.equal(player.getInventory().getAmount(TRIDENT), 2);
   assert.equal(player.getBank(0).getAmount(TRIDENT), 3);
 });
@@ -439,6 +564,49 @@ test("an item without a cache placeholder leaves none", () => {
   Bank.withdraw(player, TRIDENT, 0, 1, 0);
 
   assert.deepEqual(Bank.layout(player), []);
+});
+
+test("a plugin's placeholder family shares one bank slot across its forms", (t) => {
+  const original = PluginManager.emitCustomEvent;
+  PluginManager.emitCustomEvent = (name, event) => {
+    if (name === "bank:placeholder-identity"
+        && (event.itemId === FAMILY_CHARGED || event.itemId === FAMILY_EMPTY)) {
+      event.placeholderId = FAMILY_CHARGED;
+      event.itemIds = [FAMILY_CHARGED, FAMILY_EMPTY];
+    }
+    return original.call(PluginManager, name, event);
+  };
+  t.after(() => { PluginManager.emitCustomEvent = original; });
+  const player = createPlayer();
+  player.placeholders = true;
+  const bank = player.getBank(0);
+  bank.add(new Item(FAMILY_CHARGED, 1), false);
+
+  Bank.withdraw(player, FAMILY_CHARGED, 0, 1, 0);
+
+  assert.equal(bank.getValidItems().length, 1);
+  assert.equal(bank.getItems()[0].getAmount(), 0);
+  assert.equal(bank.getItems()[0].getId(), FAMILY_CHARGED);
+  assert.equal(Bank.displayItemId(bank.getItems()[0]), FAMILY_PLACEHOLDER);
+
+  player.getInventory().add(new Item(FAMILY_EMPTY, 1), false);
+  Bank.deposits(player, FAMILY_EMPTY, player.getInventory().getSlotForItemId(FAMILY_EMPTY), 1);
+
+  assert.equal(bank.getValidItems().length, 1, "the empty form refills the charged form's placeholder");
+  assert.equal(bank.getItems()[0].getId(), FAMILY_EMPTY);
+  assert.equal(bank.getItems()[0].getAmount(), 1);
+  assert.equal(Bank.displayItemId(bank.getItems()[0]), FAMILY_EMPTY);
+
+  Bank.withdraw(player, FAMILY_EMPTY, 0, 1, 0);
+
+  assert.equal(bank.getValidItems().length, 1);
+  assert.equal(bank.getItems()[0].getAmount(), 0);
+  assert.equal(bank.getItems()[0].getId(), FAMILY_CHARGED, "an empty form leaves the family's cache placeholder");
+  assert.equal(Bank.displayItemId(bank.getItems()[0]), FAMILY_PLACEHOLDER);
+
+  bank.add(new Item(UNRELATED, 1), false);
+  Bank.withdraw(player, UNRELATED, 1, 1, 0);
+  assert.equal(bank.getValidItems().length, 1, "an unrelated item leaves no placeholder");
 });
 
 test("clicking Release on a placeholder removes it; other options leave it", () => {
@@ -502,6 +670,21 @@ test("collapsing a tab moves its items and placeholders into the main tab and sh
   assert.deepEqual(player.getBank(0).getValidItems()[0].getMeta(), { charges: 1200 });
 });
 
+test("the old tab-button collapse keeps each stack's own count and metadata, and moves them to the main tab", () => {
+  const player = createPlayer();
+  player.getBank(1).add(new Item(TRIDENT, 1, { charges: 1200 }), false);
+  player.getBank(1).add(new Item(TRIDENT, 1, { charges: 5 }), false);
+  player.getBank(1).add(new Item(995, 300), false);
+
+  // Button 50070 + 4 * tab with action 1 is the old tab-button collapse.
+  assert.equal(Bank.handleButton(player, 50070 + 4, 1), true);
+
+  assert.deepEqual(player.getInventory().getValidItems(), []);
+  assert.deepEqual(player.getBank(0).getValidItems().map((item) => [item.getId(), item.getAmount(), item.getMeta()]),
+    [[TRIDENT, 1, { charges: 1200 }], [TRIDENT, 1, { charges: 5 }], [995, 300, null]]);
+  assert.deepEqual(player.getBank(1).getValidItems(), []);
+});
+
 test("removing placeholders from a tab leaves other tabs' placeholders", () => {
   const player = createPlayer();
   player.getBank(1).add(new Item(LAVA_BATTLESTAFF, 0), false);
@@ -515,8 +698,15 @@ test("removing placeholders from a tab leaves other tabs' placeholders", () => {
 
 const BANK_ITEMS = (Bank.MAIN_INTERFACE_ID << 16) | Bank.ITEMS_CHILD;
 const BANK_TABS = (Bank.MAIN_INTERFACE_ID << 16) | Bank.TABS_CHILD;
+const BANK_INCINERATOR = (Bank.MAIN_INTERFACE_ID << 16) | Bank.INCINERATOR_CHILD;
 const SIDE_ITEMS = (Bank.SIDE_INTERFACE_ID << 16) | Bank.SIDE_ITEMS_CHILD;
 const A = MYSTIC_LAVA_STAFF, B = LAVA_BATTLESTAFF, C = TRIDENT;
+
+const incinerations = [];
+PluginManager.createApi("bank-incinerator-test").onCustomEvent(
+  Bank.INCINERATE_EVENT,
+  (event) => incinerations.push(event),
+);
 
 function drag(player, sourceWidgetId, sourceSlot, sourceItemId, targetWidgetId, targetSlot) {
   return Bank.handleDrag(player, { sourceWidgetId, sourceSlot, sourceItemId, targetWidgetId, targetSlot });
@@ -525,6 +715,87 @@ function drag(player, sourceWidgetId, sourceSlot, sourceItemId, targetWidgetId, 
 function bankOf(player, ...tabs) {
   tabs.forEach((ids, tab) => ids.forEach((id) => player.getBank(tab).add(new Item(id, 1), false)));
 }
+
+
+test("native tab drag preserves containers, contents and save/load ordering", async (t) => {
+  const { CachePipeline } = require("../dist/game/cache/CachePipeline");
+  await CachePipeline.initialize(process.cwd());
+  const { Player } = require("../dist/game/entity/impl/player/Player");
+  const { PlayerSession } = require("../dist/net/PlayerSession");
+  const { ClientConnection } = require("../dist/net/NetworkBuilder");
+  const { decodeClientPackets } = require("../dist/net/protocol/ClientProtocol");
+  const { PlayerSave } = require("../dist/game/entity/impl/player/persistence/PlayerSave");
+  const { GameConstants } = require("../dist/game/GameConstants");
+  const channel = { kind: "test", remoteAddress: "127.0.0.1", isOpen: () => true,
+    send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+  const player = new Player(new PlayerSession(channel));
+  player.setUsername("banktabreorder");
+  player.setRegistered(true);
+  player.setStatus(PlayerStatus.BANKING);
+  player.setInterfaceId(Bank.MAIN_INTERFACE_ID);
+  player.getBank(0).add(new Item(995, 43), false);
+  player.getBank(1).add(new Item(A, 1, { charges: 7 }), false);
+  player.getBank(1).setItem(1, new Item(B, 0));
+  player.getBank(2).add(new Item(995, 2147483647), false);
+  player.getBank(3).add(new Item(C, 2), false);
+  player.setCurrentBankTab(3);
+  const before = [0, 1, 2, 3].map(tab => player.getBank(tab));
+  const contents = bank => bank.getValidItems().map(item => [item.getId(), item.getAmount(), item.getMeta()]);
+  const original = before.map(contents);
+  const saves = [];
+  t.mock.method(GameConstants.PLAYER_PERSISTENCE, "requestSave", (_p, reason) => saves.push(reason));
+  const connection = new ClientConnection(channel);
+  connection.player = player;
+  // Exact frame asserted from gateway Upstream.handle(IfButtonD): tab slot13 ->11, no item IDs.
+  const packet = decodeClientPackets(Buffer.from("01ffff0a000c00ffff008d000a000c0b00", "hex"));
+  assert.deepEqual(packet[0], { type: "widget_drag", sourceWidgetId: BANK_TABS, targetWidgetId: BANK_TABS,
+    sourceSlot: 13, targetSlot: 11, sourceItemId: 65535, targetItemId: 65535 });
+  await connection.dispatch(packet, true);
+  assert.equal(player.getBank(1), before[3]);
+  assert.equal(player.getBank(3), before[1]);
+  assert.equal(player.getBank(0), before[0]);
+  assert.equal(player.getBank(2), before[2]);
+  assert.equal(player.getCurrentBankTab(), 1, "the viewed contents follow their moved tab");
+  assert.deepEqual([0, 1, 2, 3].map(tab => contents(player.getBank(tab))), [original[0], original[3], original[2], original[1]]);
+  assert.ok(before.every(bank => bank.getPlayer() === player && bank.player === player));
+  assert.ok(saves.includes("bank-tab-reorder"));
+  let codec;
+  require("../plugins/persistence/JsonPlayerPersistence.plugin").register({
+    getSkillManager: () => require("../dist/game/content/skill/SkillManager").SkillManager,
+    setPlayerPersistence: value => { codec = value; }, log() {},
+  });
+  const saved = JSON.parse(JSON.stringify(PlayerSave.fromPlayer(player), codec.replacer.bind(codec)), codec.reviver.bind(codec));
+  const loaded = new Player(new PlayerSession(channel));
+  codec.hydratePlayerSave(saved).applyToPlayer(loaded);
+  assert.deepEqual([0, 1, 2, 3].map(tab => contents(loaded.getBank(tab))), [original[0], original[3], original[2], original[1]]);
+  loaded.setStatus(PlayerStatus.BANKING);
+  loaded.setInterfaceId(Bank.MAIN_INTERFACE_ID);
+  Bank.viewTab(loaded, 1);
+  Bank.withdraw(loaded, C, 0, 1, 1);
+  assert.equal(loaded.getInventory().getAmount(C), 1);
+  assert.equal(loaded.getBank(1).getAmount(C), 1);
+  loaded.getInventory().add(new Item(UNRELATED, 2), false);
+  const slot = loaded.getInventory().getSlotForItemId(UNRELATED);
+  drag(loaded, SIDE_ITEMS, slot, UNRELATED, BANK_TABS, 11);
+  assert.equal(loaded.getBank(1).getAmount(UNRELATED), 1, "later deposit uses the moved container");
+  assert.equal(loaded.getBank(3).getAmount(A), 1);
+  assert.equal(loaded.getBank(2).getAmount(995), 2147483647);
+  player.setRegistered(false);
+});
+
+test("tab drags reject main, empty, invalid and unrelated destinations without moving items", () => {
+  for (const [from, targetWidget, to] of [[10, BANK_TABS, 11], [11, BANK_TABS, 10],
+    [11, BANK_TABS, 13], [13, BANK_TABS, 11], [11, BANK_TABS, 11],
+    [11, BANK_TABS, 65535], [11, BANK_ITEMS, 0], [11, SIDE_ITEMS, 0]]) {
+    const player = createPlayer();
+    bankOf(player, [C], [A], [B]);
+    const containers = player.banks.slice();
+    const contents = tabsOf(player);
+    drag(player, BANK_TABS, from, 65535, targetWidget, to);
+    assert.deepEqual(player.banks, containers);
+    assert.deepEqual(tabsOf(player), contents);
+  }
+});
 
 test("dragging a bank item onto another swaps them, or inserts in insert mode", () => {
   const swapping = createPlayer();
@@ -583,6 +854,65 @@ test("dragging within the bank's inventory panel swaps inventory slots", () => {
   assert.deepEqual(player.getInventory().getValidItems().map((item) => item.getId()), [B, A]);
 });
 
+test("a bank inventory drag to a slot past the backpack moves nothing (live drags only reach 0-27)", () => {
+  const player = createPlayer();
+  player.getInventory().add(new Item(A, 1), false);
+  player.getInventory().add(new Item(B, 1), false);
+  for (const target of [28, 500, 65535, -1]) {
+    assert.equal(drag(player, SIDE_ITEMS, 0, A, SIDE_ITEMS, target), true, `target ${target} handled`);
+    assert.deepEqual(player.getInventory().getValidItems().map((item) => item.getId()), [A, B], `target ${target}: nothing moved`);
+    assert.equal(player.getInventory().getItems().length, player.getInventory().capacity(), "no slot past the backpack");
+  }
+  assert.equal(player.getInventory().getFreeSlots(), player.getInventory().capacity() - 2, "the backpack still works");
+});
+
+test("bank inventory drags reject a stale source item ID and accept the updated ID", () => {
+  const player = createPlayer();
+  player.getInventory().add(new Item(A, 1), false);
+  player.getInventory().add(new Item(B, 1), false);
+  const [first, second] = player.getInventory().getItems();
+  const ids = () => player.getInventory().getValidItems().map((item) => item.getId());
+
+  assert.equal(drag(player, SIDE_ITEMS, 0, A, SIDE_ITEMS, 1), true);
+  assert.deepEqual(ids(), [B, A]);
+
+  assert.equal(drag(player, SIDE_ITEMS, 0, A, SIDE_ITEMS, 1), true);
+  assert.deepEqual(ids(), [B, A], "stale source item ID must not swap the current items");
+  assert.equal(player.getInventory().getItems()[0], second);
+  assert.equal(player.getInventory().getItems()[1], first);
+  assert.equal(player.getInventory().getAmount(A), 1);
+  assert.equal(player.getInventory().getAmount(B), 1);
+
+  assert.equal(drag(player, SIDE_ITEMS, 0, B, SIDE_ITEMS, 1), true);
+  assert.deepEqual(ids(), [A, B]);
+  assert.equal(player.getInventory().getItems()[0], first);
+  assert.equal(player.getInventory().getItems()[1], second);
+});
+
+for (const [label, sourceItemId] of [
+  ["omitted", undefined], ["null", null], ["negative", -2],
+  ["sentinel", -1], ["wire sentinel", 0xffff],
+]) {
+  test(`bank inventory drags keep legacy slot-only behavior with ${label} source IDs`, () => {
+    const player = createPlayer();
+    player.getInventory().add(new Item(A, 1), false);
+    player.getInventory().add(new Item(B, 1), false);
+    const [first, second] = player.getInventory().getItems();
+    const request = {
+      sourceWidgetId: SIDE_ITEMS, sourceSlot: 0,
+      targetWidgetId: SIDE_ITEMS, targetSlot: 1,
+    };
+    if (sourceItemId !== undefined) request.sourceItemId = sourceItemId;
+
+    assert.equal(Bank.handleDrag(player, request), true);
+    assert.equal(player.getInventory().getItems()[0], second);
+    assert.equal(player.getInventory().getItems()[1], first);
+    assert.deepEqual(player.getInventory().getValidItems().map((item) => item.getId()), [B, A]);
+    assert.equal(player.getInventory().getAmount(A), 1);
+    assert.equal(player.getInventory().getAmount(B), 1);
+  });
+}
+
 test("bank drags are ignored while the bank is closed", () => {
   const player = createPlayer();
   bankOf(player, [A, B]);
@@ -619,6 +949,49 @@ test("dragging onto the empty space after a tab's items moves the item to the en
   drag(player, BANK_ITEMS, 2, C, BANK_ITEMS, Bank.TAB_DROP_SLOT_OFFSET + 1);
 
   assert.deepEqual(tabsOf(player), [[1, A, 1], [1, B, 1], [1, C, 1]]);
+});
+
+test("dragging a bank stack onto the incinerator asks to destroy that exact stack", () => {
+  const player = createPlayer();
+  player.getBank().add(new Item(A, 4), false);
+  player.getBank().add(new Item(B, 2), false);
+  incinerations.length = 0;
+
+  assert.equal(drag(player, BANK_ITEMS, 1, B, BANK_INCINERATOR, -1), true);
+
+  assert.deepEqual(tabsOf(player), [[0, A, 4], [0, B, 2]], "the drag does not move the stack");
+  assert.equal(incinerations.length, 1);
+  const [event] = incinerations;
+  assert.equal(event.tab, 0);
+  assert.equal(event.slot, 1);
+  assert.equal(event.item.getId(), B);
+  assert.equal(event.item.getAmount(), 2, "the whole stack is offered, never a client amount");
+});
+
+test("an inventory item dropped on the incinerator is neither deposited nor destroyed", () => {
+  const player = createPlayer();
+  bankOf(player, [A]);
+  player.getInventory().add(new Item(B, 1), false);
+  incinerations.length = 0;
+
+  assert.equal(drag(player, SIDE_ITEMS, 0, B, BANK_INCINERATOR, -1), true);
+
+  assert.equal(player.getInventory().getAmount(B), 1);
+  assert.deepEqual(tabsOf(player), [[0, A, 1]]);
+  assert.deepEqual(incinerations, []);
+});
+
+test("a placeholder or a mismatched item id dropped on the incinerator is ignored", () => {
+  const player = createPlayer();
+  player.getBank().add(new Item(A, 0), false);
+  incinerations.length = 0;
+
+  drag(player, BANK_ITEMS, 0, A, BANK_INCINERATOR, -1);
+  assert.deepEqual(incinerations, [], "placeholders have nothing to destroy");
+
+  player.getBank().setItem(0, new Item(A, 2));
+  drag(player, BANK_ITEMS, 0, B, BANK_INCINERATOR, -1);
+  assert.deepEqual(incinerations, [], "a stale client item id cannot destroy the stack now in that slot");
 });
 
 /** A player whose packet sender records client scripts. */
@@ -693,6 +1066,7 @@ test("as captured: closing the bank under an unanswered Enter amount prompt abor
       // Real interface reset; the bank's if_closesub stands in for the tracked-interface close.
       const sender = Object.assign(Object.create(PacketSender.prototype), {
         player,
+        inventoryOwners: new Map(),
         closeTrackedInterfaces: () => opcodes.push(ServerPacketId.WIDGET_CLOSE_SUB) > 0,
         sendConfig() { return this; },
         sendVarbit() { return this; },
@@ -714,6 +1088,61 @@ test("as captured: closing the bank under an unanswered Enter amount prompt abor
   }
 });
 
+test("as captured: another bank op under an unanswered Enter amount prompt runs, then aborts the prompt", async (t) => {
+  const { CachePipeline } = require("../dist/game/cache/CachePipeline");
+  await CachePipeline.initialize(process.cwd());
+  const { Player } = require("../dist/game/entity/impl/player/Player");
+  // ServerPacketId is a const enum, inlined at build time.
+  const TRIGGER_ONDIALOGABORT = 123;
+  const player = new Player(null);
+  player.setUsername("bankabort");
+  const sent = [];
+  t.mock.method(player, "getSession", () => ({ sendClientPacket: (packet) => sent.push(packet[0]) > 0, write: () => {} }));
+  const world = require("../dist/game/definition/WorldDefinition");
+  t.mock.method(world, "getWorldDefinition", () => ({ name: "Solaris RSPS" }));
+  player.getInventory().add(new Item(995, 100), false);
+  player.getInventory().add(new Item(TRIDENT, 1), false);
+  player.getBank(0).open();
+  const op = (buttonNum, slot, itemId) => Bank.handleWidgetAction(player, {
+    groupId: Bank.SIDE_INTERFACE_ID, childId: Bank.SIDE_ITEMS_CHILD, buttonNum, slot, itemId,
+  });
+
+  op(7, 0, 995);
+  assert.ok(player.getEnteredAmountAction(), "Deposit-X asks for the amount");
+  sent.length = 0;
+  op(8, 1, TRIDENT);
+  assert.equal(player.getBank().getAmount(TRIDENT), 1, "the second op still runs");
+  assert.equal(sent.filter((id) => id === TRIGGER_ONDIALOGABORT).length, 1, "the prompt is aborted once");
+  assert.equal(player.getEnteredAmountAction(), null);
+  assert.equal(player.getBank().getAmount(995), 0, "the dropped Deposit-X never deposits");
+
+  // A drag in the bank inventory aborts it too (237/04064.txt line 15732).
+  op(7, 0, 995);
+  sent.length = 0;
+  const sideItems = (Bank.SIDE_INTERFACE_ID << 16) | Bank.SIDE_ITEMS_CHILD;
+  Bank.handleDrag(player, { sourceWidgetId: sideItems, sourceSlot: 0, sourceItemId: 995, targetWidgetId: sideItems, targetSlot: 5 });
+  assert.equal(player.getInventory().getItems()[5]?.getId(), 995, "the drag still moves the item");
+  assert.equal(sent.filter((id) => id === TRIGGER_ONDIALOGABORT).length, 1);
+  assert.equal(player.getEnteredAmountAction(), null);
+
+  // Search opens the client's own search box over the prompt; an abort would close that box too.
+  op(7, 5, 995);
+  assert.ok(player.getEnteredAmountAction(), "PRE: Deposit-X asks again");
+  sent.length = 0;
+  assert.equal(Bank.handleWidgetAction(player, { groupId: Bank.MAIN_INTERFACE_ID, childId: Bank.SEARCH_CHILD, buttonNum: 1 }), true);
+  assert.ok(!sent.includes(TRIGGER_ONDIALOGABORT), "Search sends no abort");
+  assert.equal(player.getEnteredAmountAction(), null, "but the prompt's answer is dropped");
+
+  // An op that asks again replaces the prompt instead of aborting it.
+  op(7, 5, 995);
+  const first = player.getEnteredAmountAction();
+  sent.length = 0;
+  op(7, 5, 995);
+  assert.notEqual(player.getEnteredAmountAction(), first);
+  assert.ok(player.getEnteredAmountAction());
+  assert.ok(!sent.includes(TRIGGER_ONDIALOGABORT));
+});
+
 const bankTabsSent = (player) => player.varbits.filter(([id]) => id === 4150);
 
 // These exercise the registered gameplay handlers with real inventory/dialogue classes.
@@ -721,6 +1150,8 @@ function bankerHarness() {
   const { DialogueManager } = require('../dist/game/model/dialogues/DialogueManager');
   const { DialogueChainBuilder } = require('../dist/game/model/dialogues/builders/DialogueChainBuilder');
   const { OptionDialogue } = require('../dist/game/model/dialogues/entries/impl/OptionDialogue');
+  const { NpcDialogue } = require('../dist/game/model/dialogues/entries/impl/NpcDialogue');
+  const { DoubleItemStatementDialogue } = require('../dist/game/model/dialogues/entries/impl/DoubleItemStatementDialogue');
   const { ItemIdentifiers } = require('../dist/util/ItemIdentifiers');
   const { startDialogue } = require('../plugins/npcs/NpcDialogues.plugin');
   const { MultiChatboxPrompt } = require('../dist/game/model/menu/MultiChatboxPrompt');
@@ -745,10 +1176,11 @@ function bankerHarness() {
   let useNpc;
   const useObjects = [];
   const api = {
-    core: { Bank, PlayerStatus, Item, ItemIdentifiers, DialogueChainBuilder, OptionDialogue, World },
+    core: { Bank, PlayerStatus, Item, ItemIdentifiers, DialogueChainBuilder, OptionDialogue, NpcDialogue, DoubleItemStatementDialogue, World },
     onNpcInteraction: (name, handlers) => npc.set(name, handlers),
     onObjectInteraction: (name, handlers) => object.set(name, handlers),
-    onItemOnNpc: (handler) => { useNpc = handler; },
+    // The currency handler (unnoted items); banknotes have their own native test (banker-unnote.test.cjs).
+    onItemOnNpc: (handler, filter) => { if (filter?.noted !== true) useNpc = handler; },
     onItemOnObject: (...args) => useObjects.push(args),
     onButtonClick() {}, onInterfaceActionClick() {},
     onCustomEvent: (name, handler) => custom.set(name, handler),
@@ -863,8 +1295,21 @@ for (const route of ['Banker', 'Bank booth', 'Bank chest', 'Bank Chest']) {
     h.manager.handleOption(1);
     assert.equal(h.player.inventory.getAmount(995), 501);
     assert.equal(h.player.inventory.getAmount(13204), 2);
+    // rsprox 226/01645: then a mesbox with the coins and token models.
+    assert.equal(h.manager.getCurrent()?.getText?.(), 'The bank exchanges your coins for platinum tokens.');
   });
 }
+
+test('platinum tokens used on a Banker: the reverse mesbox (rsprox 226/01645)', () => {
+  const h = bankerHarness();
+  h.player.inventory.add(new Item(13204, 2), false);
+  h.use(13204, 'Banker');
+  assert.equal(h.manager.getCurrent().getTitle(), 'Exchange your platinum tokens for coins?');
+  h.manager.handleOption(1);
+  assert.equal(h.player.inventory.getAmount(995), 2000);
+  assert.equal(h.manager.getCurrent()?.getText?.(), 'The bank exchanges your platinum tokens for coins.');
+  assert.deepEqual(h.manager.getCurrent().getItemIds(), [1003, 3991]);
+});
 
 for (const [coins, tokens, used, wantCoins, wantTokens] of [
   [1000, 0, 995, 0, 1],
@@ -918,11 +1363,20 @@ test('exchange cancellation, closure, duplicate and replaced confirmation cannot
   }
 });
 
+test('any other unnoted item on a Banker: "Hand me a banknote..." (rsprox 226/01645)', () => {
+  const h = bankerHarness();
+  h.player.inventory.add(new Item(TRIDENT, 1), false);
+  assert.equal(h.use(TRIDENT, 'Banker').handled, true);
+  assert.equal(h.manager.getCurrent()?.getText?.(), "Hand me a banknote, and I'll try to convert it to an item.");
+  assert.equal(h.manager.getCurrent().expression, 611, 'chatsad2, as recorded');
+  assert.equal(h.player.inventory.getAmount(TRIDENT), 1);
+});
+
 test('currency exchange ignores unrelated NPCs, objects, items and stale item slots', () => {
   const h = bankerHarness();
   h.player.inventory.add(new Item(995, 2000), false);
   h.player.inventory.add(new Item(TRIDENT, 1), false);
-  for (const args of [[995, 'Man'], [995, 'Tree'], [TRIDENT, 'Banker'], [995, 'Banker', 1]]) {
+  for (const args of [[995, 'Man'], [995, 'Tree'], [TRIDENT, 'Bank booth'], [995, 'Banker', 1]]) {
     assert.equal(h.use(...args).handled, false);
     assert.equal(h.manager.isActive(), false);
   }
@@ -1030,24 +1484,18 @@ test("price checking quantities and closing returns every item", () => {
   }
 });
 
-test("the worn items view banks the one worn item clicked", () => {
-  const player = createPlayer();
-  // A plain container stands in for the worn equipment; the view's slot is the item's place in
-  // the list, so the click's item names it.
-  const worn = new Inventory(player);
-  worn.resetItems();
-  worn.add(new Item(TRIDENT, 1), false);
-  worn.add(new Item(LAVA_BATTLESTAFF, 1), false);
-  player.getEquipment = () => worn;
-  const click = (buttonNum, itemId) => Bank.handleWidgetAction(player, {
-    groupId: Bank.SIDE_INTERFACE_ID, childId: Bank.SIDE_WORN_CHILD, buttonNum, slot: 1, itemId,
-  });
 
-  assert.equal(click(1, LAVA_BATTLESTAFF), true);
-  assert.equal(player.getBank().getAmount(LAVA_BATTLESTAFF), 1);
-  assert.equal(worn.getAmount(LAVA_BATTLESTAFF), 0);
-  assert.equal(worn.getAmount(TRIDENT), 1, "only the clicked item");
-  // Its other ops aren't banking.
-  assert.notEqual(click(10, TRIDENT), true);
-  assert.equal(worn.getAmount(TRIDENT), 1);
+test("Bank.contains counts the item in every tab, past a placeholder and across metadata stacks", () => {
+  const player = createPlayer();
+  player.getBank(1).add(new Item(LAVA_BATTLESTAFF, 0), false);
+  player.getBank(2).add(new Item(LAVA_BATTLESTAFF, 1, { charges: 5 }), false);
+  player.getBank(3).add(new Item(LAVA_BATTLESTAFF, 1, { charges: 9 }), false);
+
+  assert.equal(Bank.contains(player, new Item(LAVA_BATTLESTAFF, 1)), true);
+  assert.equal(Bank.contains(player, new Item(LAVA_BATTLESTAFF, 2)), true);
+  assert.equal(Bank.contains(player, new Item(LAVA_BATTLESTAFF, 3)), false);
+  assert.equal(Bank.contains(player, new Item(LAVA_BATTLESTAFF_NOTE, 2)), true, "a note asks for the item it notes");
+  // The search tab holds copies of what the other tabs hold; they are not counted again.
+  player.getBank(Bank.BANK_SEARCH_TAB_INDEX).add(new Item(LAVA_BATTLESTAFF, 1, { charges: 5 }), false);
+  assert.equal(Bank.contains(player, new Item(LAVA_BATTLESTAFF, 3)), false);
 });

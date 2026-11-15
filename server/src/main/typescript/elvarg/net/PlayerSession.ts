@@ -1,3 +1,6 @@
+import { CrossFloor } from "../game/CrossFloor";
+import { NpcSpecificEffects } from "./NpcSpecificEffects";
+import type { NPC } from "../game/entity/impl/npc/NPC";
 import { PluginManager } from "../plugins/PluginManager";
 import { MAX_GAME_MESSAGE_BYTES } from "./BinaryChannel";
 import { BoatManager } from "../game/content/sailing/BoatManager";
@@ -8,7 +11,7 @@ import { PacketBuilder } from "./packet/PacketBuilder";
 import { NetworkConstants } from "./NetworkConstants";
 import type { Player } from "../game/entity/impl/player/Player";
 import type { NpcExactMove } from "../game/entity/impl/npc/NPC";
-import type { Location } from "../game/model/Location";
+import { Location } from "../game/model/Location";
 import { Appearance } from "../game/model/Appearance";
 import { Flag } from "../game/model/Flag";
 import {
@@ -18,8 +21,11 @@ import {
   encodePlayerAppearance,
   encodeInitialPlayerSync,
   encodeLogoutResponse,
+  encodeHideNpcOps,
+  encodeHideObjOps,
   encodeWalkInteractionMode,
   encodeNpcSync,
+  encodePlaySong,
   encodePlayerSync,
   encodeRebuildNormal,
   encodeTick,
@@ -28,6 +34,8 @@ import {
   NpcSyncState,
   PlayerSyncState,
   PlayerView,
+  SONG_NO_FADES,
+  SongFades,
 } from "./protocol/ClientProtocol";
 import { Music } from "../game/Music";
 import { Skill } from "../game/model/Skill";
@@ -39,7 +47,16 @@ import { CacheDefinitions } from "../game/cache/CacheDefinitions";
 import { CachePipeline } from "../game/cache/CachePipeline";
 import type { PrivateArea } from "../game/model/areas/impl/PrivateArea";
 
+/** A finished area track fades out into silence. */
+const MUSIC_END_FADES: SongFades = { fadeOutDelay: 0, fadeOutSpeed: 20, fadeInDelay: 0, fadeInSpeed: 0 };
+const NO_TRACKS: readonly number[] = [];
+
+function sameTracks(a: readonly number[], b: readonly number[] | undefined): boolean {
+  return b !== undefined && a.length === b.length && a.every((track, i) => track === b[i]);
+}
+
 type SessionChannel = {
+  kind?: string;
   binaryTransport?: boolean;
   bufferedAmount?: number;
   close?: (code?: number, reason?: string) => void;
@@ -58,6 +75,23 @@ const NETWORK_PERF_LOG_INTERVAL_MS = 10000;
 const WS_CLOSE_BACKPRESSURE = 1013;
 const WS_CLOSE_SEND_FAILURE = 1011;
 
+/**
+ * The map rebuild a changed scene needs: `region` draws a templated instance from its palette,
+ * `normal` the cache map. A plain private area is drawn from the cache map without one, unless
+ * the client is leaving a templated instance: it stays in instance mode until a `normal`
+ * rebuild arrives, and would otherwise show nothing at the new tile.
+ */
+export function sceneRebuildFor(
+  area: PrivateArea | null,
+  replayedArea: PrivateArea | null,
+  sceneChanged: boolean,
+): "region" | "normal" | null {
+  if (!sceneChanged) return null;
+  if (area instanceof TemplatedInstanceArea) return "region";
+  if (area == null || replayedArea instanceof TemplatedInstanceArea) return "normal";
+  return null;
+}
+
 export class PlayerSession {
   /**
    * The interacting-entity field (24 bits in npc/player info) marks a player by adding this to
@@ -65,6 +99,11 @@ export class PlayerSession {
    * decodes it with the same offset (client/rs/interaction/InteractionIndex.ts).
    */
   public static readonly PLAYER_INTERACTION_OFFSET = 0x10000;
+  /** HitsplatID DAMAGE_MAX_ME and its yellow twin: the client swaps them for the ordinary splat by varbit 14196. */
+  private static readonly DAMAGE_MAX_ME = 43;
+  private static readonly DAMAGE_MAX_ME_YELLOW = 46;
+  /** settings_hitsplat_threshold: max hits below it keep the ordinary splat. */
+  private static readonly MAX_HIT_THRESHOLD_VARBIT = 14195;
   private channel: SessionChannel;
   private pendingPackets: Buffer[] = [];
   private pendingPacketBytes = 0;
@@ -84,15 +123,80 @@ export class PlayerSession {
   private hasReplayedScene = false;
   private playerSyncState?: PlayerSyncState;
   private npcSyncState: NpcSyncState = createNpcSyncState();
+  private readonly npcSpecificEffects = new NpcSpecificEffects();
+
+  public queueNpcSpecificEffect(npc: NPC, packet: Buffer): void {
+    if (this.player && this.isBinaryChannelOpen()) this.npcSpecificEffects.queue(npc, packet);
+  }
   private appearanceCache = new Map<number, { player: Player; payload: Buffer }>();
-  private lastMusicRegion = -1;
+  /** The music area the player was last in, as its track list; undefined before the first flush. */
+  private lastMusicArea?: readonly number[];
   private lastMusicTrack = -1;
   private lastMusicMode = -1;
-  private lastResolvedMusicTrack?: number;
+  private lastResolvedMusicTracks?: readonly number[];
+  /** The tick the playing area track ends on, or -1. */
+  private musicTrackEndsAt = -1;
+  /** The tick the next area track starts on, after the one that ended, or -1. */
+  private musicNextTrackAt = -1;
+  /** The area track that just ended, which the next pick skips; -1 otherwise. */
+  private musicEndedTrack = -1;
+  private musicTick = 0;
+  private startingAreaTrack = false;
 
-  /** The automatic area/region track last started, or -1: what a jingle resumes. */
+  /** The selected track last started, or -1: what a jingle resumes. */
   public getCurrentMusicTrack(): number {
     return this.lastMusicTrack;
+  }
+
+  public setCurrentMusicTrack(trackId: number): void {
+    this.lastMusicTrack = trackId;
+  }
+
+  /** Starts an area track; it plays for its cache length plus a tick, then the area moves on. */
+  private startAreaTrack(player: Player, track: number, fades?: SongFades): void {
+    this.lastMusicTrack = track;
+    this.musicNextTrackAt = -1;
+    this.musicEndedTrack = -1;
+    this.musicTrackEndsAt = this.areaTrackEnd(track);
+    this.startingAreaTrack = true;
+    try {
+      player.getPacketSender().sendSong(track, fades);
+    } finally {
+      this.startingAreaTrack = false;
+    }
+  }
+
+  /**
+   * Shuffle's next track: a random unlocked track other than the one that ended, which the Music
+   * plugin picks ("music:shuffle-track" { player, previous, track, silent }); with no other, the
+   * ended one again only when the loop setting is on, and nothing when the plugin says `silent`.
+   */
+  private startShuffleTrack(player: Player, previous: number, replay: boolean, fades?: SongFades): void {
+    const request: { player: Player; previous: number; track?: number; silent?: boolean } = { player, previous };
+    PluginManager.emitCustomEvent("music:shuffle-track", request);
+    const track = request.silent ? undefined : request.track ?? (replay && previous >= 0 ? previous : undefined);
+    if (track === undefined) {
+      this.musicNextTrackAt = -1;
+      this.musicEndedTrack = -1;
+      return;
+    }
+    this.startAreaTrack(player, track, fades);
+  }
+
+  private areaTrackEnd(track: number): number {
+    const length = Music.lengthTicks(track);
+    return length === undefined ? -1 : this.musicTick + length + 1;
+  }
+
+  /**
+   * Any other song sent to the client (a boss fight, a minigame) takes over from the area until the
+   * next area change; the area track sent again from its start (the volume restart) runs anew.
+   */
+  public noteSongSent(track: number): void {
+    if (this.startingAreaTrack) return;
+    this.musicNextTrackAt = -1;
+    this.musicEndedTrack = -1;
+    this.musicTrackEndsAt = track === this.lastMusicTrack ? this.areaTrackEnd(track) : -1;
   }
   private lastGroundItemRegion = -1;
   private lastGroundItemLevel = -1;
@@ -134,7 +238,13 @@ export class PlayerSession {
   // }
 
   public setPlayer(player: Player) {
+    if (this.player !== player) this.npcSpecificEffects.clear();
     this.player = player;
+  }
+
+  /** A real client is on the other end: a websocket, TCP or WebRTC data channel (not a bot's or headless one). */
+  public hasNetworkClient(): boolean {
+    return this.channel.kind === "websocket" || this.channel.kind === "tcp" || this.channel.kind === "webrtc";
   }
 
   public getChannel(): SessionChannel {
@@ -142,10 +252,14 @@ export class PlayerSession {
   }
 
   public isTileInScene(x: number, y: number, level: number): boolean {
-    return this.hasReplayedScene
-      && level === this.replayedSceneLevel
-      && x >= this.replayedSceneBaseX && x < this.replayedSceneBaseX + 104
-      && y >= this.replayedSceneBaseY && y < this.replayedSceneBaseY + 104;
+    if (!this.hasReplayedScene
+      || x < this.replayedSceneBaseX || x >= this.replayedSceneBaseX + 104
+      || y < this.replayedSceneBaseY || y >= this.replayedSceneBaseY + 104) return false;
+    if (level === this.replayedSceneLevel) return true;
+    const player = this.player;
+    return !!player && CrossFloor.visible(
+      player.getLocation(), new Location(x, y, level), 52,
+    );
   }
 
   private sendRebuildNormal(
@@ -202,9 +316,12 @@ export class PlayerSession {
 
   /**
    * Logs out as an accepted logout button does: the client is told, then the socket closes.
-   * Live first sets clicks back to walking, as the client keeps interaction modes (rsprox).
+   * Live first sets clicks back to walking, as the client keeps interaction modes (rsprox). It
+   * sends no hidenpcops/hideobjops reset: none of the 3,157 recorded logouts has one, 47 of them
+   * with NPC ops hidden; the client clears both itself on logout (OsrsClient).
    */
   public logout(): void {
+    this.npcSpecificEffects.clear();
     this.sendClientPacket(encodeWalkInteractionMode());
     this.sendClientPacket(encodeLogoutResponse());
     this.flushPackets();
@@ -236,6 +353,8 @@ export class PlayerSession {
   }
 
   private flushClient(tick: number): void {
+    // Discard undeliverable one-shots, including disconnected and out-of-view actors.
+    const specificEffects = this.npcSpecificEffects.take();
     const player = this.player;
     if (!player || !this.isBinaryChannelOpen()) return;
     if (this.getBufferedAmount() >= NetworkConstants.OUTBOUND_WS_BUFFER_CRITICAL_BYTES) {
@@ -256,42 +375,91 @@ export class PlayerSession {
     ServerPerf.measurePhase("network.flush.region_updates", () => {
       const groundItemRegion = ((sceneTile.x >> 6) << 8) | (sceneTile.y >> 6);
       const privateArea = player.getArea?.();
-      const musicRegion = privateArea instanceof TemplatedInstanceArea
-        ? Music.regionForInstanceLocation(privateArea, current.x, current.y, current.level) ?? -1
-        : groundItemRegion;
+      // An instance plays the music of the cache-map tiles it copies; a boat deck, the sea under it.
+      const musicTile = privateArea instanceof TemplatedInstanceArea
+        ? Music.instanceSourceTile(privateArea, current.x, current.y, current.level)
+        : { x: sceneTile.x, y: sceneTile.y, plane: sceneTile.level };
+      const audio = player.getAudioSettings?.();
+      const tileArea = musicTile ? Music.tracksAt(musicTile.x, musicTile.y, musicTile.plane, Music.classic(audio)) : NO_TRACKS;
+      // A tile with no music area (a gap between areas, an unmapped spot) keeps the one the player came from.
+      const musicArea = tileArea.length === 0 && this.lastMusicArea ? this.lastMusicArea : tileArea;
       if (groundItemRegion !== this.lastGroundItemRegion || current.level !== this.lastGroundItemLevel) {
         this.lastGroundItemRegion = groundItemRegion;
         this.lastGroundItemLevel = current.level;
         require("../game/entity/impl/grounditem/ItemOnGroundManager")
           .ItemOnGroundManager.onRegionChange(player);
       }
-      const musicMode = player.getAudioSettings?.()?.[18] ?? 0;
+      const musicMode = audio?.[Music.MODE_VARP] ?? Music.AREA_MODE;
+      const replay = Music.setting(audio, Music.LOOP_BIT) === 1;
       const areaTrack = typeof privateArea?.getMusicTrack === "function"
         ? PluginManager.callArea(privateArea, "getMusicTrack", player)
         : null;
-      const track = Number.isInteger(areaTrack) && areaTrack >= 0 && areaTrack < 0xffff
-        ? areaTrack as number
-        : musicRegion < 0 ? undefined : Music.forRegion(musicRegion);
-      const selectionChanged = track !== this.lastResolvedMusicTrack;
-      if (musicRegion !== this.lastMusicRegion || musicMode !== this.lastMusicMode || selectionChanged) {
-        const regionChanged = musicRegion !== this.lastMusicRegion;
+      this.musicTick = tick;
+      const tracks: readonly number[] = Number.isInteger(areaTrack) && areaTrack >= 0 && areaTrack < 0xffff
+        ? [areaTrack as number]
+        : musicArea;
+      const selectionChanged = !sameTracks(tracks, this.lastResolvedMusicTracks);
+      // Area and Shuffle play one track after another; Single keeps the one chosen.
+      const timed = musicMode === Music.AREA_MODE || musicMode === Music.SHUFFLE_MODE;
+      if (musicArea !== this.lastMusicArea || musicMode !== this.lastMusicMode || selectionChanged) {
+        const areaChanged = musicArea !== this.lastMusicArea;
         const previousMusicMode = this.lastMusicMode;
-        this.lastMusicRegion = musicRegion;
+        this.lastMusicArea = musicArea;
         this.lastMusicMode = musicMode;
-        this.lastResolvedMusicTrack = track;
-        if ((regionChanged || selectionChanged) && track !== undefined) {
-          PluginManager.emitCustomEvent("music:unlock-track", { player, trackId: track });
+        this.lastResolvedMusicTracks = tracks;
+        // A track that also belongs to the new area plays on; otherwise one of the area's starts.
+        const keep = musicMode === 0 && previousMusicMode === 0 && tracks.includes(this.lastMusicTrack);
+        const track = keep ? this.lastMusicTrack
+          : Music.pickAreaTrack(tracks, musicMode === 0 ? this.musicEndedTrack : -1, Math.random, replay);
+        // Entering an area unlocks all its tracks, in every music mode: the picked one first, then the rest.
+        if (areaChanged || selectionChanged) {
+          for (const trackId of track === undefined ? tracks : [track, ...tracks.filter((other) => other !== track)]) {
+            PluginManager.emitCustomEvent("music:unlock-track", { player, trackId });
+          }
         }
-        if (musicMode === 0 && track !== undefined && (track !== this.lastMusicTrack || previousMusicMode !== 0)) {
-          this.lastMusicTrack = track;
-          player.getPacketSender().sendSong(track);
+        if (musicMode === Music.SHUFFLE_MODE) {
+          // Shuffle ignores areas. Switched to, it lets the playing track finish (one without an
+          // end time, a Single choice, gets its full length from now); with nothing playing it starts
+          // one, as it does on an area change after another song (a boss fight's) took over.
+          const idle = this.musicTrackEndsAt < 0 && this.musicNextTrackAt < 0;
+          if (musicMode !== previousMusicMode && this.lastMusicTrack >= 0 && idle) {
+            this.musicTrackEndsAt = this.areaTrackEnd(this.lastMusicTrack);
+          } else if (idle && (musicMode !== previousMusicMode || areaChanged)) {
+            this.startShuffleTrack(player, -1, replay);
+          }
+        } else if (musicMode !== 0 || track === undefined) {
+          this.musicTrackEndsAt = -1;
+          this.musicNextTrackAt = -1;
+          this.musicEndedTrack = -1;
+        } else if (!keep) {
+          this.startAreaTrack(player, track);
         }
+      } else if (timed && this.musicNextTrackAt >= 0 && tick >= this.musicNextTrackAt) {
+        if (musicMode === Music.SHUFFLE_MODE) {
+          this.startShuffleTrack(player, this.musicEndedTrack, replay, SONG_NO_FADES);
+        } else {
+          const track = Music.pickAreaTrack(tracks, this.musicEndedTrack, Math.random, replay);
+          if (track === undefined) this.musicNextTrackAt = -1;
+          else this.startAreaTrack(player, track, SONG_NO_FADES);
+        }
+      } else if (timed && this.musicTrackEndsAt >= 0 && tick >= this.musicTrackEndsAt) {
+        // The track has finished: silence, no current track, and the next one two ticks later.
+        this.musicTrackEndsAt = -1;
+        this.musicNextTrackAt = tick + 2;
+        this.musicEndedTrack = this.lastMusicTrack;
+        this.lastMusicTrack = -1;
+        this.sendClientPacket(encodePlaySong(Music.SILENCE_TRACK, MUSIC_END_FADES));
+        player.getPacketSender().sendConfig(Music.CURRENT_TRACK_VARP, -1);
       }
     });
     if (!this.isBinaryChannelOpen()) return;
 
     const initialSync = !this.playerSyncState;
     if (initialSync) {
+      // Live sends hidenpcops=false and hideobjops=false at login, so a world switch cannot
+      // inherit the previous world's cutscene state; the client keeps the booleans across logins.
+      this.sendClientPacket(encodeHideNpcOps(false));
+      this.sendClientPacket(encodeHideObjOps(false));
       this.sceneBaseX = Math.max(0, (sceneTile.x - 48) & ~7);
       this.sceneBaseY = Math.max(0, (sceneTile.y - 48) & ~7);
     } else {
@@ -310,15 +478,15 @@ export class PlayerSession {
       || this.replayedSceneLevel !== sceneTile.level
       || this.replayedPrivateArea !== privateArea
       || this.replayedSceneVersion !== sceneVersion;
-    const rebuildNeeded = (privateArea == null || templated != null) && (
+    const rebuild = sceneRebuildFor(privateArea, this.replayedPrivateArea, (
       !this.hasReplayedScene
       || this.replayedSceneBaseX !== this.sceneBaseX
       || this.replayedSceneBaseY !== this.sceneBaseY
       || this.replayedPrivateArea !== privateArea
       || this.replayedSceneVersion !== sceneVersion
-    );
-    if (rebuildNeeded && !(templated
-      ? this.sendClientPacket(templated.encodeScene(sceneTile.x >> 3, sceneTile.y >> 3))
+    ));
+    if (rebuild && !(rebuild === "region"
+      ? this.sendClientPacket(templated!.encodeScene(sceneTile.x >> 3, sceneTile.y >> 3))
       : this.sendRebuildNormal(sceneTile.x >> 3, sceneTile.y >> 3, this.replayedPrivateArea != null))) {
       return;
     }
@@ -438,6 +606,7 @@ export class PlayerSession {
           const boat = BoatManager.getBoat(worldView);
           return boat ? { x: boat.deckBaseX, y: boat.deckBaseY, level: 0 } : undefined;
         },
+        CrossFloor.enabled(),
       )
     );
 
@@ -459,6 +628,22 @@ export class PlayerSession {
       return true;
     });
     if (!syncSent) return;
+
+    // Both clients must know the actor before applying its viewer-specific effects.
+    // Keep object identity as well as index: a removed NPC's replacement inherits nothing.
+    const visibleNpcs = new Set(player.getLocalNpcs());
+    const sentIndices = new Set(this.npcSyncState.indices);
+    for (const effect of specificEffects) {
+      if (visibleNpcs.has(effect.npc) && effect.npc.isRegistered()
+        && effect.npc.getIndex() === effect.index && sentIndices.has(effect.index)) {
+        if (!this.sendClientPacket(effect.packet)) return;
+      }
+    }
+    // Content can refresh transient viewer visuals when an actor enters local view.
+    // Use the indices actually encoded, not the pre-cull candidate list.
+    PluginManager.emitCustomEvent("network:npc-sync", {
+      player, tick, npcs: [...visibleNpcs].filter(npc => sentIndices.has(npc.getIndex()) && npc.isRegistered()),
+    });
 
     if (!initialSync && sceneChanged) {
       ObjectManager.onRegionChange(player, this.sceneBaseX, this.sceneBaseY);
@@ -482,7 +667,7 @@ export class PlayerSession {
     const cached = this.appearanceCache.get(player.getIndex());
     let payload = cached?.player === player && !dirty ? cached.payload : undefined;
     if (!payload) {
-      const look = player.getAppearance().getLook();
+      const look = player.getAppearanceLook();
       const equipment = player.getEquipment().getItems();
       const skillAnimation = player.getSkillAnimation();
       const weapon = equipment[3]?.getDefinition?.();
@@ -515,6 +700,7 @@ export class PlayerSession {
       payload = encodePlayerAppearance(
         {
           gender: look[Appearance.GENDER] ?? 0,
+          hidden: player.isAppearanceHidden(),
           pronouns: player.getAppearance().getPronouns(),
           colors: [
             look[Appearance.HAIR_COLOUR],
@@ -642,7 +828,7 @@ export class PlayerSession {
       hits: hits.length > 0
         ? hits.map((hit: any) => this.hitView(hit, mine))
         : undefined,
-      health: hits.length > 0
+      health: hits.length > 0 && !actor.isHealthBarHidden?.()
         ? actor.getDisplayedHealth?.()
           ?? { current: actor.getHitpoints(), max: maxHitpoints, bar: actor.getHealthBar?.() ?? undefined }
         : undefined,
@@ -669,9 +855,23 @@ export class PlayerSession {
   private hitView(hit: any, onMe: boolean): { type: number; damage: number } {
     const own = onMe || (this.player != null && hit.getSource?.() === this.player);
     return {
-      type: hit.getSplatType?.(own) ?? this.hitsplatType(hit.getHitmask(), own),
+      type: hit.getSplatType?.(own) ?? this.maxHitsplatType(hit, onMe) ?? this.hitsplatType(hit.getHitmask(), own),
       damage: hit.getDamage(),
     };
+  }
+
+  /**
+   * The max hit variant of a hit this player dealt, when it met the "Max hit hitsplats threshold"
+   * setting. The client shows it or the ordinary splat by the "Max hit hitsplats" setting; only
+   * damage from a weapon or spell roll counts.
+   */
+  private maxHitsplatType(hit: any, onMe: boolean): number | null {
+    if (onMe || this.player == null || hit.getSource?.() !== this.player || hit.isMaxHit?.() !== true) return null;
+    if (hit.getDamage() < this.player.getPacketSender().getVarbit(PlayerSession.MAX_HIT_THRESHOLD_VARBIT)) return null;
+    const mask = hit.getHitmask();
+    if (mask === HitMask.RED) return PlayerSession.DAMAGE_MAX_ME;
+    if (mask === HitMask.YELLOW) return PlayerSession.DAMAGE_MAX_ME_YELLOW;
+    return null;
   }
 
   private hitsplatType(mask: HitMask, mine: boolean): number {

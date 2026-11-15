@@ -8,9 +8,10 @@
  * (spade on the graves), the amulet/bookcase/cupboard/brush/conductor gameplay,
  * the lightning repair, the monster spawn/death and the Ring of Charos ending.
  *
- * Stages (varp 399, "FENK_QUEST" in the RuneLite gameval dump):
+ * Saved gameplay stages (the legacy varp-399 route):
  *   1 body parts, 2 sewing (needle + 5 thread), 3 conductor,
  *   4 creature alive, 5 creature loose, 6 creature convinced, 7 complete.
+ * Cache-241 progress is FENK_QUEST varbit 13715, with completion at 9.
  * Per-part found/given, sewing, and clock/star/follow/mould bits are kept in
  * persisted "quest.creature_of_fenkenstrain.*" attributes.
  *
@@ -21,15 +22,17 @@
  * memorial is the only cave entrance); the Gardener Ghost does not physically
  * follow the player, but digging his grave in the Haunted Woods still yields
  * the head; the costume-needle branch and the letter's readable text are not
- * reproduced; the ground pickled brain is not removed after purchase; and
- * because npc-spawns.json still carries the stale 2013-2017 Fenkenstrain ids,
- * the plugin spawns Dr Fenkenstrain, the Gardener Ghost and the monster
- * owner-only.
+ * reproduced; and the ground pickled brain is not removed after purchase.
+ * Dr Fenkenstrain and the Gardener Ghost are the world's multi-NPC spawns (2014
+ * and 2013), which resolve to 1269 and 1272 for interactions (NPC.getContentId);
+ * only the loose monster is spawned owner-only.
  */
 module.exports = function registerCreatureOfFenkenstrainQuest(api) {
   const {
     Skill,
     Equipment,
+    Inventory,
+    Item,
     ItemIdentifiers,
     NpcIdentifiers,
     ObjectIdentifiers,
@@ -50,7 +53,8 @@ module.exports = function registerCreatureOfFenkenstrainQuest(api) {
     NpcIdentifiers.EXPERIMENT_3, // 1275
   ]);
 
-  const VARP_CREATURE_OF_FENKENSTRAIN = 399; // FENK_QUEST
+  const VARP_CREATURE_OF_FENKENSTRAIN = 3403; // parent of cache-241 FENK_QUEST
+  const VARBIT_CREATURE_OF_FENKENSTRAIN = 13715; // FENK_QUEST, bits 2–5
 
   const STAGE_BODY_PARTS = 1;
   const STAGE_SEWING = 2;
@@ -583,12 +587,29 @@ module.exports = function registerCreatureOfFenkenstrainQuest(api) {
       case HEAD_RECEIVE_ACTION_ID:
         grant(ItemIdentifiers.DECAPITATED_HEAD);
         return;
-      case BRAIN_RECEIVE_ACTION_ID:
-        if (player.getInventory().getAmount(ItemIdentifiers.COINS) >= 50) {
-          player.getInventory().deleteNumber(ItemIdentifiers.COINS, 50);
-          grant(ItemIdentifiers.PICKLED_BRAIN);
+      case BRAIN_RECEIVE_ACTION_ID: {
+        const inventory = player.getInventory();
+        if (inventory.getAmount(ItemIdentifiers.COINS) < 50) return;
+        // Recheck held items at the action before charging for a brain.
+        if (held(player, ItemIdentifiers.PICKLED_BRAIN) || held(player, ItemIdentifiers.DECAPITATED_HEAD_2)) {
+          event.handled = true;
+          event.end = true;
+          return;
         }
+        // Paying can free a slot, so check the inventory after the same deletion on a copy.
+        const plan = new Inventory(player).setItems(inventory.getCopiedItems());
+        plan.deleted(ItemIdentifiers.COINS, 50, false);
+        if (plan.getAddableAmount(new Item(ItemIdentifiers.PICKLED_BRAIN, 1)) < 1) {
+          // No full-inventory capture: the refusal wording is ours.
+          player.sendMessage("You don't have enough inventory space.");
+          event.handled = true;
+          event.end = true;
+          return;
+        }
+        inventory.deleteNumber(ItemIdentifiers.COINS, 50);
+        grant(ItemIdentifiers.PICKLED_BRAIN);
         return;
+      }
       case HEAD_WITH_BRAIN_ACTION_ID:
         grant(ItemIdentifiers.DECAPITATED_HEAD_2);
         return;
@@ -662,8 +683,17 @@ module.exports = function registerCreatureOfFenkenstrainQuest(api) {
     }
     player.sendMessage("You start digging...");
     const grave = quest.getStage(player) >= STAGE_BODY_PARTS ? nearestGravePart(location) : null;
-    if (!grave || partFound(player, grave.bit)) {
+    // Goes by what is held and handed in, so a part lost to a drop can be dug again. No capture: ours.
+    const heldAlready = grave?.bit === 1
+      ? held(player, ItemIdentifiers.DECAPITATED_HEAD) || held(player, ItemIdentifiers.DECAPITATED_HEAD_2)
+      : !!grave && held(player, grave.itemId);
+    if (!grave || heldAlready || hasBit(player, PARTS_GIVEN_ATTRIBUTE, grave.bit)) {
       player.sendMessage("...but the grave is empty.");
+      return;
+    }
+    if (player.getInventory().getFreeSlots() < 1) {
+      // No capture of this: the wording is ours.
+      player.sendMessage("You don't have enough inventory space for what you've found.");
       return;
     }
     setBit(player, PARTS_FOUND_ATTRIBUTE, grave.bit);
@@ -880,16 +910,11 @@ module.exports = function registerCreatureOfFenkenstrainQuest(api) {
   function handleSilverOnFurnace(event) {
     if (event.itemId !== ItemIdentifiers.SILVER_BAR) return;
     const { player } = event;
-    // Only the conductor step of this quest owns silver on a furnace; leave the
-    // action to other silver recipes (e.g. Nature Spirit's sickle) otherwise.
-    // Returning false (not undefined) lets the next handler run.
-    if (!quest.isStarted(player) || quest.isComplete(player)) return false;
-    if (!held(player, ItemIdentifiers.CONDUCTOR_MOULD) && held(player, ItemIdentifiers.SICKLE_MOULD)) return false;
+    // Only the conductor step of this quest owns silver on a furnace, and only with the conductor
+    // mould: without it the bar goes on to the other silver recipes (tiaras, holy symbols, jewellery,
+    // Nature Spirit's sickle) for the whole quest. Returning false (not undefined) lets the next handler run.
+    if (!quest.isStarted(player) || quest.isComplete(player) || !held(player, ItemIdentifiers.CONDUCTOR_MOULD)) return false;
     event.handled = true;
-    if (!held(player, ItemIdentifiers.CONDUCTOR_MOULD)) {
-      player.sendMessage("You need a conductor mould to cast anything useful.");
-      return;
-    }
     if (player.getSkillManager().getCurrentLevel(Skill.CRAFTING) < 20) {
       player.sendMessage("You need level 20 Crafting to cast the conductor.");
       return;
@@ -1029,12 +1054,6 @@ module.exports = function registerCreatureOfFenkenstrainQuest(api) {
     npcsByPlayer.set(player, entry);
   }
 
-  function ensureQuestNpcs(player) {
-    if (!player || player.isPlayerBot?.() === true) return;
-    spawnTracked(player, "doctor", { id: DR_FENKENSTRAIN_NPC_ID, x: 3551, y: 3550, z: 0, wanderRadius: 0 });
-    spawnTracked(player, "gardener", { id: GARDENER_GHOST_NPC_ID, x: 3551, y: 3561, z: 0, wanderRadius: 0 });
-  }
-
   function ensureMonster(player) {
     if (!player || quest.getStage(player) !== STAGE_CREATURE_LOOSE) return;
     spawnTracked(player, "monster", { id: MONSTER_NPC_ID, x: 3547, y: 3555, z: 2, wanderRadius: 0 });
@@ -1055,7 +1074,6 @@ module.exports = function registerCreatureOfFenkenstrainQuest(api) {
   }
 
   function handleZoneEnter({ player }) {
-    ensureQuestNpcs(player);
     ensureMonster(player);
   }
 
@@ -1064,7 +1082,6 @@ module.exports = function registerCreatureOfFenkenstrainQuest(api) {
   }
 
   function handleLogin({ player }) {
-    ensureQuestNpcs(player);
     ensureMonster(player);
     refreshQuestList(player);
   }
@@ -1078,10 +1095,14 @@ module.exports = function registerCreatureOfFenkenstrainQuest(api) {
     key: "creature_of_fenkenstrain",
     name: "Creature of Fenkenstrain",
     varpId: VARP_CREATURE_OF_FENKENSTRAIN,
+    varbitId: VARBIT_CREATURE_OF_FENKENSTRAIN,
+    varbitValue: stage => stage >= STAGE_COMPLETE ? 9 : stage,
     startedValue: STAGE_BODY_PARTS,
     completionValue: STAGE_COMPLETE,
     questPoints: 2,
     xpRewards: [{ skillId: Skill.THIEVING.getIndex(), amount: 1000, label: "Thieving" }],
+    // The runtime only shows xpRewards on the scroll; the experience itself is paid here.
+    onReward: (player) => player.getSkillManager().addExperiences(Skill.THIEVING, 1000),
     rewardItemId: ItemIdentifiers.RING_OF_CHAROS,
     rewardItemLabel: "Ring of Charos",
     otherRewards: ["Access to the Werewolf Agility Course"],

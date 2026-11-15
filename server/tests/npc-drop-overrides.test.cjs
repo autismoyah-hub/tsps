@@ -41,9 +41,14 @@ test("the generated files hold no hand edits: each override changes something th
     }
     assert.ok(_test.tablesByNpc.has(Number(id)), `${overrides.addNpcs[id].name} (${id}) has its table`);
   }
-  // Overrides that the dump already covers would be dead weight: the dump would win anyway.
-  const covered = Object.keys(overrides.addNpcs).filter((id) => id !== "$comment" && dump.npcs[id]);
-  assert.deepEqual(covered, [], "the dump maps these itself now: remove them from the overrides");
+  // An override the dump already covers would be dead weight: every entry must name at least one
+  // table the dump does not map for that NPC. The dump's own tables are kept and the missing ones
+  // appended, so an entry that adds nothing is stale.
+  const dead = Object.keys(overrides.addNpcs).filter((id) => id !== "$comment").filter((id) => {
+    const mapped = new Set(dump.npcs[id]?.tables ?? []);
+    return !overrides.addNpcs[id].tables.some((table) => !mapped.has(table));
+  });
+  assert.deepEqual(dead, [], "the dump maps these tables itself now: remove them from the overrides");
   for (const name of Object.keys(overrides.subtables)) assert.equal(subtables[name], undefined, `${name} is in the dump now`);
   for (const [id, change] of Object.entries(overrides.tables)) {
     for (const section of change.removeSections ?? []) {
@@ -179,4 +184,38 @@ test("the manta ray keeps its own seed rows beside the uncommon seed table (#198
   const names = new Set(manta.entries.map((entry) => entry.name));
   for (const seed of ["Yew seed", "Magic seed", "Redwood tree seed"]) assert.ok(names.has(seed), seed);
   assert.ok(manta.entries.some((entry) => entry.shared_table === "uncommonSeed"));
+});
+
+
+test("saved world tables survive dump changes and reset inherits the updated dump", () => {
+  const { __internals } = require("../plugins/npcs/NpcDrops.plugin");
+  const saved = { main_max_roll: 128, rolls: 2, entries: [{ item_id: 1353, quantity: [1, 3], weight: 2, out_of: 128, notes: ["Quest condition"] }], tertiary: [] };
+  const custom = { tables: { spectre: { replacement: saved } } };
+  const updated = { main_max_roll: 512, entries: [{ item_id: 995, weight: 512, out_of: 512, quantity: [1, 1] }] };
+  const fresh = () => ({ tables: { spectre: structuredClone(updated), untouched: { entries: [] } }, npcs: {} });
+  const world = fresh();
+  __internals.applyCustomDrops(world, custom);
+  assert.deepEqual(world.tables.spectre, saved);
+  assert.deepEqual(world.tables.untouched, { entries: [] });
+  __internals.applyOverrides(world, {}, { tables: { spectre: { addEntries: [{ item_id: 526, quantity: [1, 1], always: true }] } } });
+  assert.equal(world.tables.spectre.entries.length, 2, "repo corrections still apply after custom tables");
+  assert.equal(saved.entries.length, 1, "runtime changes never leak into the saved source");
+  const reset = fresh();
+  __internals.applyCustomDrops(reset, {});
+  assert.deepEqual(reset.tables.spectre, updated);
+  const renamed = { tables: {}, npcs: {} };
+  __internals.applyCustomDrops(renamed, custom);
+  assert.deepEqual(renamed.tables.spectre, saved, "missing defaults do not discard saved tables");
+});
+
+test("invalid saved tables fall back to defaults without aborting other tables", (t) => {
+  const { __internals } = require("../plugins/npcs/NpcDrops.plugin");
+  t.mock.method(console, "error", () => {});
+  for (const replacement of [null, [], { entries: [null] }, { tertiary: "bad" }]) {
+    const original = { entries: [{ item_id: 995 }] };
+    const world = { tables: { broken: original, valid: {} } };
+    __internals.applyCustomDrops(world, { tables: { broken: { replacement }, valid: { replacement: { entries: [] } } } });
+    assert.equal(world.tables.broken, original);
+    assert.deepEqual(world.tables.valid, { entries: [] });
+  }
 });

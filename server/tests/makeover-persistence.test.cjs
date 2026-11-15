@@ -20,7 +20,7 @@ before(async () => {
 after(() => PM.emitServerShutdown({}));
 
 const MALE = [0, 3, 18, 26, 34, 38, 42, 14, 2, 14, 5, 4, 0];
-const FEMALE = [1, 48, 57, 65, 68, 77, 80, 57, 2, 14, 5, 4, 0];
+const FEMALE = [1, 48, 57, 65, 68, 77, 80, -1, 2, 14, 5, 4, 0];
 const TOP = 3;
 const ARMS_BURGER_SLOT = 10 + 4 * 2;
 
@@ -36,6 +36,49 @@ function actor(t, look) {
 
 const component = (name) => core.CacheDefinitions.getComponentId(`makeover:${name}`);
 const click = (p, name, slot) => PM.emitInterfaceActionClick({ player: p, buttonId: component(name), action: 1, slot });
+
+test('female defaults and newly spawned bots never wear a torso kit as their jaw', (t) => {
+  const p = actor(t, FEMALE);
+  p.getAppearance().set();
+  assert.equal(p.getAppearance().getLook()[core.Appearance.BEARD], -1);
+  const queue = [];
+  const random = Math.random;
+  Math.random = () => 0.75;
+  try {
+    const bot = require('../plugins/bots/behaviours/spawn/PlayerFactory.PlayerBots').createBotPlayer(
+      'jawcheck', new core.Location(3090, 3530), {
+        loadPersistence: false, saveRandomizedAppearance: false,
+        api: { getWorld: () => ({ getPlayerByName: () => null, getAddPlayerQueue: () => queue }) },
+      });
+    assert.equal(bot.getAppearance().getLook()[core.Appearance.GENDER], 1);
+    assert.equal(bot.getAppearance().getLook()[core.Appearance.BEARD], -1);
+    assert.equal(queue[0], bot);
+  } finally { Math.random = random; }
+});
+
+test('loading an old female torso-in-jaw save repairs the jaw and keeps worn armour', (t) => {
+  const p = actor(t, FEMALE);
+  p.getEquipment().setItem(core.Equipment.BODY_SLOT, new core.Item(core.ItemIdentifiers.FIGHTER_TORSO));
+  const saved = PlayerSave.fromPlayer(p);
+  saved.appearance[core.Appearance.BEARD] = 57;
+  assert.equal(core.CacheDefinitions.getIdentKits().find(kit => kit.id === 57).bodyPartId, 9,
+    'the former jaw default is actually a female torso');
+  const loaded = actor(t, FEMALE);
+  saved.applyToPlayer(loaded);
+  assert.equal(loaded.getAppearance().getLook()[core.Appearance.BEARD], -1);
+  assert.equal(loaded.getAppearance().getLook()[core.Appearance.CHEST], FEMALE[core.Appearance.CHEST]);
+  assert.equal(loaded.getEquipment().get(core.Equipment.BODY_SLOT).getId(), core.ItemIdentifiers.FIGHTER_TORSO);
+});
+
+test('cache-valid female jaw styles still survive save and load', (t) => {
+  const jaw = core.CacheDefinitions.getIdentKits().find(kit => kit.bodyPartId === 8 && !kit.nonSelectable);
+  assert.ok(jaw);
+  const p = actor(t, FEMALE);
+  p.getAppearance().getLook()[core.Appearance.BEARD] = jaw.id;
+  const loaded = actor(t, FEMALE);
+  PlayerSave.fromPlayer(p).applyToPlayer(loaded);
+  assert.equal(loaded.getAppearance().getLook()[core.Appearance.BEARD], jaw.id);
+});
 
 /** The torso kits the makeover lists for a body type, in style order. */
 function torsoKits(typeB) {
@@ -139,4 +182,58 @@ test('opening the designer retains a legacy pronoun default across native body c
   const q = actor(t, FEMALE);
   PlayerSave.fromPlayer(p).applyToPlayer(q);
   assert.equal(q.getAppearance().getPronouns(), 0, 'the independent default survives save/load');
+});
+
+// Skin colours 8-11 are Halloween unlocks (cache [proc,makeover_unlockedcolour]; Wiki, Makeover).
+const SKIN = 12;
+const unlockKeys = () => core.Appearance.SKIN_UNLOCKS.map((unlock) => unlock.attribute);
+const { ChangeAppearancePacketListener } = require('../dist/net/packet/impl/ChangeAppearancePacketListener');
+const designSkin = (p, skin) => {
+  PM.emitCustomEvent('makeover-mage:open', { player: p });
+  const look = p.getAppearance().getLook();
+  ChangeAppearancePacketListener.apply(p, look[0], [1, 7, 2, 3, 4, 5, 6].map((i) => look[i]), [8, 9, 10, 11, 12].map((i) => look[i]).with(4, skin));
+  return p.getAppearance().getLook()[SKIN];
+};
+
+test('APPEARANCE_SET keeps the current skin for a locked or unknown colour, and takes an unlocked one', (t) => {
+  const p = actor(t, MALE);
+  for (const locked of [8, 9, 10, 11, 13, 255]) assert.equal(designSkin(p, locked), 0, `skin ${locked} without its unlock`);
+  assert.equal(p.getAppearance().getCanChangeAppearance(), false, 'the rest of the design still applies and closes');
+  assert.equal(designSkin(p, 12), 12, 'purple is open to everyone');
+  p.setAttribute(unlockKeys()[1], true);
+  assert.equal(designSkin(p, 9), 9, 'black with hw15_skincols');
+  assert.equal(designSkin(p, 11), 9, 'blue still needs hw17_skincols');
+  p.setAttribute(unlockKeys()[1], false);
+  assert.equal(designSkin(p, 9), 9, 'a saved locked colour can be confirmed unchanged');
+});
+
+test('a saved skin outside the palette loads as the default, and 8-12 survive save and load', (t) => {
+  for (const [saved, loaded] of [[13, 0], [255, 0], [-3, 0], [9, 9], [12, 12]]) {
+    const p = actor(t, MALE);
+    const save = PlayerSave.fromPlayer(p);
+    save.appearance = MALE.with(SKIN, saved);
+    const q = actor(t, MALE);
+    save.applyToPlayer(q);
+    assert.equal(q.getAppearance().getLook()[SKIN], loaded, `saved ${saved}`);
+  }
+});
+
+test('the skin unlocks are saved, shown to the client on login, and set by a completed Halloween event', (t) => {
+  const p = actor(t, MALE);
+  PM.emitCustomEvent('makeover-mage:unlock-halloween-skins', { player: p });
+  const q = actor(t, MALE);
+  PlayerSave.fromPlayer(p).applyToPlayer(q);
+  assert.deepEqual(unlockKeys().map((key) => q.getAttribute(key)), [true, true, true]);
+  PM.emitPlayerLogin({ player: q, isNewAccount: false, username: q.getUsername() });
+  assert.deepEqual([4803, 4804, 6007].map((id) => q.getPacketSender().getVarbit(id)), [1, 1, 1]);
+  const fresh = actor(t, MALE);
+  PM.emitPlayerLogin({ player: fresh, isNewAccount: false, username: fresh.getUsername() });
+  assert.deepEqual(unlockKeys().map((key) => fresh.getAttribute(key) === true), [false, false, false]);
+  assert.deepEqual([4803, 4804, 6007].map((id) => fresh.getPacketSender().getVarbit(id)), [0, 0, 0]);
+  const progress = require('../plugins/world/seasonal/Progress.HalloweenEvents');
+  const done = actor(t, MALE);
+  done.setAttribute(progress.PROGRESS_ATTRIBUTE, { ...progress.initial(), stage: progress.STAGE.COMPLETE });
+  PM.emitPlayerLogin({ player: done, isNewAccount: false, username: done.getUsername() });
+  assert.deepEqual(unlockKeys().map((key) => done.getAttribute(key)), [true, true, true], 'a save that completed Halloween 2025');
+  assert.deepEqual([4803, 4804, 6007].map((id) => done.getPacketSender().getVarbit(id)), [1, 1, 1]);
 });

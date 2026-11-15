@@ -35,9 +35,7 @@
  *   the six skill levels follow Quest Helper (Slayer/Construction/Sailing/Hunter
  *   unboosted, Woodcutting/Crafting boostable).
  * - The boat journey's at-sea Floopa variants and the boat-driven Little Pearl
- *   arrival/cutscene are played. The captured cam_moveto_cycles/
- *   cam_rotateto_coordinate legs use the closest supported arc/rotate movement,
- *   the only camera-attribution gap.
+ *   arrival/cutscene use the recorded timed moves and coordinate rotations.
  * - The shield's cape-slot equip gate and weight are not enforced; the Shellbane
  *   specials, shield block animation/hit reduction and the cutscene are implemented.
  * - Object repair/shake/chop lines and the monument "tracks" line are not in the
@@ -49,6 +47,8 @@
  *   owner-only for quest players because ground-items.json predates Sailing; the
  *   exact OSRS spawn network is not reproduced.
  */
+const CameraShake = require("../../interface/CameraShake.plugin");
+
 module.exports = function registerTroubledTortugansQuest(api) {
   const {
     Animation,
@@ -269,6 +269,11 @@ module.exports = function registerTroubledTortugansQuest(api) {
   // Quest areas.
   const ISLAND_ZONE = { minX: 2946, maxX: 2975, minY: 2588, maxY: 2625, levels: [0] };
   const PEARL_ZONE = { minX: 3338, maxX: 3378, minY: 2183, maxY: 2223, levels: [0] };
+  // The repair and bandage materials are private floor spawns. The default ground
+  // despawn (300 ticks) removed the two scutes near the west beach before they were
+  // collected in the audit run; they only came back on relog. Keep them for an hour,
+  // re-created on login and zone entry as before.
+  const QUEST_FLOOR_DESPAWN_TICKS = 6000;
 
   const ISLAND_TORTUGAN_SPAWN = { x: 2962, y: 2605, z: 0 }; // capture 3456
   const CONCH_DOCKS = { x: 3185, y: 2371, z: 0 };
@@ -583,6 +588,7 @@ module.exports = function registerTroubledTortugansQuest(api) {
     if (hook !== START_HOOK || !INJURED_TORTUGAN_NPC_IDS.has(npcId)) return;
     if (quest.getStage(player) === 0) {
       quest.setStage(player, STAGE_STARTED);
+      player.sendMessage("You've started a new quest: <col=0ab0ff>Troubled Tortugans</col>");
       ensureMaterialSpawns(player);
     }
   }
@@ -645,6 +651,12 @@ module.exports = function registerTroubledTortugansQuest(api) {
       if (before >= STAGE_KOREL_SENT && before < STAGE_RALEY_MET) quest.setStage(player, STAGE_RALEY_MET);
     }
     let stage = quest.getStage(player);
+    // Capture 3456 sets 4 on the closing player line of the opening conversation,
+    // before any bandages exist; making them (below) keeps the same value.
+    if (stage === STAGE_STARTED && text.startsWith("Right, you take it easy.")) {
+      quest.setStage(player, STAGE_BANDAGES_MADE);
+      stage = STAGE_BANDAGES_MADE;
+    }
     // The bandage conversation and the boat hand-off are two recorded steps.
     if (stage === STAGE_BANDAGES_USED && text.startsWith("Don't mention it.")) {
       quest.setStage(player, STAGE_FLOOPA_MET);
@@ -743,6 +755,8 @@ module.exports = function registerTroubledTortugansQuest(api) {
       return true;
     }
     player.performAnimation(new Animation(axe.animationId));
+    // Jatoba logs don't stack, so a full bag can't take another even when one is already held.
+    if (player.getInventory().isFull()) return true;
     player.getInventory().adds(JATOBA_LOGS_ITEM_ID, 1);
     player.sendMessage("You get some jatoba logs.");
     return true;
@@ -1182,19 +1196,20 @@ module.exports = function registerTroubledTortugansQuest(api) {
   /**
    * Capture 3456 ticks 2421-2451 (30 ticks): a two-leg flight from the first
    * shot at (3336,2207), across the Pearl, to (3372,2223), then a reset.
-   * The client encoders for cam_moveto_cycles/cam_rotateto_coordinate are not
-   * exposed by this server, so the two legs use the closest available arc and
-   * rotation packets with the captured heights/cycles/easing.
+   * Raw 235/03456 camera tiles are build-local. The root rebuild's unrotated
+   * chunks map instance (12264,528) to source (3336,2224); resolving those
+   * tiles restores the intermediate snap and both straight-flight endpoints.
    */
   function playPearlCamera(player, key) {
     const sender = player.getPacketSender();
     camera(player, [3336, 2207, 1024], [3336, 2192, 1023], Scenes.CAMERA_RATES);
     // Discord capture: five zeroed cam_shake packets open the scene.
-    for (let axis = 0; axis < 5; axis++) sender.sendCameraShake(axis, 0, 0, 0);
+    for (let axis = 0; axis < 5; axis++) CameraShake.send(sender, "atmospheric", axis, 0, 0, 0);
     later(key, 6, () => {
       if (pearlCameraKeys.get(player) !== key) return;
-      sender.sendCameraMoveArc(3355, 2210, 3336, 2197, 1024, 300, "ease_out_sine", true);
-      sender.sendCameraRotateBy(0, 0, 300, "ease_out_sine");
+      camera(player, [3366, 2232, 1024], [3336, 2197, 1023], Scenes.CAMERA_RATES);
+      sender.sendCameraMoveTo(3369, 2225, 1024, { cycles: 300, easing: "ease_out_sine", ignoreTerrain: true });
+      sender.sendCameraRotateToCoordinate(3336, 2223, 1023, 300, "ease_out_sine");
     });
     later(key, 16, () => {
       if (pearlCameraKeys.get(player) !== key) return;
@@ -1202,7 +1217,8 @@ module.exports = function registerTroubledTortugansQuest(api) {
     });
     later(key, 21, () => {
       if (pearlCameraKeys.get(player) !== key) return;
-      sender.sendCameraMoveArc(3355, 2210, 3367, 2223, 1536, 150, "ease_out_sine", true);
+      sender.sendCameraMoveTo(3377, 2228, 1536, { cycles: 150, easing: "ease_out_sine", ignoreTerrain: true });
+      sender.sendCameraRotateToCoordinate(3356, 2208, 1023, 150, "ease_out_sine");
     });
     later(key, 30, () => {
       if (pearlCameraKeys.get(player) !== key) return;
@@ -1341,7 +1357,9 @@ module.exports = function registerTroubledTortugansQuest(api) {
     for (const spawn of spawns) {
       const location = new Location(spawn.x, spawn.y, spawn.z);
       if (manager.getGroundItem(player.getUsername(), spawn.itemId, location, privateArea)) continue;
-      manager.registerLocation(player, new Item(spawn.itemId, 1), location);
+      manager.registerLocation(player, new Item(spawn.itemId, 1), location, privateArea, {
+        despawnDelay: QUEST_FLOOR_DESPAWN_TICKS,
+      });
     }
   }
 
@@ -1596,11 +1614,15 @@ module.exports = function registerTroubledTortugansQuest(api) {
     startedValue: STAGE_STARTED,
     completionValue: STAGE_COMPLETE,
     questPoints: 1,
+    completionJingleId: 152,
+    completionMessageColor: "0ab0ff",
+    scrollItemId: SEA_SHELL_ITEM_ID,
     xpRewards: [
       { skillId: Skill.SAILING.getIndex(), amount: SAILING_REWARD_XP, label: "Sailing" },
       { skillId: Skill.SLAYER.getIndex(), amount: SLAYER_REWARD_XP, label: "Slayer" },
     ],
-    otherRewards: ["Access to the Great Conch", "Ability to fight gryphons"],
+    otherRewards: ["Great Conch Access"],
+    rewardOrder: ["other", "xp"], // rsprox 235/03456.txt (the completion scroll near :52850)
     buildJournal,
     onReward: grantReward,
   });

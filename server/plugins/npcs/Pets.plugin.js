@@ -23,6 +23,9 @@ const Call = require("./pets/Call.Pets");
 const CatchUp = require("./pets/CatchUp.Pets");
 const Dialogue = require("./pets/Dialogue.Pets");
 const RiftGuardian = require("./pets/RiftGuardian.Pets");
+const TombsOfAmascut = require("./pets/TombsOfAmascut.Pets");
+const Beaver = require("./pets/Beaver.Pets");
+const GiantSquirrel = require("./pets/GiantSquirrel.Pets");
 
 const CURRENT_PET_ATTRIBUTE = "pets:current";
 /** The item of the follower the player logged out with; re-summoned on login. */
@@ -50,6 +53,8 @@ const MAX_XP = 200000000;
 const SANGUINE_DUST_UNLOCK = {permanent: true, name: "sanguine dust",
   message: "You need to earn sanguine dust from the Theatre of Blood Challenge Mode to do that."};
 let pluginApi = null;
+/** world.json pluginConfig: how many times likelier every skilling pet roll is (1, the default, is OSRS). */
+const SKILLING_PET_MULTIPLIER_CONFIG = "Pets:skillingPetMultiplier";
 let TaskClass = null;
 let TaskManagerRef = null;
 let NPCRespawnTaskRef = null;
@@ -74,19 +79,19 @@ const PETS = [
   { enumName: "LIL_NYLO", petId: NpcIdentifiers.LIL_NYLO_2, morphId: NpcIdentifiers.LIL_SOT_2, itemId: ItemIdentifiers.LIL_NYLO, familyItemId: ItemIdentifiers.LIL_ZIK, dialogue: -1, morphUnlock: SANGUINE_DUST_UNLOCK },
   { enumName: "LIL_SOT", petId: NpcIdentifiers.LIL_SOT_2, morphId: NpcIdentifiers.LIL_XARP_2, itemId: ItemIdentifiers.LIL_SOT, familyItemId: ItemIdentifiers.LIL_ZIK, dialogue: -1, morphUnlock: SANGUINE_DUST_UNLOCK },
   { enumName: "LIL_XARP", petId: NpcIdentifiers.LIL_XARP_2, morphId: NpcIdentifiers.LIL_ZIK_2, itemId: ItemIdentifiers.LIL_XARP, familyItemId: ItemIdentifiers.LIL_ZIK, dialogue: -1, morphUnlock: SANGUINE_DUST_UNLOCK },
-  // Tombs of Amascut: each form uses its boss remnant (Wiki, Metamorphosis).
-  { enumName: "TUMEKENS_GUARDIAN", petId: 11812, morphId: 11813, itemId: 27352, dialogue: -1 },
-  { enumName: "ELIDINIS_GUARDIAN", petId: 11813, morphId: 11849, itemId: 27352, dialogue: -1,
-    morphUnlock: { itemId: ItemIdentifiers.ANCIENT_REMNANT, consume: true, name: "an ancient remnant" } },
-  { enumName: "ZEBO", petId: 11849, morphId: 11848, itemId: 27352, dialogue: -1,
-    morphUnlock: { itemId: ItemIdentifiers.REMNANT_OF_ZEBAK, consume: true, name: "a remnant of Zebak" } },
-  { enumName: "KEPHRITI", petId: 11848, morphId: 11847, itemId: 27352, dialogue: -1,
-    morphUnlock: { itemId: ItemIdentifiers.REMNANT_OF_KEPHRI, consume: true, name: "a remnant of Kephri" } },
-  { enumName: "BABI", petId: 11847, morphId: 11846, itemId: 27352, dialogue: -1,
-    morphUnlock: { itemId: ItemIdentifiers.REMNANT_OF_BA_BA, consume: true, name: "a remnant of Ba-Ba" } },
-  { enumName: "AKKHITO", petId: 11846, morphId: 11850, itemId: 27352, dialogue: -1,
-    morphUnlock: { itemId: ItemIdentifiers.REMNANT_OF_AKKHA, consume: true, name: "a remnant of Akkha" } },
-  { enumName: "TUMEKENS_DAMAGED_GUARDIAN", petId: 11850, morphId: 11812, itemId: 27352, dialogue: -1 },
+  // Tombs of Amascut: the eight guardian forms share one item. Their Metamorphosis is a menu, not a cycle
+  // (pets/TombsOfAmascut.Pets.js, rsprox 1757 ticks 26423-26425), so none has a morphId here.
+  { enumName: "TUMEKENS_GUARDIAN", petId: 11812, morphId: 0, itemId: 27352, dialogue: -1 },
+  { enumName: "ELIDINIS_GUARDIAN", petId: 11813, morphId: 0, itemId: 27352, dialogue: -1 },
+  { enumName: "ZEBO", petId: 11849, morphId: 0, itemId: 27352, dialogue: -1 },
+  { enumName: "KEPHRITI", petId: 11848, morphId: 0, itemId: 27352, dialogue: -1 },
+  { enumName: "BABI", petId: 11847, morphId: 0, itemId: 27352, dialogue: -1 },
+  { enumName: "AKKHITO", petId: 11846, morphId: 0, itemId: 27352, dialogue: -1 },
+  { enumName: "TUMEKENS_DAMAGED_GUARDIAN", petId: 11850, morphId: 0, itemId: 27352, dialogue: -1 },
+  { enumName: "ELIDINIS_DAMAGED_GUARDIAN", petId: 11851, morphId: 0, itemId: 27352, dialogue: -1 },
+  // The Fractured Archive: Orion and Orion (robed) share one family and collection log slot.
+  { enumName: "ORION", petId: NpcIdentifiers.ORION, houseNpcId: NpcIdentifiers.ORION_3, morphId: NpcIdentifiers.ORION_2, itemId: ItemIdentifiers.ORION, familyItemId: ItemIdentifiers.ORION, dialogue: -1 },
+  { enumName: "ORION_ROBED", petId: NpcIdentifiers.ORION_2, houseNpcId: NpcIdentifiers.ORION_4, morphId: NpcIdentifiers.ORION, itemId: ItemIdentifiers.ORION_3, familyItemId: ItemIdentifiers.ORION, dialogue: -1 },
   { enumName: "SMOL_HEREDIT", petId: NpcIdentifiers.SMOL_HEREDIT_2, morphId: 0, itemId: 28960, dialogue: -1, mainDrop: true },
   { enumName: "NEXLING", petId: NpcIdentifiers.NEXLING_2, houseNpcId: NpcIdentifiers.NEXLING, morphId: 0, itemId: 26348, dialogue: -1 },
   { enumName: "VORKI", petId: NpcIdentifiers.VORKI_2, houseNpcId: NpcIdentifiers.VORKI, morphId: 0, itemId: 21992, dialogue: -1 },
@@ -244,8 +249,10 @@ const PETS = [
     enumName: "BEAVER",
     petId: NpcIdentifiers.BEAVER_11,
     dialogueVariant: "standard-dialogue-normal-variant",
+    // Each recolour, the pheasant and the fox are their own item (pets/Beaver.Pets.js adds them).
     morphId: 0,
     itemId: 13322,
+    familyItemId: 13322,
     dialogue: -1,
     skill: Skill.WOODCUTTING,
     chance: 5000,
@@ -322,6 +329,8 @@ const PETS = [
   {
     enumName: "ROCKY",
     petId: 7336,
+    // Transcript:Rocky also has tanuki (Ziggy) and red panda (Red) sections; this follower is Rocky.
+    dialogueVariant: "standard-dialogue",
     morphId: 0,
     itemId: 20663,
     dialogue: -1,
@@ -353,7 +362,7 @@ const PETS = [
 
   // Adult, overgrown and hell cat stages. The Wiki infobox lists kitten NPCs/items, adult
   // NPCs/items and overgrown NPCs/items in the same colour order, so the parallel order is
-  // the mapping. Wily/lazy cats need Ratcatchers, which is not implemented.
+  // the mapping. Felkrash trains overgrown cats into wily cats after Ratcatchers.
   { enumName: "PET_CAT", petId: 1619, morphId: 0, itemId: 1561, dialogue: -1, reclaimable: false },
   { enumName: "PET_CAT_2", petId: 1620, morphId: 0, itemId: 1562, dialogue: -1, reclaimable: false },
   { enumName: "PET_CAT_3", petId: 1621, morphId: 0, itemId: 1563, dialogue: -1, reclaimable: false },
@@ -369,6 +378,21 @@ const PETS = [
   { enumName: "HELL_KITTEN", petId: 5597, morphId: 0, itemId: 7583, dialogue: -1, reclaimable: false },
   { enumName: "HELLCAT", petId: 1625, morphId: 0, itemId: 7582, dialogue: -1, reclaimable: false },
   { enumName: "OVERGROWN_HELLCAT", petId: 5604, morphId: 0, itemId: 7581, dialogue: -1, reclaimable: false },
+  // Wily and lazy cats (Wiki infoboxes, same colour order as the overgrown cats above).
+  { enumName: "WILY_CAT", petId: NpcIdentifiers.WILY_CAT_2, morphId: 0, itemId: ItemIdentifiers.WILY_CAT_2, dialogue: -1, reclaimable: false },
+  { enumName: "WILY_CAT_2", petId: NpcIdentifiers.WILY_CAT, morphId: 0, itemId: ItemIdentifiers.WILY_CAT, dialogue: -1, reclaimable: false },
+  { enumName: "WILY_CAT_3", petId: NpcIdentifiers.WILY_CAT_3, morphId: 0, itemId: ItemIdentifiers.WILY_CAT_3, dialogue: -1, reclaimable: false },
+  { enumName: "WILY_CAT_4", petId: NpcIdentifiers.WILY_CAT_4, morphId: 0, itemId: ItemIdentifiers.WILY_CAT_4, dialogue: -1, reclaimable: false },
+  { enumName: "WILY_CAT_5", petId: NpcIdentifiers.WILY_CAT_5, morphId: 0, itemId: ItemIdentifiers.WILY_CAT_5, dialogue: -1, reclaimable: false },
+  { enumName: "WILY_CAT_6", petId: NpcIdentifiers.WILY_CAT_6, morphId: 0, itemId: ItemIdentifiers.WILY_CAT_6, dialogue: -1, reclaimable: false },
+  { enumName: "LAZY_CAT", petId: NpcIdentifiers.LAZY_CAT_2, morphId: 0, itemId: ItemIdentifiers.LAZY_CAT_2, dialogue: -1, reclaimable: false },
+  { enumName: "LAZY_CAT_2", petId: NpcIdentifiers.LAZY_CAT, morphId: 0, itemId: ItemIdentifiers.LAZY_CAT, dialogue: -1, reclaimable: false },
+  { enumName: "LAZY_CAT_3", petId: NpcIdentifiers.LAZY_CAT_3, morphId: 0, itemId: ItemIdentifiers.LAZY_CAT_3, dialogue: -1, reclaimable: false },
+  { enumName: "LAZY_CAT_4", petId: NpcIdentifiers.LAZY_CAT_4, morphId: 0, itemId: ItemIdentifiers.LAZY_CAT_4, dialogue: -1, reclaimable: false },
+  { enumName: "LAZY_CAT_5", petId: NpcIdentifiers.LAZY_CAT_5, morphId: 0, itemId: ItemIdentifiers.LAZY_CAT_5, dialogue: -1, reclaimable: false },
+  { enumName: "LAZY_CAT_6", petId: NpcIdentifiers.LAZY_CAT_6, morphId: 0, itemId: ItemIdentifiers.LAZY_CAT_6, dialogue: -1, reclaimable: false },
+  { enumName: "WILY_HELLCAT", petId: NpcIdentifiers.WILY_HELLCAT, morphId: 0, itemId: ItemIdentifiers.WILY_HELLCAT, dialogue: -1, reclaimable: false },
+  { enumName: "LAZY_HELLCAT", petId: NpcIdentifiers.LAZY_HELLCAT, morphId: 0, itemId: ItemIdentifiers.LAZY_HELL_CAT, dialogue: -1, reclaimable: false },
 
   {
     enumName: "FIRE_RIFT_GUARDIAN",
@@ -593,7 +617,8 @@ function ownsPetFamily(player, pet) {
   });
 }
 
-function recordOwnership(player, pet) {
+/** `announce`: false records the pet without the collection log sync (awardPet sends its lines first). */
+function recordOwnership(player, pet, { announce = true } = {}) {
   if (pet?.reclaimable === false) return;
   const family = petFamily(pet);
   const owned = getOwnedPetItems(player);
@@ -606,8 +631,17 @@ function recordOwnership(player, pet) {
   if (others.length === owned.length && owned.includes(pet.itemId)) return;
   player.setAttribute(OWNED_ATTRIBUTE, [...others, pet.itemId]);
   pluginApi.emitCustomEvent("persistence:save", { player, reason: "pet-insurance" });
-  syncCollectionLog(player, { silent: false });
+  if (announce) syncCollectionLog(player, { silent: false });
 }
+
+/**
+ * A new pet's lines, as recorded (rsprox_transcripts/234/03285.txt:287458-287462, 227/00101.txt:602776-602778,
+ * 227/01857.txt:421583-421585): the red follow line, the purple insurance line (Wiki, Probita: "One-off pets are now
+ * automatically insured upon receiving one"), then the collection log's.
+ */
+const FOLLOWED = "<col=ef1020>You have a funny feeling like you're being followed.</col>";
+const WOULD_HAVE_BEEN_FOLLOWED = "<col=ef1020>You have a funny feeling like you would have been followed...</col>";
+const INSURED = "<col=800080>Your new pet has been automatically insured. If lost, it can be reclaimed from Probita in Ardougne.</col>";
 
 /** The collection log lists one item per pet: a skilling pet's base colour, never a morph. */
 function collectionLogItemId(pet) {
@@ -658,24 +692,33 @@ function awardPet(player, itemId) {
       deliverPetItem(player, pet.itemId);
       return true;
     }
-    player.sendMessage("You have a funny feeling like you would have been followed...");
+    // rsprox_transcripts/227/01751.txt:97166: red, as the follow line.
+    player.sendMessage(WOULD_HAVE_BEEN_FOLLOWED);
     return false;
   }
-  recordOwnership(player, pet);
+  recordOwnership(player, pet, { announce: false });
+  const announce = () => {
+    if (pet.reclaimable !== false) player.sendMessage(INSURED);
+    syncCollectionLog(player, { silent: false });
+  };
   // "pets:obtained" { player, itemId, skill }: a new pet (a league's "Obtain any Skilling Pet"); `skill` a skilling pet's.
   pluginApi?.emitCustomEvent?.("pets:obtained", { player, itemId: pet.itemId, skill: pet.skill?.getName?.() ?? null });
   const following = player.getAttribute?.(CURRENT_PET_ATTRIBUTE)?.isRegistered?.() === true;
   if (following && player.getInventory().isFull()) {
     // OSRS then loses the pet to Probita; the owned record lets her return it.
     player.sendMessage("You have a funny feeling like you would have been followed... Probita can help.");
+    announce();
     return true;
   }
   if (following) {
     player.getInventory().adds(pet.itemId, 1);
     player.sendMessage("You feel something weird sneaking into your backpack.");
+    announce();
     return true;
   }
-  return drop(player, pet.itemId, true);
+  const dropped = drop(player, pet.itemId, true);
+  announce();
+  return dropped;
 }
 
 /**
@@ -689,13 +732,7 @@ function awardPetRequest(request) {
 
 /** Does the player hold this pet item anywhere (follower, inventory, bank)? */
 function holdsPetItem(player, itemId) {
-  const current = player.getAttribute?.(CURRENT_PET_ATTRIBUTE);
-  if (current?.isRegistered?.() && getPetByNpcId(current.getId())?.itemId === itemId) return true;
-  if (player.getInventory?.()?.contains?.(itemId)) return true;
-  const banks = player.getBanks?.() ?? [];
-  for (let tab = 0; tab < Bank.TOTAL_BANK_TABS; tab++) {
-    if (tab !== Bank.BANK_SEARCH_TAB_INDEX && banks[tab]?.contains?.(itemId)) return true;
-  }
+  if (holdsPetItemOutsideHouse(player, itemId)) return true;
   // Somewhere else that keeps pets (a player-owned house's menagerie) answers for its own.
   const request = { player, itemId, held: false };
   pluginApi?.emitCustomEvent("pets:held-elsewhere", request);
@@ -749,14 +786,60 @@ function reclaimPets(event) {
   Recovery.open(event);
 }
 
-/** Boss pets come straight to the killer instead of landing on the floor. */
-function awardDroppedPets({ player, drops }) {
+/**
+ * Boss pets come straight to the killer instead of landing on the floor. A boss whose loot waits for a claim (the Royal
+ * Titans' corpses) holds its death roll back ("pets:hold-for-claim" { player, npc, npcId, claim, hold }): its pet then
+ * comes with the claim's own roll (marked `claim` on npc-drops:roll), to whoever claims, not to the last hitter.
+ */
+function awardDroppedPets({ player, npc, npcId, drops, claim }) {
   if (!player || !Array.isArray(drops)) return;
+  const hold = { player, npc, npcId, claim: claim === true, hold: false };
+  pluginApi?.emitCustomEvent?.("pets:hold-for-claim", hold);
+  if (hold.hold === true) return;
   for (let index = drops.length - 1; index >= 0; index--) {
     const itemId = drops[index]?.itemId ?? drops[index]?.id;
     if (!getPetForItemId(itemId)) continue;
     drops.splice(index, 1);
     awardPet(player, itemId);
+  }
+}
+
+/**
+ * "pets:extensions" { pets, services }: asked once as this plugin registers, before it hooks its
+ * pets' NPC ids, so another plugin can add pets of its own (Plugin Hub plugins load first, from
+ * plugins/imported/). A listener pushes rows like this table's onto `pets`:
+ *   { petId, itemId, enumName?, morphId?, dialogue?, reclaimable?, ... }
+ * petId is the follower's NPC id and itemId the item it is summoned from; any other fields stay
+ * on the row, for the adding plugin to read back (its "pets:interact" handler gets the row as
+ * `pet`). `services` lends the ownership helpers such a plugin needs: getOwnedPetItems(player),
+ * holdsPetItem(player, itemId), getPetForItemId(itemId) and getPetByNpcId(npcId). A second
+ * register (tests) replaces the previous extension pets.
+ */
+function addExtensionPets(api) {
+  for (let index = PETS.length - 1; index >= 0; index--) {
+    const pet = PETS[index];
+    if (!pet.extension) continue;
+    PETS.splice(index, 1);
+    PET_BY_ID.delete(pet.petId);
+    PET_BY_NAME.delete(pet.enumName);
+    if (PET_BY_ITEM_ID.get(pet.itemId) === pet) PET_BY_ITEM_ID.delete(pet.itemId);
+  }
+  const request = { pets: [], services: { getOwnedPetItems, holdsPetItem, getPetForItemId, getPetByNpcId } };
+  api.emitCustomEvent?.("pets:extensions", request);
+  for (const row of Array.isArray(request.pets) ? request.pets : []) {
+    if (!row || !Number.isInteger(row.petId) || !Number.isInteger(row.itemId)) {
+      console.error("[pets] an extension pet needs whole-number petId and itemId; skipped", row);
+      continue;
+    }
+    if (PET_BY_ID.has(row.petId) || PET_BY_ITEM_ID.has(row.itemId)) {
+      console.error(`[pets] extension pet NPC ${row.petId} or item ${row.itemId} is already a pet's; skipped`);
+      continue;
+    }
+    const pet = { morphId: 0, dialogue: -1, ...row, enumName: row.enumName ?? `EXTENSION_${row.petId}`, extension: true };
+    PETS.push(pet);
+    PET_BY_ID.set(pet.petId, pet);
+    PET_BY_NAME.set(pet.enumName, pet);
+    PET_BY_ITEM_ID.set(pet.itemId, pet);
   }
 }
 
@@ -901,23 +984,47 @@ const CAT_ATTENTION_WARN_MS = 7 * 60 * 1000;
 const CAT_WOOL_MS = 51 * 60 * 1000;
 const CAT_STROKE_MS = 18 * 60 * 1000;
 const CAT_STROKE_SATIATED_MS = 25 * 60 * 1000;
+// Wiki "Wily cat" / "Lazy cat": a 50% and about 33% base success rate. Their extra
+// activity-level roll is not modelled. Wiki "Overgrown cat": it "will lose its ability to
+// catch vermin", so its chase never succeeds.
 const CAT_RAT_CHANCE = {
   kitten: 0.1, hellkitten: 0.1,
   cat: 0.5, hellcat: 0.5,
-  overgrown: 0.75, overgrown_hellcat: 0.75,
+  overgrown: 0, overgrown_hellcat: 0,
+  wily: 0.5, wily_hellcat: 0.5,
+  lazy: 1 / 3, lazy_hellcat: 1 / 3,
 };
+/**
+ * Wiki "Hellcat": an adult, wily or lazy cat that catches seven hell-rats becomes a hellcat.
+ * An overgrown cat "will lose its ability to catch vermin" (Wiki "Overgrown cat"); its
+ * hell form comes from growing a hellcat or from hell-rat behemoths, not from here.
+ */
+const CAT_HELL_RATS = 7;
+const CAT_HELL_OF = { cat: "hellcat", wily: "wily_hellcat", lazy: "lazy_hellcat" };
+const CAT_BASE_OF = { hellkitten: "kitten", hellcat: "cat", overgrown_hellcat: "overgrown", wily_hellcat: "wily", lazy_hellcat: "lazy" };
+/** Felkrash's training (Wiki "Wily cat"): an overgrown cat, or an overgrown hellcat, becomes wily. */
+const CAT_WILY_OF = { overgrown: "wily", overgrown_hellcat: "wily_hellcat" };
+const CAT_WILY_STAGES = new Set(["wily", "wily_hellcat"]);
+const CAT_LAZY_STAGES = new Set(["lazy", "lazy_hellcat"]);
+/**
+ * Wiki "Lazy cat": a wily cat turns lazy "after a random amount of time, usually under an
+ * hour"; about 15 caught rats retrain it, and it turns wily again 5-10 minutes later. In
+ * growth ticks (90 seconds each): up to 40 ticks, and 4-6 ticks for the retraining wait.
+ */
+const CAT_LAZY_MAX_TICKS = 40;
+const CAT_RETRAIN_RATS = 15;
+const CAT_RETRAIN_TICKS = [4, 6];
 const CAT_NEXT_STAGE = {
   kitten: "cat",
   cat: "overgrown",
   hellkitten: "hellcat",
   hellcat: "overgrown_hellcat",
 };
-const CAT_HELL_STAGES = new Set(["hellkitten", "hellcat", "overgrown_hellcat"]);
+const CAT_HELL_STAGES = new Set(["hellkitten", "hellcat", "overgrown_hellcat", "wily_hellcat", "lazy_hellcat"]);
 
 /**
- * Stage -> colour -> npc/item ids. The Wiki infobox lists the kitten NPCs/items, the adult
- * cat NPCs/items and the overgrown cat NPCs/items in the same colour order, so the parallel
- * order is the mapping. Wily/lazy cats need Ratcatchers, which the server does not have.
+ * Stage -> colour -> npc/item ids. The Wiki infoboxes list the kitten, adult, overgrown,
+ * wily and lazy cat NPCs/items in the same colour order, so the parallel order is the mapping.
  */
 const CAT_STAGES = {
   kitten: { npcs: [5591, 5592, 5593, 5594, 5595, 5596], items: [1555, 1556, 1557, 1558, 1559, 1560] },
@@ -926,7 +1033,23 @@ const CAT_STAGES = {
   hellkitten: { npcs: [5597], items: [7583] },
   hellcat: { npcs: [1625], items: [7582] },
   overgrown_hellcat: { npcs: [5604], items: [7581] },
+  wily: {
+    npcs: [NpcIdentifiers.WILY_CAT_2, NpcIdentifiers.WILY_CAT, NpcIdentifiers.WILY_CAT_3, NpcIdentifiers.WILY_CAT_4, NpcIdentifiers.WILY_CAT_5, NpcIdentifiers.WILY_CAT_6],
+    items: [ItemIdentifiers.WILY_CAT_2, ItemIdentifiers.WILY_CAT, ItemIdentifiers.WILY_CAT_3, ItemIdentifiers.WILY_CAT_4, ItemIdentifiers.WILY_CAT_5, ItemIdentifiers.WILY_CAT_6],
+  },
+  lazy: {
+    npcs: [NpcIdentifiers.LAZY_CAT_2, NpcIdentifiers.LAZY_CAT, NpcIdentifiers.LAZY_CAT_3, NpcIdentifiers.LAZY_CAT_4, NpcIdentifiers.LAZY_CAT_5, NpcIdentifiers.LAZY_CAT_6],
+    items: [ItemIdentifiers.LAZY_CAT_2, ItemIdentifiers.LAZY_CAT, ItemIdentifiers.LAZY_CAT_3, ItemIdentifiers.LAZY_CAT_4, ItemIdentifiers.LAZY_CAT_5, ItemIdentifiers.LAZY_CAT_6],
+  },
+  wily_hellcat: { npcs: [NpcIdentifiers.WILY_HELLCAT], items: [ItemIdentifiers.WILY_HELLCAT] },
+  lazy_hellcat: { npcs: [NpcIdentifiers.LAZY_HELLCAT], items: [ItemIdentifiers.LAZY_HELL_CAT] },
 };
+/**
+ * One wily or lazy cat at a time (Wiki "Wily cat"), "if you first store your existing wily
+ * cat in your menagerie" excepted: the follower, backpack and bank count, the menagerie not.
+ */
+const WILY_OR_LAZY_ITEMS = ["wily", "lazy", "wily_hellcat", "lazy_hellcat"].flatMap((stage) => CAT_STAGES[stage].items);
+const HELL_CAT_ITEMS = [...CAT_HELL_STAGES].flatMap((stage) => CAT_STAGES[stage].items);
 
 const CAT_BY_NPC = new Map();
 const CAT_BY_ITEM = new Map();
@@ -1023,6 +1146,7 @@ function catTick(player) {
   if (!info || player.getAttribute?.(CURRENT_PET_ATTRIBUTE) !== npc) return false;
   const state = getCatState(player);
   if (!state || state.stage !== info.stage) return false;
+  if (CAT_WILY_STAGES.has(info.stage) || CAT_LAZY_STAGES.has(info.stage)) return wilyCatTick(player, npc, info, state);
   // Fully grown cats need no clock: no further stage and no needs.
   if (!CAT_NEXT_STAGE[info.stage]) return false;
 
@@ -1108,6 +1232,157 @@ function advanceCatStage(player, npc, info, state) {
   player.sendMessage(`Your kitten has grown into ${grown}.`);
 }
 
+/** Same colour, another stage: the follower swaps in place and the record follows. */
+function changeCatStage(player, npc, state, stage) {
+  const { npcId, itemId } = stagePetIds(stage, state.colour);
+  state.stage = stage;
+  state.growth = 0;
+  state.hellRats = 0;
+  state.lazyRats = 0;
+  state.lazyIn = 0;
+  state.wilyIn = 0;
+  setCatState(player, state);
+  replaceFollowerNpc(player, npc, npcId, itemId);
+}
+
+function between(minimum, maximum) {
+  return minimum + Math.floor(Math.random() * (maximum - minimum + 1));
+}
+
+/**
+ * A wily cat's clock runs down to laziness whatever the player does; a lazy cat that has
+ * caught enough rats turns wily again a few minutes later. Neither grows any further.
+ */
+function wilyCatTick(player, npc, info, state) {
+  state.growth = (Number(state.growth) || 0) + 1;
+  if (CAT_WILY_STAGES.has(info.stage)) {
+    if (!(state.lazyIn > 0)) state.lazyIn = between(1, CAT_LAZY_MAX_TICKS);
+    if (state.growth >= state.lazyIn) {
+      changeCatStage(player, npc, state, info.stage === "wily" ? "lazy" : "lazy_hellcat");
+      return true;
+    }
+  } else if (state.wilyIn > 0 && state.growth >= state.wilyIn) {
+    changeCatStage(player, npc, state, info.stage === "lazy" ? "wily" : "wily_hellcat");
+    return true;
+  }
+  setCatState(player, state);
+  return true;
+}
+
+/** Rats a lazy cat catches retrain it: past the Wiki's ~15, the wait to turn wily starts. */
+function countLazyRat(state) {
+  state.lazyRats = (Number(state.lazyRats) || 0) + 1;
+  if (state.lazyRats >= CAT_RETRAIN_RATS && !(state.wilyIn > 0)) {
+    state.wilyIn = (Number(state.growth) || 0) + between(CAT_RETRAIN_TICKS[0], CAT_RETRAIN_TICKS[1]);
+  }
+}
+
+/** A hellcat of any stage anywhere but the menagerie stops another cat turning (Mod Ash, Wiki "Hellcat"). */
+function ownsOtherHellcat(player) {
+  return HELL_CAT_ITEMS.some((itemId) => holdsPetItemOutsideHouse(player, itemId));
+}
+
+/** The follower, backpack or bank holds this pet item (a house's menagerie aside). */
+function holdsPetItemOutsideHouse(player, itemId) {
+  const current = player.getAttribute?.(CURRENT_PET_ATTRIBUTE);
+  if (current?.isRegistered?.() && getPetByNpcId(current.getId())?.itemId === itemId) return true;
+  if (player.getInventory?.()?.contains?.(itemId)) return true;
+  const banks = player.getBanks?.() ?? [];
+  for (let tab = 0; tab < Bank.TOTAL_BANK_TABS; tab++) {
+    if (tab !== Bank.BANK_SEARCH_TAB_INDEX && banks[tab]?.contains?.(itemId)) return true;
+  }
+  return false;
+}
+
+/** A grown cat's hell-rat catches count toward the hellcat; the seventh turns it. */
+function countHellRat(player, npc, info, state) {
+  const hellStage = CAT_HELL_OF[info.stage];
+  if (!hellStage) return false;
+  state.hellRats = (Number(state.hellRats) || 0) + 1;
+  setCatState(player, state);
+  if (state.hellRats < CAT_HELL_RATS || ownsOtherHellcat(player)) return false;
+  // "A cat that has become a hellcat will continue to age as normal" (Wiki, Mod Ash): only
+  // the stage changes; growth, laziness and retraining progress carry over.
+  const { npcId, itemId } = stagePetIds(hellStage, state.colour);
+  state.stage = hellStage;
+  state.hellRats = 0;
+  setCatState(player, state);
+  replaceFollowerNpc(player, npc, npcId, itemId);
+  player.sendMessage("Your cat catches the hell-rat and turns into a hellcat.");
+  return true;
+}
+
+/** Find an eligible carried or following cat for Felkrash to name. */
+function answerNamingCandidate(request) {
+  const player = request?.player;
+  if (!player || request.candidate) return;
+  const eligible = info => CAT_WILY_STAGES.has(info?.stage) || CAT_LAZY_STAGES.has(info?.stage);
+  const follower = player.getAttribute?.(CURRENT_PET_ATTRIBUTE);
+  if (follower?.isRegistered?.() && follower.isVisible?.() && follower.isPet?.()
+      && follower.getOwner?.() === player && !World.getRemoveNPCQueue().includes(follower)
+      && (player.getPrivateArea?.() ?? null) === (follower.getPrivateArea?.() ?? null)
+      && player.getLocation()?.getZ() === follower.getLocation()?.getZ()
+      && (player.getLocalNpcs?.() ?? []).includes(follower)
+      && eligible(catInfoOf(getPetByNpcId(follower.getId())))) {
+    request.candidate = {kind:'follower', npc:follower};
+    return;
+  }
+  const items = player.getInventory?.()?.getItems?.() ?? [];
+  for (let slot=0; slot<items.length; slot++) {
+    const item = items[slot], info = item && CAT_BY_ITEM.get(item.getId());
+    if (eligible(info)) { request.candidate = {kind:'inventory', slot, item}; return; }
+  }
+}
+
+/**
+ * "pets:wily-cat-status" { player, overgrown, wily }: whether the player has an overgrown cat
+ * with them (following or carried) to train, and whether they already have a wily or lazy cat.
+ */
+function answerWilyCatStatus(request) {
+  const player = request?.player;
+  if (!player) return;
+  request.wily = WILY_OR_LAZY_ITEMS.some((itemId) => holdsPetItemOutsideHouse(player, itemId));
+  request.overgrown = trainableCat(player) != null;
+}
+
+/** The overgrown cat Felkrash would train: the follower first, else one in the backpack. */
+function trainableCat(player) {
+  const npc = player.getAttribute?.(CURRENT_PET_ATTRIBUTE);
+  const following = npc?.isRegistered?.() ? catInfoOf(getPetByNpcId(npc.getId())) : null;
+  if (following && CAT_WILY_OF[following.stage]) return { npc, info: following };
+  const items = player.getInventory?.()?.getItems?.() ?? [];
+  for (let slot = 0; slot < items.length; slot++) {
+    const info = items[slot] ? CAT_BY_ITEM.get(items[slot].getId()) : null;
+    if (info && CAT_WILY_OF[info.stage]) return { slot, info };
+  }
+  return null;
+}
+
+/**
+ * "pets:train-wily-cat" { player, trained }: Felkrash's training. An overgrown cat becomes a
+ * wily cat of its colour (an overgrown hellcat a wily hellcat), unless one is already owned.
+ */
+function trainWilyCat(request) {
+  const player = request?.player;
+  if (!player || WILY_OR_LAZY_ITEMS.some((itemId) => holdsPetItemOutsideHouse(player, itemId))) return;
+  const cat = trainableCat(player);
+  if (!cat) return;
+  const stage = CAT_WILY_OF[cat.info.stage];
+  if (cat.npc) {
+    const state = getCatState(player) ?? { colour: cat.info.colour };
+    changeCatStage(player, cat.npc, state, stage);
+    scheduleCatTask(player);
+  } else {
+    // The carried cat's record (its colour, for a hell cat) follows it to the new stage.
+    const state = getCatState(player);
+    const colour = state?.stage === cat.info.stage && CAT_HELL_STAGES.has(cat.info.stage) ? state.colour : cat.info.colour;
+    if (state?.stage === cat.info.stage) setCatState(player, { ...state, stage, growth: 0, hellRats: 0, lazyRats: 0, lazyIn: 0, wilyIn: 0 });
+    player.getInventory().setItem(cat.slot, new Item(stagePetIds(stage, colour).itemId));
+    player.getInventory().refreshItems();
+  }
+  request.trained = true;
+}
+
 function runAwayCat(player) {
   const npc = player.getAttribute?.(CURRENT_PET_ATTRIBUTE);
   if (npc) despawnPetNpc(npc);
@@ -1139,7 +1414,7 @@ function catItemIsFood(itemId) {
 }
 
 function catNoun(info) {
-  return CAT_HELL_STAGES.has(info.stage) ? "hell-kitten" : info.stage === "kitten" ? "kitten" : "cat";
+  return info.stage === "hellkitten" ? "hell-kitten" : info.stage === "kitten" ? "kitten" : "cat";
 }
 
 function handleItemOnCat(event) {
@@ -1155,7 +1430,7 @@ function handleItemOnCat(event) {
       event.handled = true;
       player.getInventory().deleteNumber(itemId, 1);
       player.getInventory().adds(ItemIdentifiers.BUCKET, 1);
-      const baseStage = { hellkitten: "kitten", hellcat: "cat", overgrown_hellcat: "overgrown" }[state.stage];
+      const baseStage = CAT_BASE_OF[state.stage];
       const { npcId, itemId: baseItemId } = stagePetIds(baseStage, state.colour);
       state.stage = baseStage;
       setCatState(player, state);
@@ -1275,9 +1550,14 @@ function chaseVermin(player, npc, pet) {
     verminName: name,
     location: caughtLocation,
   });
+  const state = getCatState(player);
+  if (state && state.stage === info.stage && CAT_LAZY_STAGES.has(info.stage)) {
+    countLazyRat(state);
+    setCatState(player, state);
+  }
+  if (name === "Hell-Rat" && state?.stage === info.stage && countHellRat(player, npc, info, state)) return true;
   if (name === "Hell-Rat" && info.stage === "kitten") {
     // Chasing a hell-rat turns any kitten into the generic Hell-kitten (Wiki, Cat).
-    const state = getCatState(player);
     const { npcId, itemId } = stagePetIds("hellkitten", state?.colour ?? 0);
     if (state) {
       state.stage = "hellkitten";
@@ -1535,10 +1815,11 @@ function drop(player, itemId, reward, { silent = false } = {}) {
       }
     }, 1200);
 
-    recordOwnership(player, getPetByNpcId(npc.getId()) ?? pet);
+    // A reward's lines are awardPet's to send (the log after the follow and insurance lines).
+    recordOwnership(player, getPetByNpcId(npc.getId()) ?? pet, { announce: !reward });
     trackCatFollower(player, npc, pet);
     if (reward) {
-      if (!silent) player.sendMessage("You have a funny feeling like you're being followed.");
+      if (!silent) player.sendMessage(FOLLOWED);
     } else {
       player.getInventory().deleteNumber(pet.itemId, 1);
       Sounds.sendSound(player, Sound.DROP_ITEM);
@@ -1561,7 +1842,8 @@ function drop(player, itemId, reward, { silent = false } = {}) {
       currentPetId: currentPet?.getId?.() ?? null,
       currentPetRegistered: currentPet?.isRegistered?.() ?? null,
     });
-    player.sendMessage("You already have a pet following you.");
+    // rsprox_transcripts/232/03153.txt:10326 (Drop on a pet with one out; 229/00265:24055, the menagerie, the same).
+    player.sendMessage("You already have a follower.");
   }
 
   return true;
@@ -1874,18 +2156,21 @@ function onSkill(player, skill, { petBase, petChance, rolls = 1, runeId, npcId, 
     chance = (petBase - skills.getMaxLevel(skill) * 25) / (skills.getExperience(skill) >= MAX_XP ? 15 : 1);
   }
   if (!(Number.isFinite(chance) && chance > 0)) return false;
+  chance = Math.max(1, chance / skillingPetMultiplier());
   let hit = false;
   for (let roll = 0; roll < Math.max(1, rolls | 0) && !hit; roll++) {
     hit = Math.random() < 1 / chance;
   }
   if (!hit) return false;
-  if (!ownsPetFamily(player, pet)) {
-    World.sendMessage(
-      `@dre@${player.getDisplayName()} just found a stray ${getPetDisplayName(pet)} while ${normalizeSkillName(skill)}!`
-    );
-  }
+  // No world-wide line: live sends only the player's own (rsprox_transcripts/227/01857.txt:421576-421590, Rocky).
   awardPet(player, pet.itemId);
   return true;
+}
+
+/** The world's skilling pet multiplier; 1 (the OSRS rate) when unset or not above 1. */
+function skillingPetMultiplier() {
+  const multiplier = Number(pluginApi?.getPluginConfig?.(SKILLING_PET_MULTIPLIER_CONFIG, 1));
+  return Number.isFinite(multiplier) && multiplier > 1 ? multiplier : 1;
 }
 
 /** A gatherer may resolve its normal pet opportunity before delivering the resource. */
@@ -1913,12 +2198,55 @@ function fillSkillPetVariants({ ItemIdentifiers, NpcIdentifiers: Npcs }) {
   SKILL_PET_VARIANTS.set(`npc:${Npcs.BLACK_CHINCHOMPA}`, PET_BY_NAME.get("BLACK_CHINCHOMPA"));
 }
 
+/** The beaver's other forms, each its own item and follower (pets/Beaver.Pets.js). */
+function addBeaverForms({ CacheDefinitions }) {
+  const base = PET_BY_NAME.get("BEAVER");
+  for (const pet of Beaver.rows(base, CacheDefinitions)) {
+    if (PET_BY_ID.has(pet.petId) || PET_BY_ITEM_ID.has(pet.itemId)) continue;
+    PETS.push(pet); PET_BY_ID.set(pet.petId, pet); PET_BY_NAME.set(pet.enumName, pet); PET_BY_ITEM_ID.set(pet.itemId, pet);
+  }
+}
+
+/** The giant squirrel's other forms, each its own item and follower (pets/GiantSquirrel.Pets.js). */
+function addGiantSquirrelForms({ CacheDefinitions }) {
+  const base = PET_BY_NAME.get("GIANT_SQUIRREL");
+  for (const pet of GiantSquirrel.rows(base, CacheDefinitions)) {
+    if (PET_BY_ID.has(pet.petId) || PET_BY_ITEM_ID.has(pet.itemId)) continue;
+    PETS.push(pet); PET_BY_ID.set(pet.petId, pet); PET_BY_NAME.set(pet.enumName, pet); PET_BY_ITEM_ID.set(pet.itemId, pet);
+    if (Number.isInteger(pet.houseNpcId)) PET_BY_HOUSE_ID.set(pet.houseNpcId, pet);
+  }
+}
+
+/** The player's own active follower, free to change form now. */
+function isOwnFollower(player, npc) {
+  return player?.getAttribute?.(CURRENT_PET_ATTRIBUTE) === npc && npc?.getOwner?.() === player
+    && npc.isRegistered?.() !== false && player.busy?.() !== true;
+}
+
+/** Changes the follower to another form of its pet, keeping the item and insurance records in step. */
+function transformFollower(player, npc, next) {
+  const pet = getPetByNpcId(npc.getId());
+  npc.setNpcTransformationId(next.petId);
+  if (pet) setStoredVariant(player, pet, next.petId);
+  player.setAttribute(ACTIVE_PET_ATTRIBUTE, next.itemId);
+  player.setAttribute(LAST_PET_ATTRIBUTE, next.itemId);
+  recordOwnership(player, next);
+  syncFollowerIndex(player, npc);
+}
+
 let World;
 let RegionManager;
 let ItemOnGroundManager;
 
 module.exports = {
   name: "Pets",
+  description: "Pet followers: summoning, dismissing, item-backed ownership, storage, Probita reclaim, Metamorphosis variants and pet-specific behaviour.",
+  config: {
+    "Pets:skillingPetMultiplier": {
+      type: "number", label: "Skilling pet multiplier", default: 1, min: 1,
+      help: "Makes every skilling pet roll this many times likelier. 1 is the normal rate; values of 1 or less change nothing.",
+    },
+  },
   register(api) {
     World = api.getWorld();
     RegionManager = api.getRegionManager();
@@ -1935,6 +2263,9 @@ module.exports = {
     NPCRespawnTaskRef = api.core?.NPCRespawnTask ?? null;
     ItemDefinitionClass = api.core?.ItemDefinition ?? null;
     fillSkillPetVariants(api.core);
+    addBeaverForms(api.core);
+    addGiantSquirrelForms(api.core);
+    addExtensionPets(api);
     api.persistAttribute(OWNED_ATTRIBUTE);
     api.persistAttribute(LAST_PET_ATTRIBUTE);
     api.persistAttribute(ACTIVE_PET_ATTRIBUTE, null);
@@ -1955,6 +2286,9 @@ module.exports = {
     api.onCustomEvent("pets:eligible", answerPetEligibility);
     api.onCustomEvent("pets:release", releasePet);
     api.onCustomEvent("pets:award", awardPetRequest);
+    api.onCustomEvent("pets:wily-cat-status", answerWilyCatStatus);
+    api.onCustomEvent("pets:naming-candidate", answerNamingCandidate);
+    api.onCustomEvent("pets:train-wily-cat", trainWilyCat);
     api.onItemDropPolicy(onPetItemDropPolicy);
     api.onItemOnNpc(handleItemOnCat);
     api.onItemOnNpc(handleGullFeed);
@@ -1971,6 +2305,10 @@ module.exports = {
     api.onPlayerDeath(onCatOwnerDeath);
     RiftGuardian.attach(api, {pets: PETS, skill: Skill.RUNECRAFTING, world: World, currentAttribute: CURRENT_PET_ATTRIBUTE,
       activeAttribute: ACTIVE_PET_ATTRIBUTE, lastAttribute: LAST_PET_ATTRIBUTE, getPetByNpcId, setStoredVariant, recordOwnership, syncFollowerIndex});
+    Beaver.attach(api, {getPetForItemId, recordOwnership, setStoredVariant, transformFollower, isOwnFollower});
+    GiantSquirrel.attach(api, {getPetForItemId, recordOwnership, setStoredVariant, transformFollower, isOwnFollower});
+    TombsOfAmascut.attach(api, {world: World, currentAttribute: CURRENT_PET_ATTRIBUTE, activeAttribute: ACTIVE_PET_ATTRIBUTE,
+      lastAttribute: LAST_PET_ATTRIBUTE, getPetByNpcId, setStoredVariant});
 
     api.log("registered", {
       pets: PETS.length,
@@ -1981,6 +2319,9 @@ module.exports = {
   // Exposed for tests/pets.test.cjs; nothing else reads them.
   __internals: {
     PETS,
+    addExtensionPets,
+    onSkill,
+    skillingPetMultiplier,
     PET_BY_ID,
     PET_BY_ITEM_ID,
     petFamily,
@@ -1990,6 +2331,7 @@ module.exports = {
     morph,
     interact,
     pickup,
+    drop,
     handlePetClick,
     awardPet,
     getOwnedPetItems,

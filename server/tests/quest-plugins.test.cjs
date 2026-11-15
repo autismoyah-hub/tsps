@@ -10,6 +10,7 @@ before(async () => {
 
 const { PluginManager } = require('../dist/plugins/PluginManager');
 const apiMethods = new Set(Object.keys(PluginManager.createApi('QuestTest')));
+const questTestButtons = new Map();
 const noopPacketSender = new Proxy({}, { get: (_target, key) => key === 'getVarbit' ? () => 0 : () => noopPacketSender });
 
 test('quest event names register and dispatch through the production API', () => {
@@ -61,6 +62,7 @@ function mockApi() {
   const handlers = {
     variant: [],
     condition: [],
+    interfaceClicks: [],
     custom: new Map(),
     namedObjects: [],
     npcInteractions,
@@ -92,6 +94,9 @@ function mockApi() {
   const noop = () => {};
   const base = {
     core: PluginManager.getCoreApi(),
+    onInterfaceActionButton: (ids, handler) => {
+      for (const id of Array.isArray(ids) ? ids : [ids]) questTestButtons.set(id, handler);
+    },
     onNpcDialogueVariant: (h) => handlers.variant.push(h),
     onNpcDialogueCondition: (h) => handlers.condition.push(h),
     onObjectInteraction: (target, actions) => {
@@ -117,6 +122,7 @@ function mockApi() {
     onCanBankItem: h => handlers.canBankItem.push(h),
     onCanEquip: h => handlers.canEquip.push(h),
     getPluginConfig: (_key, fallback) => fallback,
+    onInterfaceActionClick: (h) => handlers.interfaceClicks.push(h),
     onItemOnItem: (h) => handlers.itemOnItem.push(h),
     onItemOnNpc: (h) => handlers.itemOnNpc.push(h),
     onItemOnObject: (...args) => handlers.itemOnObject.push(typeof args[0] === 'function' ? args[0] : args[2]),
@@ -149,8 +155,9 @@ function mockApi() {
   return { api, handlers };
 }
 
-test('Quests.plugin registers every quest and enforces equipment requirements by default', () => {
+test('Quests.plugin registers every quest and enforces equipment requirements when enabled', () => {
   const { api, handlers } = mockApi();
+  api.getPluginConfig = (key, fallback) => (key === 'quests:equipment-requirements' ? true : fallback);
   const plugin = require('../plugins/quests/Quests.plugin');
   assert.equal(plugin.name, 'Quests');
   assert.doesNotThrow(() => plugin.register(api));
@@ -215,6 +222,93 @@ test('Family Crest only handles gold rocks in Witchaven and Mining recognizes th
   const { ROCKS } = require('../plugins/skills/Mining.plugin');
   const { GOLD_ROCKS_2 } = api.core.ObjectIdentifiers;
   assert.ok(ROCKS.find(rock => rock.objectName === 'Gold rocks').objectIds.includes(GOLD_ROCKS_2));
+});
+
+test('Family Crest brothers swap gauntlets for free or 25,000 coins, and Chronozon needs all four blasts', () => {
+  const { api, handlers } = mockApi();
+  require('../plugins/quests/quests/FamilyCrest.Quest')(api);
+  const { ItemIdentifiers: Items, NpcIdentifiers } = api.core;
+  const items = new Map();
+  const messages = [];
+  const player = {
+    getAttribute: () => 0,
+    sendMessage: m => messages.push(m),
+    getInventory: () => ({
+      getAmount: id => items.get(id) ?? 0,
+      deleteNumber: (id, n) => items.set(id, (items.get(id) ?? 0) - n),
+      adds: (id, n) => items.set(id, (items.get(id) ?? 0) + n),
+    }),
+  };
+  const action = stepId => {
+    const event = { player, stepId, handled: false };
+    for (const handler of handlers.custom.get('npc-dialogue:action')) handler(event);
+    return event;
+  };
+  items.set(Items.STEEL_GAUNTLETS, 1);
+  assert.equal(action('MOcYDq').handled, false);
+  assert.equal(items.get(Items.COOKING_GAUNTLETS), 1);
+  assert.equal(items.get(Items.STEEL_GAUNTLETS), 0, 'the free imbue swaps the steel pair');
+
+  assert.equal(action('aGBezT').handled, true, 'changing without 25,000 coins is refused');
+  assert.equal(items.get(Items.GOLDSMITH_GAUNTLETS) ?? 0, 0);
+  items.set(Items.COINS, 30000);
+  assert.equal(action('aGBezT').handled, false, messages.join('|'));
+  assert.equal(items.get(Items.COINS), 5000);
+  assert.equal(items.get(Items.GOLDSMITH_GAUNTLETS), 1);
+  assert.equal(items.get(Items.COOKING_GAUNTLETS), 0);
+
+  const coinAnswer = handlers.condition.map(h => h({ player, npcId: -1, text: 'If the player does not have enough coins:' })).find(a => typeof a === 'boolean');
+  assert.equal(coinAnswer, undefined, "other NPCs' coin checks are not answered with the 25,000 gauntlet price");
+
+  const { CombatSpells, CombatType } = api.core;
+  const caster = { ...player, isPlayer: () => true, getAsPlayer() { return this; }, getAttribute: () => 10,
+    getCombat: () => ({ getSelectedSpell: () => CombatSpells.FIRE_BLAST, getPreviousCast: () => null }) };
+  const other = { ...caster };
+  let creditedKiller = caster;
+  const npc = {
+    getId: () => NpcIdentifiers.CHRONOZON,
+    getDefinition: () => ({ getHitpoints: () => 170 }),
+    setHitpoints(v) { this.hp = v; },
+    getCombat: () => ({ getKiller: () => creditedKiller }),
+  };
+  const impact = (spell, attacker = caster, damage = 5) => {
+    const hit = { getAttacker: () => attacker, getCombatType: () => CombatType.MAGIC, isAccurate: () => damage > 0, getTotalDamage: () => damage, getSpell: () => spell };
+    for (const handler of handlers.npcHitModify) handler({ npc, hit });
+  };
+  const beforeDeath = () => {
+    const event = { npc, preventDeath: false };
+    for (const handler of handlers.npcBeforeDeath) handler(event);
+    return event.preventDeath;
+  };
+
+  messages.length = 0;
+  impact(null);
+  assert.deepEqual(messages, [], 'spell-less magic damage does not count as the selected Blast');
+  impact(CombatSpells.FIRE_BLAST);
+  impact(CombatSpells.WIND_BLAST);
+  assert.deepEqual(messages, ['Chronozon weakens...', 'Chronozon weakens...'],
+    'a manual Wind Blast counts while Fire Blast is autocast');
+  impact(CombatSpells.WATER_BLAST);
+  assert.equal(beforeDeath(), true, 'Chronozon returns to full health without all four blasts');
+  assert.equal(npc.hp, 170);
+
+  impact(CombatSpells.EARTH_BLAST);
+  impact(null, other, 0);
+  assert.equal(beforeDeath(), false, "another player's splash does not block the qualified credited killer");
+  creditedKiller = other;
+  assert.equal(beforeDeath(), true, 'an unqualified credited killer cannot bypass the gate');
+  creditedKiller = null;
+  assert.equal(beforeDeath(), true, 'Chronozon heals when nobody has damage credit');
+
+  const award = killer => {
+    for (const handler of handlers.npcDeath) handler({ killer, npcId: NpcIdentifiers.CHRONOZON });
+  };
+  award(other);
+  assert.equal(items.get(Items.CREST_PART_3) ?? 0, 0, 'a new killer selected at death still needs all four blasts');
+  award(caster);
+  assert.equal(items.get(Items.CREST_PART_3), 1, 'the qualified killer receives the crest part');
+  creditedKiller = caster;
+  assert.equal(beforeDeath(), true, 'the award consumes the killer’s Blast progress');
 });
 
 test('a shop version named after a quest opens once its quest state matches (#831)', () => {
@@ -299,33 +393,6 @@ test('completed Desert Treasure I players can ask Rasolo for a replacement Ring 
   banks = [{ contains: id => id === ring }];
   assert.equal(condition({ player, npcId: api.core.NpcIdentifiers.RASOLO, text: 'If the player has a Ring of visibility in their inventory or bank:' }), true);
   assert.equal(condition({ player, npcId: api.core.NpcIdentifiers.RASOLO, text: 'If the player does not have a Ring of visibility in their inventory or bank, and has inventory space:' }), false);
-});
-
-test('NPC Contact paginates plugin contacts and dispatches the chosen contact once', () => {
-  const { LunarSpells } = require('../dist/game/content/combat/magic/LunarSpells');
-  const original = PluginManager.emitCustomEvent;
-  const contacts = ['Nieve', 'Duradel', 'Konar quo Maten', 'Mazchna', 'Turael', 'Cyrisus'];
-  let chain;
-  const dispatched = [];
-  const player = {
-    getDialogueManager: () => ({ startDialogues: builder => { chain = builder; } }),
-    getPacketSender: () => ({ sendInterfaceRemoval() {} }),
-    sendMessage: message => { throw Error(message); },
-  };
-  PluginManager.emitCustomEvent = (name, event) => {
-    if (name === 'magic:npc-contact') event.contacts.push(...contacts.slice(4));
-    else { dispatched.push(event.name); event.handled = true; }
-  };
-  try {
-    LunarSpells.openNpcContact(player);
-    let menu = [...chain.getDialogues().values()][0];
-    assert.equal(menu.getOptions().length, 5);
-    menu.execute(5);
-    menu = [...chain.getDialogues().values()][0];
-    assert.deepEqual(menu.getOptions(), ['Turael', 'Cyrisus']);
-    menu.execute(2);
-    assert.deepEqual(dispatched, ['Cyrisus']);
-  } finally { PluginManager.emitCustomEvent = original; }
 });
 
 test('Blood Moon refinery handoff uses valid events, restores the tomb route, and waits for escape', () => {
@@ -826,15 +893,17 @@ test('While Guthix Sleeps only tracks a shirt through the player’s own broav',
   const player = { getLocation: () => new api.core.Location(2519,3249,0),
     getAttribute: key => attributes.get(key), setAttribute: (key, value) => attributes.set(key,value),
     getInventory: () => ({ deleteNumber() {} }),
-    sendMessage() {}, getPacketSender: () => ({ sendVarbit() {} }) };
+    sendMessage() {}, performAnimation() {}, getPacketSender: () => ({ sendVarbit() {} }) };
   const npc = { getId: () => 13518, getOwner: () => player,
     getMovementQueue: () => ({ addSteps: location => moves.push(location) }) };
   const event = { player, itemId:29521, target:npc };
   assert.equal(handlers.at(-1)({...event,target:{...npc,getOwner:()=>({})}}),false);
   assert.equal(handlers.at(-1)(event),true);
   assert.equal(event.handled,true);
+  // The find comes 7 ticks after the sniff (rsprox 226/01698.txt:32945-33145).
+  for (let i = 0; i < 7; i++) api.core.TaskManager.process();
   assert.equal(attributes.get('while-guthix-sleeps:broav-trail'),1);
-  assert.equal(moves.length,1);
+  assert.equal(moves.length,0,'the broav stays put (rsprox 226/01698.txt)');
 });
 
 test("While Guthix Sleeps counts Thaerisk's actual assassin kill without a player death event", () => {
@@ -1248,8 +1317,11 @@ test('Sins of the Father opens its boat route from the Slepe rowboat after compl
 });
 
 
-test('Blood Moon shrine returns to the Castle lobby before the Vampyrium portal starts its chapter', () => {
+test('Blood Moon shrine returns to the Castle lobby before the Vampyrium portal starts its chapter', (t) => {
   const { api, handlers } = mockApi();
+  // The medallion teleports through TeleportHandler, whose checks need a real player: they pass, and it moves at once.
+  t.mock.method(api.core.TeleportHandler, 'checkReqs', () => true);
+  t.mock.method(api.core.TeleportHandler, 'teleport', (player, to, _type, _warn, onArrival) => { player.moveTo(to); onArrival?.(); });
   const spawned = [];
   let castleVeliafHook;
   api.spawnNpc = spec => {
@@ -1266,6 +1338,7 @@ test('Blood Moon shrine returns to the Castle lobby before the Vampyrium portal 
   };
   require('../plugins/quests/quests/TheBloodMoonRises.Quest')(api);
   require('../plugins/quests/quests/SinsOfTheFather.Quest')(api);
+  require('../plugins/items/DrakansMedallion.plugin').register(api);
   const { getRegisteredQuests } = require('../plugins/quests/QuestRuntime');
   const quests = getRegisteredQuests();
   const quest = quests.filter((entry) => entry.key === 'the_blood_moon_rises').at(-1);
@@ -2427,11 +2500,16 @@ test('Blood Moon Paterdomus books must be placed on all six matching plinths bef
   const counts = new Map();
   const bits = new Map();
   const moveCalls = [];
+  let capacity = 28;
+  // As a real inventory: with no free slot `adds` drops the item and still returns the container.
   const inventory = {
     contains: id => (counts.get(id) ?? 0) > 0,
     getAmount: id => counts.get(id) ?? 0,
-    getFreeSlots: () => 28 - [...counts.values()].filter(value => value > 0).length,
-    adds: (id, amount) => (counts.set(id, (counts.get(id) ?? 0) + amount), true),
+    getFreeSlots: () => capacity - [...counts.values()].filter(value => value > 0).length,
+    adds: (id, amount) => {
+      if (inventory.getFreeSlots() > 0 || (counts.get(id) ?? 0) > 0) counts.set(id, (counts.get(id) ?? 0) + amount);
+      return inventory;
+    },
     deleteNumber: (id, amount) => counts.set(id, Math.max(0, (counts.get(id) ?? 0) - amount)),
   };
   const player = {
@@ -2464,9 +2542,11 @@ test('Blood Moon Paterdomus books must be placed on all six matching plinths bef
   useBook(wrong);
   assert.equal(attributes.get('quest.the_blood_moon_rises.slepe-story').booksPlaced, undefined,
     'a wrong portrait cannot satisfy the ordered matching puzzle');
+  capacity = [...counts.values()].filter(value => value > 0).length; // a full inventory
   useBook({ player, itemId: ids.ESSIANDARS_NOTES, location: { x: 3409, y: 3483, z: 1 }, handled: false });
   assert.equal(inventory.contains(ids.PIOUS_PROCEEDINGS), true,
-    'placing the intended book returns a book that was put on the wrong plinth');
+    'placing the intended book returns a book that was put on the wrong plinth, even into a full inventory');
+  capacity = 28;
   for (const [itemId, x, y] of placements.slice(1)) useBook({ player, itemId, location: { x, y, z: 1 }, handled: false });
   const story = attributes.get('quest.the_blood_moon_rises.slepe-story');
   assert.equal(story.booksPlaced, true);
@@ -2513,6 +2593,8 @@ test('Blood Moon Hallowed preparations make the stew, upgraded flail and stakes 
   const counts = new Map();
   const inventory = {
     getFreeSlots: () => 0,
+    // Room for each pickup (handlePrepObject checks it: `adds` never reports failure).
+    getAddableAmount: (item) => item.getAmount(),
     contains: (id) => (counts.get(id) ?? 0) > 0,
     getAmount: (id) => counts.get(id) ?? 0,
     adds: (id, amount) => (counts.set(id, (counts.get(id) ?? 0) + amount), true),
@@ -2577,8 +2659,13 @@ test('Blood Moon Hallowed preparations make the stew, upgraded flail and stakes 
   interact('Crate', 3177, 7843);
   interact('Crate', 3181, 7841);
   interact('Chest', 3181, 7835);
-  use(ids.SILVER_SICKLE_B_, ids.DIAMOND); choose(2); assert.equal(inventory.contains(ids.DIAMOND), true, 'No preserves crafting materials');
-  use(ids.SILVER_SICKLE_B_, ids.DIAMOND); choose(1);
+  // The diamond sickle is Crafting's (tests/gem-sickles-crafting.test.cjs); the quest says when it can be made.
+  assert.equal(use(ids.SILVER_SICKLE_B_, ids.DIAMOND).handled, false, 'the gem on the sickle is left to Crafting');
+  const sickleRequest = { player, product: ids.DIAMOND_SICKLE_B_, allowed: false };
+  handlers.custom.get('crafting:gem-sickle-allowed').forEach(handler => handler(sickleRequest));
+  assert.equal(sickleRequest.allowed, true, 'the preparations allow the diamond sickle');
+  inventory.deleteNumber(ids.SILVER_SICKLE_B_, 1); inventory.deleteNumber(ids.DIAMOND, 1); inventory.adds(ids.DIAMOND_SICKLE_B_, 1);
+  handlers.custom.get('crafting:gem-sickle-made').forEach(handler => handler({ player, product: ids.DIAMOND_SICKLE_B_ }));
   interact('Chest', 3175, 7836);
   use(ids.DIAMOND_SICKLE_B_, ids.ENCHANT_DIAMOND);
   use(ids.ENCHANTED_DIAMOND_SICKLE_B_, ids.BLISTERWOOD_LOGS); choose(1);
@@ -4902,15 +4989,15 @@ test('Blood Moon crossing preserves the captured native stages and starts the sh
     area.process(boss);
     const hitModifier = handlers.npcHitModify.find(handler => handler.name === 'handleFirstBloodHit');
     let damage = 20;
-    const hit = { getHits: () => [{ getDamage: () => damage, setDamage: value => { damage = value; } }], updateTotalDamage() {} };
-    hitModifier({ npc: boss, attacker: player, hit });
+    const hit = { getAttacker: () => player, getHits: () => [{ getDamage: () => damage, setDamage: value => { damage = value; } }], updateTotalDamage() {} };
+    hitModifier({ npc: boss, hit });
     assert.equal(damage, 0, 'player hits cannot bypass the initial lunge-dodge mechanic');
     damage = 69;
-    const allyHit = { getHits: () => [{ getDamage: () => damage, setDamage: value => { damage = value; } }], updateTotalDamage() {} };
-    hitModifier({ npc: vanescula, attacker: boss, hit: allyHit });
+    const allyHit = { getAttacker: () => boss, getHits: () => [{ getDamage: () => damage, setDamage: value => { damage = value; } }], updateTotalDamage() {} };
+    hitModifier({ npc: vanescula, hit: allyHit });
     assert.equal(damage, 0, 'Lowerniel cannot remove the ally before the opening dodge sequence ends');
     for (let dodge = 0; dodge < 3; dodge++) {
-      if (dodge > 0) { worldCycle += 2; area.process(boss); }
+      if (dodge > 0) { worldCycle += 3; area.process(boss); }
       assert.ok(messages.at(-1)?.includes('sparkling safe tile'),
         'each lunge tells the player to follow the visible safe-tile mark');
       assert.equal(graphics.length, dodge + 1, 'one safe-tile mark is sent for each lunge');
@@ -4925,13 +5012,13 @@ test('Blood Moon crossing preserves the captured native stages and starts the sh
       assert.equal(api.core.RegionManager.canMove(player.location.getX(), player.location.getY(), x, y, z, 1, 1, area),
         true, 'the safe-tile mark is reachable from the player');
       player.location = marked;
-      worldCycle += 2;
+      worldCycle += 3;
       area.process(boss);
     }
     assert.equal(boss.target, player, 'three successful spear-lunge dodges make Lowerniel focus the player');
     assert.equal(boss.flags['combat:no-retaliate'], false, 'Lowerniel can retaliate after the opening sequence');
     damage = 20;
-    hitModifier({ npc: boss, attacker: player, hit });
+    hitModifier({ npc: boss, hit });
     assert.equal(damage, 20, 'player damage becomes available after the lunge sequence');
     boss.hitpoints = 2899;
     player.location = new api.core.Location(2712, 7840, 0);
@@ -8124,10 +8211,10 @@ test('Desert Treasure II last medallion route traps the player, requires solving
     let attackStyle = 1;
     p.isPlayer = () => true; p.getAsPlayer = () => p;
     p.getFightType = () => ({ getBonusType: () => attackStyle });
-    const hitFor = (style) => {
+    const hitFor = (style, bypass = false) => {
       attackStyle = style;
       const part = { damage: 10, setDamage(value) { this.damage = value; } };
-      const hit = { getAttacker: () => p, getHits: () => [part], getTotalDamage: () => part.damage, updateTotalDamage() {} };
+      const hit = { getAttacker: () => p, getHits: () => [part], getTotalDamage: () => part.damage, updateTotalDamage() {}, bypassesProtectionPrayer: () => bypass };
       for (const hook of npcHitHooks) hook({ npc: spawnedFigure, hit });
       return part.damage;
     };
@@ -8135,6 +8222,8 @@ test('Desert Treasure II last medallion route traps the player, requires solving
     assert.equal(hitFor(1), 10);
     assert.equal(hitFor(1), 10, 'the third attack lands before the Figure changes her prayer');
     assert.equal(hitFor(1), 0, 'the Figure blocks the attack style she prayed against');
+    assert.equal(hitFor(1, true), 10, 'a hit that bypasses protection prayers goes through hers (issue 5037)');
+    assert.equal(hitFor(1), 0, 'she still prays against melee after the third hit');
     assert.equal(hitFor(4), 10, 'switching from melee to ranged bypasses her current protection');
 
     const figureAttack = () => resolvedHitHooks.forEach(hook => hook({ attacker: spawnedFigure, target: p, hit: { getTotalDamage: () => 20 } }));
@@ -8268,13 +8357,13 @@ test('Desert Treasure II vault cache has blocked Ketla clone lanes and nearby cl
   const blockedTile = area.tile(32, 46, 0);
   const clearButOccluded = area.tile(35, 46, 0);
   const replacement = area.tile(35, 44, 0);
-  assert.notEqual(RegionManager.getClipping(blockedTile.getX(), blockedTile.getY(), 0, area) & 0x1280100, 0,
+  assert.notEqual(RegionManager.getClipping(blockedTile.getX(), blockedTile.getY(), 0, area) & RegionManager.BLOCKED_MASK, 0,
     'the original southern cardinal clone tile is blocked by the copied vault floor');
-  assert.equal(RegionManager.getClipping(clearButOccluded.getX(), clearButOccluded.getY(), 0, area) & 0x1280100, 0,
+  assert.equal(RegionManager.getClipping(clearButOccluded.getX(), clearButOccluded.getY(), 0, area) & RegionManager.BLOCKED_MASK, 0,
     'the original diagonal clone tile is walkable');
   assert.equal(RegionManager.canProjectileAttackBounds(ketla, clearButOccluded, 1, 1, 1, 1, area), false,
     'the original diagonal clone tile is hidden from Ketla by the copied vault geometry');
-  assert.equal(RegionManager.getClipping(replacement.getX(), replacement.getY(), 0, area) & 0x1280100, 0);
+  assert.equal(RegionManager.getClipping(replacement.getX(), replacement.getY(), 0, area) & RegionManager.BLOCKED_MASK, 0);
   assert.equal(RegionManager.canProjectileAttackBounds(ketla, replacement, 1, 1, 1, 1, area), true,
     'the nearby replacement tile is clear and has a projectile line');
 });
@@ -8327,9 +8416,9 @@ test('Desert Treasure II final wights expose their distinct smoke, clone, vial a
     TemplatedInstanceArea: TestInstance, GameObject: TestObject, RangedCombatMethod: TestRangedCombatMethod,
     MeleeCombatMethod: TestMeleeCombatMethod, PendingHit: TestPendingHit,
     Animation: class { constructor(id) { this.id = id; } },
-    RegionManager: { getClipping(x, y, z, area) {
+    RegionManager: { BLOCKED_MASK: base.core.RegionManager.BLOCKED_MASK, getClipping(x, y, z, area) {
       clipChecks.push({ x, y, z, area });
-      return (x === 8227 && y === 1614) || (x === 8227 && y === 1646) || (x === 8224 && y === 1646) ? 0x20100 : 0;
+      return (x === 8227 && y === 1614) || (x === 8227 && y === 1643) || (x === 8227 && y === 1646) || (x === 8224 && y === 1646) ? 0x20100 : 0;
     }, canProjectileAttackBounds(_source, destination) {
       const x = destination.getX?.() ?? destination.x, y = destination.getY?.() ?? destination.y;
       return !(x === 8227 && y === 1646) && !(x === 8224 && y === 1646);
@@ -8548,8 +8637,10 @@ test('Desert Treasure II final wights expose their distinct smoke, clone, vial a
     for (const hook of hitRollHooks) hook(ordinaryNpcRoll);
     assert.equal(ordinaryNpcRoll.bypassProtectionPrayer, false, 'other NPCs do not inherit the clone prayer rule');
     assert.ok(clones.every(clone => !((clone.location.x === 8227 && clone.location.y === 1646)
-      || (clone.location.x === 8224 && clone.location.y === 1646))), 'clones avoid floor-blocked or projectile-blocked cache cover points');
-    assert.ok(clones.every(clone => (core.RegionManager.getClipping(clone.location.x, clone.location.y, 0, area) & 0x1280100) === 0
+      || (clone.location.x === 8227 && clone.location.y === 1643)
+      || (clone.location.x === 8224 && clone.location.y === 1646))),
+    'clones avoid floor-blocked or projectile-blocked cache cover points (8227,1643 is a preferred clone lane blocked by the floor alone)');
+    assert.ok(clones.every(clone => (core.RegionManager.getClipping(clone.location.x, clone.location.y, 0, area) & core.RegionManager.BLOCKED_MASK) === 0
       && core.RegionManager.canProjectileAttackBounds(current.getLocation(), clone.location, 1, 1, 1, 1, area)),
     'each placed clone occupies clear floor with a projectile path from Ketla');
     ketlaCombat.start(current, p);
@@ -9320,7 +9411,8 @@ test('Desert Treasure II enters the Scar through the Catalytic Guardian and requ
     inventoryCounts.set(core.ItemIdentifiers.AIR_NERVE, 1);
     processCycle += 4;
     const inventory = player.getInventory;
-    player.getInventory = () => ({ ...inventory(), adds: () => false });
+    // A full inventory: `adds` never reports failure, so the handler must check for room first.
+    player.getInventory = () => ({ ...inventory(), getFreeSlots: () => 0 });
     objectHooks[0](airEnding);
     assert.equal(inventoryCounts.get(core.ItemIdentifiers.AIR_NERVE), 1);
     player.getInventory = inventory;
@@ -9385,7 +9477,8 @@ test('Desert Treasure II enters the Scar through the Catalytic Guardian and requ
     try {
       const leeches = queues.add.filter((npc) => npc.id === core.NpcIdentifiers.LIGHT_LEECH);
       const getInventory = player.getInventory;
-      player.getInventory = () => ({ ...getInventory(), adds: () => false });
+      // A full bag: `adds` never reports failure, so the lure handler checks for room first.
+      player.getInventory = () => ({ ...getInventory(), getFreeSlots: () => 0 });
       takeLure({ player, npc: leeches[0] });
       assert.ok(!queues.remove.includes(leeches[0]), 'a full bag keeps the leech and its obtainable lure');
       player.getInventory = getInventory;
@@ -10699,13 +10792,16 @@ test('Desert Treasure II runs the Whisperer specials, enrage and medallion recov
     getPacketSender: () => new Proxy({}, { get: (_target, key) => key === 'sendVarbit' ? () => {} : () => {} }),
     getInventory: () => ({
       getAmount: (id) => items.get(id) ?? 0,
+      getFreeSlots: () => 28,
       adds: (id, amount = 1) => items.set(id, (items.get(id) ?? 0) + amount),
       deleteNumber: (id, amount = 1) => items.set(id, Math.max(0, (items.get(id) ?? 0) - amount)),
     }),
     getCombat: () => ({ getHitQueue: () => ({ addPendingDamage() {} }) }),
     location: { x: 2656, y: 6370, z: 0 }, getLocation() { return this.location; }, moveTo(location) { this.location = location; },
     sendMessage(message) { playerMessages.push(String(message)); },
+    getDialogueManager: () => ({ startDialogues: builder => startedDialogues.push(builder) }),
   };
+  const startedDialogues = [];
   quest.setStage(player, 10);
   attrs.set('desert-treasure-ii:lassar', {
     entered: true, cathedralTentacles: true, perfectTorch: true, sanity: 100,
@@ -11028,6 +11124,10 @@ test('Desert Treasure II runs the Whisperer specials, enrage and medallion recov
   assert.equal(remains.getOwner?.(), player, 'the remains are private to the player who earned the kill');
   objectInteractions.find(h => h.name === 'handleObjectInteraction')({ player, objectId: 47578, definition: { id: 47578 }, option: 'Search', location: { x: 2400, y: 6370, z: 0 } });
   assert.equal(items.get(core.ItemIdentifiers.WHISPERERS_MEDALLION), 1, 'the remains yield the actual medallion');
+  const medallionBox = [...startedDialogues.at(-1).getDialogues().values()];
+  assert.equal(medallionBox.length, 1);
+  assert.equal(medallionBox[0].constructor.name, 'ItemStatementDialogue', 'the medallion shows in an item box');
+  assert.equal(medallionBox[0].itemId, core.ItemIdentifiers.WHISPERERS_MEDALLION);
   assert.equal(attrs.get('desert-treasure-ii:lassar').medallion, true);
   assert.ok(deregisteredObjects.includes(remains), 'searching the remains removes the one-time loot object');
   objectInteractions.find(h => h.name === 'handleObjectInteraction')({ player, objectId: 48310, definition: { id: 48310 }, option: 'Climb', location: { x: 2400, y: 6370, z: 0 } });
@@ -11622,7 +11722,6 @@ test('Desert Treasure II prison escape leads to the cache Duke arena and require
   attrs.set('desert-treasure-ii:sucellus-defeated', false);
   attrs.set('desert-treasure-ii:sucellus-encounter-started', true);
   attrs.set('desert-treasure-ii:sucellus-poisons', 2);
-  attrs.set('desert-treasure-ii:sucellus-mushrooms', { musca: 3, arder: 3 });
   attrs.set('desert-treasure-ii:sucellus-vats', { filled: { powders: [I.MUSCA_POWDER, I.ARDER_POWDER], salt: 6 } });
   attrs.delete('desert-treasure-ii:sucellus-area');
   const login = handlers.playerLogin.find(handler => handler.name === 'handleLogin');
@@ -11633,7 +11732,6 @@ test('Desert Treasure II prison escape leads to the cache Duke arena and require
   assert.notEqual(recoveredArea, area, 'login reconstructs the destroyed private encounter area');
   assert.equal(attrs.get('desert-treasure-ii:sucellus-encounter-started'), false);
   assert.equal(attrs.get('desert-treasure-ii:sucellus-poisons'), 0);
-  assert.deepEqual(attrs.get('desert-treasure-ii:sucellus-mushrooms'), { musca: 0, arder: 0 });
   assert.deepEqual(attrs.get('desert-treasure-ii:sucellus-vats'), {});
   assert.ok(recoveredArea.getObjects().some(object => object.getId() === O.MUSCA_MUSHROOMS));
   assert.ok(recoveredArea.getObjects().some(object => object.getId() === O.ARDER_MUSHROOMS));
@@ -11642,13 +11740,11 @@ test('Desert Treasure II prison escape leads to the cache Duke arena and require
   // with no poison item is enough evidence to restore the normal recipe too.
   attrs.set('desert-treasure-ii:sucellus-encounter-started', false);
   attrs.set('desert-treasure-ii:sucellus-poisons', 2);
-  attrs.set('desert-treasure-ii:sucellus-mushrooms', { musca: 3, arder: 3 });
   attrs.set('desert-treasure-ii:sucellus-vats', { filled: { powders: [I.MUSCA_POWDER, I.ARDER_POWDER], salt: 6 } });
   attrs.delete('desert-treasure-ii:sucellus-area');
   player.moveTo({ x: 2927, y: 10353, z: 0 });
   login({ player });
   assert.equal(attrs.get('desert-treasure-ii:sucellus-poisons'), 0);
-  assert.deepEqual(attrs.get('desert-treasure-ii:sucellus-mushrooms'), { musca: 0, arder: 0 });
   assert.deepEqual(attrs.get('desert-treasure-ii:sucellus-vats'), {});
 });
 
@@ -11854,13 +11950,14 @@ test('Temple vine picking allows the three flowers needed to refill a pouch', ()
 });
 
 
-test('Druid pouch refills existing charges using three produce, preferring pears and stems', () => {
+test('Druid pouch refills existing charges with the first three produce in the pack (rsprox NatureSpirit 1248, 1299)', () => {
  const {api}=mockApi(),handlers=[];
  api.onItemAction=handler=>handlers.push(handler);
  require('../plugins/quests/quests/NatureSpirit.Quest')(api);
  const items=new Map([[2958,6],[2974,2],[2972,1],[29556,3]]);
- const inventory={contains:id=>(items.get(id)||0)>0,getAmount:id=>items.get(id)||0,deleteNumber:(id,n)=>items.set(id,(items.get(id)||0)-n),adds:(id,n)=>items.set(id,(items.get(id)||0)+n)};
- const player={getInventory:()=>inventory,sendMessage(){}};
+ const inventory={contains:id=>(items.get(id)||0)>0,getAmount:id=>items.get(id)||0,deleteNumber:(id,n)=>items.set(id,(items.get(id)||0)-n),adds:(id,n)=>items.set(id,(items.get(id)||0)+n),
+  getItems:()=>[...items].flatMap(([id,n])=>id===2958||n<=0?[]:[{getId:()=>id,getAmount:()=>n}])};
+ const player={getInventory:()=>inventory,sendMessage(){},getAttribute:key=>key==='quest.nature_spirit.stage'?90:undefined,setAttribute(){},getPacketSender:()=>({sendSoundEffect(){},sendConfig(){},sendVarbit(){}})};
  const fill=()=>{const e={player,itemId:2958,option:'Fill'};for(const handler of handlers)handler(e);assert.equal(e.handled,true);};
  fill();assert.equal(items.get(2958),14);assert.equal(items.get(29556),3);assert.equal(items.get(2974),0);assert.equal(items.get(2972),0);
  fill();assert.equal(items.get(2958),17);assert.equal(items.get(29556),0);
@@ -11951,10 +12048,12 @@ test('Lantern lenses and unpowered orbs are glassblown without consuming the pip
  try{
   require('../plugins/skills/Crafting.plugin').register(api);
   const inventory={contains:id=>(items.get(id)||0)>0,getAmount:id=>items.get(id)||0,deleteNumber:(id,n)=>items.set(id,items.get(id)-n),addItem:i=>items.set(i.getId(),(items.get(i.getId())||0)+i.getAmount())};
-  const sender={sendCreationMenu:m=>{menu=m;return sender;},sendSoundEffect:()=>sender};
+  // The craft lines are spam lines (rsprox captures), sent through sendTypedMessage.
+  const sender={sendCreationMenu:m=>{menu=m;return sender;},sendSoundEffect:()=>sender,sendTypedMessage:(type,m)=>{messages.push(m);return sender;}};
   const player={getInventory:()=>inventory,getSkillManager:()=>({getCurrentLevel:()=>level,addExperiences:(s,n)=>xp+=n}),sendMessage:m=>messages.push(m),
    getPacketSender:()=>sender,performAnimation(){},getAttribute:()=>null,setAttribute(){},isRegistered:()=>true,getHitpoints:()=>99,
-   getMovementQueue:()=>({size:()=>0}),getForceMovement:()=>null,getInterfaceId:()=>-1,isPlayerBot:()=>false};
+   getMovementQueue:()=>({size:()=>0}),getForceMovement:()=>null,getInterfaceId:()=>-1,isPlayerBot:()=>false,
+   getLocation:()=>new api.core.Location(3200,3200,0)};
   const e={player,usedItemId:1785,usedWithItemId:1775};for(const h of handlers){h(e);if(e.handled)break;}assert.equal(e.handled,true);
   // rsprox 1842: all eight items, whatever the level, under the captured labels.
   assert.deepEqual(menu.getOptions().labels,['Beer glass','Candle lantern','Oil lamp','Vial','Fishbowl','Unpowered staff orb','Lantern lens','Light orb']);
@@ -11985,13 +12084,16 @@ test('WGS restores native Slayer and Warriors Guild replacement states on login'
 
 test('Astral Contact and its former name use one astral, one cosmic and two air runes', () => {
  const {Spell}=PluginManager.getCoreApi(),{LunarSpells}=require('../dist/game/content/combat/magic/LunarSpells');
- const original=Spell.prototype.canCast,emit=PluginManager.emitCustomEvent;let costs,chain,xp=0;
- const player={getIndex:()=>1,getPacketSender:()=>({sendSoundEffect(){}}),getSkillManager:()=>({getMaxLevel:()=>99,addExperiences:(s,n)=>xp+=n}),performAnimation(){},performGraphic(){},getDialogueManager:()=>({startDialogues:c=>chain=c})};
+ const {TaskManager}=require('../dist/game/task/TaskManager');
+ const original=Spell.prototype.canCast,emit=PluginManager.emitCustomEvent;let costs,lists=0,xp=0;
+ const player={getIndex:()=>1,isRegistered:()=>true,isDyingReturn:()=>false,getHitpoints:()=>99,getInterfaceId:()=>-1,getInterfaceOpens:()=>0,getPacketSender:()=>({sendSoundEffect(){}}),getSkillManager:()=>({getMaxLevel:()=>99,addExperiences:(s,n)=>xp+=n}),performAnimation(){},performGraphic(){}};
  try {
-  Spell.prototype.canCast=function(){costs=this.itemsRequired().map(i=>[i.getId(),i.getAmount()]);return true;};PluginManager.emitCustomEvent=()=>{};
+  Spell.prototype.canCast=function(){costs=this.itemsRequired().map(i=>[i.getId(),i.getAmount()]);return true;};PluginManager.emitCustomEvent=(name)=>{if(name==='magic:npc-contact')lists++;};
   for(const name of ['Astral Contact','NPC Contact']){
-   assert.equal(LunarSpells.handleSelf(player,name),true);assert.deepEqual(costs,[[9075,1],[564,1],[556,2]]);assert.ok(chain);
+   assert.equal(LunarSpells.handleSelf(player,name),true);assert.deepEqual(costs,[[9075,1],[564,1],[556,2]]);
+   for(let tick=0;tick<7;tick++)TaskManager.process();
   }
+  assert.equal(lists,2);
   assert.equal(xp,126);
  }finally{Spell.prototype.canCast=original;PluginManager.emitCustomEvent=emit;}
 });
@@ -12019,12 +12121,12 @@ test('WGS super truth serum starts the captive conversation only for its owner a
 test('WGS NPC Contact recruits only the first four heroes; Guild heroes require a visit', () => {
  const {api,handlers,player}=movarioFixture();let progress=280;const played=[];
  require('../plugins/quests/wgs/Fellowship.WhileGuthixSleeps')({...api.context,stage:()=>progress,play:(p,id,v)=>played.push(v)});
- const e={player,contacts:[]};handlers.custom.get('magic:npc-contact')(e);
- assert.deepEqual(e.contacts,['Turael','Mazchna','Duradel','Cyrisus']);
+ assert.equal(handlers.custom.get('magic:npc-contact'),undefined);
+ for(const name of ['Turael','Mazchna','Duradel','Cyrisus']){const pick={player,name};handlers.custom.get('magic:npc-contact-selected')(pick);assert.equal(pick.handled,true);}
+ played.length=0;
  let selected={player,name:'Ghommal'};handlers.custom.get('magic:npc-contact-selected')(selected);
  assert.equal(selected.handled,undefined);
- progress=320;const second={player,contacts:[]};handlers.custom.get('magic:npc-contact')(second);
- assert.deepEqual(second.contacts,[]);
+ progress=320;
  selected={player,name:'Ghommal'};handlers.custom.get('magic:npc-contact-selected')(selected);
  assert.equal(selected.handled,undefined);assert.deepEqual(played,[]);
 });
@@ -12174,8 +12276,8 @@ function synapseFixture() {
  api.core={...api.core,Task:class{constructor(ticks){this.ticks=ticks;}stop(){}},TaskManager:{submit:t=>tasks.push(t)},ObjectDefinition:{forPlayer:()=>({getName:()=> 'Anvil'})}};
  api.sendMultiChatboxPrompt=(p,title,...pairs)=>prompt=pairs;
  const inventory={getItems:()=>items,contains:id=>items.some(i=>i.getId()===id),getAmount:id=>items.filter(i=>i.getId()===id).length,refreshItems(){},deleteNumber:(id,n)=>{while(n--){const at=items.findIndex(i=>i.getId()===id);assert(at>=0);items.splice(at,1);}}};
- const player={getInventory:()=>inventory,getEquipment:()=>({getItems:()=>items,refreshItems(){}}),getAttribute:k=>attrs.get(k),setAttribute:(k,v)=>attrs.set(k,v),getHitpoints:()=>99,getLocation:()=>position,isRegistered:()=>registered,sendMessage(){},getCombat:()=>({getHitQueue:()=>({addPendingDamage:d=>damage.push(...d)})}),getSkillManager:()=>({getCurrentLevel:s=>current.get(s)??99,getMaxLevel:s=>base.get(s)??99,addExperience:(s,n)=>xp.push([s,n]),stopSkillable(){}})};
- const arc=require('../plugins/items/Arclight.plugin');arc.register({core:api.core,emitCustomEvent(){},onItemOnObject(){},onItemOnItem(){},onItemAction(){},onCombatHitResolved(){}});
+ const player={getInventory:()=>inventory,getEquipment:()=>({getItems:()=>items,refreshItems(){}}),getAttribute:k=>attrs.get(k),setAttribute:(k,v)=>attrs.set(k,v),getHitpoints:()=>99,getLocation:()=>position,isRegistered:()=>registered,sendMessage(){},getDialogueManager:()=>({startDialogues(){}}),getPacketSender:()=>({sendTypedMessage(){}}),getCombat:()=>({getHitQueue:()=>({addPendingDamage:d=>damage.push(...d)})}),getSkillManager:()=>({getCurrentLevel:s=>current.get(s)??99,getMaxLevel:s=>base.get(s)??99,addExperience:(s,n)=>xp.push([s,n]),stopSkillable(){}})};
+ const arc=require('../plugins/items/Arclight.plugin');arc.register({core:api.core,emitCustomEvent(){},onItemOnObject(){},onItemOnItem(){},onItemAction(){},onCombatHitResolved(){},sendMultiChatboxPrompt:(p,title,...pairs)=>prompt=pairs});
  const f=require('../plugins/quests/wgs/Rewards.WhileGuthixSleeps')({api,stage:()=>progress,held:(p,id)=>inventory.contains(id),val:(p,k)=>attrs.get(k)||0,ATTRIBUTES:[]});
  const add=id=>{const i=new api.core.Item(id,1);items.push(i);return i;};
  return {api,f,arc,attrs,items,tasks,xp,damage,player,current,base,add,prompt:()=>prompt,setStage:s=>progress=s,move:()=>position=new api.core.Location(3201,3200,0),disconnect:()=>registered=false};
@@ -12200,7 +12302,7 @@ test('purging staff uses boosted Crafting, unboosted Smithing, an iron bar and a
 
 test('Arclight charges and infusion are per sword and must total 10,000 for Emberlight',()=>{
  const t=synapseFixture(),I=t.api.core.ItemIdentifiers,r=t.f.recipes[2],sword=t.add(I.DARKLIGHT);for(let n=0;n<30;n++)t.add(I.ANCIENT_SHARD);
- t.arc._test.enhance({player:t.player,item:sword,objectId:t.api.core.ObjectIdentifiers.ALTAR_52});assert.equal(sword.getId(),I.ARCLIGHT);assert.equal(t.arc.state(sword).charges,1000);assert.equal(t.player.getInventory().getAmount(I.ANCIENT_SHARD),27);
+ t.arc._test.enhance({player:t.player,item:sword,objectId:t.api.core.ObjectIdentifiers.ALTAR_52});t.prompt()[1]();assert.equal(sword.getId(),I.ARCLIGHT);assert.equal(t.arc.state(sword).charges,1000);assert.equal(t.player.getInventory().getAmount(I.ANCIENT_SHARD),27);
  t.add(29580);t.add(2347);t.f.craft(t.player,r);assert.equal(t.tasks.length,0);
  const shard=t.items.find(i=>i.getId()===I.ANCIENT_SHARD);t.arc._test.charge({player:t.player,usedItem:sword,usedWithItem:shard,usedItemId:sword.getId(),usedWithItemId:I.ANCIENT_SHARD});assert.equal(t.arc.state(sword).charges,10000);assert.equal(t.player.getInventory().getAmount(I.ANCIENT_SHARD),0);
  const other=new t.api.core.Item(I.ARCLIGHT,1);assert.equal(t.arc.state(other).charges,1000);
@@ -13856,6 +13958,7 @@ test('Song of the Elves Iorwerth scroll lands on the walkable camp tile', () => 
     ...base.core,
     TeleportHandler: {
       checkReqs: () => true,
+      confirm: (player, destination, go, level, { item } = {}) => go(item),
       teleport: (player, location) => player.moveTo(location),
     },
   };
@@ -14232,13 +14335,14 @@ test('Song of the Elves library mirrors must follow the previous beam direction'
     'touching a completed seal replays its memory so its return transport stays available');
 });
 
-test('Regicide tripwires use the Agility success roll and apply the dart hit and poison on failure', () => {
+test('Regicide tripwires use the Agility success roll and snag with poison and the arrow trap on failure', () => {
   const { api: base } = mockApi();
-  const objectHooks = [];
+  const objectHooks = [], poisoned = [];
+  const core = { ...base.core, CombatFactory: { ...base.core.CombatFactory, poisonEntity: (target, severity) => poisoned.push([target, severity]) } };
   const api = new Proxy(base, {
     get: (target, prop) => prop === 'onObjectInteraction'
       ? (handler) => objectHooks.push(handler)
-      : target[prop],
+      : prop === 'core' ? core : target[prop],
   });
   require('../plugins/quests/quests/Regicide.Quest')(api);
   const interact = objectHooks[0];
@@ -14247,7 +14351,7 @@ test('Regicide tripwires use the Agility success roll and apply the dart hit and
   const location = { x: 2285, y: 3187, z: 0 };
   const object = { getFace: () => 3 };
   const createPlayer = (agility) => {
-    const state = { moves: [], hits: [], poison: 0 };
+    const state = { moves: [], hits: [], poison: 0, said: [] };
     const position = { x: 2286, y: 3188, z: 0 };
     const player = {
       getLocation: () => ({ getX: () => position.x, getY: () => position.y, getZ: () => position.z }),
@@ -14258,6 +14362,7 @@ test('Regicide tripwires use the Agility success roll and apply the dart hit and
       }),
       isPoisoned: () => false,
       setPoisonDamage: (amount) => { state.poison = amount; },
+      sendMessage: (text) => state.said.push(text),
       moveTo: (destination) => state.moves.push([destination.getX(), destination.getY(), destination.getZ()]),
     };
     return { player, state };
@@ -14287,9 +14392,12 @@ test('Regicide tripwires use the Agility success roll and apply the dart hit and
     const failure = interactWith(caught.player);
     interact(failure);
     assert.equal(failure.handled, true);
-    assert.equal(caught.state.hits[0][0].getDamage(), 10);
-    assert.equal(caught.state.poison, 2);
-    assert.deepEqual(caught.state.moves, [], 'a triggered tripwire leaves the player on the near side');
+    // The arrows land 4 ticks later (regicide-trip-wire-arrow-trap.test.cjs).
+    assert.deepEqual(caught.state.hits, [], 'no hit on the snag tick');
+    // rsprox_transcripts/230/02969.txt and 237/01105.txt: the snag line, real poison at 10, and the crossing.
+    assert.deepEqual(caught.state.said, ['You snag the trip wire as you step over it.']);
+    assert.deepEqual(poisoned, [[caught.player, 10]]);
+    assert.deepEqual(caught.state.moves, [[2284, 3188, 0]], 'a snag still steps over');
   } finally {
     Math.random = originalRandom;
   }
@@ -14662,8 +14770,75 @@ test('Regicide leaf and stick traps use Agility checks and cross from the approa
   }
 });
 
-test("Mourning's End I last teleport crystal charge becomes a saveable seed", () => {
+test("Mourning's End I publishes and restores the completed Arianwyn briefing", () => {
+  const { api } = mockApi();
+  const persisted = new Map();
+  api.persistAttribute = (key, value) => persisted.set(key, value);
+  require('../plugins/quests/quests/MourningsEndPartI.Quest')(api);
+  const runtime = require('../plugins/quests/QuestRuntime');
+  const quest = runtime.getRegisteredQuests().findLast(q => q.key === 'mournings_end_part_i');
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true,
+    send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+  const createPlayer = () => {
+    const player = new Player(new PlayerSession(channel));
+    player.setUsername('me1briefing');
+    return player;
+  };
+  const key = 'mournings-end-part-i:briefed';
+  assert.equal(persisted.get(key), false, 'briefing flag has the saved starting default');
+  const steps = require('../data/definitions/npc-dialogues.json')["Mourning's End Part I"].variants['in-need-of-your-skills'];
+  const final = steps.at(-1);
+  assert.equal(final.player, "Alright, I'll see what I can do.");
+  const choice = steps.find(step => step.type === 'choice');
+  assert.equal(choice.options.length, 2, 'both backstory choices converge on the final line');
+  for (const npcId of [api.core.NpcIdentifiers.ELUNED, api.core.NpcIdentifiers.ARIANWYN_6]) {
+    const player = createPlayer();
+    api.emitCustomEvent('npc-dialogue:action', { player, npcId, kind: 'message', stepId: 'qEuEsp' });
+    assert.equal(quest.getStage(player), 1, 'real crystal message produces the introduction stage');
+    assert.equal(player.getPacketSender().getVarp(517), 2);
+    const line = { player, npcId, step: final, text: final.player };
+    api.emitCustomEvent('npc-dialogue:line', line);
+    assert.equal(player.getPacketSender().getVarp(517), 2, 'wait until the final player line is continued');
+    assert.equal(typeof line.after, 'function');
+    line.after();
+    assert.equal(player.getPacketSender().getVarp(517), 3, 'publish the disguise objective immediately');
+    assert.equal(quest.getStage(player), 1, 'saved stages stay compatible');
+    assert.equal(player.getAttribute(key), true);
+
+    const restored = createPlayer();
+    restored.setAttribute('quest.mournings_end_part_i.stage', '1');
+    restored.setAttribute(key, player.getAttribute(key));
+    runtime.sendQuestVarps({ player: restored });
+    assert.equal(restored.getPacketSender().getVarp(517), 3, 'login replays the durable flag');
+    api.emitCustomEvent('player:bootstrap-complete', { player: restored });
+    assert.equal(restored.getPacketSender().getVarp(517), 3, 'bootstrap keeps the briefing phase');
+    const repeat = { player: restored, npcId, step: final, text: final.player };
+    api.emitCustomEvent('npc-dialogue:line', repeat);
+    repeat.after();
+    assert.equal(quest.getStage(restored), 1);
+    assert.equal(restored.getPacketSender().getVarp(517), 3, 'repeated briefing stays at the same phase');
+    quest.setStage(restored, 0);
+    assert.equal(restored.getAttribute(key), false, 'reset clears the old briefing');
+    quest.setStage(restored, 1);
+    assert.equal(restored.getPacketSender().getVarp(517), 2, 'restarting needs a new briefing');
+    const restarted = { player: restored, npcId, step: final, text: final.player };
+    api.emitCustomEvent('npc-dialogue:line', restarted);
+    restarted.after();
+    assert.equal(restored.getPacketSender().getVarp(517), 3, 'the briefing can be completed again');
+  }
+});
+
+test("Mourning's End I last teleport crystal charge becomes a saveable seed", (t) => {
   const { api: base } = mockApi();
+  // The crystal teleports through TeleportHandler now; its own checks need a real player, so they pass here.
+  const moved = [];
+  t.mock.method(base.core.TeleportHandler, 'checkReqs', () => true);
+  t.mock.method(base.core.TeleportHandler, 'teleport', (_player, location, _type, _warn, onArrival) => {
+    moved.push([location.getX(), location.getY(), location.getZ()]);
+    onArrival?.();
+  });
   const itemActions = new Map();
   const api = new Proxy(base, {
     get: (target, prop) => prop === 'onItemAction'
@@ -14672,7 +14847,6 @@ test("Mourning's End I last teleport crystal charge becomes a saveable seed", ()
   });
   require('../plugins/quests/quests/MourningsEndPartI.Quest')(api);
   const items = new Map([[6102, 1]]);
-  const moved = [];
   const messages = [];
   const inventory = {
     getAmount: (id) => items.get(id) ?? 0,
@@ -15322,7 +15496,7 @@ test('Suqah tiara drops wait for Meteora and never duplicate the Lunar amulet', 
   const handler = handlers.custom.get('npc-drops:quest-item').at(-1);
   assert.equal(typeof handler, 'function');
   const tiara = api.core.ItemIdentifiers.A_SPECIAL_TIARA;
-  const requirement = { key: 'quest_lunardiplomacyafteraskingmeteoraaboutherheadgear', mode: 'RequiresDuring' };
+  const requirement = { key: 'quest_lunardiplomacy', mode: 'RequiresDuring' };
   const allowed = (state, hold = {}) => {
     const fixture = lunarPlayer(api, {
       stage: state,
@@ -15978,6 +16152,7 @@ test('Priest in Peril unlocks the mausoleum Holy barrier only after completion',
     getAttribute: () => stage,
     moveTo: (location) => moves.push([location.getX(), location.getY(), location.getZ()]),
     sendMessage: (text) => messages.push(text),
+    getPacketSender: () => ({ sendTypedMessage: (type, text) => messages.push(`${type === api.core.ChatType.SPAM ? 'spam' : type}: ${text}`) }),
   };
   for (stage of [0, 10, 46]) {
     assert.equal(pass({ player, objectId: api.core.ObjectIdentifiers.HOLY_BARRIER }), true);
@@ -16004,7 +16179,7 @@ test('Priest in Peril unlocks the mausoleum Holy barrier only after completion',
   for (stage of [quest.completionValue, quest.completionValue + 1]) {
     assert.equal(pass({ player, objectId: api.core.ObjectIdentifiers.HOLY_BARRIER }), true);
     assert.deepEqual(moves.at(-1), [3423, 3485, 0]);
-    assert.equal(messages.at(-1), 'You pass through the holy barrier.');
+    assert.equal(messages.at(-1), 'spam: You pass through the holy barrier.', 'a spam line (rsprox)');
   }
   const before = [moves.length, messages.length];
   assert.equal(pass({ player, objectId: api.core.ObjectIdentifiers.HOLY_BARRIER_2 }), false,
@@ -18093,23 +18268,82 @@ test('Death Plateau keeps Eohric and Harold dialogue in order', () => {
 });
 
 
+test('Death Plateau reads the held combination in the handwritten scroll', () => {
+  const { api, handlers, player, items, messages } = questScene('DeathPlateau');
+  const itemId = api.core.ItemIdentifiers.COMBINATION;
+  const sent = [];
+  const sender = {
+    sendInterface: id => sent.push(id),
+    sendString: (text, component) => sent.push([component, text]),
+  };
+  player.getPacketSender = () => sender;
+  const read = handlers.namedItemActions.get('Combination').Read;
+  assert.equal(read({ player, itemId }), false);
+  assert.deepEqual(sent, []);
+  items.set(itemId, 1);
+  assert.equal(read({ player, itemId }), true);
+  assert.deepEqual(sent, [
+    222,
+    [(222 << 16) | 5, 'Red is North of Blue. Yellow is South of Purple.'],
+    [(222 << 16) | 6, 'Green is North of Purple. Blue is West of'],
+    [(222 << 16) | 7, 'Yellow. Purple is East of Red.'],
+  ]);
+  assert.equal(items.get(itemId), 1);
+  assert.deepEqual(messages, []);
+});
+
+test("Death Plateau walks the castle and inn stairs without climbing", (t) => {
+  const { api, handlers, player, tile } = questScene('DeathPlateau');
+  const { ObjectIdentifiers: O } = api.core;
+  const [walkStairs] = handlers.custom.get('ladders:climb');
+  const climb = t.mock.method(api, 'emitCustomEvent');
+  for (const [objectId, from, to] of [
+    [O.STAIRS_23, [2897, 3566, 0], [2897, 3569, 1]],
+    [O.STAIRS_22, [2897, 3567, 1], [2897, 3565, 0]],
+    [O.STAIRCASE_79, [2914, 3539, 0], [2914, 3542, 1]],
+    [O.STAIRCASE_82, [2914, 3540, 1], [2914, 3538, 0]],
+  ]) {
+    const object = { getLocation: () => tile(...from) };
+    const request = { player, objectId, object, handled: false };
+    walkStairs(request);
+    assert.equal(request.handled, true);
+    const [event, options] = climb.mock.calls.at(-1).arguments;
+    assert.equal(event, to[2] > from[2] ? 'ladders:climbUp' : 'ladders:climbDown');
+    assert.deepEqual(options, { player, object, destination: tile(...to), animate: false });
+  }
+  const other = { player, objectId: O.STAIRCASE_79, object: { getLocation: () => tile(3200, 3200) }, handled: false };
+  walkStairs(other);
+  assert.equal(other.handled, false);
+});
+
 test("Death Plateau doors require Eohric's hint and the solved puzzle", () => {
-  const { api, handlers, quest, player, messages } = questScene('DeathPlateau');
+  const { api, handlers, quest, player } = questScene('DeathPlateau');
   const door = api.core.ObjectIdentifiers.DOOR_115;
+  const started = [];
+  player.getDialogueManager = () => ({ startDialogues: (chain) => started.push(chain) });
   const toggle = objectId => {
     const event = { player, objectId, handled: false };
     handlers.custom.get('door:toggle').forEach(handler => handler(event));
     return event.handled;
   };
+  // Transcript:Death_Plateau: the refusal is the player's chathead line; after Eohric, a knock from the corridor, and
+  // leaving the room is the door's own pass-through.
+  player.moveTo(new api.core.Location(2906, 3542, 1));
   for (const stage of [0, 10]) {
     quest.setStage(player, stage);
+    started.length = 0;
     assert.equal(toggle(door), true);
-    assert.match(messages.at(-1), /without a reason/);
+    assert.ok(JSON.stringify([...started[0].getDialogues().values()]).includes('without a reason'));
   }
   for (const stage of [20, 30, 40, 60, 80]) {
     quest.setStage(player, stage);
-    assert.equal(toggle(door), false, 'the shared door handler opens it');
+    assert.equal(toggle(door), false, 'leaving: the shared door handler opens it');
   }
+  player.moveTo(new api.core.Location(2906, 3543, 1));
+  quest.setStage(player, 20);
+  started.length = 0;
+  assert.equal(toggle(door), true, 'entering: the knock first');
+  assert.ok(JSON.stringify([...started[0].getDialogues().values()]).includes('You knock on the door.'));
   for (const stage of [0, 55, 60, 65, 70, 80]) {
     quest.setStage(player, stage);
     assert.equal(toggle(api.core.ObjectIdentifiers.LARGE_DOOR_23), stage < 65);
@@ -19521,7 +19755,7 @@ test('RFD Amik shrine requires the Wise Old Man clue, enters the mapped lair and
 
 
 test('RFD shows the Feldip spit-roast only while Skrach can be rescued', () => {
-  assert.deepEqual(require('../data/definitions/object-spawns.json'), []);
+  assert.equal(require('../data/definitions/object-spawns.json').some(spawn => [3375].includes(spawn.id)), false);
   const { api: base, handlers } = mockApi();
   const objects = [];
   base.core = { ...base.core, ObjectManager: {
@@ -19577,6 +19811,8 @@ test('RFD council interactions read requirements through the SkillManager before
     getSkillManager: () => ({ getCurrentLevel: () => 99 }),
     getPacketSender: () => packetSender,
     getInventory: () => ({ getAmount: () => 0, getFreeSlots: () => 27 }),
+    // In the dining room: outside it the council isn't frozen and this handler stands aside.
+    getLocation: () => new api.core.Location(1860, 5348, 0),
     sendMessage: (message) => messages.push(message),
   };
   quest.setStage(player, 4);
@@ -19658,7 +19894,11 @@ test('RFD fishcake recipe preserves incomplete ingredients and consumes all four
   const { api: base } = mockApi();
   const itemHandlers = [];
   const core = Object.create(base.core);
-  Object.defineProperty(core, 'NpcDefinition', { value: { forId: () => ({ getActions: () => ['Talk-to'] }) } });
+  Object.defineProperty(core, 'NpcDefinition', { value: { forId: id => ({
+    getId: () => id,
+    getName: () => base.core.NpcDefinition.forId(id).getName(),
+    getActions: () => ['Talk-to'],
+  }) } });
   const api = new Proxy(base, {
     get(target, prop) {
       if (prop === 'core') return core;
@@ -21273,12 +21513,8 @@ test('Song of the Elves prison entry keeps Elena visible and cannot release her 
 test('Song of the Elves prison stair routes to its open foot, not the exit landing behind the wall', () => {
   const { api, handlers } = mockApi();
   require('../plugins/quests/quests/SongOfTheElves.Quest')(api);
-  const route = handlers.routes.find(handler => handler.name === 'routeCastleThroneStairs');
-  const event = { player: { getLocation: () => new api.core.Location(2569, 3298, 0) },
-    object: { getLocation: () => new api.core.Location(2569, 3295, 0) },
-    objectId: 35791, sourceLocation: { x: 2569, y: 3298, z: 0 }, destination: null };
-  route(event);
-  assert.equal(event.destination, null, 'the prison stair keeps the normal walk-to-object route');
+  // No route override: the prison stair (and the castle's main staircase) keep the normal walk-to-object route.
+  assert.equal(handlers.routes.find(handler => handler.name === 'routeCastleThroneStairs'), undefined);
 
   const finder = new api.core.RsmodRouteFinding();
   const spec = { level: 0, srcSize: 1, moveNear: true, maxWaypoints: 25, privateArea: null,
@@ -21603,6 +21839,127 @@ test('Song of the Elves remembers Elena’s earlier answer and fills the cave di
   const line = { player, text: 'Is [Tim/Sue/Sam] here, [Tim/Sue/Sam]?' };
   fillName(line);
   assert.equal(line.text, 'Is Sam here, Sam?', 'the player gives the transcript fake identity instead of their actual name');
+});
+
+test('The Lost Tribe reads its symbol book and a close before the symbols does not advance', () => {
+  // Real-engine coverage, arrows included: lost-tribe-symbol-book.test.cjs.
+  const { api, handlers } = mockApi();
+  require('../plugins/quests/quests/LostTribe.Quest')(api);
+  const quest = require('../plugins/quests/QuestRuntime').getRegisteredQuests().filter(entry => entry.key === 'the_lost_tribe').at(-1);
+  const attrs = new Map([['quest.the_lost_tribe.stage', 7]]);
+  const hidden = new Map(), varbits = new Map();
+  let openInterface = -1;
+  const sender = new Proxy({
+    sendVarbit: (id, value) => varbits.set(id, value),
+    sendInterface: group => { openInterface = group; },
+    sendInterfaceDisplayState: (uid, hide) => hidden.set(uid, hide),
+  }, { get: (target, key) => target[key] ?? (() => {}) });
+  const player = {
+    getAttribute: key => attrs.get(key), setAttribute: (key, value) => attrs.set(key, value),
+    getPacketSender: () => sender,
+  };
+  handlers.playerLogin.find((handler) => handler.name === "handleLogin")({ player });
+  handlers.namedItemActions.get('Goblin symbol book').Read({ player });
+  assert.equal(openInterface, 183, 'Read opens lost_tribe_symbol_book');
+  assert.equal(hidden.get((183 << 16) | 33), false, 'on its title spread');
+  assert.equal(quest.getStage(player), 7, 'reading begins without skipping the book');
+  for (const handler of handlers.custom.get('interface:closed')) handler({ player, interfaceId: 183 });
+  // rsprox 20261112T152024-5ab63b4, tick 387: the stage moves on the turn to the symbols spread.
+  assert.equal(quest.getStage(player), 7, 'closing on the title spread is not the reading');
+  assert.equal(varbits.get(532), 5);
+});
+
+test('The Lost Tribe guide dialogue preserves the treaty checkpoint without an immediate teleport', () => {
+  const { api, handlers } = mockApi();
+  require('../plugins/quests/quests/LostTribe.Quest')(api);
+  const attrs = new Map([['quest.the_lost_tribe.stage', 10]]);
+  const destinations = [];
+  const player = {
+    getAttribute: key => attrs.get(key), setAttribute: (key, value) => attrs.set(key, value),
+    getPacketSender: () => new Proxy({}, { get: () => () => {} }),
+    moveTo: at => destinations.push([at.getX(), at.getY(), at.getZ()]),
+  };
+  const actions = handlers.custom.get('npc-dialogue:action');
+  for (const action of actions) action({ player, stepId: 'm471ps', kind: 'message' });
+  assert.equal(attrs.get('quest.the_lost_tribe.stage'), 11);
+  assert.deepEqual(destinations, [], 'the guide travel plugin owns the delayed crossing');
+});
+
+test('The Lost Tribe Mistag dialogue leaves movement to the guide crossing', () => {
+  const { api, handlers } = mockApi();
+  require('../plugins/quests/quests/LostTribe.Quest')(api);
+  const destinations = [];
+  const player = { getAttribute: () => 9, moveTo: at => destinations.push([at.getX(), at.getY(), at.getZ()]) };
+  for (const action of handlers.custom.get('npc-dialogue:action')) action({ player, stepId: 'yWjjdW', kind: 'message' });
+  assert.deepEqual(destinations, [], 'Mistag dialogue cannot send the player to the surface');
+});
+
+test('The Lost Tribe login recovers the saved treaty scene exit', () => {
+  const { api, handlers } = mockApi();
+  require('../plugins/quests/quests/LostTribe.Quest')(api);
+  const recovery = 'lost-tribe:treaty-scene-exit';
+  const attrs = new Map([[recovery, [3318, 9616, 0]], ['quest.the_lost_tribe.stage', 10]]);
+  const destinations = [];
+  const player = {
+    getAttribute: (key) => attrs.get(key),
+    setAttribute: (key, value) => attrs.set(key, value),
+    moveTo: (at) => destinations.push([at.getX(), at.getY(), at.getZ()]),
+  };
+  const recover = handlers.playerLogin.find((handler) => handler.name === 'recover');
+  recover({ player });
+  recover({ player });
+  assert.deepEqual(destinations, [[3318, 9616, 0]]);
+  assert.equal(attrs.get(recovery), null);
+  assert.equal(attrs.get('quest.the_lost_tribe.stage'), 10);
+});
+
+test('The Lost Tribe replaces a missing treaty after Kazgar has escorted the player', () => {
+  const { api, handlers } = mockApi();
+  require('../plugins/quests/quests/LostTribe.Quest')(api);
+  const treaty = api.core.ItemIdentifiers.PEACE_TREATY;
+  let amount = 0;
+  const inventory = {
+    getAmount: (id) => id === treaty ? amount : 0,
+    getFreeSlots: () => 28,
+    adds(id, count) {
+      assert.equal(id, treaty);
+      amount += count;
+    },
+  };
+  const player = {
+    getAttribute: (key) => key === 'quest.the_lost_tribe.stage' ? 11 : undefined,
+    getInventory: () => inventory,
+  };
+  const event = { player, npcId: api.core.NpcIdentifiers.DUKE_HORACIO, stepId: 'cXIAOU' };
+  assert.equal(handlers.condition.at(-1)(event), true);
+  handlers.custom.get('npc-dialogue:condition').at(-1)(event);
+  assert.equal(amount, 1);
+  assert.equal(handlers.condition.at(-1)(event), false);
+});
+
+test('The Lost Tribe chest interaction supports the current and legacy castle locations', () => {
+  const { api, handlers } = mockApi();
+  const runtime = require('../plugins/quests/QuestRuntime');
+  const original = runtime.startTranscript;
+  const transcripts = [];
+  runtime.startTranscript = (...args) => transcripts.push(args);
+  try {
+    require('../plugins/quests/quests/LostTribe.Quest')(api);
+    const player = { getAttribute: () => undefined };
+    const interact = handlers.objects.at(-1);
+    for (const [objectId, x, y] of [
+      [api.core.ObjectIdentifiers.CHEST_38, 3209, 3217],
+      [api.core.ObjectIdentifiers.CHEST_38, 3211, 3212],
+    ]) {
+      const event = { player, objectId, definition: { id: objectId }, location: { x, y, z: 1 } };
+      interact(event);
+      assert.equal(event.handled, true);
+    }
+    assert.equal(transcripts.length, 2);
+    assert.ok(transcripts.every(args => args[3] === 'The Lost Tribe' && args[4] === 'property-recovery-opening-sigmund-s-chest'));
+  } finally {
+    runtime.startTranscript = original;
+  }
 });
 
 test('Song of the Elves uses all six real waterfall pillars, reading, clue retries and the awakened Baxtorian',()=>{
@@ -22115,6 +22472,8 @@ test('Curator Haig belongs to the active Golem museum step, then The Dig Site, t
 
   attributes.set('quest.the_golem.stage', 0);
   attributes.set('quest.the_dig_site.stage', 1);
+  // The curator's approval belongs to the letter: stamped, and not yet back with the examiner.
+  attributes.set('quest.the_dig_site.letter_stamped', true);
   assert.equal(select().owner, 'The Dig Site', 'The Dig Site approval remains available through the curator');
 
   attributes.set('quest.the_dig_site.stage', 9);
@@ -22737,6 +23096,7 @@ test('In Search of Knowledge feeds Aimeri, fills the tomes and completes through
   });
   const inventory = {
     getAmount: (id) => items.get(id) ?? 0,
+    contains: (id) => (items.get(id) ?? 0) > 0,
     getItems: () => [...items.entries()].map(([id, amount]) => ({ id, getId: () => id, getAmount: () => amount })),
     adds: (id, amount) => items.set(id, (items.get(id) ?? 0) + amount),
     deleteNumber: (id, amount) => {
@@ -23055,4 +23415,766 @@ test('In Search of Knowledge resumes the reward after the final tome is handed i
   assert.ok(lines.includes('Enough talk now, Shhhh!'));
   assert.equal(attributes.get('quest.in_search_of_knowledge.stage'), 3);
   assert.equal(items.get(ids.LAMP_OF_KNOWLEDGE), 1);
+});
+
+
+function rfdNativeCounterFixture(t, initial = {}) {
+  const { api, handlers } = mockApi();
+  delete require.cache[require.resolve('../plugins/quests/quests/RecipeForDisaster.Quest')];
+  require('../plugins/quests/quests/RecipeForDisaster.Quest')(api);
+  const quest = require('../plugins/quests/QuestRuntime').getRegisteredQuests().findLast(q => q.key === 'recipe_for_disaster');
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true, send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+  const player = new Player(new PlayerSession(channel));
+  player.setUsername('rfdnative');
+  for (const [key, value] of Object.entries(initial)) player.setAttribute(key, value);
+  const sender = player.getPacketSender();
+  const replay = () => {
+    for (const handler of handlers.playerLogin) handler({ player });
+    for (const handler of handlers.custom.get('player:bootstrap-complete') ?? []) handler({ player });
+  };
+  t.after(() => { for (const handler of handlers.playerLogout) handler({ player }); });
+  return { player, sender, quest, replay, api, handlers };
+}
+
+test('RFD native subquest completion counts opening, each rescue and finale without awarding progress', t => {
+  const f = rfdNativeCounterFixture(t), key = 'recipe-for-disaster:rescues';
+  f.player.setAttribute('recipe-for-disaster:feast-seen', true);
+  for (const [stage, expected] of [[0, 0], [1, 0], [4, 1]]) {
+    f.quest.setStage(f.player, stage);
+    assert.equal(f.sender.getVarbit(13987), expected);
+  }
+  let flags = 0;
+  for (let i = 0; i < 8; i++) {
+    flags |= 1 << i; f.player.setAttribute(key, flags); f.replay();
+    assert.equal(f.sender.getVarbit(13987), i + 2, 'opening plus exactly the completed rescues');
+  }
+  assert.equal(f.sender.getVarbit(1850), 4, 'all rescues still await the final battle');
+  f.quest.setStage(f.player, 5);
+  assert.equal(f.sender.getVarbit(13987), 10);
+  assert.equal(f.player.getAttribute('quest.points'), undefined, 'publication cannot award quest points');
+  f.replay(); assert.equal(f.sender.getVarbit(13987), 10);
+  assert.equal(f.player.getAttribute(key), 255);
+});
+
+test('RFD native subquest completion restores authoritative legacy parent completion and actual incomplete child states', t => {
+  const f = rfdNativeCounterFixture(t, { 'quest.recipe_for_disaster.stage': 5, 'quest.points': 17 });
+  const C = require('../dist/game/cache/CacheDefinitions').CacheDefinitions;
+  const children = [[1892, 60], [1867, 40], [1895, 110], [1896, 5], [1878, 5], [1904, 170], [1910, 20], [1914, 50]];
+  // These sentinel bits are outside both the RFD main state and native subquest counter.
+  const parents = [...new Set([1850, 13987].map(id => C.getVarbit(id).baseVar))];
+  for (const parent of parents) f.sender.sendConfig(parent, 1 << 30);
+  const before = f.player.getInventory().getItems().map(item => item.clone());
+  f.replay();
+  assert.equal(f.sender.getVarbit(13987), 10);
+  for (const [id, value] of children) assert.equal(f.sender.getVarbit(id), value, 'completed parent publishes native rescue ' + id);
+  for (const parent of parents) assert.equal(f.sender.getVarp(parent) & (1 << 30), 1 << 30, 'sibling bit preserved in parent '+parent);
+  assert.equal(f.player.getAttribute('recipe-for-disaster:rescues'), undefined, 'legacy flags stay untouched');
+  assert.equal(f.player.getAttribute('quest.points'), 17);
+  assert.deepEqual(f.player.getInventory().getItems(), before);
+  f.replay(); assert.equal(f.sender.getVarbit(13987), 10, 'relog/bootstrap cannot double count');
+  // A normal child update after restoration must not undo a completed legacy parent.
+  const pirateChoice = f.handlers.custom.get('npc-dialogue:choice').find(handler => handler.name === 'handlePirateChoice');
+  pirateChoice({ player: f.player, npcId: f.api.core.NpcIdentifiers.MURPHY, option: 'Talk about Recipe for Disaster.' });
+  assert.equal(f.sender.getVarbit(1895), 110, 'Murphy cannot reopen a child of a completed parent');
+  assert.equal(f.sender.getVarbit(13987), 10);
+  assert.equal(f.player.getAttribute('recipe-for-disaster:rescues'), undefined);
+  assert.equal(f.player.getAttribute('quest.points'), 17);
+  assert.deepEqual(f.player.getInventory().getItems(), before);
+  f.player.setAttribute('quest.recipe_for_disaster.stage', 4);
+  f.player.setAttribute('recipe-for-disaster:feast-seen', true);
+  f.player.setAttribute('recipe-for-disaster:pirate-stage', 110);
+  f.replay();
+  assert.equal(f.sender.getVarbit(13987), 2, 'incomplete parent counts only opening and the actually completed numeric child');
+  for (const [id] of children) if (id !== 1895) assert.equal(f.sender.getVarbit(id), 0, 'incomplete parent must not retain inferred completion');
+  assert.equal(f.player.getAttribute('recipe-for-disaster:rescues'), undefined);
+});
+
+test('native View info derives the original overview for started and completed Pirate saves', t => {
+  const runtimePath = require.resolve('../plugins/quests/QuestRuntime');
+  const previousRuntime = require.cache[runtimePath];
+  delete require.cache[runtimePath];
+  t.after(() => {
+    if (previousRuntime) require.cache[runtimePath] = previousRuntime;
+    else delete require.cache[runtimePath];
+  });
+  const Q = require(runtimePath);
+  const { api } = mockApi();
+  const buttons = new Map();
+  api.onInterfaceActionButton = (ids, handler) => {
+    for (const id of Array.isArray(ids) ? ids : [ids]) buttons.set(id, handler);
+  };
+  require('../plugins/quests/quests/PiratesTreasure.Quest')(api);
+  const quest = Q.getRegisteredQuests().find(q => q.key === 'pirates_treasure');
+  assert.ok(quest);
+  assert.equal(require('../plugins/quests/data/quest-start-text.json')[quest.name], undefined,
+    'this quest exercises its authored unstarted journal rather than static start text');
+  const { questMetadata } = require('../plugins/quests/QuestList.QuestRuntime');
+  const row = questMetadata(quest, api.core.CacheDefinitions);
+  assert.equal(row.id[0], 16);
+  const click = buttons.get((399 << 16) | 7);
+  assert.equal(typeof click, 'function');
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  for (const stage of [1, 4]) {
+    const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true, send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+    const player = new Player(new PlayerSession(channel));
+    player.setUsername('questoverview');
+    player.setAttribute('quest.pirates_treasure.stage', stage);
+    player.setAttribute('quest.points', 17);
+    const sender = player.getPacketSender(), opened = [], scripts = [];
+    t.mock.method(sender, 'sendSubInterface', (...args) => { opened.push(args); return sender; });
+    t.mock.method(sender, 'sendInterfaceScript', (...args) => { scripts.push(args); return sender; });
+    const items = player.getInventory().getItems().map(item => item.clone());
+    t.mock.method(player, 'setAttribute', () => assert.fail('View info cannot modify a saved attribute'));
+    click({ player, slot: row.id[0], opId: 1 });
+    assert.equal(opened.at(-1)[1], 782, 'View info opens the overview at saved stage ' + stage);
+    assert.equal(scripts.at(-1)[0], 6821);
+    assert.equal(scripts.at(-1)[1][1], 'speaking to <col=800000>Redbeard Frank<col=000080> at Port Sarim.');
+    click({ player, slot: row.id[0], opId: 2 });
+    assert.equal(opened.at(-1)[1], 119, 'Read journal still opens the current progress journal');
+    assert.equal(quest.getStage(player), stage);
+    assert.equal(player.getAttribute('quest.points'), 17);
+    assert.deepEqual(player.getInventory().getItems(), items);
+  }
+});
+
+test('Edmond Talk-to routes a fresh player to Plague City instead of Song of the Elves', () => {
+  const runtime = require('../plugins/quests/QuestRuntime');
+  const transcripts = [];
+  const originalStartTranscript = runtime.startTranscript;
+  runtime.startTranscript = (_api, _player, npcId, page, variant) => {
+    transcripts.push({ npcId, page, variant });
+    return true;
+  };
+  const completed = new Set();
+  const eventName = 'quest:is-complete';
+  const previousHooks = PluginManager.customEventHooks.get(eventName);
+  const previousStageHooks = PluginManager.customEventHooks.get('quest:get-stage');
+  const prerequisiteAnswers = (event) => {
+    if (completed.has(event.key)) event.complete = true;
+  };
+  try {
+    const api = PluginManager.createApi('SoteEdmondDispatchTest');
+    require('../plugins/quests/quests/SongOfTheElves.Quest')(api);
+    require('../plugins/quests/quests/PlagueCity.Quest')(api);
+    PluginManager.createApi('SoteEdmondPrerequisiteAnswers').onCustomEvent(eventName, prerequisiteAnswers);
+    // Plague City's stage: 29 complete, 30 once Edmond's scroll is read (asked after QuestRuntime answers).
+    let plagueCityStage = 0;
+    PluginManager.createApi('SoteEdmondStage').onCustomEvent('quest:get-stage', (event) => {
+      if (event.key === 'plague_city') event.stage = plagueCityStage;
+    });
+
+    const attributes = new Map();
+    const messages = [];
+    let skillLevel = 1;
+    const player = {
+      getAttribute: (key) => attributes.get(key),
+      setAttribute: (key, value) => attributes.set(key, value),
+      getInventory: () => ({
+        getAmount: () => 0, getFreeSlots: () => 28, isFull: () => false,
+        contains: () => false, adds: () => true, deleteNumber: () => true,
+      }),
+      getEquipment: () => ({ getItems: () => [], get: () => null }),
+      getPacketSender: () => new Proxy({}, { get: () => () => {} }),
+      getDialogueManager: () => ({ isActive: () => false, startDialogues() {}, reset() {} }),
+      getSkillManager: () => ({ getMaxLevel: () => skillLevel, getCurrentLevel: () => skillLevel }),
+      sendMessage: (text) => messages.push(text),
+      getLocation: () => ({ getX: () => 0, getY: () => 0, getZ: () => 0 }),
+      isRegistered: () => true,
+    };
+    const npcId = api.core.NpcIdentifiers.EDMOND_2;
+    const definition = { getName: () => 'Edmond', getActions: () => ['Talk-to'] };
+    const npc = { getCurrentDefinition: () => definition, getId: () => npcId };
+    const dispatch = () => {
+      messages.length = 0;
+      const event = {
+        player, npc, npcId, clickType: 1, handled: false, definition,
+        location: { x: 0, y: 0, z: 0 },
+      };
+      return { handled: PluginManager.emitNpcInteraction(event), event };
+    };
+
+    const fresh = dispatch();
+    assert.equal(fresh.handled, false, 'Song of the Elves must not swallow Edmond for a fresh player');
+    assert.deepEqual(messages, [], 'a fresh player must not see Song of the Elves requirements');
+    assert.deepEqual(transcripts, []);
+    const pages = [
+      { page: 'Plague City', variants: ['starting-the-quest-talking-to-edmond'] },
+      { page: 'Song of the Elves', variants: ['starting-out-talking-to-edmond'] },
+    ];
+    assert.equal(
+      PluginManager.emitNpcDialogueVariant({ player, npc, npcId, definition, pages }),
+      'starting-the-quest-talking-to-edmond',
+      'the shared dialogue dispatch selects Plague City start'
+    );
+
+    completed.add('plague_city');
+    plagueCityStage = 29;
+    const unread = dispatch();
+    assert.equal(unread.handled, false, "Edmond's own dialogue (a new teleport scroll) while the scroll is unread and none is carried");
+    assert.deepEqual(messages, []);
+
+    plagueCityStage = 30;
+    const refused = dispatch();
+    assert.equal(refused.handled, true, 'Song of the Elves owns Edmond once Plague City is complete');
+    assert.ok(messages.some((text) => text.includes("Mourning's End Part II")),
+      'eligible players still get the Song of the Elves prerequisite refusal');
+    assert.deepEqual(transcripts, []);
+
+    completed.add('mournings_end_part_ii');
+    completed.add('making_history');
+    completed.add('druidic_ritual');
+    skillLevel = 70;
+    const started = dispatch();
+    assert.equal(started.handled, true);
+    assert.deepEqual(transcripts, [{
+      npcId, page: 'Song of the Elves', variant: 'starting-out-talking-to-edmond',
+    }], 'eligible players still start Song of the Elves');
+  } finally {
+    runtime.startTranscript = originalStartTranscript;
+    if (previousHooks) PluginManager.customEventHooks.set(eventName, previousHooks);
+    else PluginManager.customEventHooks.delete(eventName);
+    if (previousStageHooks) PluginManager.customEventHooks.set('quest:get-stage', previousStageHooks);
+    else PluginManager.customEventHooks.delete('quest:get-stage');
+  }
+});
+
+test('Alrena gives the Song of the Elves tabard only for the silk and purple dye handed over', () => {
+  const { api, handlers } = mockApi();
+  delete require.cache[require.resolve('../plugins/quests/quests/SongOfTheElves.Quest')];
+  require('../plugins/quests/quests/SongOfTheElves.Quest')(api);
+  const { ItemIdentifiers } = api.core;
+  const attributes = new Map();
+  const items = new Map();
+  const messages = [];
+  const player = {
+    isPlayerBot: () => true,
+    getAttribute: key => attributes.get(key),
+    setAttribute: (key, value) => attributes.set(key, value),
+    getLocation: () => new api.core.Location(2614, 3291, 0),
+    getPacketSender: () => new Proxy({}, { get: () => () => {} }),
+    getInventory: () => ({
+      getAmount: id => items.get(id) ?? 0,
+      contains: id => (items.get(id) ?? 0) > 0,
+      deleteNumber: (id, amount) => items.set(id, Math.max(0, (items.get(id) ?? 0) - amount)),
+      adds: (id, amount) => { items.set(id, (items.get(id) ?? 0) + amount); return true; },
+      getFreeSlots: () => 28,
+    }),
+    sendMessage: text => messages.push(text),
+  };
+  const step = stepId => {
+    const event = { player, npcId: 8721, kind: 'message', stepId, handled: false };
+    for (const handler of handlers.custom.get('npc-dialogue:action')) handler(event);
+    return event;
+  };
+  const tabard = () => items.get(ItemIdentifiers.ARDOUGNE_KNIGHT_TABARD) ?? 0;
+
+  assert.equal(step('tNiXqt').handled, true, 'handing over nothing stops the dialogue');
+  step('Y45282');
+  assert.equal(tabard(), 0, 'no tabard without the silk and dye');
+
+  items.set(ItemIdentifiers.SILK, 2);
+  items.set(ItemIdentifiers.PURPLE_DYE, 2);
+  step('0nVxB-');
+  step('bGd6H8');
+  assert.equal(tabard(), 1);
+  assert.equal(items.get(ItemIdentifiers.SILK), 1, 'one silk is taken, not two');
+  assert.equal(items.get(ItemIdentifiers.PURPLE_DYE), 1, 'one purple dye is taken, not two');
+  step('bGd6H8');
+  assert.equal(tabard(), 1, 'one hand-over makes one tabard');
+});
+
+test('Giant Dwarf permits a second company after a completed delivery', (t) => {
+  const { api, handlers } = mockApi();
+  const { PlayerSave } = require('../dist/game/entity/impl/player/persistence/PlayerSave');
+  const originalKeys = new Set(PlayerSave.persistentAttributeKeys);
+  const originalDefaults = new Map(PlayerSave.attributeDefaults);
+  t.after(() => {
+    PlayerSave.persistentAttributeKeys.clear();
+    for (const key of originalKeys) PlayerSave.persistentAttributeKeys.add(key);
+    PlayerSave.attributeDefaults.clear();
+    for (const [key, value] of originalDefaults) PlayerSave.attributeDefaults.set(key, value);
+  });
+  api.persistAttribute = (key, value) => PlayerSave.persistAttribute(key, value);
+  // The fresh QuestRuntime below registers its own quest-list widgets; keep them out of the
+  // shared button map, or later native-row tests click a runtime with no other quests.
+  api.onInterfaceActionButton = () => {};
+  const npcActions = new Map();
+  api.onNpcsInteraction = (names, actions) => {
+    for (const name of names) npcActions.set(name, actions);
+  };
+  const runtimePath = require.resolve('../plugins/quests/QuestRuntime');
+  const questPath = require.resolve('../plugins/quests/quests/GiantDwarf.Quest');
+  const previousRuntime = require.cache[runtimePath], previousQuest = require.cache[questPath];
+  let runtime, started;
+  try {
+    delete require.cache[runtimePath];
+    delete require.cache[questPath];
+    runtime = require(runtimePath);
+    const originalStartTranscript = runtime.startTranscript;
+    runtime.startTranscript = (...args) => { started = { page: args[3], variant: args[4] }; return originalStartTranscript(...args); };
+    require(questPath)(api);
+    runtime.startTranscript = originalStartTranscript;
+  } finally {
+    if (previousRuntime) require.cache[runtimePath] = previousRuntime; else delete require.cache[runtimePath];
+    if (previousQuest) require.cache[questPath] = previousQuest; else delete require.cache[questPath];
+  }
+  const quest = runtime.getRegisteredQuests().findLast(q => q.key === 'giant_dwarf');
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true,
+    send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+  const player = new Player(new PlayerSession(channel));
+  player.setUsername('giantdwarfcompany');
+  quest.setStage(player, 30);
+  const N = api.core.NpcIdentifiers;
+  const talk = (name, npcId, actor = player) => {
+    const event = { player: actor, npcId, clickType: 1, handled: false,
+      definition: { getName: () => name, getActions: () => ['Talk-to'] } };
+    npcActions.get(name)['Talk-to'](event);
+    return event;
+  };
+  const first = N.PURPLE_PEWTER_SECRETARY;
+  assert.equal(talk('Purple Pewter Secretary', first).handled, true, 'first secretary is available');
+  // Checkpoint the transcript offer and acceptance, as the existing parity test does.
+  api.emitCustomEvent('npc-dialogue:line', { player, npcId: first, text: 'We need 3 copper ore in the next [number] minutes.' });
+  api.emitCustomEvent('npc-dialogue:choice', { player, npcId: first, option: "I'll take it." });
+  const item = Number(player.getAttribute('quest.giant_dwarf.task-item'));
+  const amount = Number(player.getAttribute('quest.giant_dwarf.task-amount'));
+  assert.ok(item > 0 && amount >= 3 && amount <= 5, 'an ore task was accepted');
+  player.getInventory().adds(item, amount);
+  assert.equal(player.getInventory().getAmount(item), amount);
+  api.emitCustomEvent('npc-dialogue:line', { player, npcId: first, text: "I've completed your task! Here is your ore!" });
+  assert.equal(player.getInventory().getAmount(item), 0, 'the first delivery consumes the ore');
+  player.getDialogueManager().reset();
+  const blue = N.BLUE_OPAL_SECRETARY;
+  started = undefined;
+  assert.equal(talk('Blue Opal Secretary', blue).handled, true,
+    'a completed delivery does not prevent talking to a different company');
+  assert.deepEqual(started, { page: 'The Giant Dwarf', variant: 'the-head-of-a-dwarf-talking-to-a-company-secretary' }, 'the second secretary selects the task conversation');
+  assert.ok(player.getDialogueManager().getCurrent(), 'the second secretary actually starts dialogue');
+  const condition = (actor, npcId, stepId) => handlers.condition.map(fn => fn({ player: actor, npcId, stepId })).find(v => typeof v === 'boolean');
+  assert.equal(condition(player, first, 'jzxdAM'), true, 'the first company recognises its completed delivery');
+  assert.equal(condition(player, blue, 'Mzu06u'), true, 'the second company starts with few tasks');
+  assert.equal(condition(player, blue, 'jzxdAM'), false, 'the first company score is not shared');
+  const savedBeforeBlue = PlayerSave.fromPlayer(player);
+  const restoredBeforeBlue = new Player(new PlayerSession(channel));
+  restoredBeforeBlue.setUsername('giantdwarfcompany');
+  savedBeforeBlue.applyToPlayer(restoredBeforeBlue);
+  assert.equal(condition(restoredBeforeBlue, first, 'jzxdAM'), true, 'the first company score survives restoration');
+  assert.equal(condition(restoredBeforeBlue, blue, 'jzxdAM'), false, 'the other company remains at zero after restoration');
+  api.emitCustomEvent('npc-dialogue:line', { player, npcId: blue, text: 'We need 3 copper ore in the next [number] minutes.' });
+  api.emitCustomEvent('npc-dialogue:choice', { player, npcId: blue, option: "I'll take it." });
+  const blueItem = Number(player.getAttribute('quest.giant_dwarf.task-item'));
+  const blueAmount = Number(player.getAttribute('quest.giant_dwarf.task-amount'));
+  assert.ok(blueItem > 0 && blueAmount >= 3 && blueAmount <= 5, 'the second company accepts a task');
+  player.getInventory().adds(blueItem, blueAmount);
+  assert.equal(player.getInventory().getAmount(blueItem), blueAmount);
+  api.emitCustomEvent('npc-dialogue:line', { player, npcId: blue, text: "I've completed your task! Here is your ore!" });
+  assert.equal(player.getInventory().getAmount(blueItem), 0, 'the second company receives its ore');
+  assert.equal(condition(player, blue, 'jzxdAM'), true, 'the second company recognises a completed task');
+  const saved = PlayerSave.fromPlayer(player);
+  const restored = new Player(new PlayerSession(channel));
+  restored.setUsername('giantdwarfcompany');
+  saved.applyToPlayer(restored);
+  assert.equal(condition(restored, first, 'jzxdAM'), true, 'the first company retains its progress after restoration');
+  assert.equal(condition(restored, blue, 'jzxdAM'), true, 'the second company retains its progress after restoration');
+
+  // The Purple Pewter clothing bonus is earned before any task selects a company.
+  const bonusPlayer = new Player(new PlayerSession(channel));
+  bonusPlayer.setUsername('giantdwarfbonus');
+  quest.setStage(bonusPlayer, 30);
+  const { Item, ItemIdentifiers: I } = api.core;
+  for (const [slot, id] of [I.HAM_HOOD, I.HAM_SHIRT, I.HAM_ROBE].entries()) {
+    bonusPlayer.getEquipment().set(slot, new Item(id, 1));
+  }
+  assert.equal(talk('Purple Pewter Secretary', first, bonusPlayer).handled, true);
+  assert.equal(condition(bonusPlayer, first, 'eQt6ua'), true, 'three H.A.M. pieces qualify for the bonus');
+  assert.equal(condition(bonusPlayer, first, 'jzxdAM'), true, 'Purple Pewter receives the bonus');
+  assert.equal(condition(bonusPlayer, blue, 'jzxdAM'), false, 'the unchosen Blue Opal has no bonus');
+  const decliningPlayer = new Player(new PlayerSession(channel));
+  decliningPlayer.setUsername('giantdwarfbonus');
+  PlayerSave.fromPlayer(bonusPlayer).applyToPlayer(decliningPlayer);
+  api.emitCustomEvent('npc-dialogue:line', { player: decliningPlayer, npcId: first, text: 'We need 3 copper ore in the next [number] minutes.' });
+  assert.ok(Number(decliningPlayer.getAttribute('quest.giant_dwarf.task-item')) > 0, 'Purple offer is pending');
+  api.emitCustomEvent('npc-dialogue:choice', { player: decliningPlayer, npcId: first, option: 'No thanks.' });
+  assert.equal(decliningPlayer.getAttribute('giant-dwarf:company-points')[1], 18, 'refusing the first offer debits Purple');
+  assert.equal(condition(decliningPlayer, first, 'jzxdAM'), false, 'the penalty drops Purple below the 20-point branch');
+  const declinedRestored = new Player(new PlayerSession(channel));
+  declinedRestored.setUsername('giantdwarfbonus');
+  PlayerSave.fromPlayer(decliningPlayer).applyToPlayer(declinedRestored);
+  assert.equal(declinedRestored.getAttribute('giant-dwarf:company-points')[1], 18, 'the refusal penalty survives restoration');
+  assert.equal(condition(declinedRestored, first, 'jzxdAM'), false);
+  bonusPlayer.getDialogueManager().reset();
+  assert.equal(talk('Blue Opal Secretary', blue, bonusPlayer).handled, true);
+  api.emitCustomEvent('npc-dialogue:line', { player: bonusPlayer, npcId: blue, text: 'We need 3 copper ore in the next [number] minutes.' });
+  api.emitCustomEvent('npc-dialogue:choice', { player: bonusPlayer, npcId: blue, option: "I'll take it." });
+  assert.equal(condition(bonusPlayer, blue, 'jzxdAM'), false, 'Blue Opal does not inherit the Purple Pewter bonus');
+  const bonusItem = Number(bonusPlayer.getAttribute('quest.giant_dwarf.task-item'));
+  const bonusAmount = Number(bonusPlayer.getAttribute('quest.giant_dwarf.task-amount'));
+  assert.ok(bonusItem > 0 && bonusAmount >= 3 && bonusAmount <= 5, 'Blue Opal task was accepted');
+  bonusPlayer.getInventory().adds(bonusItem, bonusAmount);
+  api.emitCustomEvent('npc-dialogue:line', { player: bonusPlayer, npcId: blue, text: "I've completed your task! Here is your ore!" });
+  assert.equal(bonusPlayer.getInventory().getAmount(bonusItem), 0, 'Blue Opal receives the ore');
+  bonusPlayer.getDialogueManager().reset();
+  assert.equal(talk('Purple Pewter Secretary', first, bonusPlayer).handled, true, 'return to Purple Pewter after delivery');
+  assert.equal(condition(bonusPlayer, first, 'jzxdAM'), true, 'Purple Pewter retains its bonus');
+  const bonusRestored = new Player(new PlayerSession(channel));
+  bonusRestored.setUsername('giantdwarfbonus');
+  PlayerSave.fromPlayer(bonusPlayer).applyToPlayer(bonusRestored);
+  assert.equal(condition(bonusRestored, first, 'jzxdAM'), true, 'Purple Pewter bonus survives save and restore');
+  assert.equal(condition(bonusRestored, blue, 'jzxdAM'), true, 'Blue Opal delivery survives save and restore');
+
+  // Legacy checkpoint: the old implementation could persist this bonus before company choice.
+  const legacy = new Player(new PlayerSession(channel));
+  legacy.setUsername('giantdwarflegacy');
+  quest.setStage(legacy, 30);
+  legacy.setAttribute('quest.giant_dwarf.ham-bonus', true);
+  legacy.setAttribute('quest.giant_dwarf.points', 20);
+  const legacyRestored = new Player(new PlayerSession(channel));
+  legacyRestored.setUsername('giantdwarflegacy');
+  PlayerSave.fromPlayer(legacy).applyToPlayer(legacyRestored);
+  assert.equal(condition(legacyRestored, first, 'jzxdAM'), true, 'legacy unassigned bonus belongs to Purple Pewter');
+  assert.equal(condition(legacyRestored, blue, 'jzxdAM'), false, 'legacy bonus is not Blue Opal progress');
+  assert.equal(talk('Blue Opal Secretary', blue, legacyRestored).handled, true);
+  api.emitCustomEvent('npc-dialogue:line', { player: legacyRestored, npcId: blue, text: 'We need 3 copper ore in the next [number] minutes.' });
+  api.emitCustomEvent('npc-dialogue:choice', { player: legacyRestored, npcId: blue, option: "I'll take it." });
+  assert.equal(condition(legacyRestored, blue, 'jzxdAM'), false, 'first Blue acceptance cannot inherit the legacy bonus');
+  assert.equal(condition(legacyRestored, first, 'jzxdAM'), true, 'first Blue acceptance preserves the legacy Purple bonus');
+  const legacyItem = Number(legacyRestored.getAttribute('quest.giant_dwarf.task-item'));
+  const legacyAmount = Number(legacyRestored.getAttribute('quest.giant_dwarf.task-amount'));
+  assert.ok(legacyItem > 0 && legacyAmount >= 3 && legacyAmount <= 5, 'legacy player accepted the Blue task');
+  legacyRestored.getInventory().adds(legacyItem, legacyAmount);
+  api.emitCustomEvent('npc-dialogue:line', { player: legacyRestored, npcId: blue, text: "I've completed your task! Here is your ore!" });
+  assert.equal(legacyRestored.getInventory().getAmount(legacyItem), 0, 'legacy player completed the Blue delivery');
+  legacyRestored.getDialogueManager().reset();
+  assert.equal(talk('Purple Pewter Secretary', first, legacyRestored).handled, true, 'legacy player can return to Purple Pewter');
+  const legacyAgain = new Player(new PlayerSession(channel));
+  legacyAgain.setUsername('giantdwarflegacy');
+  PlayerSave.fromPlayer(legacyRestored).applyToPlayer(legacyAgain);
+  assert.equal(condition(legacyAgain, first, 'jzxdAM'), true, 'migrated Purple bonus survives another save');
+  assert.equal(condition(legacyAgain, blue, 'jzxdAM'), true, 'Blue delivery survives another save');
+
+});
+
+test('Giant Dwarf machine accepts coal or logs as the first used item without consuming repeats', t => {
+  const { api, handlers } = mockApi();
+  require('../plugins/quests/quests/GiantDwarf.Quest')(api);
+  const core = api.core;
+  const quest = require('../plugins/quests/QuestRuntime').getRegisteredQuests().find(q => q.key === 'giant_dwarf');
+  const player = new (require('../dist/game/entity/impl/player/Player').Player)(null);
+  t.mock.method(player, 'getSession', () => ({ sendClientPacket: () => true, write: () => true }));
+  quest.setStage(player, 20); player.setAttribute('quest.giant_dwarf.clothes', 2);
+  const handler = handlers.itemOnObject.find(h => h.name === 'handleItemOnObject');
+  const use = itemId => {
+    const event = { player, itemId, objectId: core.ObjectIdentifiers.SPINNING_MACHINE, handled: false };
+    handler(event); return event;
+  };
+  for (const first of [core.ItemIdentifiers.LOGS, core.ItemIdentifiers.COAL]) {
+    player.setAttribute('quest.giant_dwarf.machine', 0);
+    player.getInventory().resetItems();
+    player.getInventory().adds(core.ItemIdentifiers.LOGS, 2);
+    assert.equal(use(first).handled, true);
+    assert.equal(player.getInventory().getAmount(core.ItemIdentifiers.LOGS), 2);
+    assert.equal(player.getAttribute('quest.giant_dwarf.machine'), 0);
+    assert.equal(use(core.ItemIdentifiers.TINDERBOX).handled, true);
+    assert.equal(player.getAttribute('quest.giant_dwarf.machine'), 0);
+    player.getInventory().adds(core.ItemIdentifiers.COAL, 2);
+    assert.equal(use(first).handled, true);
+    assert.equal(player.getAttribute('quest.giant_dwarf.machine'), 1);
+    use(first);
+    assert.equal(player.getInventory().getAmount(core.ItemIdentifiers.COAL), 1);
+    assert.equal(player.getInventory().getAmount(core.ItemIdentifiers.LOGS), 1);
+  }
+});
+
+test('RFD Murphy leaves at-sea and wreck copies to their own dialogue handlers', () => {
+  const { api, handlers } = mockApi();
+  require('../plugins/quests/quests/RecipeForDisaster.Quest')(api);
+  const core = api.core, attrs = new Map([['quest.recipe_for_disaster.stage', 4]]);
+  const player = { getAttribute: key => attrs.get(key), getInventory: () => ({ getAmount: () => 0 }) };
+  const variant = handlers.variant.at(-1);
+  for (const npcId of [core.NpcIdentifiers.MURPHY_2, core.NpcIdentifiers.MURPHY_3, core.NpcIdentifiers.MURPHY_4]) {
+    assert.equal(variant({ player, npcId, pages: [{ page: 'Recipe for Disaster/Freeing Pirate Pete' }] }), null);
+  }
+});
+
+// Font advances are the first 256 bytes of the native p12_full metrics, as read
+// by client/rs/font/BitmapFont.ts. Ignoring its nonpositive kerning gives an upper
+// bound. Matching cache242 questjournal.if3: 431px scroll minus 16px text layer.
+let rfdFontAdvances;
+function rfdJournalTextWidth(line) {
+  if (!rfdFontAdvances) {
+    const { CachePipeline } = require('../dist/game/cache/CachePipeline');
+    const { CacheIndexDat2 } = require('../dist/game/cache/codec/rs/cache/CacheIndex');
+    const { IndexType } = require('../dist/game/cache/codec/rs/cache/IndexType');
+    const cache = PluginManager.getCoreApi().CacheDefinitions;
+    const fontId = cache.getSpriteId('p12_full');
+    assert.ok(Number.isInteger(fontId), 'native p12_full font identity');
+    const metrics = CacheIndexDat2.fromStore(IndexType.DAT2.fonts, CachePipeline.getStore()).getFile(fontId, 0)?.data;
+    assert.ok(metrics?.length >= 256, 'native font metrics, not a guessed monospace width');
+    rfdFontAdvances = Array.from(metrics.slice(0, 256), x => x & 255);
+    assert.ok(rfdFontAdvances[87] > 0, 'W has a real native advance');
+  }
+  return [...line.replace(/<[^>]*>/g, '')].reduce((sum, c) => sum + rfdFontAdvances[c.charCodeAt(0)], 0);
+}
+
+// The native row selects the journal independently of the combined gameplay quest.
+// Checkpoints below seed existing saved stages; they do not simulate playing the quest.
+function rfdJournalFixture({ stage = 4, flags = 0, attributes = {}, inventory = [] } = {}) {
+  const { api } = mockApi();
+  require('../plugins/quests/quests/RecipeForDisaster.Quest')(api);
+  const Q = require('../plugins/quests/QuestRuntime');
+  const quest = Q.getRegisteredQuests().findLast(q => q.key === 'recipe_for_disaster');
+  for (const key of ['desert_treasure_i', 'horror_from_the_deep']) {
+    if (!Q.getRegisteredQuests().some(q => q.key === key)) Q.registerQuest(api, { key, name: key, completionValue: 2 });
+  }
+  const attrs = new Map(Object.entries({
+    'quest.recipe_for_disaster.stage': stage, 'recipe-for-disaster:rescues': flags,
+    'recipe-for-disaster:feast-seen': true, 'quest.points': 200,
+    'quest.desert_treasure_i.stage': 100, 'quest.horror_from_the_deep.stage': 100,
+    ...attributes,
+  }));
+  const strings = new Map(), configs = new Map(), interfaces = [], scripts = [];
+  const sender = new Proxy({
+    sendString: (text, uid) => strings.set(uid, text),
+    sendInterfaceScript: (id, args) => scripts.push([id, args]),
+    sendConfig: (id, value) => configs.set(id, value),
+    sendSubInterface: (uid, group) => interfaces.push(group),
+  }, { get: (target, key) => target[key] ?? (() => sender) });
+  const player = {
+    getAttribute: key => attrs.get(key),
+    getInventory: () => ({ getAmount: id => inventory.includes(id) ? 1 : 0 }),
+    getPacketSender: () => sender,
+  };
+  const { metadata } = require('../plugins/quests/QuestList.QuestRuntime');
+  const rows = [...metadata(api.core.CacheDefinitions).values()];
+  const open = (name, opId = 2) => {
+    const row = rows.find(row => row.displayname?.[0] === name);
+    assert.ok(row, `actual cache row ${name}`);
+    strings.clear(); configs.clear(); interfaces.length = 0; scripts.length = 0;
+    const before = [...attrs];
+    const click = questTestButtons.get((399 << 16) | 7);
+    assert.equal(typeof click, 'function', 'native row handler was registered');
+    click({ player, slot: row.id[0], opId });
+    assert.deepEqual([...attrs], before, 'reading a journal must not change gameplay state');
+    assert.ok(interfaces.includes(opId === 1 || stage === 0 ? 782 : 119));
+    assert.equal(configs.get(3679), row.rowId, 'latest journal is the clicked DB row');
+    if (opId === 2 && stage > 0) assert.equal(strings.get((119 << 16) | 5), `<col=7f0000>${name}</col>`);
+    const lines = Array.from({ length: configs.get(4398) ?? 0 }, (_, i) => strings.get((119 << 16) | (11 + i)));
+    for (const line of lines) assert.ok(rfdJournalTextWidth(line) <= 415, `p12_full text fits native 415px line: ${line}`);
+    assert.ok(lines.length <= 210, 'native line widget capacity');
+    return { row, lines, scripts: [...scripts], interfaces: [...interfaces], text: lines.join(' ').replace(/<[^>]*>/g, ''), title: strings.get((119 << 16) | 5) };
+  };
+  return { api, Q, quest, player, attrs, strings, configs, open };
+}
+
+const rfdJournalCases = [
+  ['Mountain Dwarf', 'dwarf', 1, 60, [[10, /Rohak/], [20, /Asgoldian ale/], [30, /price/], [40, /bowl of water/], [50, /cool the dwarven rock cake/]]],
+  ['Wartface & Bentnoze', 'goblin', 2, 40, [[5, /Goblin Village/], [10, /charcoal/], [15, /talk to the Goblin Cook/], [30, /spicy maggots/], [35, /use the slop/]]],
+  ['Pirate Pete', 'pirate', 4, 110, [[10, /Cook how/], [20, /ground kelp/], [30, /wear it/], [40, /talk to Nung/], [50, /five mudskipper hides/], [60, /talk to him again/], [70, /three bronze wires/], [80, /giant crab meat/], [90, /cook the fishcake/], [100, /use a cooked fishcake/]]],
+  ['Lumbridge Guide', 'guide', 8, 5, [[1, /Wizard Traiborn/], [2, /answer his questions/], [3, /bake the cake/], [4, /use the cake/]]],
+  ['Evil Dave', 'evil-dave', 16, 5, [[1, /Doris's basement/], [2, /ask Doris/], [3, /cat can catch hell-rats/], [4, /that mixture of spices/]]],
+  ['Skrach Uglogwee', 'skrach', 32, 170, [[10, /Rantz in the Feldip Hills/], [20, /meet him by the coast/], [30, /follow him to the coast/], [40, /axe on the tree/], [50, /hollow out/], [60, /talk to Rantz again/], [70, /firing an arrow/], [80, /take the ogre boat back/], [90, /ogre boat/], [100, /balloon toad/], [110, /bellows contain/], [120, /inflated a toad/], [130, /collected a rock/], [140, /place a balloon toad/], [150, /hunt the jubbly/], [160, /use cooked jubbly/]]],
+  ['Sir Amik Varze', 'amik', 64, 20, [[5, /Cook for the recipe/], [10, /Evil Chicken's egg/]]],
+  ['King Awowogei', 'awowogei', 128, 50, [[5, /three wise monkeys/], [10, /banana and monkey nuts/], [15, /large snake corpse/], [20, /stuff the snake/], [30, /zombie monkey/], [40, /use the cooked stuffed snake/]]],
+];
+for (const [name, key, flag, end, checkpoints] of rfdJournalCases) {
+  test(`RFD native journal ${name}: uninspected, each saved step, freed and parent completion`, () => {
+    const f = rfdJournalFixture();
+    const rowName = `Recipe for Disaster - ${name}`;
+    assert.match(f.open(rowName).text, /I need to inspect/);
+    assert.doesNotMatch(f.open(rowName).text, /QUEST COMPLETE/);
+    for (const [stage, expected] of checkpoints) {
+      f.attrs.set(`recipe-for-disaster:${key}-stage`, stage);
+      const result = f.open(rowName);
+      assert.match(result.text, expected, `${name} stage ${stage}: current instruction`);
+      assert.doesNotMatch(result.lines.at(-1), /<str>/, 'current work is not crossed out');
+      assert.doesNotMatch(result.text, /I need to inspect/, 'active steps do not invent completed history');
+      assert.ok(result.lines.every(line => line.replace(/<[^>]*>/g, '').length <= 58), 'native line budget');
+      assert.doesNotMatch(result.text, /QUEST COMPLETE/);
+    }
+    f.attrs.set(`recipe-for-disaster:${key}-stage`, 0);
+    f.attrs.set('recipe-for-disaster:rescues', flag);
+    assert.match(f.open(rowName).text, /QUEST COMPLETE/);
+    assert.ok(f.open(rowName).lines.some(line => line.startsWith('<str>I freed')));
+    // A sibling row is still active, independently of this one's completion.
+    const sibling = rfdJournalCases.find(entry => entry[0] !== name)[0];
+    assert.doesNotMatch(f.open(`Recipe for Disaster - ${sibling}`).text, /QUEST COMPLETE/);
+    f.attrs.set('recipe-for-disaster:rescues', 0);
+    f.attrs.set('quest.recipe_for_disaster.stage', 5);
+    assert.match(f.open(rowName).text, /QUEST COMPLETE/);
+    f.attrs.set('quest.recipe_for_disaster.stage', 4);
+    f.attrs.set(`recipe-for-disaster:${key}-stage`, end);
+    assert.match(f.open(rowName).text, /QUEST COMPLETE/);
+  });
+}
+
+test('RFD journals retain legacy progress without exposing Evil Dave hidden spice amounts', () => {
+  const f = rfdJournalFixture({ attributes: {
+    'recipe-for-disaster:pirate-state': 8,
+    'recipe-for-disaster:evil-dave-state': 3,
+    'recipe-for-disaster:evil-dave-recipe': { red: 3, yellow: 2, brown: 1, orange: 3 },
+  } });
+  assert.match(f.open('Recipe for Disaster - Pirate Pete').text, /needle and three bronze wires/);
+  const dave = f.open('Recipe for Disaster - Evil Dave').text;
+  assert.match(dave, /cat can catch hell-rats/);
+  assert.doesNotMatch(dave, /red:|yellow:|orange:|brown:/);
+});
+
+test('RFD intro journal lists actual banquet ingredients and completes before rescues', () => {
+  const f = rfdJournalFixture({ stage: 1 });
+  const row = "Recipe for Disaster - Another Cook's Quest";
+  assert.match(f.open(row).text, /eye of newt/);
+  assert.match(f.open(row).text, /greenman's ale/);
+  assert.match(f.open(row).text, /rotten tomato/);
+  assert.match(f.open(row).text, /Dirty Blast/);
+  f.attrs.set('quest.recipe_for_disaster.stage', 4);
+  assert.match(f.open(row).text, /QUEST COMPLETE/);
+  assert.doesNotMatch(f.open('Recipe for Disaster').text, /QUEST COMPLETE/);
+  const ready = rfdJournalFixture({ stage: 1, inventory: [f.api.core.ItemIdentifiers.EYE_OF_NEWT, f.api.core.ItemIdentifiers.GREENMANS_ALE,
+    f.api.core.ItemIdentifiers.ROTTEN_TOMATO, f.api.core.ItemIdentifiers.DIRTY_BLAST] });
+  assert.match(ready.open(row).text, /I have all the ingredients/);
+  assert.ok(ready.open(row).lines.some(line => line.includes('<str>an eye of newt')));
+});
+
+test('RFD parent and finale journals distinguish remaining rescues, prerequisites, portal and final completion', () => {
+  const f = rfdJournalFixture();
+  for (const name of ['Recipe for Disaster', 'Recipe for Disaster - Culinaromancer']) {
+    assert.match(f.open(name).text, /free 8 council members/);
+    f.attrs.set('recipe-for-disaster:rescues', 127);
+    assert.match(f.open(name).text, /free 1 council member\./);
+    f.attrs.set('recipe-for-disaster:rescues', 255);
+    f.attrs.set('quest.points', 174);
+    assert.match(f.open(name).text, /175 quest points/);
+    assert.doesNotMatch(f.open(name).text, /still need to free/);
+    f.attrs.set('quest.points', 200);
+    f.attrs.set('quest.desert_treasure_i.stage', 0);
+    assert.match(f.open(name).text, /Desert Treasure I completed/);
+    f.attrs.set('quest.desert_treasure_i.stage', 100);
+    assert.match(f.open(name).text, /through the portal and defeat him/);
+    f.attrs.set('recipe-for-disaster:culinaromancer-wave', -1);
+    assert.match(f.open(name).text, /through the portal/);
+    f.attrs.set('recipe-for-disaster:culinaromancer-wave', 3);
+    assert.match(f.open(name).text, /through the portal/);
+    f.attrs.set('recipe-for-disaster:culinaromancer-defeated', true);
+    assert.match(f.open(name).text, /speak to Aris to finish/);
+    f.attrs.set('quest.recipe_for_disaster.stage', 5);
+    assert.match(f.open(name).text, /QUEST COMPLETE/);
+    f.attrs.set('quest.recipe_for_disaster.stage', 4);
+    f.attrs.set('recipe-for-disaster:rescues', 0);
+    f.attrs.delete('recipe-for-disaster:culinaromancer-defeated');
+  }
+});
+
+test('RFD native View info always opens the row overview, including started and complete saves', () => {
+  const names = ["Recipe for Disaster - Another Cook's Quest", 'Recipe for Disaster - Culinaromancer',
+    ...rfdJournalCases.map(([name]) => `Recipe for Disaster - ${name}`)];
+  for (const stage of [0, 4, 5]) {
+    const f = rfdJournalFixture({ stage });
+    for (const name of names) {
+      for (const op of stage === 0 ? [1, 2] : [1]) {
+        const result = f.open(name, op);
+        assert.ok(result.interfaces.includes(782));
+        assert.equal(result.interfaces.includes(119), false, 'overview does not reveal the current journal');
+        const setup = result.scripts.find(([id]) => id === 6821);
+        assert.ok(setup, 'native overview setup script carries the start sentence');
+        assert.ok(setup[1].some(arg => typeof arg === 'string' && /Cook|dining room/.test(arg)), name);
+        assert.equal(f.attrs.get('quest.recipe_for_disaster.stage'), stage, 'View info does not reset the real quest');
+      }
+    }
+  }
+});
+
+test('RFD journal independent Skrach supplies do not fabricate earlier completed objectives', () => {
+  const f = rfdJournalFixture({ attributes: { 'recipe-for-disaster:skrach-stage': 130 } });
+  const result = f.open('Recipe for Disaster - Skrach Uglogwee');
+  assert.match(result.text, /collected a rock/);
+  assert.doesNotMatch(result.text, /inflated a toad|bellows contain|hollow out/);
+  assert.equal(result.lines.some(line => line.includes('<str>')), false);
+});
+
+test('RFD Amik journal follows existing clue, kill, token and prepared food state', () => {
+  const key = 'Recipe for Disaster - Sir Amik Varze';
+  const f = rfdJournalFixture({ attributes: { 'recipe-for-disaster:amik-stage': 10 } });
+  assert.match(f.open(key).text, /ask the Wise Old Man/);
+  f.attrs.set('recipe-for-disaster:amik-wom-briefed', 1);
+  assert.match(f.open(key).text, /offer raw chicken/);
+  f.attrs.set('recipe-for-disaster:amik-chicken-dead', true);
+  assert.match(f.open(key).text, /I defeated the Evil Chicken/);
+  f.attrs.set('recipe-for-disaster:amik-dragon-drop', true);
+  assert.match(f.open(key).text, /I obtained a dragon token/);
+  const prepared = rfdJournalFixture({ attributes: { 'recipe-for-disaster:amik-stage': 10 }, inventory: [f.api.core.ItemIdentifiers.BRULEE_3] });
+  assert.match(prepared.open(key).text, /rub a dragon token/);
+  const cooked = rfdJournalFixture({ attributes: { 'recipe-for-disaster:amik-stage': 10 }, inventory: [f.api.core.ItemIdentifiers.BRULEE_SUPREME] });
+  assert.match(cooked.open(key).text, /use the creme brulee supreme/);
+});
+
+
+test('RFD Skrach journal distinguishes setting bait from obtaining raw jubbly at shared stage 150', () => {
+  const attributes = { 'recipe-for-disaster:skrach-stage': 150 };
+  const bait = rfdJournalFixture({ attributes });
+  assert.match(bait.open('Recipe for Disaster - Skrach Uglogwee').text, /hunt the jubbly/);
+  const meat = rfdJournalFixture({ attributes, inventory: [bait.api.core.ItemIdentifiers.RAW_JUBBLY] });
+  assert.match(meat.open('Recipe for Disaster - Skrach Uglogwee').text, /cook the raw jubbly/);
+  assert.doesNotMatch(meat.open('Recipe for Disaster - Skrach Uglogwee').text, /hunt the jubbly/);
+});
+
+
+test('RFD parent journal counts legacy numeric completion consistently with its child without migrating flags', () => {
+  const f = rfdJournalFixture({ attributes: { 'recipe-for-disaster:pirate-stage': 110 } });
+  assert.match(f.open('Recipe for Disaster - Pirate Pete').text, /QUEST COMPLETE/);
+  assert.match(f.open('Recipe for Disaster').text, /free 7 council members/);
+  assert.match(f.open('Recipe for Disaster - Culinaromancer').text, /free 7 council members/);
+  assert.equal(f.attrs.get('recipe-for-disaster:rescues'), 0);
+  for (const [, key, , end] of rfdJournalCases) f.attrs.set(`recipe-for-disaster:${key}-stage`, end);
+  for (const name of ['Recipe for Disaster', 'Recipe for Disaster - Culinaromancer']) {
+    const result = f.open(name);
+    assert.match(result.text, /rescue journals are complete/);
+    assert.match(result.text, /finish the council's rescue at the banquet/);
+    assert.doesNotMatch(result.text, /free 0|through the portal and defeat him|QUEST COMPLETE/);
+  }
+  assert.equal(f.attrs.get('recipe-for-disaster:rescues'), 0, 'no invented flag migration or mechanics change');
+});
+
+
+test('RFD parent journal lists all council names once with truthful complete or pending status', () => {
+  const labels = rfdJournalCases.map(([name]) => name === 'Wartface & Bentnoze' ? 'Goblin generals (Wartface & Bentnoze)' : name);
+  const checkMembers = (f, completed) => {
+    const result = f.open('Recipe for Disaster');
+    assert.match(result.text, /Council members:/);
+    for (const [i, label] of labels.entries()) {
+      assert.equal(result.text.split(label).length - 1, 1, `${label} appears once`);
+      assert.ok(result.text.includes(`${label}: ${completed(i) ? 'rescue complete' : 'still needs rescuing'}.`), label);
+    }
+    assert.doesNotMatch(f.open('Recipe for Disaster - Culinaromancer').text, /Council members:/, 'finale child retains its own guidance');
+    return result;
+  };
+  const zero = rfdJournalFixture();
+  checkMembers(zero, () => false);
+  const mixed = rfdJournalFixture({ flags: 85 });
+  const before = [...mixed.attrs];
+  checkMembers(mixed, i => Boolean(85 & rfdJournalCases[i][2]));
+  assert.deepEqual([...mixed.attrs], before, 'informational rendering never awards or migrates rescues');
+  const legacy = rfdJournalFixture({ attributes: { 'recipe-for-disaster:pirate-stage': 110 } });
+  checkMembers(legacy, i => i === 2);
+  assert.match(legacy.open('Recipe for Disaster').text, /free 7 council members/);
+  assert.match(legacy.open('Recipe for Disaster - Pirate Pete').text, /QUEST COMPLETE/);
+  assert.equal(legacy.attrs.get('recipe-for-disaster:rescues'), 0);
+  for (const [, key, , end] of rfdJournalCases) legacy.attrs.set(`recipe-for-disaster:${key}-stage`, end);
+  assert.match(checkMembers(legacy, () => true).text, /finish the council's rescue at the banquet/);
+  assert.equal(legacy.attrs.get('recipe-for-disaster:rescues'), 0);
+  const freed = rfdJournalFixture({ flags: 255 });
+  assert.match(checkMembers(freed, () => true).text, /through the portal and defeat him/);
+  freed.attrs.set('quest.points', 174);
+  assert.match(checkMembers(freed, () => true).text, /175 quest points/);
+  freed.attrs.set('quest.recipe_for_disaster.stage', 5);
+  assert.match(checkMembers(freed, () => true).text, /QUEST COMPLETE/);
+  const intro = rfdJournalFixture({ stage: 1 });
+  assert.doesNotMatch(intro.open('Recipe for Disaster').text, /Council members:/, 'the banquet introduction remains separate');
+  // Reopen the long parent after a short child journal; only the new active lines count.
+  assert.match(mixed.open('Recipe for Disaster - Pirate Pete').text, /QUEST COMPLETE/);
+  checkMembers(mixed, i => Boolean(85 & rfdJournalCases[i][2]));
 });

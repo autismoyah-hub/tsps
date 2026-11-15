@@ -22,7 +22,7 @@
 const Core = require("./Core.Smithing");
 const Data = require("./Data.Smithing");
 const Sessions = require("./Sessions.Smithing");
-const { messageBox, itemBox, hasHammer, smithingLevel, obj, hammering } = require("./Common.Smithing");
+const { messageBox, itemBox, hasHammer, smithingLevel, obj, hammering, restricted, PRESET_TEXT } = require("./Common.Smithing");
 
 const DRAGON_FORGE = "ds2_ac_forge_anvil";
 const SHIELD_MACHINE = "fossil_lab_shield_maker";
@@ -65,21 +65,30 @@ function forgeRecipes() {
 }
 
 const animate = (player) => player.performAnimation(hammering());
-const carries = (player, ids) => ids.every((id) => player.getInventory().contains(id));
+/** The slot of a plain copy of `id`: a preset (untradeable, unbankable) part never goes into a fresh, tradeable product. */
+const plainSlot = (player, id) => player.getInventory().getItems().findIndex((item) => item?.getId() === id && !restricted(item));
+const carries = (player, ids) => ids.every((id) => plainSlot(player, id) >= 0);
+/** Every part is held, but some only as preset copies. */
+const presetOnly = (player, ids) => !carries(player, ids) && ids.every((id) => player.getInventory().contains(id));
 
-function give(player, used, result, xp) {
+function give(player, used, result, xp, source) {
   if (!carries(player, used)) return false;
   const inventory = player.getInventory();
-  for (const id of used) inventory.deleteNumber(id, 1);
+  for (const id of used) inventory.deleteAtSlot(plainSlot(player, id), 1);
   inventory.addItem(new Core.Item(result, 1));
   player.getSkillManager().addExperiences(Core.Skill.SMITHING, xp);
-  Core.api.emitCustomEvent("smithing:success", { player, skill: Core.Skill.SMITHING, itemId: result });
+  Core.api.emitCustomEvent("smithing:success", {
+    player,
+    skill: Core.Skill.SMITHING,
+    itemId: result,
+    ...(source ? { source: "anvil", objectId: source.objectId, location: source.location } : {}),
+  });
   return true;
 }
 
 // --- Dragon sq shield.
 
-function repairSqShield(player) {
+function repairSqShield(player, source) {
   const halves = [obj("dragonshield_a"), obj("dragonshield_b")];
   if (!carries(player, halves)) return messageBox(player, SQ_SHIELD.otherHalf);
   if (!hasHammer(player)) return messageBox(player, SQ_SHIELD.noHammer);
@@ -89,7 +98,7 @@ function repairSqShield(player) {
   messageBox(player, SQ_SHIELD.start, () => Sessions.timeline(player, "dragon-sq-shield", [
     { at: 0, run: () => animate(player) },
     { at: 3, run: () => animate(player) },
-    { at: 6, run: () => messageBox(player, SQ_SHIELD.done, () => give(player, halves, obj("dragon_sq_shield"), SQ_SHIELD.xp)) },
+    { at: 6, run: () => messageBox(player, SQ_SHIELD.done, () => give(player, halves, obj("dragon_sq_shield"), SQ_SHIELD.xp, source)) },
   ]));
 }
 
@@ -114,14 +123,18 @@ function attachVisage(player, shield) {
 
 function forgeAtDragonForge(event) {
   const { player, itemId } = event;
-  const recipe = forgeRecipes().find((candidate) => candidate.parts.includes(itemId));
+  const candidates = forgeRecipes().filter((candidate) => candidate.parts.includes(itemId));
+  const heldParts = (candidate) => candidate.parts.filter((id) => player.getInventory().contains(id)).length;
+  const recipe = candidates.find((candidate) => carries(player, candidate.parts))
+    ?? candidates.reduce((best, candidate) => !best || heldParts(candidate) > heldParts(best) ? candidate : best, null);
   if (!recipe) return false;
   event.handled = true;
   if (!Core.questComplete(player, "dragon_slayer_ii")) {
     player.sendMessage(`You need to complete ${Data.questName("dragon_slayer_ii")} to use the dragon forge.`);
     return true;
   }
-  const problem = !carries(player, recipe.parts) ? recipe.missing
+  const problem = presetOnly(player, recipe.parts) ? PRESET_TEXT
+    : !carries(player, recipe.parts) ? recipe.missing
     : !hasHammer(player) ? "You need a hammer to work the dragon metal."
     : smithingLevel(player) < recipe.level ? `You need a Smithing level of ${recipe.level} to make that.`
     : null;
@@ -169,22 +182,36 @@ function smithAtAnvil(player) {
 
 function useOnAnvil(event) {
   const { player, itemId } = event;
+  const source = anvilSource(event);
   if (event.objectId === Core.CacheDefinitions.getLocId(DRAGON_FORGE) && forgeAtDragonForge(event)) return true;
   if (itemId === obj("dragonshield_a") || itemId === obj("dragonshield_b")) {
     event.handled = true;
-    repairSqShield(player);
+    repairSqShield(player, source);
     return true;
   }
   const shield = visageShields().find((candidate) => candidate.visage === itemId)
     ?? (itemId === Core.ItemIdentifiers.ANTI_DRAGON_SHIELD ? visageShieldFor(player) : null);
   if (!shield) return false;
   event.handled = true;
+  if (presetOnly(player, [shield.visage, Core.ItemIdentifiers.ANTI_DRAGON_SHIELD])) {
+    messageBox(player, PRESET_TEXT);
+    return true;
+  }
   if (!carries(player, [shield.visage, Core.ItemIdentifiers.ANTI_DRAGON_SHIELD])) {
     messageBox(player, `You need an anti-dragon shield and a ${Core.ItemDefinition.forId(shield.visage).getName().toLowerCase()} to do that.`);
     return true;
   }
   attachVisage(player, shield);
   return true;
+}
+
+function anvilSource({ object, objectId }) {
+  const location = object?.getLocation?.();
+  if (!location) return null;
+  return {
+    objectId: object.getId?.() ?? objectId,
+    location: { x: location.getX(), y: location.getY(), z: location.getZ() },
+  };
 }
 
 function halvesByHand(event) {
@@ -199,4 +226,4 @@ module.exports = function attach(api) {
   api.onItemOnItem(halvesByHand, { noted: false });
 };
 
-Object.assign(module.exports, { smithAtAnvil, useOnAnvil, useOnShieldMachine, SHIELD_MACHINE });
+Object.assign(module.exports, { smithAtAnvil, useOnAnvil, useOnShieldMachine, SHIELD_MACHINE, repairSqShield });

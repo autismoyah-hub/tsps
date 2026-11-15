@@ -1,9 +1,14 @@
 # Mining rocks
 
 `plugins/skills/Mining.plugin.js` mines the ore rocks (clay to runite, blurite, barronite, the essence mines) and the
-skilling rocks below them: soft clay, lead, lovakite, nickel, rubium, sunstone, infernal shale, gem rocks, amethyst
-and Daeyalt.
+skilling rocks below them: soft clay, lead, lovakite, nickel, rubium, sunstone, infernal shale, gem rocks, amethyst,
+Daeyalt, the Cam Torum calcified rocks and Fossil Island's ash piles.
 Pickaxe-specific rules are in `plugins/skills/mining/`.
+
+`plugins/areas/MiningGuild.plugin.js` checks 60 current Mining at all four Falador entrance
+ladders and the Dwarven Mine door; temporary boosts count. It also operates both doors into
+the members' section, including the east door. Exits never require a Mining level, and those
+inner doors only admit players on members' worlds. The Motherlode tunnel has its own level check.
 
 ## What live OSRS does
 
@@ -55,7 +60,7 @@ Recording 3280's live message agrees with mithril's level 55.
 
 OSRS Wiki rock pages (https://oldschool.runescape.wiki/w/Soft_clay_rocks, `/w/Lead_rocks`, `/w/Lovakite_rocks`,
 `/w/Nickel_rocks`, `/w/Rubium_rocks`, `/w/Sunstone_rocks`, `/w/Infernal_shale_rocks`, `/w/Gem_rocks`,
-`/w/Amethyst_crystals`, `/w/Daeyalt_rocks`; pet base rates from `/w/Rock_golem`):
+`/w/Amethyst_crystals`, `/w/Daeyalt_rocks`, `/w/Calcified_rocks`; pet base rates from `/w/Rock_golem`):
 
 | Rock | Level | XP | Respawn | Before it goes |
 | --- | ---: | ---: | --- | --- |
@@ -69,6 +74,7 @@ OSRS Wiki rock pages (https://oldschool.runescape.wiki/w/Soft_clay_rocks, `/w/Le
 | Gem rocks | 40 | 65 | 99 ticks | 1 |
 | Amethyst | 92 | 240 | 75 s (125 ticks) | 2-3 |
 | Daeyalt | 20 | 17.5 | 28 s (47 ticks) | 3 (one stage each) |
+| Calcified | 41 | 33 (shards), 36 (deposit) | 30 s (50 ticks) | about 70 s (117 ticks) of being mined, or the end of its water |
 
 - **Mined-out locs:** the Sailing rocks have their own `<gameval>_empty` loc (`leadrock1_empty`, `nickelrock1_empty`,
   `rubiumrock1_empty`, all named "Rocks"); clicking Mine on one says there is no ore, like `rocks1`/`rocks2`. Amethyst
@@ -106,6 +112,60 @@ OSRS Wiki rock pages (https://oldschool.runescape.wiki/w/Soft_clay_rocks, `/w/Le
   `area_sanguine_mine_minerocks_01` -> `_02` -> `_03` while the player mines on, then `_04` with
   `This rock face is now empty.`. It grows back as `_01`. Its ore line is a game message (recording 1637), where
   every other rock's is spam.
+
+### Ash piles
+
+Fossil Island's ash piles (`fossil_ashpile`, "Ash pile"). Sources: the Wiki's
+[Ash pile](https://oldschool.runescape.wiki/w/Ash_pile) and [Volcanic ash](https://oldschool.runescape.wiki/w/Volcanic_ash)
+pages, and rsprox captures AshPile-MithrilPickaxe and AshPile-DragonPickaxe (the user's own, rev 242, a normal world,
+Mining 73 with no boost, 789 rolls and 750 successes between them).
+
+- **Wiki:** level 22 and 10 XP a success, whatever it gives. Each success is volcanic ash (19/20) or one soda ash (1/20).
+  Volcanic ash is one at 22 and one more every 15 levels, six from 97 ("boosts can be used", so the current level
+  counts). Each success has a 1/4 chance to empty the pile. Gems, clue geodes and the rock golem (base 741,600) apply;
+  mining enhancers, Varrock armour, the Mining cape and mining gloves don't.
+- **Recorded:** `You manage to mine some volcanic ash.` / `You manage to mine some soda ash.` (spam), sound 3600, the
+  normal pickaxe swing, 10 XP for both. Four ash at 73, and `tracking_ore_mined` goes up by four; soda ash goes up by
+  one. The captures had 39 soda ash in 750 successes, about the Wiki's 1/20.
+- **Emptying:** the pile became `fossil_ashpile_empty` ("Empty ash pile") only on a success, never on a miss: 181 of
+  750 successes, about the Wiki's 1/4. The respawn timer read 49 ticks every time, the empty pile's own shape (10 or
+  11), and every pile came back 49 ticks later (179 of 179). The Wiki's 30 s would be 50.
+- **First roll:** a full pickaxe interval after arrival, so one tick less than that after the swing message.
+  Mithril: +4 after the swing in 76 of 76; dragon: +2 in 84 and +1 in 22 (its 1/6 fast roll). The last pile's timer
+  never carries over. A pile emptied at tick 44 of the mithril capture, the next was reached at 48, and its first
+  roll came at 53, not 49. Rocks without `freshRollTimer` keep the carried-over timer (below).
+- **Success chart (estimate):** the Wiki has none. `[206, 255]` gives 243/256 (94.9%) at 73, which matches the
+  captures' 95.1% (750 of 789 rolls). The assumption that success is certain at 99 sets the high value, so the low
+  levels are only a guess.
+
+### Calcified rocks
+
+Cam Torum mine (Wiki Calcified rocks; rsprox capture 1105, rev 237, a Leagues world, ten water cycles).
+`plugins/skills/mining/CalcifiedWater.Mining.js` runs the water.
+
+- **Mining:** wall swings (`human_mining_<pickaxe>_pickaxe_wall`). Each success is 1-3 blessed bone shards (74/75,
+  33 XP) or a calcified deposit (1/75, 36 XP): `You manage to chip off some bone shards.` /
+  `You manage to mine a calcified deposit.` (spam), sound 3600. `tracking_ore_mined` goes up by the number of
+  shards (+3 for three). The gem pre-roll applies; mining enhancers don't. A full inventory stops mining even with
+  shards in it (Wiki: shards stack, but a free slot is still needed).
+- **Running out:** the rock stays through its ores and runs out on a timer that counts the ticks it is mined: the
+  Wiki's "around 70 seconds" (117 ticks). In the capture each mined-out rock went with the first ore after
+  121-127 ticks of mining (three of three), so the rock goes with the next ore once the timer is over. The rock
+  becomes its own `_empty` loc (`varlamore_mining_rock` -> `varlamore_mining_rock_empty`,
+  `varlamore_mining_rock02` -> `varlamore_mining_rock_empty02`, ...), with area sound 2661 (delay 10, range 1)
+  and the respawn timer.
+- **Water:** `<col=a53fff>Some cracks around the cave begin to ooze water.` (game message) and sound 2041, and
+  `varlamore_mining_special_rock` is added as a wall decoration (shape 4) on four rocks' tiles, with each rock's
+  rotation. Cycles started 117-146 ticks apart and the water lasted 38-54 ticks (the Wiki: every 1-2 minutes,
+  for 20-30 seconds). When it stops the decorations go, and the next tick every one of the four rocks is mined out,
+  mined or not, with sound 2661 and the respawn timer for the players there. Every recorded cycle wet two rocks
+  of the west half (x 1497-1505) and two of the east half (x 1514-1521).
+- **Boost:** the Wiki's 15% better success rate while a rock is wet.
+
+Estimated, not recorded: the success chart (below); that the 15% multiplies the roll's chance (×1.15, capped at
+1); that the water picks only standing rocks, at random within each half; the mine's area (x 1490-1528,
+y 9530-9553, level 1). The capture's respawns were 11-14 ticks (timers of 12 and 13) on a Leagues world; the
+Wiki's 30 s is used, as for gem rocks.
 
 ## Rolls and success chance
 
@@ -158,6 +218,8 @@ The Wiki has no chart for the rocks below; these are estimates, to replace once 
 | Sunstone | 69 | 301 | the Wiki's momentum rate (75% at 53, 100% at 80) |
 | Infernal shale | 60 | 180 | the Wiki: "between iron and coal" to mine |
 | Daeyalt | 96 | 350 | iron's chart; recordings got ore on every roll |
+| Calcified | 20 | 200 | the Wiki training rates (23,500-49,000 XP an hour at 50-99), and 46% at level 61 in capture 1105 (51% here) |
+| Ash pile | 206 | 255 | the captures' 95.1% at level 73 (94.9% here), with success certain at 99 assumed |
 
 The Runite rocks page checks the formula: 17/256 at level 85 and 19/256 from 97.
 
@@ -167,6 +229,73 @@ through to the next size; failing them all gives nothing. Sandstone 10kg 4/50, 5
 granite 5kg 6/64, 2kg 8/75, 500g 16/100.
 
 Rune essence rocks succeed on every roll (Wiki https://oldschool.runescape.wiki/w/Pure_essence, Mod Ash).
+
+## Clue geodes
+
+[Clue geode rates](https://oldschool.runescape.wiki/w/Clue_geode) use the rock's
+base, the visible Mining level and each eligible clue tier. The matching Combat
+Achievement reward applies its 5% bonus before the level and tier calculations;
+beginner geodes do not receive a tier reward. The documented floor order is also
+used without a Combat Achievement reward. The present ring-of-wealth effect for
+geodes remains unverified here.
+
+## Mining gloves
+
+On members worlds, the equipped gloves keep eligible rocks standing for extra successful gathers before depletion.
+Regular, superior and expert gloves respectively save copper, tin, iron, silver, lead, coal and gold rocks one,
+two and three times. Superior and expert gloves save mithril and adamantite once and twice. Expert gloves save
+sandstone, sunstone, runite and amethyst once. Amethyst retains its normal two or three gathers before that save;
+the save budget is cleared when the rock depletes. Granite is unaffected.
+
+The original tier changes are in Jagex's [Project Rebalance](https://secure.runescape.com/m=news/project-rebalance-skilling--poll-81-mta-changes?oldschool=1),
+and its [follow-up](https://secure.runescape.com/m=news/minigame-tweaks-skilling-adjustments--more?oldschool=1)
+restored the single sandstone save. The current [Mining enhancers](https://oldschool.runescape.wiki/w/Mining_enhancers),
+[Lead rocks](https://oldschool.runescape.wiki/w/Lead_rocks) and [Sunstone rocks](https://oldschool.runescape.wiki/w/Sunstone_rocks)
+pages cover the later rock entries. As elsewhere on this page, this is the source contract, not an in-game test result.
+
+## Varrock armour and extra ore
+
+On members worlds the worn armour has a 10% extra-ore roll on the ordinary metal rocks supported here:
+tier 1 or higher for clay, copper, tin, iron, silver, coal, gold and lead; tier 2 for mithril; tier 3 for
+adamantite; tier 4 for runite. The Mining cape and charged celestial ring roll independently where each
+is eligible. Each delivered bonus gives normal XP and counts as an ore; each must fit in the inventory
+or an accepting storage path. A charged ring loses one charge on the base gather, including when its
+bonus roll misses. Treat the single charge in a simultaneous multi-enhancer case as the implementation's
+nonrecursive interpretation, not a captured retail observation. See the Wiki's [Mining enhancers](https://oldschool.runescape.wiki/w/Mining_enhancers),
+[Iron rocks](https://oldschool.runescape.wiki/w/Iron_rocks) and [Lead rocks](https://oldschool.runescape.wiki/w/Lead_rocks).
+
+## Bracelet of clay
+
+Plugin `plugins/items/BraceletOfClay.plugin.js`; Mining asks `mining:ore-yield` for the ore and amount of each
+success and calls the answer's `spend` once the ore is kept (not when it is handed over or combusted). Per the Wiki
+([Bracelet of clay](https://oldschool.runescape.wiki/w/Bracelet_of_clay), [Soft clay rocks](https://oldschool.runescape.wiki/w/Soft_clay_rocks)):
+worn, a mined clay is soft clay, and a soft clay rock gives two soft clay a success; one bracelet softens 28, the
+count belongs to the player (`bracelet-of-clay:charges`) and the bracelet is gone at 0. A Varrock armour, Mining
+cape or celestial ring extra from a clay rock is soft clay as well (the armour asks by the rock's own ore, clay
+tier 1 per [Mining enhancers](https://oldschool.runescape.wiki/w/Mining_enhancers)).
+
+No recording in the index has a bracelet of clay worn, so nothing here is from a capture. Not verified: the crumble
+line (ours), whether the second soft clay of a soft clay rock and an enhancer's extra use a charge (here the
+bracelet's own soft clay each cost one, extras cost none), and the Wiki's soft clay armour tier (its table says 2,
+its prose 3), so soft clay rocks are not yet in the Varrock armour table. The Wiki's worn Check option is not in
+the rev 241 cache (the item has no worn option params), so there is none.
+
+## Prospector outfit
+
+`plugins/skills/mining/ProspectorOutfit.Mining.js` adds the Wiki's Mining XP bonus (source: the Wiki's
+[Prospector outfit](https://oldschool.runescape.wiki/w/Prospector_outfit) page): helmet 0.4%, jacket 0.8%, legs
+0.6%, boots 0.2%, plus 0.5% for all four, 2.5% for the set. Pieces are matched by their cache name, so the golden
+recolours and every other id the cache gives a piece count, and a golden/plain mix still completes the set.
+[Varrock armour 4](https://oldschool.runescape.wiki/w/Varrock_armour_4) "acts as a prospector jacket in terms of
+XP bonus", so it fills the jacket in the bonus and the set; the page names no other tier, so the lower ones do not.
+
+The bonus multiplies the rock's XP (the server then keeps tenths, so iron's 35 becomes 35.8 with the set) and the
+XP of each extra ore (the Varrock armour 4 page: "Additional ores gathered by Varrock armour now provide the bonus
+experience from the Prospector's outfit"; the Mining cape's extra ore takes the same path here, which no fetched page states). Content that gives Mining XP outside
+a rock session asks through the `mining:xp-multiplier` custom event: Motherlode pay-dirt (the Motherlode Mine page
+lists the pieces' Exp boost in Percy's shop), stardust (the Shooting Stars page: 32 becomes 32.8 with the full kit)
+and Volcanic Mine (its page: 3.8 Mining XP a point, "3.895 with the prospector kit bonus").
+Rockfalls, Guardians of the Rift and quest rewards are not raised: no fetched page says the outfit applies there.
 
 ## Gems while mining
 
@@ -181,15 +310,37 @@ and `+uncut_sapphire`, with no mining sound or experience and the mining animati
 Leagues world) has `You just found a Sapphire!` while mining coal rocks, and the Leagues recordings have
 `You just found an Emerald!`, `a Ruby!` and `a Diamond!` too.
 
+## Mining Guild members' area
+
+The part of the Mining Guild behind the two inner doors ([Wiki](https://oldschool.runescape.wiki/w/Mining_Guild)) is
+the members' area. Its rules are `plugins/areas/MiningGuild.plugin.js`; Mining asks them through two events.
+
+- **Invisible +7 Mining** (Wiki Mining Guild). The success rolls count it on top of the visible level capped at 99,
+  with the celestial ring's +4 and any visible boost ("mining:level-boost"); requirements still read the visible
+  level. It applies to the player's own tile, in the main cave and the two corridors behind the doors at 3019,9732
+  and 3043,9729.
+- **Rocks empty for half as long** ("mining:respawn-ticks", by the rock's own tile). The Wiki rock pages give iron
+  5.4 s -> 2.4 s (9 -> 4 ticks), adamantite 4 -> 2 minutes and runite 12 -> 6 minutes; rsprox recording 3285
+  (an event world) shows the guild's respawn timers: iron 4 ticks at 3028,9720 and 3030,9720, mithril 99 at
+  3032,9716 against 199 at the free-to-play 3046,9733 and 3053,9737, adamantite 199 at 3039,9722 and 3030,9725.
+  Every ore rock in the area takes the floor of half its Wiki time; the free-to-play half keeps the normal time.
+- **Amethyst** keeps 75 seconds: its Wiki page gives that as the one time, and the crystals exist only in the guild.
+
+The area is the tiles reachable from the cave with the inner doors shut, in the active cache: x 2999-3058 and y
+9696-9728, x 3017-3021 and y 9729-9732, and x 3042-3044 at y 9729.
+
 ## Not done
 
-- The Mining Guild halves the respawn of iron, adamantite and runite (Wiki rock pages) and gives an invisible +7
-  Mining (Wiki Mining Guild), which needs the guild's members area.
+- Runite rocks in the Wilderness also take 6 minutes instead of 12 (Wiki Runite rocks); only the Mining Guild's
+  members' area shortens a respawn so far.
+- The live respawn timers read one tick less than the Wiki times for the long rocks (mithril 199, recording 3285);
+  ours send the Wiki's tick count.
 - The skilling timer is Mining's own: other skills' actions (herb tar, food) don't delay it, so tick
   manipulation is not modelled.
 - The first roll after the swing: main-game captures with dragon and infernal pickaxes have it the tick after the
   swing, but slower pickaxes were recorded later (bronze on gold, recording 468: seven ticks after the swing; steel
-  and iron on Leagues worlds: interval minus one). Not enough to model; every pickaxe rolls the tick after.
+  and iron on Leagues worlds: interval minus one). Not enough to model; every pickaxe rolls the tick after, except on
+  ash piles, whose captures show a full interval after arrival (above).
 - Barronite's 1-minute respawn was 67 ticks in recording 1636, and the timer the client was sent read 86.
 - Other plugins that mine rocks of their own (quests, minigames, stars, Motherlode) keep their wording.
 - No recordings of a successful Mine on lead, nickel, rubium, soft clay, lovakite, sunstone or infernal shale: the
@@ -198,12 +349,21 @@ Leagues world) has `You just found a Sapphire!` while mining coal rocks, and the
 - Sunstone momentum (better odds, 28 XP and a 20% extra chunk for 5 ticks after a success) is not modelled.
 - Infernal shale's Wiki lists ten XP values at 1/11 each; one value must be twice as likely, so all ten are
   equally weighted for now.
-- Mining gloves, Varrock armour and the expert gloves' extra amethyst/sunstone are not modelled.
+- Varrock armour is supported only on the ordinary ores listed above; other rocks and the armour 4 gem-table
+  bonus remain unverified or unmodelled. Mining glove saves use a shared standing-rock budget; the precise OSRS
+  behavior when miners compete or change gloves on a partly mined rock is not established here. Depletion
+  hooks see a glove-kept rock as already handled. On ordinary iron, Power Miner stacks its four-ore budget
+  with glove saves (up to seven). Other finite-yield rocks and stacking with other rock-saving effects remain unverified.
 - Access isn't checked: Shilo Village for the Shilo gem rocks, the Mining Guild for amethyst, the Yama contract for
   infernal shale, Sailing islands for lead, nickel and rubium.
 - A Daeyalt face only grows back once it is empty; a face left part-mined stays at its stage.
+- Ash piles: no capture has a full inventory or a click on an empty pile. A full inventory holding ash mines on,
+  because the ash stacks, and a soda ash with no free slot falls to the floor (ours). The empty pile answers with
+  the rocks' `There is currently no ore available in this rock.` and sound 2661 (ours). The level the ash amount reads is
+  the current one, without the celestial ring's invisible +4 (the Wiki doesn't say).
+- Calcified rocks: the world-hop debuff (`Your pickaxe keeps slipping on the rocks as it's still wet from the last
+  deposit.`) and the Varlamore red token are not modelled.
 - Not mineable yet, each needing its own area or mechanic: limestone (stages with their own respawns), rubium and
-  infernal shale deposits (one of two active, timed), calcified rocks (timed depletion, water), Daeyalt Essence,
-  Tai Bwo Wannai gem rocks, the Lovatt Mine ore veins, the Fossil Island boulders, ash piles and volcanic
-  sulphur, the Keldagrim gold vein, the salt rocks, and the Easter egg rock. `tests/mining-parity.test.cjs` lists
+  infernal shale deposits (one of two active, timed), Daeyalt Essence,
+  Tai Bwo Wannai gem rocks, the Lovatt Mine ore veins, the Fossil Island boulders, the Keldagrim gold vein, the salt rocks, and the Easter egg rock. `tests/mining-parity.test.cjs` lists
   every loc with a Mine option, so a new one without a handler fails the test.

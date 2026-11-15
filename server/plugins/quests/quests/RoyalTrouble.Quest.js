@@ -61,6 +61,8 @@
  *  - The 20,000 coins are handed over by Queen Sigrid's transcript action
  *    (oTxB6D), matching OSRS; the completion scroll lists them as a reward line.
  */
+const royalTroubleCombat = require("./Combat.RoyalTrouble");
+
 module.exports = function registerRoyalTroubleQuest(api) {
   const {
     DialogueChainBuilder,
@@ -134,6 +136,8 @@ module.exports = function registerRoyalTroubleQuest(api) {
   const VARBIT_PLATFORM_AT_TOP = 2155; // royal_lift_platformattop
   const VARBIT_COAL = 2156; // royal_coalinengine bits 20-22
   const VARBIT_KIDS_CUTSCENE = 2157; // royal_meddlingkids_cutscene
+  const VARBIT_ETC_ITEMS_RETURNED = 2158; // royal_etc_totalitemsreturned, bits 24-27
+  const VARBIT_MISC_KNOW_TEENS = 2161; // royal_misc_knowaboutteens
 
   const STAGE_STARTED = 10;
   const STAGE_PARTNER = 20;
@@ -175,10 +179,15 @@ module.exports = function registerRoyalTroubleQuest(api) {
   const CHAPTERS_ATTRIBUTE = "royal-trouble:chapters";
   const FIRE_BITS_ATTRIBUTE = "royal-trouble:fire-bits";
   const DIARY_READ_ATTRIBUTE = "royal-trouble:diary-read";
+  const DIARY_CHAPTERS_ATTRIBUTE = "royal-trouble:diary-chapters";
   const PLATFORM_TOP_ATTRIBUTE = "royal-trouble:platform-at-top";
   const COAL_ATTRIBUTE = "royal-trouble:coal-in-engine";
   const CUTSCENE_ATTRIBUTE = "royal-trouble:kids-cutscene";
   const COINS_ATTRIBUTE = "royal-trouble:coins-given";
+  const ITEMS_RETURNED_ATTRIBUTE = "royal-trouble:etc-items-returned";
+  const KNOW_TEENS_ATTRIBUTE = "royal-trouble:knows-teens";
+  // Capture 91 hands all six stolen items back to Sigrid with the heavy box.
+  const ETC_STOLEN_ITEMS_RETURNED = 6;
 
   // Throne of Miscellania's persisted keys (module constants in that file).
   const THRONE_PARTNER_ATTRIBUTE = "throne-of-miscellania:partner";
@@ -518,12 +527,36 @@ module.exports = function registerRoyalTroubleQuest(api) {
     player.getPacketSender().sendVarbit(VARBIT_COAL, value | 0);
   }
 
+  function itemsReturned(player) {
+    return Math.max(0, Number(player.getAttribute(ITEMS_RETURNED_ATTRIBUTE)) || 0);
+  }
+
+  function setItemsReturned(player, value) {
+    player.setAttribute(ITEMS_RETURNED_ATTRIBUTE, value | 0);
+    player.getPacketSender().sendVarbit(VARBIT_ETC_ITEMS_RETURNED, value | 0);
+  }
+
   function chapters(player) {
     return Math.max(0, Number(player.getAttribute(CHAPTERS_ATTRIBUTE)) || 0);
   }
 
   function diaryRead(player) {
     return hasAttribute(player, DIARY_READ_ATTRIBUTE);
+  }
+
+  function diaryChapters(player) {
+    return Math.max(0, Number(player.getAttribute(DIARY_CHAPTERS_ATTRIBUTE)) || 0) & 0x1f;
+  }
+
+  /** Capture 91 read the whole diary once and set only diarychapter1read. */
+  function readNextDiaryChapter(player) {
+    const mask = diaryChapters(player);
+    for (let bit = 0; bit < 5; bit++) {
+      if ((mask & (1 << bit)) !== 0) continue;
+      player.setAttribute(DIARY_CHAPTERS_ATTRIBUTE, mask | (1 << bit));
+      player.getPacketSender().sendVarbit(VARBIT_DIARY_READ_1 + bit, 1);
+      return;
+    }
   }
 
   function married(player) {
@@ -557,6 +590,7 @@ module.exports = function registerRoyalTroubleQuest(api) {
       (Number(player.getAttribute(FIRE_BITS_ATTRIBUTE)) || 0) !== 0 ||
       hasAttribute(player, MISC_VILLAGERS_ATTRIBUTE) || hasAttribute(player, ETC_VILLAGERS_ATTRIBUTE) ||
       hasAttribute(player, USED_PROP_ATTRIBUTE) || hasAttribute(player, DIARY_READ_ATTRIBUTE) ||
+      diaryChapters(player) !== 0 || itemsReturned(player) !== 0 || hasAttribute(player, KNOW_TEENS_ATTRIBUTE) ||
       hasAttribute(player, PLATFORM_TOP_ATTRIBUTE) || hasAttribute(player, CUTSCENE_ATTRIBUTE) ||
       hasAttribute(player, COINS_ATTRIBUTE);
     if (!dirty) return;
@@ -564,7 +598,8 @@ module.exports = function registerRoyalTroubleQuest(api) {
       MISC_ATTRIBUTE, ETC_ATTRIBUTE, MISC_VILLAGERS_ATTRIBUTE, ETC_VILLAGERS_ATTRIBUTE,
       USED_PROP_ATTRIBUTE, LIFT_ATTRIBUTE, ROPELOC_ATTRIBUTE, CHAPTERS_ATTRIBUTE,
       FIRE_BITS_ATTRIBUTE, DIARY_READ_ATTRIBUTE, PLATFORM_TOP_ATTRIBUTE, COAL_ATTRIBUTE,
-      CUTSCENE_ATTRIBUTE, COINS_ATTRIBUTE,
+      CUTSCENE_ATTRIBUTE, COINS_ATTRIBUTE, DIARY_CHAPTERS_ATTRIBUTE,
+      ITEMS_RETURNED_ATTRIBUTE, KNOW_TEENS_ATTRIBUTE,
     ]) {
       player.setAttribute(key, 0);
     }
@@ -585,13 +620,16 @@ module.exports = function registerRoyalTroubleQuest(api) {
     sender.sendVarbit(VARBIT_LIFT_STAGE, liftStage(player));
     sender.sendVarbit(VARBIT_ROPELOC, Number(player.getAttribute(ROPELOC_ATTRIBUTE)) || 0);
     sender.sendVarbit(VARBIT_CHAPTERS, chapters(player));
+    const diary = diaryChapters(player);
     for (let bit = 0; bit < 5; bit++) {
-      sender.sendVarbit(VARBIT_DIARY_READ_1 + bit, diaryRead(player) ? 1 : 0);
+      sender.sendVarbit(VARBIT_DIARY_READ_1 + bit, (diary >> bit) & 1);
     }
     sender.sendVarbit(VARBIT_NOTICED_FIRES, chapters(player) > 0 ? 1 : 0);
     sender.sendVarbit(VARBIT_PLATFORM_AT_TOP, hasAttribute(player, PLATFORM_TOP_ATTRIBUTE) ? 1 : 0);
     sender.sendVarbit(VARBIT_COAL, coalInEngine(player));
     sender.sendVarbit(VARBIT_KIDS_CUTSCENE, hasAttribute(player, CUTSCENE_ATTRIBUTE) ? 1 : 0);
+    sender.sendVarbit(VARBIT_ETC_ITEMS_RETURNED, itemsReturned(player));
+    sender.sendVarbit(VARBIT_MISC_KNOW_TEENS, hasAttribute(player, KNOW_TEENS_ATTRIBUTE) ? 1 : 0);
   }
 
   function movePlayer(player, tile) {
@@ -861,14 +899,6 @@ module.exports = function registerRoyalTroubleQuest(api) {
       player.sendMessage("You must complete Throne of Miscellania before you can help with this.");
       return;
     }
-    const skills = player.getSkillManager();
-    const missing = [];
-    if (skills.getMaxLevel(Skill.AGILITY) < 40) missing.push("40 Agility");
-    if (skills.getMaxLevel(Skill.SLAYER) < 40) missing.push("40 Slayer");
-    if (missing.length > 0) {
-      player.sendMessage(`You need ${missing.join(" and ")} to start this quest.`);
-      return;
-    }
     quest.setStage(player, STAGE_STARTED);
     sendSideVarbits(player);
   }
@@ -977,6 +1007,7 @@ module.exports = function registerRoyalTroubleQuest(api) {
       event.handled = true;
       if (!held(player, LETTER_ITEM_ID)) giveItem(player, LETTER_ITEM_ID);
       advanceEtc(player, ETC_BOX);
+      setItemsReturned(player, ETC_STOLEN_ITEMS_RETURNED);
       return;
     }
     if (stepId === ACTION_RECEIVE_COINS) {
@@ -1003,6 +1034,10 @@ module.exports = function registerRoyalTroubleQuest(api) {
         setAttributeFlag(player, MISC_VILLAGERS_ATTRIBUTE, false);
         setAttributeFlag(player, ETC_VILLAGERS_ATTRIBUTE, false);
         setAttributeFlag(player, DIARY_READ_ATTRIBUTE, false);
+        player.setAttribute(DIARY_CHAPTERS_ATTRIBUTE, 0);
+        setAttributeFlag(player, KNOW_TEENS_ATTRIBUTE, true);
+        setItemsReturned(player, 0);
+        setCoalInEngine(player, 0);
         sendSideVarbits(player);
         quest.complete(player);
       }
@@ -1137,6 +1172,16 @@ module.exports = function registerRoyalTroubleQuest(api) {
     }
   }
 
+  function canEnterDeeper(player) {
+    if (player.getSkillManager().getCurrentLevel(Skill.AGILITY) >= 40) return true;
+    player.sendMessage("You need an Agility level of 40 to go further into the dungeon.");
+    return false;
+  }
+
+  function awardPassageExperience(player) {
+    player.getSkillManager().addExperiences(Skill.AGILITY, 1);
+  }
+
   function squeezeMiningCrack(player) {
     if (!questActive(player)) return;
     if (!hasAttribute(player, USED_PROP_ATTRIBUTE)) {
@@ -1144,11 +1189,15 @@ module.exports = function registerRoyalTroubleQuest(api) {
       return;
     }
     const location = player.getLocation();
-    const destination = location.getY() <= 10281 ? { x: 2505, y: 10283, z: 0 } : { x: 2505, y: 10280, z: 0 };
+    const entering = location.getY() <= 10281;
+    if (entering && !canEnterDeeper(player)) return;
+    const destination = entering ? { x: 2505, y: 10283, z: 0 } : { x: 2505, y: 10280, z: 0 };
     movePlayer(player, destination);
+    if (entering) awardPassageExperience(player);
   }
 
   function enterTunnelFromPlankRoom(player) {
+    if (!canEnterDeeper(player)) return;
     if ([...PULLEY_ITEMS].some((id) => held(player, id))) {
       for (const id of PULLEY_ITEMS) {
         if (held(player, id)) takeItem(player, id, player.getInventory().getAmount(id));
@@ -1158,6 +1207,7 @@ module.exports = function registerRoyalTroubleQuest(api) {
     player.sendMessage("You squeeze through the small hole in the wall.");
     // Capture 91 tunnels from (2511,10287,1) to the walkable ledge at (2514,10291,0).
     movePlayer(player, { x: 2514, y: 10291, z: 0 });
+    awardPassageExperience(player);
   }
 
   function squeezeFremennikCrack(player, objectId) {
@@ -1171,9 +1221,11 @@ module.exports = function registerRoyalTroubleQuest(api) {
       playVariant(player, ARMOD_NPC_ID, V_CREVICE_LOCKED);
       return;
     }
+    if (!canEnterDeeper(player)) return;
     if (!hasAttribute(player, CUTSCENE_ATTRIBUTE)) {
       setAttributeFlag(player, CUTSCENE_ATTRIBUTE, true);
       movePlayer(player, KIDS_SCENE_TILE);
+      awardPassageExperience(player);
       const sender = player.getPacketSender();
       sender.sendCameraMoveTo(KIDS_CAMERA_MOVE.x, KIDS_CAMERA_MOVE.y, KIDS_CAMERA_MOVE.height,
         { rate: KIDS_CAMERA_MOVE.rate, rate2: 0 });
@@ -1183,12 +1235,15 @@ module.exports = function registerRoyalTroubleQuest(api) {
       return;
     }
     movePlayer(player, KIDS_EXIT_TILE);
+    awardPassageExperience(player);
   }
 
   function squeezeSnakeCrack(player, objectId) {
     if (!questActive(player)) return;
     const entering = objectId === SNAKE_CRACK_IN_OBJECT_ID;
+    if (entering && !canEnterDeeper(player)) return;
     movePlayer(player, entering ? { x: 2617, y: 10275, z: 0 } : { x: 2617, y: 10270, z: 0 });
+    if (entering) awardPassageExperience(player);
   }
 
   function searchFireRemains(player, objectId) {
@@ -1420,7 +1475,7 @@ module.exports = function registerRoyalTroubleQuest(api) {
     if (BURNT_DIARY_ITEM_IDS.includes(itemId)) {
       event.handled = true;
       setAttributeFlag(player, DIARY_READ_ATTRIBUTE, true);
-      for (let bit = 0; bit < 5; bit++) player.getPacketSender().sendVarbit(VARBIT_DIARY_READ_1 + bit, 1);
+      readNextDiaryChapter(player);
       if (chapters(player) >= 5) advanceMisc(player, MISC_DIARY);
       openDiary(player);
       return;
@@ -1655,6 +1710,10 @@ module.exports = function registerRoyalTroubleQuest(api) {
   }
 
   function handleLogin({ player }) {
+    // Saves from before the per-chapter mask only knew "read at least once".
+    if (diaryRead(player) && diaryChapters(player) === 0) {
+      player.setAttribute(DIARY_CHAPTERS_ATTRIBUTE, 1);
+    }
     refreshQuestList(player);
     sendSideVarbits(player);
     recoverHeavyBox(player);
@@ -1684,10 +1743,13 @@ module.exports = function registerRoyalTroubleQuest(api) {
   api.persistAttribute(CHAPTERS_ATTRIBUTE);
   api.persistAttribute(FIRE_BITS_ATTRIBUTE);
   api.persistAttribute(DIARY_READ_ATTRIBUTE);
+  api.persistAttribute(DIARY_CHAPTERS_ATTRIBUTE);
   api.persistAttribute(PLATFORM_TOP_ATTRIBUTE);
   api.persistAttribute(COAL_ATTRIBUTE);
   api.persistAttribute(CUTSCENE_ATTRIBUTE);
   api.persistAttribute(COINS_ATTRIBUTE);
+  api.persistAttribute(ITEMS_RETURNED_ATTRIBUTE);
+  api.persistAttribute(KNOW_TEENS_ATTRIBUTE);
 
   quest = registerQuest(api, {
     key: "royal_trouble",
@@ -1727,6 +1789,8 @@ module.exports = function registerRoyalTroubleQuest(api) {
   api.onItemAction(handleItemAction);
   api.onGroundItemClick([LIFT_MANUAL_ITEM_ID], 3, handleGroundItemClick);
   api.onCustomEvent("ladders:climb", handleClimb);
+  royalTroubleCombat.init(api);
+  royalTroubleCombat.attach(api);
   api.onNpcDeath(handleNpcDeath);
   api.onZoneEnter(DUNGEON_ZONE, handleZoneEnter);
   api.onZoneEnter(BOSS_ROOM_ZONE, handleZoneEnter);

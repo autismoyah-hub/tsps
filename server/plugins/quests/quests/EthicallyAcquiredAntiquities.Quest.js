@@ -39,6 +39,7 @@
  * Rewards per the capture: 1 Quest point, 6,000 Thieving XP and 5,000 coins.
  */
 module.exports = function registerEthicallyAcquiredAntiquitiesQuest(api) {
+  const { giveReward } = require("../QuestRuntime");
   const {
     ActionDialogue,
     Animation,
@@ -283,6 +284,10 @@ module.exports = function registerEthicallyAcquiredAntiquitiesQuest(api) {
   const V_SARIM_AGAIN = "clues-in-port-sarim-talking-to-a-trader-crewmember-in-port-sarim-again";
   const V_BETTY_FIRST = "clues-in-port-sarim-talking-to-betty";
   const V_BETTY_AGAIN = "clues-in-port-sarim-talking-to-betty-again";
+  // Transcript:Ethically_Acquired_Antiquities: "Talking to Betty again after visiting Curator Haig Halen".
+  const V_BETTY_AFTER_HAIG = "clues-in-port-sarim-talking-to-betty-again-after-visiting-curator-haig-halen";
+  // "Talking to Curator Haig Halen after arranging the diadem's return".
+  const V_HAIG_RETURN = "in-varrock-museum-talking-to-curator-haig-halen-after-arranging-the-diadem-s-return";
   const V_NOTES_FIRST = "clues-in-port-sarim-inspecting-betty-s-notes-for-the-first-time";
   const V_HAIG_FIRST = "in-varrock-museum-talking-to-curtor-haig-halen";
   const V_HAIG_AGAIN = "in-varrock-museum-talking-to-curtor-haig-halen-talking-to-haig-again";
@@ -522,15 +527,22 @@ module.exports = function registerEthicallyAcquiredAntiquitiesQuest(api) {
 
   function selectBettyVariant(player) {
     const stage = quest.getStage(player);
-    // Hand in the Sand's Betty: stages 18-21.
-    if (stage < STAGE_BETTY || stage >= STAGE_HAIG || quest.isComplete(player)) return null;
+    // Hand in the Sand's Betty: stages 18-23; once Haig has been visited (24+), her "after visiting" page.
+    if (stage < STAGE_BETTY || quest.isComplete(player)) return null;
+    // Plugins load alphabetically, so this selector runs before Hand in the Sand's: leave Betty to it while one of its
+    // pages applies (the vial, the lens, the serum), or a player doing both quests could never finish that one.
+    const handInTheSand = { player, variant: null };
+    api.emitCustomEvent("hand-in-the-sand:betty-page", handInTheSand);
+    if (handInTheSand.variant) return null;
+    if (stage >= STAGE_STOREROOM) return V_BETTY_AFTER_HAIG;
     return stage >= STAGE_READ_NOTES ? V_BETTY_AGAIN : V_BETTY_FIRST;
   }
 
   function selectHaigVariant(player) {
     const stage = quest.getStage(player);
-    // Dig Site and Bone Voyage's Haig: stages 22-35, released with the return hand-in.
-    if (stage < STAGE_HAIG || stage >= STAGE_RETURN || quest.isComplete(player)) return null;
+    // Dig Site and Bone Voyage's Haig: stages 22-35, then his "after arranging the diadem's return" page (36-37).
+    if (stage < STAGE_HAIG || quest.isComplete(player)) return null;
+    if (stage >= STAGE_RETURN) return V_HAIG_RETURN;
     if (stage >= STAGE_CONFRONT) return V_HAIG_FOUND;
     return stage >= STAGE_STOREROOM ? V_HAIG_AGAIN : V_HAIG_FIRST;
   }
@@ -965,10 +977,12 @@ module.exports = function registerEthicallyAcquiredAntiquitiesQuest(api) {
     }
   }
 
+  /** A fade back in leaves the full-screen fade overlay mounted on 161:1 once the script has run (#2640). Take it down then, but only if it is still the interface mounted there: a ladder or transport that mounted something else in the meantime is not ours to close, and a later fade out is a new mount. */
   function fade(player, out) {
-    player.getPacketSender().sendSubInterface(OVERLAY_UID, FADE_INTERFACE, 1, {
+    const mount = player.getPacketSender().mountSubInterface(OVERLAY_UID, FADE_INTERFACE, 1, {
       postScripts: [{ scriptId: 948, args: out ? [0, 255, 0, 0, 50] : [0, 0, 0, 255, 50] }],
     });
+    if (!out) TaskManager.submit(new CountdownTask(player, 3, () => player.getPacketSender().closeSubInterfaceMount(mount)));
   }
 
   function controls(player, active) {
@@ -1397,7 +1411,7 @@ module.exports = function registerEthicallyAcquiredAntiquitiesQuest(api) {
   function grantReward(player) {
     player.getSkillManager().addExperiences(Skill.THIEVING, 6000);
     // registerQuest adds one coin; top the stack up to 5,000.
-    player.getInventory().adds(COINS_ITEM_ID, 4999);
+    giveReward(player, COINS_ITEM_ID, 4999);
     if (held(player, BETTYS_NOTES_ITEM_ID)) player.getInventory().deleteNumber(BETTYS_NOTES_ITEM_ID, 1);
     later(player, DIADEM_RETURN_TICKS, () => {
       if (player.isRegistered?.() !== false && !hasFlag(player, BIT_DIADEM)) setFlag(player, BIT_DIADEM, DIADEM_VARBIT);

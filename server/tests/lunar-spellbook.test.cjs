@@ -10,9 +10,12 @@ Server.installProductionPathResolver();
 const { CachePipeline } = require("../dist/game/cache/CachePipeline");
 const { CacheDefinitions } = require("../dist/game/cache/CacheDefinitions");
 const { LunarSpells } = require("../dist/game/content/combat/magic/LunarSpells");
+const { Skill } = require("../dist/game/model/Skill");
 const { Spell } = require("../dist/game/content/combat/magic/Spell");
 
 before(async () => {
+  // Dream Mentor gives these Lunar spells (Wiki); the quest plugins are not loaded here.
+  require("../dist/plugins/PluginManager").PluginManager.createApi("DreamMentorDone").onCustomEvent("quest:is-complete", (q) => { if (q.key === "dream_mentor") q.complete = true; });
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
 });
 
@@ -34,6 +37,7 @@ function caster(slots) {
     items, experience, messages: [],
     getIndex: () => 1,
     getPrivateArea: () => null,
+    getLocation: () => new (require('../dist/game/model/Location').Location)(3200, 3200, 0),
     getPacketSender: () => ({ sendSoundEffect() {} }),
     isRegistered: () => true,
     performAnimation() {}, performGraphic() {},
@@ -104,13 +108,15 @@ test("the potion shares are cast on a potion, not on a player", () => {
 });
 
 /** A player for the player-target spells: `hp` of 99, full special bar and run energy unless given. */
-function fighter({ hp = 99, special = 100, run = 100 } = {}) {
+function fighter({ hp = 99, special = 100, run = 100, dueling = false, at = [3200, 3200], multi = false } = {}) {
   const state = { hp, special, run, messages: [] };
   const sink = { updateSpecialAttackOrb: () => sink, sendRunEnergy: () => sink };
   return Object.assign(state, {
     getIndex: () => 2, isRegistered: () => true, performAnimation() {}, performGraphic() {}, getPrivateArea: () => null,
     getAttribute: () => null,
-    getLocation: () => ({ isWithinDistance: () => true }),
+    getDueling: () => ({ inDuel: () => dueling }),
+    getLocation: () => Object.assign(new (require("../dist/game/model/Location").Location)(at[0], at[1], 0), { isWithinDistance: () => true }),
+    getArea: () => (multi ? { isMulti: () => true } : null),
     getSkillManager: () => ({ getMaxLevel: () => 99, getCurrentLevel: () => 99, addExperiences() {} }),
     getHitpoints: () => state.hp, setHitpoints(next) { state.hp = next; },
     heal(amount) { state.hp = Math.min(99, state.hp + amount); },
@@ -141,6 +147,43 @@ test("Energy Transfer costs 10 Hitpoints and gives a full special bar and full r
   assert.deepEqual(weak.messages, ["You need more hitpoints to cast this spell."]);
 });
 
+// Wiki (Energy Transfer): "players cannot cast this spell in single-way combat PvP areas"; and (24 September 2015)
+// not from multi-combat Wilderness onto a player standing in single-way Wilderness.
+test("Energy Transfer is refused in single-way Wilderness, for the caster or the target, and works in multi", () => {
+  const SINGLE_WILDERNESS = [3100, 3600], MULTI_WILDERNESS = [3150, 3650];
+  const refused = (player, target) => {
+    assert.equal(castable(() => LunarSpells.handlePlayerTarget(player, target, "Energy Transfer")), false);
+    assert.deepEqual([player.hp, player.special, target.special], [99, 100, 0], "nothing paid or given");
+  };
+  refused(fighter({ at: SINGLE_WILDERNESS }), fighter({ special: 0, at: SINGLE_WILDERNESS }));
+  refused(fighter({ at: MULTI_WILDERNESS, multi: true }), fighter({ special: 0, at: SINGLE_WILDERNESS }));
+  refused(fighter({ at: SINGLE_WILDERNESS }), fighter({ special: 0 }));
+  const player = fighter({ at: MULTI_WILDERNESS, multi: true }), target = fighter({ special: 0, at: MULTI_WILDERNESS, multi: true });
+  castable(() => LunarSpells.handlePlayerTarget(player, target, "Energy Transfer"));
+  assert.deepEqual([player.hp, target.special], [89, 100], "both in multi: it works");
+});
+
+test("aid spells don't reach a duelist, and a duelist aids no one (the duel is the two duelists' alone)", () => {
+  const spectator = fighter(), duelist = fighter({ hp: 50, special: 0, run: 5, dueling: true });
+  assert.equal(LunarSpells.handlePlayerTarget(spectator, duelist, "Heal Other"), false);
+  assert.equal(LunarSpells.handlePlayerTarget(spectator, duelist, "Energy Transfer"), false);
+  assert.equal(LunarSpells.handlePlayerTarget(spectator, duelist, "Vengeance Other"), false);
+  assert.deepEqual([duelist.hp, duelist.special, duelist.run], [50, 0, 5], "nothing reached the duelist");
+  assert.deepEqual([spectator.hp, spectator.special], [99, 100], "and nothing was paid");
+  const hurt = fighter({ hp: 50 });
+  assert.equal(LunarSpells.handlePlayerTarget(fighter({ dueling: true }), hurt, "Heal Other"), false);
+  assert.equal(hurt.hp, 50);
+});
+
+test("Stat Spy still reads a duelist's stats, and a duelist can still cast it: it aids no one", () => {
+  for (const [spy, target] of [[fighter(), fighter({ dueling: true })], [fighter({ dueling: true }), fighter()]]) {
+    spy.getDisplayName = () => "Spy";
+    assert.equal(castable(() => LunarSpells.handlePlayerTarget(spy, target, "Stat Spy")), true);
+    assert.ok(spy.messages.some((message) => /Hitpoints: 99/.test(message)), "the stats are read");
+    assert.deepEqual(target.messages, ["Spy is reading your skill stats!"]);
+  }
+});
+
 test("Monster Examine sends interface 522 the text live sends script 1179", () => {
   // rsprox 3235 tick 89, an Outlaw. Live also lists "Strength bonus: -21"; this server keeps no
   // NPC strength bonuses, so that line is the one difference.
@@ -155,7 +198,9 @@ test("Monster Examine sends interface 522 the text live sends script 1179", () =
     getElementalWeakness: () => null, getCombatLevel: () => 32, getMaxHit: () => 3, getName: () => "Outlaw",
     getRangedDefenceBonus: () => 0,
   };
-  const npc = { getCurrentDefinition: () => definition, getHitpoints: () => 20, getLocation: () => ({}), performGraphic() {} };
+  const npc = { getCurrentDefinition: () => definition,
+    getCurrentLevel: skill => definition.getStats()[[Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE, Skill.RANGED, Skill.MAGIC].indexOf(skill)],
+    getHitpoints: () => 20, getLocation: () => ({}), performGraphic() {} };
   const sent = [];
   const sender = {
     sendMagicTabInterface(id) { sent.push(["mount", id]); return sender; },
@@ -167,4 +212,57 @@ test("Monster Examine sends interface 522 the text live sends script 1179", () =
   });
   castable(() => LunarSpells.handleNpcTarget(player, npc, "Monster Examine"));
   assert.deepEqual(sent, [["mount", 522], ["script", 1179, live.replace("<br>Strength bonus: -21", "")]]);
+
+  const options = { includeMaxHit: false, includeAttackStyle: false, meleeBonusLabel: "Attack bonus" };
+  assert.equal(LunarSpells.monsterStats(npc, options), live.replace("<br>Strength bonus: -21", "")
+    .replace("<br>Max standard hit: 3", "").replace("<br>Main attack style: Crush", ""));
+  const withBonus = { ...npc, getCurrentDefinition: () => ({ ...definition,
+    getStats: () => [35, 30, 25, 1, 1, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  }) };
+  assert.ok(LunarSpells.monsterStats(withBonus, options).includes("<br>Attack bonus: 7"));
+  assert.ok(LunarSpells.monsterStats(withBonus).includes("<br>Crush bonus: 7"), "optional field controls leave the Lunar defaults intact");
+  const drained = { ...npc, getCurrentLevel: skill => new Map([
+    [Skill.ATTACK, 3], [Skill.DEFENCE, 0], [Skill.STRENGTH, 2], [Skill.MAGIC, 1], [Skill.RANGED, 0],
+  ]).get(skill) };
+  for (const settings of [undefined, options]) {
+    assert.ok(LunarSpells.monsterStats(drained, settings).includes(
+      "Attack: 3<br>Defence: 0<br>Strength: 2<br>Magic: 1<br>Ranged: 0"),
+      "both inspection spells report temporary instance levels instead of the base definition");
+  }
+});
+
+test("Lunar teleport arrival identifies only the caster after a successful landing", () => {
+  const { TeleportHandler } = require("../dist/game/model/teleportation/TeleportHandler");
+  const { PluginManager } = require("../dist/plugins/PluginManager");
+  const original = { check: TeleportHandler.checkReqs, teleport: TeleportHandler.teleport,
+    nearby: LunarSpells.forNearbyPlayers, emit: PluginManager.emitCustomEvent };
+  const arrivals = [], events = [], player = caster([]), passenger = caster([]);
+  const spells = [LunarSpells.TELEPORTS.get("catherby teleport"), LunarSpells.GROUP_TELEPORTS.get("tele group catherby")];
+  const pay = spells.map(spell => spell.pay);
+  const castable = spells.map(spell => spell.castable);
+  try {
+    TeleportHandler.checkReqs = () => true;
+    TeleportHandler.teleport = (target, destination, type, warning, arrived) => arrivals.push({ target, arrived });
+    PluginManager.emitCustomEvent = (name, event) => { if (name !== "teleport:confirm") events.push({ channel: name, ...event }); };
+    LunarSpells.forNearbyPlayers = (source, radius, visit) => visit(passenger);
+    for (const spell of spells) { spell.pay = () => true; spell.castable = () => true; }
+    spells[0].castTeleport(player);
+    assert.deepEqual(events, [], "starting a cast is not an arrival");
+    arrivals.shift().arrived();
+    assert.deepEqual(events.map(event => [event.channel, event.name, event.player]),
+      [["spell:teleport-arrival", "catherby teleport", player]]);
+    events.length = 0;
+    LunarSpells.castGroupTeleport(player, spells[1]);
+    assert.deepEqual(events, []);
+    assert.equal(arrivals.length, 2);
+    assert.equal(arrivals[1].target, passenger);
+    assert.equal(arrivals[1].arrived, undefined, "group passengers did not cast a spell");
+    arrivals[0].arrived();
+    assert.deepEqual(events.map(event => [event.channel, event.name, event.player]),
+      [["spell:teleport-arrival", "tele group catherby", player]]);
+  } finally {
+    TeleportHandler.checkReqs = original.check; TeleportHandler.teleport = original.teleport;
+    LunarSpells.forNearbyPlayers = original.nearby; PluginManager.emitCustomEvent = original.emit;
+    spells.forEach((spell, i) => { spell.pay = pay[i]; spell.castable = castable[i]; });
+  }
 });

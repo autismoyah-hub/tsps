@@ -74,10 +74,10 @@ before(async () => {
     },
   }, { get: (target, key) => (key in target ? target[key] : on(String(key))) });
   custom["quest:is-complete"] = [(request) => { request.complete = false; }];
-  require("../plugins/modes/LeagueMode.plugin").register(api);
-  require("../plugins/modes/LeaguePoints.plugin").register(api);
-  require("../plugins/modes/LeagueTasks.plugin").register(api);
-  require("../plugins/modes/LeaguePacts.plugin").register(api);
+  require("../plugins/modes/Base.LeagueMode").register(api);
+  require("../plugins/modes/Points.LeagueMode").register(api);
+  require("../plugins/modes/Tasks.LeagueMode").register(api);
+  require("../plugins/modes/Pacts.LeagueMode").register(api);
   Common = require("../plugins/modes/leaguepacts/Common.LeaguePacts");
   Ranged = require("../plugins/modes/leaguepacts/Ranged.LeaguePacts");
   // The core's own hooks and events reach the handlers attached above.
@@ -224,6 +224,18 @@ test("ranged prayers are 30% more effective: Rigour's 20% accuracy and 23% stren
   assert.equal(level(pacts, "damage"), 1000 + Math.floor((99 * 1299) / 1000) - Math.floor(99 * 1.23));
   assert.equal(level(main, "accuracy"), 1000);
   assert.equal(EquipmentEffects.applyCombatEffectiveLevelModifiers(pacts, 1000, { combatType: core.CombatType.MELEE, purpose: "accuracy" }), 1000, "ranged only");
+});
+
+test("buffed ranged prayers boost Deadeye's 18%, not Eagle Eye's 15%, once its scroll is read", () => {
+  const [pacts] = pair("prayers", nodesOf("talent_buffed_ranged_prayers"));
+  stub(core.PrayerHandler, "isActivated", (player, prayer) => prayer === core.PrayerHandler.EAGLE_EYE);
+  const level = (purpose) => EquipmentEffects.applyCombatEffectiveLevelModifiers(pacts, 1000, { combatType: RANGED(), purpose });
+  stub(core.PrayerHandler, "deadeyeActive", () => false);
+  assert.equal(level("accuracy"), 1000 + Math.floor(99 * 1.195) - Math.floor(99 * 1.15), "Eagle Eye");
+  stub(core.PrayerHandler, "deadeyeActive", () => true);
+  for (const purpose of ["accuracy", "damage"]) {
+    assert.equal(level(purpose), 1000 + Math.floor(99 * 1.234) - Math.floor(99 * 1.18), `Deadeye ${purpose}`);
+  }
 });
 
 test("thrown weapons: +60 ranged accuracy and 80% of the melee strength as ranged strength, the atlatl included", () => {
@@ -399,6 +411,7 @@ test("a melee echo rolls the melee stats against the ranged defence, with the bo
   const echo = target.queued[0];
   assert.ok(Ranged.isEcho(echo));
   assert.equal(echo.getCombatType(), core.CombatType.MELEE);
+  assert.deepEqual(echo.getSkills(), [Skill.RANGED.getIndex()], "a melee echo pays Ranged XP");
   assert.equal(echo.getCombatMethod().accuracyDefenceType(core.CombatType.MELEE), RANGED());
   assert.equal(rolls.at(-1).forceAccurate, true);
   assert.ok(echo.isAccurate());

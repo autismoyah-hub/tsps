@@ -2,7 +2,10 @@
 // open from the deck with a crowbar for that spot's drink; drinking it charts the task (75 XP).
 //   Pry-open: the helm let go of; with no crowbar: "You require a crowbar to do that."; else
 //   sound 67 and the drink with "You pry open the crate and take a bottle of {drink} to sample.",
-//   or "The crate contains a bottle of {drink}, but you don't take it as you already have one."
+//   or the drink in an item box with "The crate contains a bottle of {drink}, but you don't take it
+//   as you've already sampled it before." (charted, and not one of the few drinks that can be
+//   sampled again), "... but you don't have enough room to take it." or "... but you don't take it
+//   as you already have one."
 //   Drink: unless told not to ask again, the box "This drink has been sealed in a crate for an
 //   unknown amount of time. It could do anything to you, good or bad. Are you sure you want to
 //   drink it?" and the choice "Yes. / Yes, and don't ask again. / No." Then "You drink the bottle
@@ -25,6 +28,8 @@ const LEVEL = 12;
 const PRYING_TIMES_DRINK = "drink_crate_prying_times";
 /** Drinking warns until told not to (persisted, sent at login as its varbit). */
 const NO_WARNING_ATTRIBUTE = "charting:drink-no-warning";
+/** All Settings > Warnings: "Forgotten drink crate warning", the warning's own "don't ask again". */
+const WARNING_SETTING = 455;
 
 const NO_CROWBAR = "You require a crowbar to do that.";
 const WARNING = "This drink has been sealed in a crate for an unknown amount of time. It could do anything to you, good or bad. Are you sure you want to drink it?";
@@ -99,12 +104,24 @@ function pryOpen(event) {
     return;
   }
   const name = drinkName(spot);
+  // Most drinks are sampled once; a few can be taken again (with no further XP).
+  // Ours: this refusal is checked before the inventory ones.
+  if (!spot.drink?.repeatable && common.isCharted(player, spot)) {
+    itemBox(player, spot.item, `The crate contains a bottle of ${name}, but you don't take it as you've already sampled it before.`);
+    return;
+  }
+  // A full inventory refuses even when a bottle is already held.
+  const bottle = new (common.core().Item)(spot.item, 1);
+  if (player.getInventory().getAddableAmount(bottle) < 1) {
+    itemBox(player, spot.item, `The crate contains a bottle of ${name}, but you don't have enough room to take it.`);
+    return;
+  }
   if (player.getInventory().contains(spot.item)) {
     itemBox(player, spot.item, `The crate contains a bottle of ${name}, but you don't take it as you already have one.`);
     return;
   }
   player.getPacketSender().sendSoundEffect(SOUND_PRY, 1, 0);
-  player.getInventory().add(new (common.core().Item)(spot.item, 1), true);
+  player.getInventory().add(bottle, true);
   itemBox(player, spot.item, `You pry open the crate and take a bottle of ${name} to sample.`);
 }
 
@@ -133,8 +150,7 @@ function choose(player, consume) {
   common.api().sendMultiChatboxPrompt(player, CHOICE,
     "Yes.", consume,
     "Yes, and don't ask again.", () => {
-      player.setAttribute(NO_WARNING_ATTRIBUTE, true);
-      player.getPacketSender().sendVarbit(VARBIT_NO_WARNING, 1);
+      setNoWarning(player, true);
       consume();
     },
     "No.", () => {});
@@ -171,6 +187,17 @@ function placeCrates() {
   }
 }
 
+function setNoWarning(player, noWarning) {
+  player.setAttribute(NO_WARNING_ATTRIBUTE, noWarning);
+  player.getPacketSender().sendVarbit(VARBIT_NO_WARNING, noWarning ? 1 : 0);
+}
+
+function warningSettingClicked(request) {
+  if (request.settingId !== WARNING_SETTING) return;
+  request.handled = true;
+  setNoWarning(request.player, request.player.getAttribute(NO_WARNING_ATTRIBUTE) !== true);
+}
+
 function onLogin({ player }) {
   if (player.getAttribute(NO_WARNING_ATTRIBUTE) === true) player.getPacketSender().sendVarbit(VARBIT_NO_WARNING, 1);
 }
@@ -187,6 +214,7 @@ function attach(api) {
   api.onItemAction(drink);
   api.onServerStartup(placeCrates);
   api.onPlayerLogin(onLogin);
+  api.onCustomEvent("settings:setting-clicked", warningSettingClicked);
   api.onPlayerLogout(onLogout);
   api.onCustomEvent("interface:changed", interfaceChanged);
 }
@@ -196,4 +224,5 @@ module.exports.pryOpen = pryOpen;
 module.exports.drink = drink;
 module.exports.swallow = swallow;
 module.exports.drinks = drinks;
+module.exports.warningSettingClicked = warningSettingClicked;
 module.exports.NO_WARNING_ATTRIBUTE = NO_WARNING_ATTRIBUTE;

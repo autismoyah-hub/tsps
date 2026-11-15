@@ -12,6 +12,8 @@ const KEGS = new Map([[15669, 2253], [15670, 2254], [15671, 2255], [15672, 2256]
 const ROOM = { minX: 2861, maxX: 2878, minY: 3535, maxY: 3543, z: 1 };
 const PICK_UP_ANIMATION = 4180;
 const PICK_UP_TICKS = 2;
+// Wiki (Warriors' Guild): up to five kegs can be balanced at once.
+const MAX_KEGS = 5;
 /** Stand 4179 and walk 4178 while balancing; the turns stay the default ones. */
 const BALANCE_ANIMATIONS = [4179, 823, 4178, 820, 821, 822, 4178];
 /** Graphic of the falling stack, by keg count (one keg 688 ... five 684). */
@@ -39,23 +41,39 @@ function setHead(player, itemId) {
   player.getUpdateFlag().flag(Flag.APPEARANCE);
 }
 
+/** Hands, and the head unless it already holds the kegs, must be empty. */
+function wearingInTheWay(player) {
+  const { Equipment } = Guild.core;
+  const items = player.getEquipment().getItems();
+  return [Equipment.WEAPON_SLOT, Equipment.SHIELD_SLOT, Equipment.HANDS_SLOT, ...(balancing.has(player) ? [] : [Equipment.HEAD_SLOT])]
+    .some((slot) => items[slot]?.getId() > 0);
+}
+
+function refuseWorn(player) {
+  // ponytail: Near-Reality's wording; the Wiki gives the rule but not the message.
+  player.sendMessage("You must have both your hands as well as your head completely free to balance kegs.");
+}
+
 function pickUpKeg({ player, objectId }) {
   if (!KEGS.has(objectId)) return false;
-  const { Equipment, Animation } = Guild.core;
+  const { Animation } = Guild.core;
   const state = balancing.get(player);
-  const items = player.getEquipment().getItems();
-  const busy = [Equipment.WEAPON_SLOT, Equipment.SHIELD_SLOT, Equipment.HANDS_SLOT, ...(state ? [] : [Equipment.HEAD_SLOT])]
-    .some((slot) => items[slot]?.getId() > 0);
-  if (busy) {
-    // ponytail: Near-Reality's wording; the Wiki gives the rule but not the message.
-    player.sendMessage("You must have both your hands as well as your head completely free to balance kegs.");
+  if (wearingInTheWay(player)) {
+    refuseWorn(player);
     return;
   }
   if (state?.taken.has(objectId)) return;
   player.performAnimation(new Animation(PICK_UP_ANIMATION));
   Guild.later(player, PICK_UP_TICKS, () => {
     if (!inRoom(player)) return;
+    // Something put on in the two ticks (a helmet, or a weapon that dropped the stack) would be overwritten by the keg.
+    if (wearingInTheWay(player)) {
+      refuseWorn(player);
+      return;
+    }
     const current = balancing.get(player) ?? { kegs: 0, ticks: 0, taken: new Set() };
+    // A second click on the same keg (or a sixth keg) lands here too, two ticks on: it counts once.
+    if (current.taken.has(objectId) || current.kegs >= MAX_KEGS) return;
     current.kegs++;
     current.taken.add(objectId);
     balancing.set(player, current);
@@ -156,3 +174,4 @@ module.exports = function attachKegs(api) {
   api.onNpcDialogueCondition(jimmyCondition);
   api.onCustomEvent("npc-dialogue:action", jimmyWritesLedger);
 };
+module.exports._test = { pickUpKeg, balancing };

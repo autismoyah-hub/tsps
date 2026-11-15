@@ -6,6 +6,7 @@ const { isMembersArea, isMembersWorld } = require("../../../../src/main/typescri
 const { isLoadoutAvailable } = require("./PvpLoadoutRegistry.PlayerBots");
 const { listPvpProfiles } = require("./PvpProfileRegistry.PlayerBots");
 const { readBotSites } = require("../../brain/Sites.PlayerBots");
+const { normalizeRegionDensity } = require("./RegionDensity.PlayerBots");
 const fs = require("fs");
 const path = require("path");
 
@@ -49,11 +50,16 @@ function freezeHotspot(hotspot) {
  */
 const SITES_FILE = readBotSites(path.join(GameConstants.DEFINITIONS_DIRECTORY, "bot-sites.json"));
 const PVP_BOT_CONFIG = SITES_FILE.pvp ?? {};
+const SMITE_ONLY_REGIONS = new Set(PVP_BOT_CONFIG.smiteOnlyRegions ?? []);
 
 /** How many wilderness bot names exist and how they spread over players' active regions. */
 const PVP_BOT_SETTINGS = Object.freeze({
   botPool: Math.max(0, Math.floor(Number(PVP_BOT_CONFIG.botPool ?? 0))),
   activeRegionBotsPerRegion: Math.max(0, Math.floor(Number(PVP_BOT_CONFIG.activeRegionBotsPerRegion ?? 0))),
+  activeRegionBotsByRegion: normalizeRegionDensity(
+    PVP_BOT_CONFIG.activeRegionBotsByRegion,
+    Math.max(0, Math.floor(Number(PVP_BOT_CONFIG.botPool ?? 0)))
+  ),
   activeRegionInset: Math.max(0, Math.floor(Number(PVP_BOT_CONFIG.activeRegionInset ?? 0))),
 });
 
@@ -123,6 +129,14 @@ function getWildernessHotspot(hotspotId) {
   return WILDERNESS_HOTSPOTS[hotspotId] ?? null;
 }
 
+function usesSmiteOnlyPrayers(player, state) {
+  if (getWildernessHotspot(state?.pvp?.hotspotId)?.smiteOnly === true) return true;
+  const location = player?.getLocation?.();
+  return location != null && SMITE_ONLY_REGIONS.has(
+    `${location.getZ()}:${location.getX() >> 6}:${location.getY() >> 6}`
+  );
+}
+
 function listWildernessHotspots() {
   return WILDERNESS_HOTSPOT_IDS.map((hotspotId) => WILDERNESS_HOTSPOTS[hotspotId]);
 }
@@ -174,4 +188,5 @@ module.exports = {
   hotspotContainsLocation,
   isOutsideWildernessHotspots,
   listWildernessHotspots,
+  usesSmiteOnlyPrayers,
 };

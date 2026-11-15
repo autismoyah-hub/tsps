@@ -20,6 +20,7 @@ const { GameConstants } = require("../dist/game/GameConstants");
 const { Skill } = require("../dist/game/model/Skill");
 const { Location } = require("../dist/game/model/Location");
 const { Item } = require("../dist/game/model/Item");
+const dropDump = require("../data/definitions/npc-drops.json");
 
 let core;
 const hooks = {};
@@ -78,9 +79,9 @@ before(async () => {
       for (const handler of custom[name] ?? []) handler(payload);
     },
   }, { get: (target, key) => (key in target ? target[key] : on(String(key))) });
-  require("../plugins/modes/LeagueMode.plugin").register(api);
-  require("../plugins/modes/LeaguePoints.plugin").register(api);
-  require("../plugins/modes/LeagueRelics.plugin").register(api);
+  require("../plugins/modes/Base.LeagueMode").register(api);
+  require("../plugins/modes/Points.LeagueMode").register(api);
+  require("../plugins/modes/Relics.LeagueMode").register(api);
   // The drop table's own roller, without its kill hook (these kills are Slayer's).
   require("../plugins/npcs/NpcDrops.plugin").register(new Proxy(api, { get: (target, key) => (key === "onNpcDeath" ? () => {} : target[key]) }));
   require("../plugins/skills/Slayer.plugin").register(api);
@@ -282,8 +283,14 @@ test("Bloodthirsty: superiors 1 in 25, a quarter bloodthirsty; points and six (n
     return { drops, rolls: asked.reduce((sum, request) => sum + request.rolls, 0), npcId: asked[0]?.npcId };
   };
   const before = points(who.relic);
+  // The relic's "six rolls on their normal counterpart's drop table (excluding unique superior table)" (Wiki,
+  // Trailblazer Reloaded League/Relics, rev 15173899) is the kill's total: a Nechryarch's own table is already
+  // rolled three times (its page says rolls=3), so the relic adds three; a nine-roll variant adds six.
+  const ownRolls = (npc) => Math.max(1, dropDump.tables[dropDump.npcs[npc.getId()]?.tables?.[0]]?.rolls ?? 1);
+  assert.equal(ownRolls(nechryarch), 3, "a Nechryarch kill rolls its own table three times");
   const plain = rewards(who.relic, nechryarch);
-  assert.equal(plain.rolls, 6, "six rolls");
+  assert.equal(plain.rolls, 3, "three more rolls");
+  assert.equal(plain.rolls + ownRolls(nechryarch), 6, "six rolls in all");
   assert.equal(core.NpcDefinition.forId(plain.npcId).getName(), "Nechryael", "on the normal monster's table");
   assert.ok(points(who.relic) > before, "and Slayer points");
   for (const player of others(who)) {
@@ -296,7 +303,21 @@ test("Bloodthirsty: superiors 1 in 25, a quarter bloodthirsty; points and six (n
   emit("slayer:superior-spawned", { player: who.relic, npc: npcOf("Nechryael"), superior: variant });
   assert.ok(require("../plugins/modes/leaguerelics/Bloodthirsty.LeagueRelics").bloodthirsty.has(variant), "a 10 is bloodthirsty (25%)");
   const { drops: variantDrops, rolls: variantRolls } = rewards(who.relic, variant);
-  assert.equal(variantRolls, 9, "nine rolls");
+  assert.equal(variantRolls, 6, "six more rolls");
+  assert.equal(variantRolls + ownRolls(variant), 9, "nine rolls in all");
+  // A superior whose table exports no `rolls` (King kurask) is rolled once, so the relic adds five and eight.
+  const kuraskOf = () => { try { return npcOf("King kurask"); } catch { return npcOf("King Kurask"); } };
+  const kurask = kuraskOf();
+  assert.equal(ownRolls(kurask), 1, "a King kurask kill rolls its table once");
+  const plainKurask = rewards(who.relic, kurask);
+  assert.equal(plainKurask.rolls, 5, "five more rolls");
+  assert.equal(plainKurask.rolls + ownRolls(kurask), 6, "six rolls in all");
+  const variantKurask = kuraskOf();
+  Math.random = () => 0.1;
+  emit("slayer:superior-spawned", { player: who.relic, npc: npcOf("Kurask"), superior: variantKurask });
+  const variantKuraskRolls = rewards(who.relic, variantKurask).rolls;
+  assert.equal(variantKuraskRolls, 8, "eight more rolls");
+  assert.equal(variantKuraskRolls + ownRolls(variantKurask), 9, "nine rolls in all");
   const table = new Set(require("../plugins/modes/data/league-relics.json").effects.bloodthirsty.uniqueTable.rows.map((row) => row.item));
   assert.ok(variantDrops.some((drop) => [...table].some((name) => [I[name], core.ItemDefinition.forId(I[name]).getNoteId()].includes(drop.itemId))));
   Math.random = () => 0.9;
@@ -350,6 +371,20 @@ test("Bloodthirsty: superiors 1 in 25, a quarter bloodthirsty; points and six (n
     assert.equal(player.getAttribute(Bracelet.CHARGES_ATTRIBUTE), 29, `${player.getUsername()} uses a charge`);
   }
 
+  // The expeditious bracelet: 35% and no charge.
+  const Expeditious = require("../plugins/skills/slayer/ExpeditiousBracelet.Slayer");
+  const expedited = (player, roll) => {
+    player.getEquipment().setItem(core.Equipment.HANDS_SLOT, new Item(I.EXPEDITIOUS_BRACELET));
+    return Expeditious.extraKills(player, npcOf("Nechryael"), () => roll);
+  };
+  assert.equal(expedited(who.relic, 0.3), 1, "a 30 works (35%)");
+  assert.equal(who.relic.getAttribute(Expeditious.CHARGES_ATTRIBUTE), undefined, "no charge used");
+  for (const player of others(who)) {
+    assert.equal(expedited(player, 0.3), 0, `${player.getUsername()}'s expeditious bracelet works 25% of the time`);
+    assert.equal(expedited(player, 0.2), 1);
+    assert.equal(player.getAttribute(Expeditious.CHARGES_ATTRIBUTE), 29, `${player.getUsername()} uses a charge`);
+  }
+
   // The gem's check offers a task from anywhere.
   const master = core.CacheDefinitions.getVarbitId("slayer_master");
   for (const player of [who.relic, ...others(who)]) player.getPacketSender().sendVarbit(master, 6); // Duradel
@@ -365,6 +400,37 @@ test("Bloodthirsty: superiors 1 in 25, a quarter bloodthirsty; points and six (n
   const withMortimer = character("mortimer", "league", BLOODTHIRSTY, 4);
   withMortimer.getPacketSender().sendVarbit(master, 10);
   assert.equal(offered(withMortimer), false, "Mortimer's tasks are chosen in person");
+});
+
+test("Slayer Master: the Morytania Diary's Slayer XP also lifts a Slayer Tower kill with no task, and the count stays (Wiki: Morytania Diary)", () => {
+  const Diaries = require("../plugins/achievements/diaries/Data.AchievementDiaries");
+  const { onIsComplete } = require("../plugins/achievements/AchievementDiaries.plugin")._test;
+  custom["diary:is-complete"] = [onIsComplete];
+  const who = cases(SLAYER_MASTER, 5);
+  const elite = Diaries.TIERS.flatMap((tier) => Diaries.BY_KEY.get("morytania").tiers[tier].tasks.map((task) => task.key));
+  for (const player of [who.relic, ...others(who)]) {
+    player.setAttribute("achievement-diaries:tasks", { morytania: elite });
+    player.isPlayer = () => true;
+  }
+  const bloodveld = npcOf("Bloodveld");
+  const tower = new Location(3420, 3560, 0);
+  const inTower = { ...bloodveld, getLocation: () => tower };
+  const base = bloodveld.getDefinition().getHitpoints();
+  assert.equal(emit("slayer:on-task", { player: who.relic, npc: inTower, onTask: false }).onTask, true, "on task through the relic");
+  // The relic character holds a Turael task, which Bloodvelds do not count for.
+  const turael = [...require("../plugins/skills/slayer/Data.Slayer").get().masters.values()].find((master) => master.names.includes("Turael"));
+  Tasks.assign(who.relic, turael);
+  const task = Tasks.current(who.relic);
+  hooks.onNpcDeath({ killer: who.relic, npc: inTower });
+  assert.equal(slayerXp(who.relic), base * 1.1, "the elite diary's 10% on the off-task kill");
+  assert.equal(Tasks.current(who.relic).count, task.count, "the task's count does not fall");
+  const before = slayerXp(who.relic);
+  hooks.onNpcDeath({ killer: who.relic, npc: bloodveld });
+  assert.equal(slayerXp(who.relic) - before, base, "outside the tower, no bonus");
+  for (const player of others(who)) {
+    hooks.onNpcDeath({ killer: player, npc: inTower });
+    assert.equal(slayerXp(player), 0, `${player.getUsername()} gets none`);
+  }
 });
 
 test("Slayer Master: every Slayer monster on task (XP, no count), free rewards, a bonus on the 100th kill of each", () => {

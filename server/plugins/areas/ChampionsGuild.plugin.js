@@ -1,12 +1,15 @@
 /**
  * The Champions' Guild door in Varrock (https://oldschool.runescape.wiki/w/Champions%27_Guild):
- * coming in needs 32 Quest Points; the Guildmaster turns the rest away with his Wiki transcript.
- * Leaving is never stopped. Doors.plugin.js opens the door itself.
+ * coming in needs 32 Quest Points; the Guildmaster turns the rest away with his Wiki transcript,
+ * and greets the rest as they come in ("Greetings bold adventurer. Welcome to the guild of
+ * Champions.", revision 242 capture 20261106T101002 tick 971, as the door opens). Leaving is never
+ * stopped. Doors.plugin.js opens the door itself.
  */
 const { QUEST_POINTS_ATTRIBUTE } = require("../quests/QuestRuntime");
 
 const REQUIRED_QUEST_POINTS = 32;
-const REFUSAL_VARIANT = "standard-dialogue-entering-the-champions-guild";
+/** Its two conditions pick the refusal or the greeting. */
+const ENTRY_VARIANT = "standard-dialogue-entering-the-champions-guild";
 /** The guild is south of the door; the door's own tile is outside. */
 const INSIDE_TO_Y = 3362;
 
@@ -18,9 +21,19 @@ const worthy = (player) => (Number(player.getAttribute(QUEST_POINTS_ATTRIBUTE)) 
 function guardDoor(request) {
   if (request.handled || request.objectId !== core.ObjectIdentifiers.DOOR_45) return;
   const { player } = request;
-  if (player.getLocation().getY() <= INSIDE_TO_Y || worthy(player)) return;
+  // Wiki: entering or leaving the guild both count for the diary task.
+  const entering = player.getLocation().getY() > INSIDE_TO_Y;
+  if (!entering || worthy(player)) {
+    api.emitCustomEvent("diary:task", { player, diary: "varrock", task: "enter-the-champions-guild" });
+    if (entering) startEntryDialogue(player);
+    return;
+  }
   request.handled = true;
-  api.emitCustomEvent("npc-dialogue:start", { player, npcId: core.NpcIdentifiers.GUILDMASTER, variant: REFUSAL_VARIANT, handled: false });
+  startEntryDialogue(player);
+}
+
+function startEntryDialogue(player) {
+  api.emitCustomEvent("npc-dialogue:start", { player, npcId: core.NpcIdentifiers.GUILDMASTER, variant: ENTRY_VARIANT, handled: false });
 }
 
 function answerDoorCondition({ npcId, player, text }) {
@@ -33,6 +46,7 @@ function answerDoorCondition({ npcId, player, text }) {
 
 module.exports = {
   name: "ChampionsGuild",
+  description: "Lets players into the Champions' Guild in Varrock only with 32 Quest Points, with the Guildmaster's refusal and greeting.",
   _test: { guardDoor, answerDoorCondition },
   register(pluginApi) {
     api = pluginApi;

@@ -65,7 +65,9 @@ test('all six curses refuse lowered NPC/player stats before rune payment, until 
     assert.equal(f.method.canAttack(f.p,target),false,name+' paid cast');
     assert.equal(JSON.stringify(f.p.getInventory().getItems()),inventory,name+' preserves runes');
     assert.equal(f.p.getSkillManager().getSkills().experience[core.Skill.MAGIC.getIndex()],xp,name+' preserves XP');
-    assert.ok(f.p.messages.some(message=>message.includes('already weakened.')));
+    // Attack curses: the recorded line (rsprox_transcripts/228/02224.txt); the others keep the older one.
+    const weakened=stat==='ATTACK'?"Your foe's attack has already been weakened.":'already weakened.';
+    assert.ok(f.p.messages.some(message=>message.includes(weakened)),name);
     if(pvp)levels.setCurrentLevels(skill,maximum-1,false);else levels.setCurrentLevels(skill,maximum-1);
     f.select();assert.equal(f.spell.canCast(f.p,false),false,'partial recovery is not enough');
     if(pvp)levels.setCurrentLevels(skill,maximum,false);else levels.setCurrentLevels(skill,maximum);
@@ -139,7 +141,7 @@ test('non-damaging curse spells explicitly declare zero direct magic damage',t=>
   for(const [name] of cases) assert.equal(core.DamageFormulas.getMagicMaxhit(attacker,core.CombatSpells[name]),0,name);
 });
 
-test('Count Draynor garlic cannot turn any nondamaging curse into a damaging impact', t => {
+test('Count Draynor garlic cannot turn a zero-damage spell into a damaging impact', t => {
   new (require('../dist/game/definition/loader/impl/NpcDefinitionLoader').NpcDefinitionLoader)().load();
   const attacker = player(t), tasks = [], spawned = [];
   attacker.getInventory().setItem(0, new core.Item(core.ItemIdentifiers.GARLIC));
@@ -162,14 +164,14 @@ test('Count Draynor garlic cannot turn any nondamaging curse into a damaging imp
   });
   openCoffin({ player: attacker, object: new core.GameObject(core.ObjectIdentifiers.COFFIN_46,
     new core.Location(3077, 9775, 0), 10, 3, null) });
-  tasks.find(task => task.getDelay() === 9).execute();
+  tasks.find(task => task.getDelay() === 10).execute();
   const target = spawned.at(-1);
   assert.equal(target.getId(), core.NpcIdentifiers.COUNT_DRAYNOR);
   attacker.getCombat().setTarget(target);
   t.mock.method(Math, 'random', () => 0.999);
   const { PendingHit } = require('../dist/game/content/combat/hit/PendingHit');
   const { MagicCombatMethod } = require('../dist/game/content/combat/method/impl/MagicCombatMethod');
-  for (const [name] of [...cases, ['BIND']]) {
+  for (const [name] of [...cases, ['BIND'], ['TELEBLOCK']]) {
     const spell = core.CombatSpells[name];
     attacker.getCombat().setCastSpell(spell);
     assert.deepEqual(core.DamageFormulas.getMagicHitBounds(attacker, spell, target), { minimum: 0, maximum: 0 }, name);
@@ -180,7 +182,7 @@ test('Count Draynor garlic cannot turn any nondamaging curse into a damaging imp
   }
   assert.equal(core.DamageFormulas.getMagicMaxhit(attacker, core.CombatSpells.FIRE_STRIKE), 9,
     'garlic still adds one to damaging spells');
-  assert.equal(core.DamageFormulas.getMagicMaxhit(attacker, core.CombatSpells.TELEBLOCK), 2,
+  assert.equal(core.DamageFormulas.getMagicMaxhit(attacker, core.CombatSpells.DARK_LURE), 2,
     'unspecified negative utility maximum retains its existing fallback');
 });
 
@@ -253,4 +255,58 @@ test('unrelated utility spells retain their fallback effect and inaccurate casts
   attacker.setAttribute('standard-curses-test:handled',false);
   attacker.setAttribute('standard-curses-test:veto',true);
   spell.finishCast(attacker,value,true,0);assert.equal(calls,1);
+});
+
+// rsprox_transcripts/227/00095.txt:81131 and 227/02174.txt:5460: Enfeeble on an immune NPC is refused on the click's
+// tick with this line: no animation, runes or XP.
+test('every curse on a stat-drain-immune NPC says the target is immune, before rune payment', t => {
+  for (const [name] of cases) {
+    const { value: target } = npc(t);
+    target.setStatDrainImmune(true);
+    const f = paidCast(t, name, target);
+    const inventory = JSON.stringify(f.p.getInventory().getItems()), xp = f.p.getSkillManager().getSkills().experience[core.Skill.MAGIC.getIndex()];
+    assert.equal(f.method.canAttack(f.p, target), false, name + ': the cast is refused');
+    assert.deepEqual(f.p.messages, ['Your target is currently immune to that spell.'], name);
+    assert.equal(JSON.stringify(f.p.getInventory().getItems()), inventory, name + ' keeps its runes');
+    assert.equal(f.p.getSkillManager().getSkills().experience[core.Skill.MAGIC.getIndex()], xp, name + ' gives no XP');
+  }
+  // A player target is never immune this way, and an ordinary NPC still takes the curse.
+  const { value: normal } = npc(t);
+  const ok = paidCast(t, 'ENFEEBLE', normal);
+  assert.equal(ok.method.canAttack(ok.p, normal), true);
+  assert.deepEqual(ok.p.messages, []);
+});
+
+test('native spell-on-NPC Enfeeble on a real cached NPC made immune is refused with the recorded line', t => {
+  new (require('../dist/game/definition/loader/impl/NpcDefinitionLoader').NpcDefinitionLoader)().load();
+  const { NPCOptionPacketListener } = require('../dist/net/packet/impl/NPCOptionPacketListener');
+  const target = new NPC(core.NpcIdentifiers.LESSER_DEMON, new core.Location(3201, 3200));
+  target.setStatDrainImmune(true);
+  const f = paidCast(t, 'ENFEEBLE', target); f.p.setRegistered(true); f.p.setLocation(new core.Location(3200, 3200));
+  core.World.getNpcs().add(target); t.after(() => core.World.getNpcs().remove(target));
+  const inventory = JSON.stringify(f.p.getInventory().getItems()), xp = f.p.getSkillManager().getSkills().experience[core.Skill.MAGIC.getIndex()];
+  assert.equal(NPCOptionPacketListener.castSpell(f.p, target.getIndex(), f.spell.spellId()), true, 'the native click selects the target');
+  assert.equal(f.method.canAttack(f.p, target), false, 'the cast gate refuses before payment');
+  assert.deepEqual(f.p.messages, ['Your target is currently immune to that spell.']);
+  assert.equal(JSON.stringify(f.p.getInventory().getItems()), inventory);
+  assert.equal(f.p.getSkillManager().getSkills().experience[core.Skill.MAGIC.getIndex()], xp);
+  assert.equal(target.getCurrentLevel(core.Skill.STRENGTH), target.getMaxLevel(core.Skill.STRENGTH));
+});
+
+// Wiki (Dark Lure): "Dark Lure remains active on monsters for 61.2 seconds" (102 ticks).
+test('Dark Lure keeps a monster from retreating for 102 ticks', () => {
+  const attributes = new Map();
+  const attacked = [];
+  const target = {
+    isNpc: () => true, isPlayer: () => false,
+    getMovementQueue: () => ({ reset() {} }),
+    setAttribute: (key, value) => attributes.set(key, value),
+    getAttribute: key => attributes.get(key),
+    getCombat: () => ({ attack: who => attacked.push(who) }),
+  };
+  const caster = { isNpc: () => false, isPlayer: () => true };
+  const now = core.World.getProcessCycle();
+  core.CombatSpells.DARK_LURE.spellEffect(caster, target);
+  assert.equal(attributes.get('arceuus:dark-lure-until'), now + 102);
+  assert.deepEqual(attacked, [caster]);
 });

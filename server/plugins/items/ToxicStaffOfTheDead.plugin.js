@@ -128,19 +128,33 @@ function chargeStaff(event) {
   event.handled = true;
 }
 
+/**
+ * "item:fill-charges" { player, item, handled }: content that hands out a staff ready to use
+ * (the PvP Arena's load-outs) asks for a full one: charged, with every scale it holds.
+ */
+function fillCharges(event) {
+  const { item } = event;
+  const id = item?.getId?.();
+  if (!chargedIds.has(id) && !chargedByUncharged.has(id)) return;
+  if (chargedByUncharged.has(id)) item.setId(chargedByUncharged.get(id));
+  item.setMetaValue(CHARGES_META_KEY, MAX_CHARGES);
+  event.handled = true;
+}
+
 function uncharge({ player, item }) {
   const left = charges(item);
   if (left <= 0) {
     player.sendMessage("Your toxic staff has no scales to remove.");
     return true;
   }
-  if (player.getInventory().getFreeSlots() < 1) {
+  const refund = new Item(zulrahScalesId, left);
+  if (player.getInventory().getAddableAmount(refund) < left) {
     player.sendMessage("You need a free inventory slot to uncharge your toxic staff.");
     return true;
   }
   item.setId(unchargedByCharged.get(item.getId()) ?? item.getId());
   item.setMetaValue(CHARGES_META_KEY, undefined);
-  player.getInventory().addItem(new Item(zulrahScalesId, left));
+  player.getInventory().addItem(refund);
   refresh(player);
   player.sendMessage(`You remove ${left} scales from your toxic staff.`);
   return true;
@@ -148,8 +162,9 @@ function uncharge({ player, item }) {
 
 module.exports = {
   name: "ToxicStaffOfTheDead",
+  description: "Charges the Toxic staff of the dead with Zulrah's scales, drains scales in combat and gives its hits a chance to envenom the target.",
   members: true,
-  _test: { charges, isWieldingCharged, consumeCharges, processCombatUpkeep, onHitResolved, chargeStaff, uncharge, MAX_CHARGES },
+  _test: { charges, isWieldingCharged, consumeCharges, processCombatUpkeep, onHitResolved, chargeStaff, uncharge, fillCharges, MAX_CHARGES },
   register(api) {
     core = api.core;
     zulrahScalesId = core.ItemIdentifiers.ZULRAHS_SCALES;
@@ -180,6 +195,7 @@ module.exports = {
       }
     });
     api.onItemOnItem(chargeStaff, { noted: false });
+    api.onCustomEvent("item:fill-charges", fillCharges);
     api.onCombatHitResolved(onHitResolved);
     api.onPlayerProcess(({ player }) => {
       if (!player?.isPlayerBot?.()) {

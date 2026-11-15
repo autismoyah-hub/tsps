@@ -81,8 +81,19 @@ function createArea() {
   const [minX, minY, maxX, maxY, z] = CAMDOZAAL_BOUNDS;
   return new (class CamdozaalGolemArea extends Area {
     constructor() { super([new Boundary(minX, maxX, minY, maxY, z)]); }
+    process(actor) {
+      if (actor?.isPlayer?.()) pluginApi.emitCustomEvent("camdozaal:area-process", { player: actor.getAsPlayer() });
+    }
+    postEnter(actor) {
+      super.postEnter(actor);
+      if (actor?.isPlayer?.()) pluginApi.emitCustomEvent("camdozaal:area-enter", { player: actor.getAsPlayer() });
+    }
     postLeave(actor, logout) {
-      if (actor?.isPlayer?.()) restoreGolem(stateByPlayer.get(actor.getAsPlayer()));
+      if (actor?.isPlayer?.()) {
+        const player = actor.getAsPlayer();
+        restoreGolem(stateByPlayer.get(player));
+        pluginApi.emitCustomEvent("camdozaal:area-leave", { player });
+      }
       super.postLeave(actor, logout);
     }
   })();
@@ -90,6 +101,7 @@ function createArea() {
 
 module.exports = {
   name: "CamdozaalGolems",
+  description: "Lets players Awaken golem rubble in the Ruins of Camdozaal, turning it into a Chaos Golem to fight with its drop table.",
   members: true,
   register(api) {
     pluginApi = api;

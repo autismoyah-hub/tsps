@@ -30,6 +30,7 @@ let useTablet;
 let castAlternate;
 let prompt;
 let diaries;
+let unfinished = new Set();
 const casts = [];
 const teleports = [];
 const tabletIds = new Map();
@@ -44,9 +45,11 @@ before(async () => {
         onPlayerLogin: () => {},
         onSpellCast: (handler) => { castAlternate = handler; },
         onInterfaceActionClick: () => {},
+        onCustomEvent: () => {},
         sendMultiChatboxPrompt: (player, title, ...pairs) => { prompt = { title, pairs }; return true; },
         emitCustomEvent: (name, request) => {
             if (name === 'diary:is-complete') request.complete = diaries.has(`${request.diary} ${request.tier}`);
+            if (name === 'quest:is-complete') request.complete = !unfinished.has(request.key);
         },
     });
     TeleportHandler.checkReqs = () => true;
@@ -76,9 +79,14 @@ function playerWith(itemId) {
         sendMessage: (message) => messages.push(message),
         getAttribute: (key) => attributes.get(key),
         setAttribute: (key, value) => attributes.set(key, value),
-        getPacketSender: () => ({ sendVarbit: (id, value) => varbits.push([id, value]) }),
+        // Every varbit 1: the Wilderness tablets' warnings off, so they break at once
+        // (wilderness-teleport-warnings.test.cjs covers the warnings).
+        getPacketSender: () => ({ sendVarbit: (id, value) => varbits.push([id, value]), getVarbit: () => 1 }),
         getInventory: () => ({
             contains: (id) => (inventory.get(id) ?? 0) > 0,
+            getAmount: (id) => inventory.get(id) ?? 0,
+            // Room enough for one more of anything (the fixture models no full inventory).
+            getAddableAmount: (item) => item.getAmount(),
             deleteNumber: (id, amount) => inventory.set(id, (inventory.get(id) ?? 0) - amount),
             adds: (id, amount) => inventory.set(id, (inventory.get(id) ?? 0) + amount),
         }),
@@ -107,11 +115,35 @@ test('every teleport tablet and scroll in the cache has a destination', () => {
     assert.deepEqual(missing, []);
 });
 
+// Wiki (each tablet's page): using it requires the quest. Recorded: rsprox_transcripts/242/900268.txt (Ardougne),
+// 242/900261.txt (Civitas illa Fortis), tablet kept; Kourend's line follows the same pattern.
+test('the Ardougne, Kourend Castle and Civitas tablets need their quests; Trollheim needs none', (t) => {
+    unfinished = new Set(['plague_city', 'client_of_kourend', 'twilights_promise', 'eadgars_ruse']);
+    t.after(() => { unfinished = new Set(); });
+    for (const [name, quest] of [['ardougne teleport', 'Plague City'], ['kourend castle teleport', 'Client of Kourend'],
+        ['civitas illa fortis teleport', "Twilight's Promise"]]) {
+        const refused = use(name, 'break');
+        assert.equal(refused.teleport, undefined, name);
+        assert.deepEqual(refused.player.messages, [`You need to have completed the ${quest} quest to use this spell.`]);
+        assert.equal(refused.player.inventory.get(tabletIds.get(name).id), 1, 'the tablet is kept');
+    }
+    assert.ok(use('trollheim teleport', 'break').teleport, 'Trollheim tablet has no quest requirement (Wiki)');
+});
+
 test('Arceuus and Lunar tablets land where their spells do; Ape Atoll is the Arceuus tablet', () => {
     diaries = new Set();
     assertLanding(use('barrows teleport', 'break').tile, [3565, 3315, 0]);
     assertLanding(use('moonclan teleport', 'break').tile, [2113, 3917, 0]);
     assertLanding(use('ape atoll teleport', 'break').tile, [2770, 9100, 0]);
+});
+
+// Wiki maps (each a 2-tile square): Key master teleport 1310,1250 (next to the Key Master in Cerberus' Lair),
+// Wilderness crabs teleport 3352,3782, Nardah teleport 3419,2917 (recorded arrival 3421,2917: 227/01862.txt).
+test('the Key master, Wilderness crabs and Nardah scrolls land where the Wiki maps them', () => {
+    diaries = new Set();
+    assertLanding(use('key master teleport', 'teleport').tile, [1310, 1250, 0]);
+    assertLanding(use('wilderness crabs teleport', tabletIds.get('wilderness crabs teleport').op).tile, [3352, 3782, 0]);
+    assertLanding(use('nardah teleport', 'teleport').tile, [3419, 2917, 0]);
 });
 
 test('a scroll is used up on the click, a tablet as it is absorbed', () => {
@@ -158,6 +190,15 @@ test('Revert turns a redirected tablet back into a Teleport to house tablet', ()
     assert.equal(event.handled, true);
     assert.equal(player.inventory.get(tabletIds.get('yanille teleport').id), 0);
     assert.equal(player.inventory.get(Items.TELEPORT_TO_HOUSE), 1);
+});
+
+test('the house tablet Group option refuses as live does, and keeps the tablet (rsprox 2919 tick 2179)', () => {
+    const { event, player, teleport } = use('teleport to house', 'group');
+    assert.equal(event.handled, true);
+    assert.equal(teleport, undefined);
+    assert.deepEqual(player.messages, ['You are not in an Ironman Group.']);
+    assert.equal(player.inventory.get(Items.TELEPORT_TO_HOUSE), 1);
+    assert.deepEqual(CacheDefinitions.getItem(Items.TELEPORT_TO_HOUSE).inventoryActions.slice(0, 4), ['Break', 'Inside', 'Outside', 'Group']);
 });
 
 /** Clicks an option on a spell, as NetworkBuilder emits it; unhandled means the usual cast. */

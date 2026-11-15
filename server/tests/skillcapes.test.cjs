@@ -63,6 +63,11 @@ function container(ids, size) {
         amount -= taken;
       }
     },
+    deleteAtSlot(slot, amount = 1) {
+      const held = items[slot];
+      held.setAmount(held.getAmount() - amount);
+      if (held.getAmount() <= 0) held.setId(-1);
+    },
     adds(id, amount) {
       const stack = items.find((i) => i.getId() === id && core.ItemDefinition.forId(id)?.isStackable?.());
       if (stack) { stack.setAmount(stack.getAmount() + amount); return; }
@@ -75,7 +80,7 @@ function container(ids, size) {
 }
 
 /** A player with the given 99s (skill keys), worn cape, inventory and bank. */
-function player({ ninetyNines = [], cape = -1, inventory = [], bank = [], coins = 0, location = { x: 3000, y: 3000, z: 0 } } = {}) {
+function player({ ninetyNines = [], cape = -1, inventory = [], bank = [], coins = 0, location = { x: 3000, y: 3000, z: 0 }, username = "capes" } = {}) {
   const equipment = Array(14).fill(null).map(() => item(-1, 0));
   equipment[core.Equipment.CAPE_SLOT] = item(cape);
   const inv = container(inventory, 28);
@@ -88,6 +93,7 @@ function player({ ninetyNines = [], cape = -1, inventory = [], bank = [], coins 
   const levelOf = (skill) => (ninetyNines.includes("ALL") || ninetyNines.some((key) => core.Skill[key] === skill) ? 99 : 50);
   return {
     messages, attributes, varbits, location,
+    getUsername: () => username,
     getEquipment: () => ({ ...container([], 0), getItems: () => equipment, contains: (id) => equipment.some((i) => i.getId() === id), refreshItems() {} }),
     getInventory: () => inv,
     getBanks: () => banks,
@@ -224,6 +230,46 @@ test("masters sell the cape and hood for 99,000, trimmed with a second 99", () =
   assert.equal(ask(poor, "If the player does not have at least 99,000 coins:"), true);
 });
 
+test("the Master Crafter's transcript has no hand-out step, so his sale and hood lines make it", () => {
+  const { sellerLine } = Sellers._test;
+  const definition = { getName: () => "Master Crafter" };
+  const sale = "Excellent! Wear that cape with pride my friend.";
+  const buyer = player({ ninetyNines: ["CRAFTING"], coins: 99000 });
+  sellerLine({ player: buyer, definition, text: "Not the sale line" });
+  assert.equal(buyer.getInventory().getAmount(core.ItemIdentifiers.COINS), 99000);
+  sellerLine({ player: buyer, definition, text: sale });
+  assert.equal(buyer.getInventory().getAmount(core.ItemIdentifiers.COINS), 0);
+  assert.equal(buyer.getInventory().contains(obj("skillcape_crafting")), true);
+  assert.equal(buyer.getInventory().contains(obj("skillcape_crafting_hood")), true);
+
+  const hood = "Most certainly, and free of charge!";
+  const another = player({ ninetyNines: ["CRAFTING"], coins: 0 });
+  sellerLine({ player: another, definition, text: hood });
+  assert.equal(another.getInventory().contains(obj("skillcape_crafting_hood")), false);
+  another.getInventory().adds(obj("skillcape_crafting"), 1);
+  sellerLine({ player: another, definition, text: hood });
+  assert.equal(another.getInventory().contains(obj("skillcape_crafting_hood")), true);
+});
+
+test("every skillcape master is named after an NPC in the active cache", () => {
+  // Masters are found by cache name: rev 242 renamed the Melee combat and Woodsman tutors
+  // (Captain Harlan, Wilfred), which left the Defence and Woodcutting capes unsold.
+  const names = new Set();
+  for (let id = 0; id < core.CacheDefinitions.getCounts().npcs; id++) names.add(core.CacheDefinitions.getNpc(id)?.name);
+  const missing = [...Sellers._test.MASTERS.keys()].filter((name) => !names.has(name));
+  assert.deepEqual(missing, []);
+});
+
+test("Captain Harlan sells the Defence cape to a player with 99 Defence", () => {
+  const { sellerVariant, sellerAction } = Sellers._test;
+  const definition = { getName: () => "Captain Harlan" };
+  const buyer = player({ ninetyNines: ["DEFENCE"], coins: 99000 });
+  assert.equal(sellerVariant({ player: buyer, definition }), "with-99-defence");
+  sellerAction({ player: buyer, definition, text: "a Defence cape and hood" });
+  assert.equal(buyer.getInventory().contains(obj("skillcape_defence")), true);
+  assert.equal(sellerVariant({ player: player({ ninetyNines: ["WOODCUTTING"] }), definition: { getName: () => "Wilfred" } }), "99-woodcutting");
+});
+
 test("shop masters get a copy of their shop with the cape, and the hood needs a second slot", () => {
   const { shopCopies, limitCapePurchase, SHOP_MASTERS, SHOP_CAPES } = Sellers._test;
   const copies = shopCopies();
@@ -263,7 +309,15 @@ test("Boost raises the skill to 100 once until it drops back; Hitpoints waits a 
   p.getSkillManager().setCurrentLevel(core.Skill.HITPOINTS, 99);
   boost(p, hp);
   assert.equal(p.messages.at(-1), "Your Skillcape of Hitpoints can only provide a hitpoint boost once per minute.");
-  lastBoost.delete(p);
+  const relogged = player({ ninetyNines: ["HITPOINTS"] });
+  boost(relogged, hp);
+  assert.equal(relogged.getSkillManager().getCurrentLevel(core.Skill.HITPOINTS), 99, "a relog doesn't reset the minute");
+  assert.equal(relogged.messages.at(-1), "Your Skillcape of Hitpoints can only provide a hitpoint boost once per minute.");
+  const other = player({ ninetyNines: ["HITPOINTS"], username: "someone else" });
+  other.getSkillManager().setCurrentLevel(core.Skill.HITPOINTS, 99);
+  boost(other, hp);
+  assert.equal(other.getSkillManager().getCurrentLevel(core.Skill.HITPOINTS), 100, "another player's minute is their own");
+  lastBoost.clear();
 });
 
 test("daily allowances count today's uses and reset on a new day", () => {
@@ -283,6 +337,48 @@ test("the Magic cape menu leaves out the current spellbook and counts what is le
   Options.spellbookMenu(p);
   assert.equal(prompts[0].title, "Choose spellbook: (5/5 left)");
   assert.deepEqual(prompts[0].options, ["Ancient", "Lunar", "Arceuus", "Cancel"]);
+});
+
+// After the fifth change of the day the max cape's Spellbook
+// option opens the message box, not the menu; its Check sub-option still gives the 5/5 line.
+test("with five changes used, the Spellbook option (max or Magic cape) shows the limit box, no menu", (t) => {
+  const boxes = [];
+  t.mock.method(Capes, "messageBox", (_player, text) => boxes.push(text));
+  for (const capeItem of [obj("skillcape_max"), obj("skillcape_magic")]) {
+    prompts.length = 0;
+    boxes.length = 0;
+    const p = player({ ninetyNines: ["ALL"], inventory: [capeItem] });
+    p.getSpellbook = () => core.MagicSpellbook.NORMAL;
+    for (let i = 0; i < 5; i++) Capes.useDaily(p, "spellbook");
+    const event = { player: p, itemId: capeItem, option: "Spellbook", clickType: 3 };
+    if (capeItem === obj("skillcape_max")) MaxCape._test.maxCapeOption(event);
+    else Options._test.capeOption(event);
+    assert.equal(event.handled, true);
+    assert.deepEqual(prompts, []);
+    assert.deepEqual(boxes, ["You may only switch spellbooks five times per day. Try again tomorrow."]);
+  }
+  const p = player({ ninetyNines: ["ALL"] });
+  for (let i = 0; i < 5; i++) Capes.useDaily(p, "spellbook");
+  Options.checkSpellbook(p);
+  assert.deepEqual(p.messages, ["<col=ef1020>You have changed your spellbook 5/5 times today.</col>"]);
+});
+
+// A player without every 99 picking a Teleports entry gets the box.
+test("the max cape's Teleports need every skill at 99", (t) => {
+  const boxes = [];
+  t.mock.method(Capes, "messageBox", (_player, text) => boxes.push(text));
+  const goTo = t.mock.method(Teleports, "goTo", () => {});
+  const openMenu = t.mock.method(Teleports, "openMenu", () => {});
+  const p = player({ ninetyNines: ["MAGIC"], inventory: [obj("skillcape_max")] });
+  for (const event of [
+    { player: p, itemId: obj("skillcape_max"), option: "Teleports", clickType: 3 },
+    { player: p, itemId: obj("skillcape_max"), option: "Teleports", clickType: 3, subOpId: 1 },
+  ]) MaxCape._test.maxCapeOption(event);
+  assert.deepEqual(boxes, Array(2).fill("You need to have level 99 in all of the skills to use this."));
+  assert.equal(goTo.mock.callCount() + openMenu.mock.callCount(), 0);
+  const maxed = player({ ninetyNines: ["ALL"], inventory: [obj("skillcape_max")] });
+  MaxCape._test.maxCapeOption({ player: maxed, itemId: obj("skillcape_max"), option: "Teleports", clickType: 3 });
+  assert.equal(openMenu.mock.callCount(), 1);
 });
 
 test("the max cape and Agility cape swap to their worn ids and back", () => {
@@ -324,4 +420,21 @@ test("Mac sells the max cape only to a player with every 99, and buys it back fo
   sellBack(maxed);
   assert.equal(maxed.getInventory().getAmount(core.ItemIdentifiers.COINS), 1900800);
   assert.equal(maxed.getInventory().contains(obj("skillcape_max_hood")), false);
+});
+
+test("Brother Jered offers and blesses one symbol with a full inventory", () => {
+  const symbol = core.ItemIdentifiers.UNBLESSED_SYMBOL;
+  const holy = core.ItemIdentifiers.HOLY_SYMBOL;
+  const p = player({ inventory: Array(28).fill(symbol) });
+  const base = { player: p, definition: { getName: () => "Brother Jered" } };
+  assert.equal(Sellers._test.sellerCondition({ ...base, text: "If the player does not have 99 Prayer:" }), false);
+  assert.equal(Sellers._test.sellerCondition({ ...base, text: "If the player is carrying an unblessed symbol:" }), true);
+  const action = { ...base, stepId: "4VbQ5b" };
+  Sellers._test.sellerAction(action);
+  assert.equal(action.handled, true);
+  assert.equal(p.getInventory().getAmount(symbol), 27);
+  assert.equal(p.getInventory().getAmount(holy), 1);
+  const empty = player();
+  Sellers._test.sellerAction({ ...base, player: empty, stepId: "4VbQ5b" });
+  assert.equal(empty.getInventory().getAmount(holy), 0);
 });

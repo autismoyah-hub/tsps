@@ -8,8 +8,6 @@ import { getLogicalFirePositions } from "../../../game/login/renderer/layout/geo
 import { drawServerListOverlay } from "../../../game/login/renderer/render/serverListOverlay";
 import { LoadingMessageOverlay } from "../../../ui/devoverlay/LoadingMessageOverlay";
 import type { OverlayUpdateArgs } from "../../../ui/devoverlay/Overlay";
-import { SystemUpdateOverlay } from "../../../ui/devoverlay/SystemUpdateOverlay";
-import { getChatboxScreenRect } from "../../../widgets/gl/widgetsOverlayFactory";
 import type { WebGPURenderer } from "../WebGPURenderer";
 import { createMobileLoginInput, type MobileLoginInput } from "./mobileLoginInput";
 import type { UiRenderMetrics } from "./WebGPUUi";
@@ -18,9 +16,9 @@ import type { UiRenderMetrics } from "./WebGPUUi";
 const WELCOME_SCREEN_GROUP_ID = 378;
 
 /**
- * DOM presentation for the WebGPU backend: the title/login surface, the loading message, the
- * system-update countdown and the welcome blackout live on DOM canvases stacked over the main
- * canvas (same pattern WidgetsOverlay uses for the HUD). No main-context GL is involved.
+ * DOM presentation for the WebGPU backend: the title/login surface, loading message and
+ * welcome blackout live on DOM canvases stacked over the main canvas (same pattern
+ * WidgetsOverlay uses for the HUD). No main-context GL is involved.
  *
  * The login surface is drawn by the Canvas2D LoginRenderer (fire included via skipFire=false)
  * and blitted 1:1 to device pixels, with the WebGL frame loop's login input routing replicated
@@ -32,7 +30,6 @@ export class WebgpuUiPresentation {
     private hudFxCanvas: HTMLCanvasElement;
     private hudFxCtx: CanvasRenderingContext2D | null = null;
     private readonly loadingMessageOverlay: LoadingMessageOverlay;
-    private readonly systemUpdateOverlay: SystemUpdateOverlay;
     private readonly mobileLoginInput: MobileLoginInput;
 
     constructor(
@@ -51,9 +48,6 @@ export class WebgpuUiPresentation {
         this.loadingMessageOverlay.setSceneLoadingSource(
             () => !renderer.mapManager.isViewSquareReady(renderer.stats.frameCount),
         );
-        this.systemUpdateOverlay = new SystemUpdateOverlay({
-            getChatboxRect: () => getChatboxScreenRect({ osrsClient }),
-        });
         this.mobileLoginInput = createMobileLoginInput(renderer, computeMetrics);
     }
 
@@ -94,7 +88,6 @@ export class WebgpuUiPresentation {
 
     dispose(): void {
         this.loadingMessageOverlay.dispose();
-        this.systemUpdateOverlay.dispose();
         this.mobileLoginInput.dispose();
         this.loginCanvas.remove();
         this.hudFxCanvas.remove();
@@ -140,8 +133,8 @@ export class WebgpuUiPresentation {
                 const { loginState } = osrsClient;
                 this.mobileLoginInput.sync(
                     isMobileMode &&
-                        loginState.loginIndex === LoginIndex.LOGIN_FORM &&
-                        loginState.virtualKeyboardVisible &&
+                        (loginState.extension ? loginState.extension.textInput?.() !== undefined :
+                            loginState.loginIndex === LoginIndex.LOGIN_FORM && loginState.virtualKeyboardVisible) &&
                         inputManager.isTouch,
                 );
                 if (action === "connect") {
@@ -182,6 +175,7 @@ export class WebgpuUiPresentation {
             (inputManager.mouseY - metrics.renderOffsetY) / metrics.renderScaleY,
         );
         loginState.hoveredServerIndex = loginRenderer.computeHoveredServerIndex(loginState);
+        loginRenderer.updateExtensionHover(loginState);
 
         if (editorLoading) {
             loginRenderer.drawInitial(loginState, layoutW, layoutH, layoutW, layoutH);
@@ -351,14 +345,9 @@ export class WebgpuUiPresentation {
 
         const args = makeOverlayArgs(timeMs, deltaMs, bufW, bufH);
         this.loadingMessageOverlay.update(args);
-        this.systemUpdateOverlay.update(args);
         let hasContent = hasGutters;
         if (this.loadingMessageOverlay.isVisible()) {
             this.loadingMessageOverlay.drawTo2D(ctx);
-            hasContent = true;
-        }
-        if (this.systemUpdateOverlay.isVisible()) {
-            this.systemUpdateOverlay.drawTo2D(ctx);
             hasContent = true;
         }
         if (hasContent) this.show(canvas);

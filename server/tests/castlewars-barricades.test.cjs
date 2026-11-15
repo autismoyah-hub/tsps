@@ -63,7 +63,6 @@ before(() => {
   game.getTeamId = () => data.TEAM.SARADOMIN;
   game.swapObject = (...args) => swaps.push(args);
   game.gameArea = { getPlayers: () => [] };
-  game.getBarricadePlayerPriority = () => false;
   game.hasPracticeBots = () => false;
   Barricades(api, game);
   require('../plugins/combat/specials/Shove.SpecialAttack')(PluginManager.createApi('Castle Wars shove regression'));
@@ -108,42 +107,35 @@ test('the energy-barrier exit and nonblocking map objects allow immediate barric
   }
 });
 
-test('practice menu priority selects native variants through burning, extinguishing and removal', (t) => {
-  let playerPriority = false;
+test('practice and human games keep players above native barricades through burning, extinguishing and removal', (t) => {
   let practice = true;
-  t.mock.method(game, 'getBarricadePlayerPriority', () => playerPriority);
   t.mock.method(game, 'hasPracticeBots', () => practice);
   for (const team of Object.values(data.TEAM)) {
     t.mock.method(game, 'getTeamId', () => team);
-    for (const [isPractice, enabled] of [[true, false], [true, true], [false, false], [false, true]]) {
+    for (const isPractice of [true, false]) {
       practice = isPractice;
-      playerPriority = enabled;
       const p = playerAt(t, 2427, 3078);
       const inventory = p.getInventory();
       inventory.adds(core.ItemIdentifiers.TINDERBOX, 1);
       inventory.adds(core.ItemIdentifiers.BUCKET_OF_WATER, 1);
       const npc = deployed(t, p);
-      const standardId = data.BARRICADE_NPC[team];
-      const barricadeFirst = isPractice && !enabled;
-      const expected = barricadeFirst ? (team === data.TEAM.SARADOMIN ? core.NpcIdentifiers.BARRICADE : core.NpcIdentifiers.BARRICADE_3) : standardId;
+      const expected = data.BARRICADE_NPC[team];
       assert.equal(npc.getId(), expected);
       const definition = core.CacheDefinitions.getNpc(npc.getId());
-      const standard = core.CacheDefinitions.getNpc(standardId);
-      assert.equal(definition.drawPriority, barricadeFirst ? 0 : 1);
-      assert.deepEqual(definition.modelIds, standard.modelIds);
-      assert.deepEqual(definition.actions, standard.actions);
+      assert.equal(definition.drawPriority, 1);
+      assert.equal(definition.name, 'Barricade');
       assert.equal(npc.hasFlag(core.NPC.BLOCKS_PLAYERS_FLAG), true);
       assert.equal(game.isBarricade(npc), true);
       p.moveTo(npc.getLocation().transform(-1, 0));
       itemOnNpc({ player: p, target: npc, itemId: core.ItemIdentifiers.TINDERBOX, slot: inventory.getSlotForItemId(core.ItemIdentifiers.TINDERBOX), handled: false });
       assert.equal(npc.getNpcTransformationId(), expected + 1);
-      assert.equal(core.CacheDefinitions.getNpc(expected + 1).drawPriority, barricadeFirst ? 0 : 1);
+      assert.equal(core.CacheDefinitions.getNpc(expected + 1).drawPriority, 1);
       itemOnNpc({ player: p, target: npc, itemId: core.ItemIdentifiers.BUCKET_OF_WATER, slot: inventory.getSlotForItemId(core.ItemIdentifiers.BUCKET_OF_WATER), handled: false });
       assert.equal(npc.getNpcTransformationId(), -1);
-      assert.equal(npc.getId(), expected, 'extinguishing restores the selected priority variant');
+      assert.equal(npc.getId(), expected, 'extinguishing restores the standard variant');
       inventory.adds(core.ItemIdentifiers.EXPLOSIVE_POTION, 1);
       itemOnNpc({ player: p, target: npc, itemId: core.ItemIdentifiers.EXPLOSIVE_POTION, slot: inventory.getSlotForItemId(core.ItemIdentifiers.EXPLOSIVE_POTION), handled: false });
-      assert.equal(game.isBarricade(npc), false, 'explosion releases either variant');
+      assert.equal(game.isBarricade(npc), false, 'explosion releases the barricade');
       assert.equal(npc.hasFlag(core.NPC.BLOCKS_PLAYERS_FLAG), false);
       World.getRemoveNPCQueue().splice(0);
       World.getNpcs().remove(npc);
@@ -330,7 +322,7 @@ test('issue 1929: a player cannot cut diagonally past a barricade', (t) => {
   assert.equal(step(1, 1), true);
 });
 
-test("issue 1929: a standard dropped on tunnel rocks, or your own on catapult battlements, goes home", (t) => {
+test("a standard dropped on blocked tunnel rocks, or your own on catapult battlements, goes home", (t) => {
   const { SARADOMIN } = data.TEAM;
   const dropAt = (x, y) => {
     const carrier = playerAt(t, x, y, 0);
@@ -342,7 +334,7 @@ test("issue 1929: a standard dropped on tunnel rocks, or your own on catapult ba
     return result;
   };
   // RuneHQ: "if you die on the stepping stones or under the rockslide, it will return to your base."
-  // Rocks 4437 stand at 2391,9501 in the cache map; the same holds once they are mined away.
+  // Rocks 4437 stand at 2391,9501 in the cache map; cleared patches have outside floor drops.
   const rockTiles = [[2391, 9501], [2392, 9502], [2401, 9494], [2402, 9495], [2409, 9503], [2400, 9512]];
   // The reporter's battlement tiles beside each catapult, and their mirrors.
   const battlements = [[2383, 3116], [2384, 3116], [2385, 3116], [2387, 3118], [2387, 3119],
@@ -353,7 +345,9 @@ test("issue 1929: a standard dropped on tunnel rocks, or your own on catapult ba
     assert.equal(dropped, null, `${x},${y} leaves nothing on the floor`);
   }
   t.mock.method(core.MapObjects, 'get', () => null);
-  assert.equal(dropAt(2392, 9502).status, 0, 'mined-away rocks still send it home');
+  const cleared = dropAt(2392, 9502);
+  assert.equal(cleared.status, 2, 'cleared rocks leave a dropped standard');
+  assert.ok(cleared.dropped.getLocation().equals(new core.Location(2393, 9502)), 'the east-west passage keeps the carrier row');
   // The rest of the catapult deck, and the tunnel beside the rocks, drop it as usual.
   for (const [x, y] of [[2383, 3118], [2385, 3120], [2413, 3087], [2393, 9502], [2401, 9493]]) {
     const { status, dropped } = dropAt(x, y);
@@ -623,4 +617,53 @@ test('standard-world barricades and burning variants use the cache types that re
     assert.equal(core.CacheDefinitions.getNpc(id + 1).drawPriority, 1);
     assert.equal(core.CacheDefinitions.getNpc(id).name, 'Barricade');
   }
+});
+
+test('Castle Wars barricades block combat sight in both directions and remain attackable', (t) => {
+  const owner = playerAt(t, 2405, 3110, 0);
+  const barricade = deployed(t, owner);
+  const attacker = playerAt(t, 2406, 3110, 0);
+  const target = playerAt(t, 2404, 3110, 0);
+  attacker.getCombat().setCastSpell(core.CombatSpells.ICE_BARRAGE.getSpell());
+  assert.equal(core.CombatRange.canReach(attacker, core.CombatFactory.MAGIC_COMBAT, target), false, 'native Ice Barrage targeting');
+  const mapClip = RegionManager.getClipping(2405, 3110, 0, null);
+  for (const type of [core.CombatType.RANGED, core.CombatType.MAGIC, core.CombatType.MELEE]) {
+    const method = { type: () => type, attackDistance: () => 2 };
+    assert.equal(core.CombatRange.canReach(attacker, method, target), false, String(type));
+    assert.equal(core.CombatRange.canReach(target, method, attacker), false, 'reverse ray');
+    assert.equal(core.CombatRange.canReach(attacker, method, barricade), true, 'attack the blocker itself');
+    assert.equal(core.CombatRange.canReach(attacker, method, playerAt(t, 2406, 3111, 0)), true, 'off-ray target');
+  }
+  assert.equal(attacker.getMovementQueue().canWalkTo(owner.getLocation(), attacker.getLocation()), false);
+  assert.equal(RegionManager.getClipping(2405, 3110, 0, null), mapClip, 'dynamic NPCs leave map clips intact');
+  const sight = () => RegionManager.canProjectileAttackTarget(attacker, target);
+  barricade.setNpcTransformationId(barricade.getId() + 1);
+  assert.equal(sight(), false, 'burning still blocks sight');
+  barricade.setNpcTransformationId(-1);
+  assert.equal(sight(), false, 'extinguished still blocks sight');
+  game.removeBarricade(barricade);
+  assert.equal(sight(), true, 'removal opens the ray before the NPC removal queue runs');
+  assert.equal(core.CombatRange.canReach(attacker, core.CombatFactory.MAGIC_COMBAT, target), true, 'Ice Barrage can target again');
+});
+
+test('projectile blockers are scoped to their plane and private area, and overlapping blockers clear independently', (t) => {
+  const owner = playerAt(t, 2405, 3110, 0);
+  const first = deployed(t, owner);
+  const second = new core.NPC(first.getId(), owner.getLocation().clone());
+  World.getNpcs().add(second);
+  game.trackBarricade(second, data.TEAM.SARADOMIN);
+  t.after(() => { game.releaseBarricade(second); World.getNpcs().remove(second); });
+  const ray = (z = 0, area = null) => RegionManager.canProjectileAttackBounds(
+    new core.Location(2406, 3110, z), new core.Location(2404, 3110, z), 1, 1, 1, 1, area);
+  assert.equal(ray(), false);
+  assert.equal(ray(0, {}), true, 'a different instance is unaffected');
+  assert.equal(World.isProjectileBlockingNpcOnTile(2405, 3110, 1, null), false, 'another floor is unaffected');
+  game.releaseBarricade(first);
+  assert.equal(ray(), false, 'the overlapping blocker remains');
+  second.setLocation(new core.Location(2405, 3111, 0));
+  assert.equal(ray(), true, 'moving the blocker updates its indexed footprint');
+  second.setLocation(owner.getLocation().clone());
+  assert.equal(ray(), false);
+  World.getNpcs().remove(second);
+  assert.equal(ray(), true, 'unregistering removes the indexed blocker');
 });

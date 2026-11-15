@@ -44,6 +44,8 @@ const game = {
 };
 
 before(async () => {
+  // Dream Mentor gives these Lunar spells (Wiki); the quest plugins are not loaded here.
+  PluginManager.createApi("DreamMentorDone").onCustomEvent("quest:is-complete", (q) => { if (q.key === "dream_mentor") q.complete = true; });
   await CachePipeline.initialize(process.cwd());
   core.CacheDefinitions.registerCustomItems(require('../data/definitions/custom-items.json'));
   Potions.register(api);
@@ -154,9 +156,11 @@ test('Castlewars brew uses normal potion cooldowns and restores stats, prayer an
   p.getInventory().setItem(0, new core.Item(data.BREW_DOSES[0], 1));
   assert.equal(drink(p, data.BREW_DOSES[0]), true);
   assert.equal(p.getInventory().getItems()[0].getId(), data.BREW_DOSES[1]);
-  for (const skill of [core.Skill.ATTACK, core.Skill.STRENGTH, core.Skill.DEFENCE]) assert.equal(p.getSkillManager().getCurrentLevel(skill), 118);
-  assert.equal(p.getSkillManager().getCurrentLevel(core.Skill.RANGED), 112);
-  assert.equal(p.getSkillManager().getCurrentLevel(core.Skill.MAGIC), 109);
+  // From 50/99: the super restore part first (to 82), then each boost added to that (rsprox 226/01702: a boost adds
+  // to the current level; base + boost is only its cap).
+  for (const skill of [core.Skill.ATTACK, core.Skill.STRENGTH, core.Skill.DEFENCE]) assert.equal(p.getSkillManager().getCurrentLevel(skill), 82 + 19);
+  assert.equal(p.getSkillManager().getCurrentLevel(core.Skill.RANGED), 82 + 13);
+  assert.equal(p.getSkillManager().getCurrentLevel(core.Skill.MAGIC), 82 + 10);
   assert.equal(p.getSkillManager().getCurrentLevel(core.Skill.PRAYER), 82);
   assert.equal(p.getSkillManager().getCurrentLevel(core.Skill.HITPOINTS), 50);
   assert.equal(p.getRunEnergy(), 30);
@@ -210,7 +214,7 @@ test('bucket routing stands directly next to a Castle Wars tap', (t) => {
 test('cleanup includes buckets and every potion dose; Lanthus and ground supplies use corrected canonical spawns', () => {
   for (const id of [core.ItemIdentifiers.BUCKET, core.ItemIdentifiers.BUCKET_OF_WATER, ...data.BREW_DOSES]) {
     assert.equal(data.CLEANUP_ITEM_IDS.has(id), true);
-    assert.equal(data.DEATH_REMOVE_ITEM_IDS.has(id), true);
+    assert.equal(data.DEATH_REMOVE_ITEM_IDS.has(id), false, 'supplies last until the player leaves the game');
   }
   const lanthus = require('../data/definitions/npc-spawns.json').filter((spawn) => spawn.name === 'Lanthus');
   assert.equal(lanthus.length, 1);
@@ -310,6 +314,7 @@ for (const name of ['Energy Transfer', 'Vengeance Other', 'Vengeance', 'Spellboo
         if (params.get(param)) costs.push([params.get(param), params.get(param + 1)]);
       }
       if (mode === 'paid') for (const [id, amount] of costs) p.getInventory().adds(id, amount);
+      p.getSkillManager().setMaxLevels(core.Skill.HITPOINTS, 99, false).setCurrentLevel(core.Skill.HITPOINTS, 99, false);
       p.setSpecialPercentage(100);
       p.setRunEnergy(100);
       target.setSpecialPercentage(0);
@@ -330,13 +335,15 @@ for (const name of ['Energy Transfer', 'Vengeance Other', 'Vengeance', 'Spellboo
       if (name === 'Energy Transfer') {
         assert.equal(p.getSpecialPercentage(), casts ? 0 : 100);
         assert.equal(target.getSpecialPercentage(), casts ? 100 : 0);
-        assert.equal(target.getRunEnergy(), casts ? 50 : 0);
+        assert.equal(target.getRunEnergy(), casts ? 100 : 0);
       } else if (name === 'Vengeance Other') {
         assert.equal(target.hasVengeanceReturn(), casts);
       } else if (name === 'Vengeance') {
         assert.equal(p.hasVengeanceReturn(), casts);
       } else {
         assert.equal(p.getDialogueManager().isActive(), casts, 'Spellbook Swap opens its existing book chooser');
+        // Wiki (Spellbook Swap): the runes are spent when a book is selected.
+        if (casts) p.getDialogueManager().handleOption(1);
       }
       if (casts) {
         assert.notEqual(p.getAnimation()?.getId() ?? -1, -1);

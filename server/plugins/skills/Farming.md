@@ -45,8 +45,10 @@ Crop levels, planting/harvest/check-health XP and seed counts are the Wiki's
 held as explicit rows in `Data.Farming.js`. Planting reads the player's current
 Farming level (so boosts count) and refuses a lower level with
 `You need level <n> Farming to plant that.` before taking a seed or touching
-the patch. Herbs defer their planting XP until the final pick, as the Wiki
-describes.
+the patch. Planting XP is deferred for every crop until its health check or
+until the patch clears after harvest; clearing a dead crop awards that pending
+planting XP. Early spade clearing is enabled only when a patch can grow more
+than one crop species, matching the June 2026 Wiki update.
 
 Growth is part of the server's one-tick Farming task. `Model.nextGrowth`
 aligns every stage to the Wiki's fixed 5/10/20/40/80/160/320/640-minute cycle
@@ -68,9 +70,30 @@ stops for 40 minutes), not twice its normal cycle.
   depletion is 1/11 with a 200-tick regrowth, and the compost and belladonna
   tables are named constants.
 
+### Tree seedlings in plant pots
+
+From rsprox captures 127 (rev 227) and 2879 (rev 230) and the index's other sowings:
+
+- A tree seed on a filled plant pot (either way round, gardening trowel carried)
+  sends the spam line `You sow a <seed> in the plantpot.<br>It needs watering
+  before it will grow.` on the same tick, with no animation or sound. The seed
+  and pot go and the seedling takes the first free slot. The seed is named
+  "yew/maple tree seed", "Magic Tree seed" and "Spirit Tree seed"; every other
+  captured seed keeps its cache name (palm/papaya/orange/dragonfruit/calquat tree
+  seed, mahogany/teak seed, crystal acorn). Ours: oak stays "acorn", willow
+  follows yew/maple.
+- Below the seed's level live opens a message box,
+  `You need level <n> Farming to plant that.`, and nothing is sown.
+- A watering can on a seedling sends `You water the <seed>.` (spam) with no
+  animation; the can and seedling change in place. The seed keeps its cache
+  name ("yew seed", "maple seed"), except "magic tree seed" and "spirit tree
+  seed"; a hardwood seedling is "the plantpot".
+
 ## Fidelity limits
 
-This is **not a verified 1:1 implementation**. In particular:
+This is **not a verified 1:1 implementation**. The patch planting, harvest,
+health-check XP timing, early-clearing rules and named herb transforms were
+audited against the current Wiki/cache for issue #2360. In particular:
 
 - Disease, compost, watering, yield, Kronos and barbarian rates live in
   `Data.Farming.js`'s `FORMULAS` table, not inside the model. Published rates
@@ -128,6 +151,15 @@ supplies storage capacities and noted deposits/withdrawals. No ordinary-world
 recording shows every quantity/Banknotes path: their op order follows the cache;
 Banknotes uses the selected quantity, and X remembers a positive amount for the
 open session. The amount prompt wording is ours. Produce noting is unchanged.
+
+Produce noting follows rsprox captures (user recordings, revision 241: potatoes and
+weeds at Catherby, potatoes at Ardougne and Falador, grimy guam and tomatoes at
+Hosidius, strawberries at the Varlamore leprechaun). On the tick the notes replace
+the produce, live sends `The leprechaun exchanges your items for banknotes.` as a
+mesbox chat line and opens `objectbox` (193) with the unnoted item at zoom 400 and
+the same text. Exchanging a single item reads `The leprechaun exchanges your item for a
+banknote.` instead (rsprox.net recording 1851, rev 227, tick 17662: one coconut). The
+refusal lines are not in these recordings.
 
 ### Other Farming verification
 
@@ -196,6 +228,41 @@ so limited inventory space is filled from the lowest-level herb first (including
 Huasca before Snapdragon). Regression checks cover both sack variants, partial/repeated
 withdrawals and full inventories. Source: [Herb sack](https://oldschool.runescape.wiki/w/Herb_sack).
 
+The sack's lines (rsprox captures, rev 235 normal worlds: 960, 964, 966, 976, 982, 1016, 4293, 4300, 4302):
+
+| Action | Line | Type |
+| --- | --- | --- |
+| Fill, grimy herbs stored | "You search your inventory for herbs appropriate to put in the sack..." then "You add the herbs to your sack." | spam |
+| Fill, no room for any carried herb | the search line, then "You don't have enough space for the herbs." | spam, game |
+| Fill, no grimy herb carried | "You have no grimy herbs in your inventory that can be stored in the sack." | game |
+| Check | "You look in your herb sack and see:", then "<n> x <herb>" per herb, lowest Herblore level first, or "The herb sack is empty." | game |
+| Empty | "You rummage around to see if you can extract any herbs from your herb sack." | spam |
+| Empty, inventory full | "You have no space to put any herbs!" | game |
+| Empty (inventory or bank), nothing stored | "The herb sack is empty." | game |
+| An item other than a grimy herb used on it | "You can't possibly put that in there, it would spoil your sack." | game |
+
+The rummage line is from Leagues V and Grid Master recordings (86, 1723, 3271), where the Forager's pouch empties
+with it, naming the herb sack; the spoil line is also in the Wiki's trivia. The silklined sack says "silklined herb
+sack" in Check and the empty line (Wiki), and, ours, in the rummage line. Ours: a grimy herb used on a sack with no
+room for it gets Fill's "not enough space" line. A seed box emptied into a full inventory adds "You don't have space
+in your inventory for that." after its Emptied lines (captures 3911, 4300, 4302, 4307).
+
+Not covered (no capture or Wiki line): a herb used on the sack when it has room (no line here), the closed sack's own
+recordings (only the open sack is recorded; the two share these lines here), live's one-tick delay before Check's
+lines, what a sack does below 58 Herblore (here Fill finds no room), a sack used on a seed box (here the spoil line),
+and a bank Empty when the bank has no room (silent here). Empty from a deposit box (Wiki, 27 September 2018) isn't
+here: deposit boxes don't offer any storage item's bank Empty yet.
+
+An open sack also takes grimy herbs picked up from the ground and herbs harvested from a herbiboar,
+as it does from patches, whole or not at all for a pickup and per herb for a harvest, while it has room
+(30 of each type here, 100 in a silklined sack). A closed sack takes none. Wiki: "will automatically
+store any grimy herbs that are picked up", "provided there is space for it". No message is shown, as none is documented.
+Open, it also takes grimy herbs looted from a Sailing creature ("herb-sack:gather", Wiki: Herb sack, 6 May 2026), silently.
+
+A pristine spider silk (Sarachnis's) used on a herb sack makes it a silklined herb sack, which stores 100 of each grimy herb
+and otherwise works the same, open or closed. The upgrade has no cost or level requirement (Wiki: [Silklined herb sack](https://oldschool.runescape.wiki/w/Silklined_herb_sack)).
+Assumed, as no source says: the herbs already in the sack are kept, an open sack stays open, and no message is shown.
+
 The four South Falador allotment/flower/herb patches award 10% extra Farming XP
 after the Medium Falador Diary, queried through canonical diary progress. The
 bonus follows the acted-on patch; it does not apply to Falador Park trees,
@@ -204,8 +271,9 @@ planting, harvesting, deferred herb planting XP and incomplete/easy-only diaries
 Source: [South Falador Farm](https://oldschool.runescape.wiki/w/South_Falador_Farm).
 
 The grown Farming Hespori is immune to ordinary-ring and Ring of Suffering recoil.
-Its content sets the generic `combat:recoil-immune` policy used by both recoil paths;
-Vengeance/Retribution retain their existing reflected-damage behavior. Tests verify
+Its content sets the generic `combat:recoil-immune` policy used by both recoil paths
+and by Vengeance (Wiki: Category:Monsters immune to recoil), whose rebound still goes off
+but deals nothing; Retribution keeps its reflected-damage behavior. Tests verify
 the actual boss wake-up, unchanged flowers, charge conservation and normal recoil.
 Source: [Hespori](https://oldschool.runescape.wiki/w/Hespori).
 

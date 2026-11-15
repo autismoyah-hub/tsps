@@ -4,6 +4,7 @@ import { CLIENT_PACKET_LENGTHS as NATIVE_CLIENT_PACKET_LENGTHS, ClientPacketId a
 import { SERVER_PACKET_LENGTHS, ServerPacketId } from "./ServerPackets";
 import { EntityInteractionMode, INTERACTION_WORLD_DEFAULT, TileInteractionMode } from "./InteractionMode";
 import { deflateSync } from "zlib";
+import { type LocMergePayload, validateLocMerge } from "./LocMerge";
 
 export const enum ClientPacket {
   NPC_OPTION_2 = 12,
@@ -24,6 +25,9 @@ export const enum ClientPacket {
   LOGOUT = 203,
   LOGIN = 204,
   LOGIN_FORGET = 207,
+  CHARACTER_SELECT = 206,
+  CHARACTER_CREATE = 208,
+  CHARACTER_DELETE = 209,
   FACE = 211,
   MOVEMENT_INPUT = 215,
   LOC_INTERACT = 231,
@@ -35,6 +39,8 @@ export const enum ServerPacket {
   HANDSHAKE = 2,
   LOGIN_RESPONSE = 3,
   LOGOUT_RESPONSE = 4,
+  CHARACTER_LIST = 7,
+  CHARACTER_RESULT = 8,
   PLAYER_SYNC = 20,
   NPC_INFO = 21,
   ANIM = 22,
@@ -49,6 +55,7 @@ export const enum ServerPacket {
 
 export type PlayerAppearance = {
   gender: number;
+  hidden?: boolean;
   pronouns?: number;
   colors: number[];
   kits: number[];
@@ -129,6 +136,42 @@ function finePositionPayload(position: FinePositionView): Buffer {
 
 export function encodeFinePosition(position: FinePositionView): Buffer {
   return encodeServerPacket(ServerPacketId.MOVEMENT_POSITION, finePositionPayload(position));
+}
+
+function effectInteger(name: string, value: number, min: number, max: number): number {
+  if (!Number.isInteger(value) || value < min || value > max) throw new RangeError(`${name} outside ${min}..${max}`);
+  return value;
+}
+
+/** A one-shot sequence for one viewer; -1 clears the NPC's current sequence. */
+export function encodeNpcAnimationSpecific(index: number, id: number, delay = 0): Buffer {
+  const out = Buffer.alloc(5);
+  out.writeUInt16BE(effectInteger("NPC index", index, 0, 65534), 0);
+  out.writeUInt16BE(effectInteger("sequence", id, -1, 65534) & 65535, 2);
+  out[4] = effectInteger("sequence delay", delay, 0, 255);
+  return encodeServerPacket(ServerPacketId.NPC_ANIM_SPECIFIC, out);
+}
+
+/** Actor spot effects use independent slots; -1 clears only the requested slot. */
+export function encodeNpcSpotAnimationSpecific(index: number, id: number, slot = 0, height = 0, delay = 0): Buffer {
+  const out = Buffer.alloc(9);
+  out.writeUInt16BE(effectInteger("NPC index", index, 0, 65534), 0);
+  out.writeUInt16BE(effectInteger("spotanim", id, -1, 65534) & 65535, 2);
+  out[4] = effectInteger("spotanim slot", slot, 0, 255);
+  out.writeUInt16BE(effectInteger("spotanim height", height, 0, 65535), 5);
+  out.writeUInt16BE(effectInteger("spotanim delay", delay, 0, 65535), 7);
+  return encodeServerPacket(ServerPacketId.NPC_SPOTANIM_SPECIFIC, out);
+}
+
+/** Replace one of this viewer's eight head-icon slots; -1 clears that slot. */
+export function encodeNpcHeadIconSpecific(index: number, slot: number, archive: number, frame: number): Buffer {
+  const out = Buffer.alloc(7);
+  out.writeUInt16BE(effectInteger("NPC index", index, 0, 65534), 0);
+  out[2] = effectInteger("head icon slot", slot, 0, 7);
+  out.writeUInt16BE(effectInteger("head icon archive", archive, -1, 65535) & 65535, 3);
+  // The native client reads the frame as a signed short; 65535 is its clear sentinel.
+  out.writeUInt16BE(effectInteger("head icon frame", frame, -1, 32767) & 65535, 5);
+  return encodeServerPacket(ServerPacketId.NPC_HEADICON_SPECIFIC, out);
 }
 
 export type PlayerSyncState = {
@@ -215,6 +258,7 @@ export type SkillView = {
 };
 
 export type GroundItemView = {
+  enabledOps?: number;
   id: number;
   itemId: number;
   quantity: number;
@@ -259,11 +303,12 @@ export type FriendsChatSnapshot = {
 
 export type ClientMessage =
   | { type: "plugin_message"; channel: string; data: Record<string, unknown> }
-  /** modifierFlags is the click's key byte (OSRS: 1 Ctrl, 2 Ctrl+Shift); run forces running. */
   | { type: "movement_input"; seq: number; dx: number; dy: number; rotation: number; duration: number; active: boolean; running: boolean }
+  /** modifierFlags is the click's key byte (OSRS: 1 Ctrl, 2 Ctrl+Shift); run forces running. */
   | { type: "move"; worldX: number; worldY: number; modifierFlags: number; run?: boolean }
-  | { type: "npc_option"; index: number; clickType: number }
-  | { type: "object_option"; id: number; x: number; y: number; clickType?: number; action?: string }
+  /** On the interaction clicks below, modifierFlags is the packet's Ctrl byte (1 while Ctrl is held), left out when 0. */
+  | { type: "npc_option"; index: number; clickType: number; modifierFlags?: number }
+  | { type: "object_option"; id: number; x: number; y: number; clickType?: number; action?: string; modifierFlags?: number }
   | { type: "world_entity_option"; index: number; clickType: number }
   | { type: "chat"; text: string; messageType: "public" | "game" | "friends_chat"; autoChat?: boolean; style?: ChatStyle }
   | { type: "clan_chat"; clanType: number; text: string }
@@ -279,21 +324,21 @@ export type ClientMessage =
   | { type: "set_heading"; heading: number }
   | { type: "interface_close" }
   | { type: "local_trigger"; widgetId: number; childIndex: number; itemId: number; opcodeParam: number; argsData: Buffer }
-  | { type: "player_option"; index: number; option: number }
-  | { type: "item_on_player"; targetIndex: number; itemId: number; slot: number; widgetId: number }
-  | { type: "item_on_npc"; targetIndex: number; itemId: number; slot: number; widgetId: number }
-  | { type: "item_on_object"; objectId: number; x: number; y: number; itemId: number; slot: number; widgetId: number }
-  | { type: "spell_on_player"; targetIndex: number; spellWidget: number; spellChild: number; spellItemId: number }
-  | { type: "spell_on_npc"; targetIndex: number; spellWidget: number; spellChild: number; spellItemId: number }
-  | { type: "spell_on_object"; objectId: number; x: number; y: number; spellWidget: number; spellChild: number; spellItemId: number }
+  | { type: "player_option"; index: number; option: number; modifierFlags?: number }
+  | { type: "item_on_player"; targetIndex: number; itemId: number; slot: number; widgetId: number; modifierFlags?: number }
+  | { type: "item_on_npc"; targetIndex: number; itemId: number; slot: number; widgetId: number; modifierFlags?: number }
+  | { type: "item_on_object"; objectId: number; x: number; y: number; itemId: number; slot: number; widgetId: number; modifierFlags?: number }
+  | { type: "spell_on_player"; targetIndex: number; spellWidget: number; spellChild: number; spellItemId: number; modifierFlags?: number }
+  | { type: "spell_on_npc"; targetIndex: number; spellWidget: number; spellChild: number; spellItemId: number; modifierFlags?: number }
+  | { type: "spell_on_object"; objectId: number; x: number; y: number; spellWidget: number; spellChild: number; spellItemId: number; modifierFlags?: number }
   | { type: "inventory_action"; slot: number; itemId: number; widgetId: number; option?: string; optionIndex?: number }
   | { type: "inventory_use_on"; slot: number; itemId: number; target: { kind: "npc" | "loc" | "ground" | "player"; id: number; x?: number; y?: number; level?: number } | { kind: "inventory"; slot: number; itemId: number } }
   | { type: "inventory_move"; from: number; to: number; widgetId?: number }
   | { type: "bank_deposit_inventory" | "bank_deposit_equipment" }
   | { type: "bank_move"; from: number; to: number; mode: "swap" | "insert"; tab?: number }
-  | { type: "ground_item_action"; itemId: number; x: number; y: number; stackId?: number; option?: string; optionIndex?: number }
-  | { type: "item_on_ground"; itemId: number; slot: number; widgetId: number; groundItemId: number; x: number; y: number }
-  | { type: "spell_on_ground"; spellWidget: number; spellChild: number; spellItemId: number; groundItemId: number; x: number; y: number }
+  | { type: "ground_item_action"; itemId: number; x: number; y: number; stackId?: number; option?: string; optionIndex?: number; modifierFlags?: number }
+  | { type: "item_on_ground"; itemId: number; slot: number; widgetId: number; groundItemId: number; x: number; y: number; modifierFlags?: number }
+  | { type: "spell_on_ground"; spellWidget: number; spellChild: number; spellItemId: number; groundItemId: number; x: number; y: number; modifierFlags?: number }
   | { type: "examine_npc"; id: number }
   | { type: "examine_object"; id: number }
   | { type: "appearance"; gender: number; kits: number[]; colors: number[] }
@@ -315,7 +360,23 @@ export type ClientMessage =
   | { type: "logout" }
   | { type: "login"; username: string; password: string; revision: number; flags: number }
   | { type: "login_forget"; username: string; token: string }
+  | { type: "character_select"; name: string }
+  | { type: "character_create"; name: string }
+  | { type: "character_delete"; name: string; confirmName: string }
   | { type: "handshake"; name: string; clientType: number; capabilities: number };
+
+/** An interaction click's message, with its Ctrl byte when it is set. */
+function withCtrl<T extends ClientMessage>(message: T, modifierFlags: number): T {
+  return modifierFlags ? { ...message, modifierFlags } : message;
+}
+
+/**
+ * An item id the client writes as two unsigned bytes, with 65535 (its -1) for "no item": ids 32768-65534 are real
+ * items, so the field must not be read as signed.
+ */
+function unsignedItemId(raw: number): number {
+  return raw === 0xffff ? -1 : raw;
+}
 
 class Reader {
   private offset = 0;
@@ -470,7 +531,7 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
         type: "widget_target",
         targetWidgetId: reader.intIME(), targetSlot: reader.shortAddLE(),
         sourceWidgetId: reader.intLE(), sourceSlot: reader.shortLE(),
-        sourceItemId: reader.signedShort(), targetItemId: reader.shortAddLE(),
+        sourceItemId: unsignedItemId(reader.short()), targetItemId: reader.shortAddLE(),
       };
     case NativeClientPacket.IF_TRIGGEROPLOCAL: {
       const blockLength = reader.short();
@@ -484,7 +545,7 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
       return {
         type: "local_trigger", opcodeParam,
         childIndex: childRaw > 0x7fff ? childRaw - 0x10000 : childRaw,
-        widgetId, itemId: itemRaw > 0x7fff ? itemRaw - 0x10000 : itemRaw,
+        widgetId, itemId: unsignedItemId(itemRaw),
         argsData: reader.bytes(blockLength - 12),
       };
     }
@@ -506,80 +567,81 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
       const packed = reader.intIME() >>> 0;
       return { type: "world_map_click", level: packed >>> 28, x: (packed >>> 14) & 0x3fff, y: packed & 0x3fff };
     }
-    case NativeClientPacket.OPPLAYER1:
-      reader.byteSub();
-      return { type: "player_option", index: reader.short(), option: 1 };
-    case NativeClientPacket.OPPLAYER2:
-      reader.byte();
-      return { type: "player_option", index: reader.short(), option: 2 };
-    case NativeClientPacket.OPPLAYER3:
-      reader.byteSub();
-      return { type: "player_option", index: reader.short(), option: 3 };
+    case NativeClientPacket.OPPLAYER1: {
+      const modifierFlags = reader.byteSub();
+      return withCtrl({ type: "player_option", index: reader.short(), option: 1 }, modifierFlags);
+    }
+    case NativeClientPacket.OPPLAYER2: {
+      const modifierFlags = reader.byte();
+      return withCtrl({ type: "player_option", index: reader.short(), option: 2 }, modifierFlags);
+    }
+    case NativeClientPacket.OPPLAYER3: {
+      const modifierFlags = reader.byteSub();
+      return withCtrl({ type: "player_option", index: reader.short(), option: 3 }, modifierFlags);
+    }
     case NativeClientPacket.OPPLAYER4: {
       const index = reader.short();
-      reader.byteNeg();
-      return { type: "player_option", index, option: 4 };
+      return withCtrl({ type: "player_option", index, option: 4 }, reader.byteNeg());
     }
     case NativeClientPacket.OPPLAYER5: {
       const index = reader.shortAddLE();
-      reader.byteSub();
-      return { type: "player_option", index, option: 5 };
+      return withCtrl({ type: "player_option", index, option: 5 }, reader.byteSub());
     }
     case NativeClientPacket.OPPLAYER6: {
       const index = reader.short();
-      reader.byteNeg();
-      return { type: "player_option", index, option: 6 };
+      return withCtrl({ type: "player_option", index, option: 6 }, reader.byteNeg());
     }
     case NativeClientPacket.OPPLAYER7: {
       const index = reader.shortAdd();
-      reader.byteSub();
-      return { type: "player_option", index, option: 7 };
+      return withCtrl({ type: "player_option", index, option: 7 }, reader.byteSub());
     }
-    case NativeClientPacket.OPPLAYER8:
-      reader.byte();
-      return { type: "player_option", index: reader.shortAdd(), option: 8 };
+    case NativeClientPacket.OPPLAYER8: {
+      const modifierFlags = reader.byte();
+      return withCtrl({ type: "player_option", index: reader.shortAdd(), option: 8 }, modifierFlags);
+    }
     case NativeClientPacket.OPPLAYER_U: {
       const targetIndex = reader.shortAddLE();
       const itemId = reader.shortAddLE();
       const slot = reader.shortAdd();
       const widgetId = reader.int();
-      reader.byteAdd();
-      return { type: "item_on_player", targetIndex, itemId, slot, widgetId };
+      const modifierFlags = reader.byteAdd();
+      return withCtrl({ type: "item_on_player", targetIndex, itemId, slot, widgetId }, modifierFlags);
     }
-    case NativeClientPacket.OPPLAYER_T:
-      reader.byteNeg();
-      return {
+    case NativeClientPacket.OPPLAYER_T: {
+      const modifierFlags = reader.byteNeg();
+      return withCtrl({
         type: "spell_on_player",
         spellItemId: reader.shortLE(),
         spellChild: reader.shortLE(),
         spellWidget: reader.intIME(),
         targetIndex: reader.shortLE(),
-      };
+      }, modifierFlags);
+    }
     case NativeClientPacket.OPNPC_T: {
       const targetIndex = reader.short();
       const spellWidget = reader.intLE();
       const spellChild = reader.short();
       const spellItemId = reader.shortAdd();
-      reader.byteAdd();
-      return { type: "spell_on_npc", targetIndex, spellWidget, spellChild, spellItemId };
+      const modifierFlags = reader.byteAdd();
+      return withCtrl({ type: "spell_on_npc", targetIndex, spellWidget, spellChild, spellItemId }, modifierFlags);
     }
     case NativeClientPacket.OPNPC_U: {
       const slot = reader.shortAddLE();
-      reader.byte();
+      const modifierFlags = reader.byte();
       const widgetId = reader.intME();
       const itemId = reader.shortLE();
       const targetIndex = reader.shortAddLE();
-      return { type: "item_on_npc", targetIndex, itemId, slot, widgetId };
+      return withCtrl({ type: "item_on_npc", targetIndex, itemId, slot, widgetId }, modifierFlags);
     }
     case NativeClientPacket.OPLOCU: {
       const slot = reader.shortAddLE();
       const objectId = reader.shortAdd();
       const widgetId = reader.intLE();
-      reader.byteSub();
+      const modifierFlags = reader.byteSub();
       const x = reader.shortLE();
       const y = reader.short();
       const itemId = reader.shortAddLE();
-      return { type: "item_on_object", objectId, x, y, itemId, slot, widgetId };
+      return withCtrl({ type: "item_on_object", objectId, x, y, itemId, slot, widgetId }, modifierFlags);
     }
     case NativeClientPacket.OPLOC_T: {
       const y = reader.shortAddLE();
@@ -588,31 +650,29 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
       const spellWidget = reader.intLE();
       const x = reader.short();
       const spellItemId = reader.shortLE();
-      reader.byteNeg();
-      return { type: "spell_on_object", objectId, x, y, spellWidget, spellChild, spellItemId };
+      const modifierFlags = reader.byteNeg();
+      return withCtrl({ type: "spell_on_object", objectId, x, y, spellWidget, spellChild, spellItemId }, modifierFlags);
     }
-    case NativeClientPacket.OPOBJ1:
-      reader.byteSub();
-      return { type: "ground_item_action", y: reader.shortLE(), itemId: reader.shortAdd(), x: reader.shortAdd(), optionIndex: 1 };
+    case NativeClientPacket.OPOBJ1: {
+      const modifierFlags = reader.byteSub();
+      return withCtrl({ type: "ground_item_action", y: reader.shortLE(), itemId: reader.shortAdd(), x: reader.shortAdd(), optionIndex: 1 }, modifierFlags);
+    }
     case NativeClientPacket.OPOBJ2: {
       const x = reader.shortAdd(), y = reader.shortLE(), itemId = reader.short();
-      reader.byte();
-      return { type: "ground_item_action", itemId, x, y, optionIndex: 2 };
+      return withCtrl({ type: "ground_item_action", itemId, x, y, optionIndex: 2 }, reader.byte());
     }
     case NativeClientPacket.OPOBJ3: {
       const itemId = reader.shortLE(), x = reader.shortAdd(), y = reader.shortAddLE();
-      reader.byteSub();
-      return { type: "ground_item_action", itemId, x, y, optionIndex: 3 };
+      return withCtrl({ type: "ground_item_action", itemId, x, y, optionIndex: 3 }, reader.byteSub());
     }
     case NativeClientPacket.OPOBJ4: {
       const itemId = reader.shortAddLE(), y = reader.shortAddLE();
-      reader.byteNeg();
-      return { type: "ground_item_action", itemId, x: reader.shortAdd(), y, optionIndex: 4 };
+      const modifierFlags = reader.byteNeg();
+      return withCtrl({ type: "ground_item_action", itemId, x: reader.shortAdd(), y, optionIndex: 4 }, modifierFlags);
     }
     case NativeClientPacket.OPOBJ5: {
       const itemId = reader.shortAdd(), x = reader.shortLE(), y = reader.shortLE();
-      reader.byteSub();
-      return { type: "ground_item_action", itemId, x, y, optionIndex: 5 };
+      return withCtrl({ type: "ground_item_action", itemId, x, y, optionIndex: 5 }, reader.byteSub());
     }
     case NativeClientPacket.EXAMINE_OBJ:
       return { type: "ground_item_action", itemId: reader.short(), y: reader.shortLE(), x: reader.shortLE(), option: "Examine" };
@@ -622,19 +682,15 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
       const widgetId = reader.intME();
       const x = reader.shortAdd();
       const slot = reader.shortAddLE();
-      reader.byteSub();
-      return { type: "item_on_ground", groundItemId, y, widgetId, x, slot, itemId: reader.shortLE() };
+      const modifierFlags = reader.byteSub();
+      return withCtrl({ type: "item_on_ground", groundItemId, y, widgetId, x, slot, itemId: reader.shortLE() }, modifierFlags);
     }
-    case NativeClientPacket.OPLOC_T_ALT:
-      return {
-        type: "spell_on_ground",
-        spellWidget: reader.intLE(),
-        spellChild: reader.shortAdd(),
-        groundItemId: reader.shortAdd(),
-        x: reader.shortAddLE(),
-        y: reader.short(),
-        spellItemId: (reader.byte(), reader.shortAddLE()),
-      };
+    case NativeClientPacket.OPLOC_T_ALT: {
+      const spellWidget = reader.intLE(), spellChild = reader.shortAdd(), groundItemId = reader.shortAdd();
+      const x = reader.shortAddLE(), y = reader.short();
+      const modifierFlags = reader.byte();
+      return withCtrl({ type: "spell_on_ground", spellWidget, spellChild, groundItemId, x, y, spellItemId: reader.shortAddLE() }, modifierFlags);
+    }
     case NativeClientPacket.IF_BUTTONX: {
       // Ops 11-32 carry their op index (live OSRS: a bank item's Examine is IF_BUTTONX op=11).
       const widgetId = reader.int(), slot = reader.short(), itemId = reader.short();
@@ -701,57 +757,56 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
         sourceWidgetId: reader.intME(), targetSlot: reader.shortLE(),
       };
     }
-    case ClientPacket.NPC_OPTION_1:
-      reader.byte();
-      return { type: "npc_option", index: reader.shortAddLE(), clickType: 1 };
+    case ClientPacket.NPC_OPTION_1: {
+      const modifierFlags = reader.byte();
+      return withCtrl({ type: "npc_option", index: reader.shortAddLE(), clickType: 1 }, modifierFlags);
+    }
     case ClientPacket.NPC_OPTION_2: {
       const index = reader.shortAddLE();
-      reader.byte();
-      return { type: "npc_option", index, clickType: 2 };
+      return withCtrl({ type: "npc_option", index, clickType: 2 }, reader.byte());
     }
     case ClientPacket.NPC_OPTION_3: {
       const index = reader.shortAdd();
-      reader.byteNeg();
-      return { type: "npc_option", index, clickType: 3 };
+      return withCtrl({ type: "npc_option", index, clickType: 3 }, reader.byteNeg());
     }
-    case ClientPacket.NPC_OPTION_4:
-      reader.byteNeg();
-      return { type: "npc_option", index: reader.shortLE(), clickType: 4 };
-    case ClientPacket.NPC_OPTION_5:
-      reader.byteAdd();
-      return { type: "npc_option", index: reader.shortLE(), clickType: 5 };
+    case ClientPacket.NPC_OPTION_4: {
+      const modifierFlags = reader.byteNeg();
+      return withCtrl({ type: "npc_option", index: reader.shortLE(), clickType: 4 }, modifierFlags);
+    }
+    case ClientPacket.NPC_OPTION_5: {
+      const modifierFlags = reader.byteAdd();
+      return withCtrl({ type: "npc_option", index: reader.shortLE(), clickType: 5 }, modifierFlags);
+    }
     case ClientPacket.OBJECT_OPTION_1: {
       const x = reader.shortAdd();
       const y = reader.shortLE();
-      reader.byteNeg();
+      const modifierFlags = reader.byteNeg();
       const id = reader.shortAddLE();
-      return { type: "object_option", id, x, y, clickType: 1 };
+      return withCtrl({ type: "object_option", id, x, y, clickType: 1 }, modifierFlags);
     }
     case ClientPacket.OBJECT_OPTION_2: {
       const x = reader.shortAddLE();
       const y = reader.shortAddLE();
-      reader.byteSub();
-      return { type: "object_option", id: reader.short(), x, y, clickType: 2 };
+      const modifierFlags = reader.byteSub();
+      return withCtrl({ type: "object_option", id: reader.short(), x, y, clickType: 2 }, modifierFlags);
     }
     case ClientPacket.OBJECT_OPTION_3: {
       const y = reader.shortLE();
       const id = reader.shortLE();
       const x = reader.shortAddLE();
-      reader.byteSub();
-      return { type: "object_option", id, x, y, clickType: 3 };
+      return withCtrl({ type: "object_option", id, x, y, clickType: 3 }, reader.byteSub());
     }
     case ClientPacket.OBJECT_OPTION_4: {
       const x = reader.shortAdd();
       const id = reader.shortLE();
       const y = reader.shortAdd();
-      reader.byteNeg();
-      return { type: "object_option", id, x, y, clickType: 4 };
+      return withCtrl({ type: "object_option", id, x, y, clickType: 4 }, reader.byteNeg());
     }
     case ClientPacket.OBJECT_OPTION_5: {
       const x = reader.short();
-      reader.byteAdd();
+      const modifierFlags = reader.byteAdd();
       const y = reader.shortAdd();
-      return { type: "object_option", id: reader.shortAdd(), x, y, clickType: 5 };
+      return withCtrl({ type: "object_option", id: reader.shortAdd(), x, y, clickType: 5 }, modifierFlags);
     }
     case ClientPacket.MOVE_GAMECLICK: {
       const worldY = reader.shortAddLE();
@@ -904,7 +959,7 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
       reader.short();
       reader.short();
       reader.byte();
-      const slot = reader.signedShort(), itemId = reader.signedShort();
+      const slot = reader.signedShort(), itemId = unsignedItemId(reader.short());
       return { type: "widget_action", widgetId, groupId, childId, opId, buttonNum, option, target, slot: slot >= 0 ? slot : undefined, itemId: itemId >= 0 ? itemId : undefined };
     }
     case HighClientPacket.IF_BUTTOND:
@@ -918,7 +973,7 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
     case HighClientPacket.TRADE_ACTION: {
       const action = (["offer", "remove", "accept", "decline", "confirm_accept", "confirm_decline"] as const)[reader.byte()];
       if (!action) return { type: "raw", opcode, payload: frame.subarray(frame.length) };
-      const slot = reader.short(), quantity = reader.int(), itemId = reader.signedShort();
+      const slot = reader.short(), quantity = reader.int(), itemId = unsignedItemId(reader.short());
       return { type: "trade_action", action, slot, quantity, itemId: itemId >= 0 ? itemId : undefined };
     }
     case HighClientPacket.ITEM_SPAWNER_SEARCH:
@@ -950,6 +1005,12 @@ export function decodeClientPacket(frame: Buffer): ClientMessage {
       };
     case ClientPacket.LOGIN_FORGET:
       return { type: "login_forget", username: reader.string(), token: reader.string() };
+    case ClientPacket.CHARACTER_SELECT:
+      return { type: "character_select", name: reader.string() };
+    case ClientPacket.CHARACTER_CREATE:
+      return { type: "character_create", name: reader.string() };
+    case ClientPacket.CHARACTER_DELETE:
+      return { type: "character_delete", name: reader.string(), confirmName: reader.string() };
     case ClientPacket.HANDSHAKE: {
       const name = reader.string();
       const hasAppearance = reader.byte() !== 0;
@@ -1049,9 +1110,41 @@ export const ChatType = {
   FRIENDS_CHAT_NOTIFICATION: 11,
   /** Filtered out with "Filter: on" (the Game tab's filter). */
   SPAM: 105,
+  /** A trade/duel status line ("Sending trade offer...", "Accepted trade."; rsprox `type=trade`, RuneLite TRADE). */
+  TRADE: 102,
   /** An NPC's overhead line, shown as "Name: text"; the NPC's name goes in `from`. */
   NPC_SAY: 116,
+  /** A message box's text, logged in the chatbox as live does when one opens (rsprox `type=mesbox`). */
+  MESBOX: 115,
+  /** The login greeting, "Welcome to Old School RuneScape." (rsprox `type=108`). */
+  WELCOME: 108,
+  /** An NPC's examine (rsprox `type=npc_examine`; RuneLite NPC_EXAMINE). */
+  NPC_EXAMINE: 28,
+  /** An object's examine (rsprox `type=loc_examine`; RuneLite OBJECT_EXAMINE). */
+  LOC_EXAMINE: 29,
 } as const;
+
+/**
+ * Live's highlight tags (`@mes_hl_gre@...</col>`): the official client colours them by the
+ * chatbox's transparency (varbit chatbox_transparency 4608), this client does not, so content
+ * resolves them before sending. gre and red are from captures (GotR); ora (Hardcore Worlds' death
+ * broadcasts) is UNVERIFIED: the classic orange, for both backgrounds. pur is Death Charge's
+ * (rsprox_transcripts/237/04102.txt: a53fff with chatbox_transparency 1, 6800bf after it went to 0).
+ */
+export const CHAT_HIGHLIGHTS: Record<string, { opaque: string; transparent: string }> = {
+  gre: { opaque: "06600c", transparent: "229628" },
+  red: { opaque: "ef1020", transparent: "ef1020" },
+  ora: { opaque: "ff9040", transparent: "ff9040" },
+  pur: { opaque: "6800bf", transparent: "a53fff" },
+};
+
+/** `text` with each known `@mes_hl_<colour>@` tag as a `<col=...>` for that chatbox background. */
+export function resolveChatHighlights(text: string, transparent = false): string {
+  return String(text ?? "").replace(/@mes_hl_([a-z]+)@/g, (tag, colour: string) => {
+    const highlight = CHAT_HIGHLIGHTS[colour];
+    return highlight ? `<col=${transparent ? highlight.transparent : highlight.opaque}>` : tag;
+  });
+}
 
 /**
  * Public chat's colour and effect, as typed with prefixes like "red:wave:" (OSRS chat colours 0-20,
@@ -1083,6 +1176,12 @@ function chatStyleBytes(style: ChatStyle | undefined): Buffer {
   return Buffer.from([style.colour & 0xff, style.effect & 0xff, ...(style.pattern ?? []).map((value) => value & 0xff)]);
 }
 
+const LEGACY_CHAT_COLOURS: Record<string, string> = {
+  red: "ff0000", gre: "00ff00", blu: "0000ff", yel: "ffff00", cya: "00ffff", mag: "ff00ff",
+  whi: "ffffff", bla: "000000", lre: "ff9040", dre: "800000", dbl: "000080",
+  or1: "ffb000", or2: "ff7000", or3: "ff3000", gr1: "c0ff00", gr2: "80ff00", gr3: "40ff00",
+};
+
 export function encodeChatMessage(
   messageType: "game" | "public" | "private_in" | "private_out" | "channel" | "clan" | "trade" | "server",
   text: string,
@@ -1104,6 +1203,11 @@ export function encodeChatMessage(
     server: 0,
   };
   const type = chatType ?? defaultTypes[messageType];
+  // Existing server content uses legacy colours; both clients render native font markup.
+  if (messageType === "game" || messageType === "server") {
+    text = text.replace(/@([a-z0-9]{3})@/g, (tag, colour) =>
+      LEGACY_CHAT_COLOURS[colour] ? `<col=${LEGACY_CHAT_COLOURS[colour]}>` : tag);
+  }
   const id = Buffer.alloc(2);
   id.writeUInt16BE(playerId & 0xffff);
   return encodeServerPacket(ServerPacketId.CHAT_MESSAGE, Buffer.concat([
@@ -1332,6 +1436,16 @@ export function encodeInventorySnapshot(slots: Array<{ slot: number; itemId: num
   ]));
 }
 
+/** UPDATE_INV_STOPTRANSMIT clears client data only, never authoritative item storage. */
+export function encodeInventoryStopTransmit(inventoryId: number): Buffer {
+  if (!Number.isInteger(inventoryId) || inventoryId < 0 || inventoryId > 0xffff) {
+    throw new RangeError("inventoryId must be an unsigned short");
+  }
+  const body = Buffer.alloc(2);
+  body.writeUInt16BE(inventoryId);
+  return encodeServerPacket(ServerPacketId.INVENTORY_STOP_TRANSMIT, body);
+}
+
 export function encodeInventorySlot(slot: number, itemId: number, quantity: number): Buffer {
   return encodeServerPacket(ServerPacketId.INVENTORY_SLOT, encodeItemSlot(slot, itemId, quantity));
 }
@@ -1373,7 +1487,7 @@ export function encodeBankSlot(slot: BankSlotView): Buffer {
   return encodeServerPacket(ServerPacketId.BANK_SLOT, encodeBankSlotPayload(slot));
 }
 
-export const GROUND_ITEM_BYTES = 33;
+export const GROUND_ITEM_BYTES = 34;
 
 function encodeGroundItem(stack: GroundItemView): Buffer {
   const payload = Buffer.alloc(GROUND_ITEM_BYTES);
@@ -1389,6 +1503,7 @@ function encodeGroundItem(stack: GroundItemView): Buffer {
   payload.writeInt32BE(stack.ownerId ?? -1, 27);
   payload[31] = stack.isPrivate ? 1 : 0;
   payload[32] = stack.ownership ?? 0;
+  payload[33] = (stack.enabledOps ?? 0x1f) & 0x1f;
   return payload;
 }
 
@@ -1433,6 +1548,24 @@ export function encodeLocDel(x: number, y: number, level: number, shape: number,
   payload[4] = level;
   payload[5] = (shape << 2) | (rotation & 3);
   return encodeServerPacket(ServerPacketId.LOC_DEL, payload);
+}
+
+export function encodeLocMerge(merge: LocMergePayload): Buffer {
+  validateLocMerge(merge);
+  const payload = Buffer.alloc(18);
+  payload.writeUInt16BE(merge.locId, 0);
+  payload.writeUInt16BE(merge.tile.x, 2);
+  payload.writeUInt16BE(merge.tile.y, 4);
+  payload[6] = merge.level;
+  payload[7] = (merge.shape << 2) | merge.rotation;
+  payload.writeUInt16BE(merge.playerIndex, 8);
+  payload.writeUInt16BE(merge.start, 10);
+  payload.writeUInt16BE(merge.end, 12);
+  payload.writeInt8(merge.minX, 14);
+  payload.writeInt8(merge.minZ, 15);
+  payload.writeInt8(merge.maxX, 16);
+  payload.writeInt8(merge.maxZ, 17);
+  return encodeServerPacket(ServerPacketId.LOC_MERGE, payload);
 }
 
 export function encodeLocAnim(id: number, x: number, y: number, level: number, shape: number, rotation: number, animationId: number): Buffer {
@@ -1492,7 +1625,7 @@ export type CameraMovementOptions = {
   heightRelative?: boolean;
 };
 
-function encodeCameraPosition(mode: number, x: number, y: number, height: number, motion: boolean | CameraMovementOptions): Buffer {
+function encodeCameraPosition(mode: number, x: number, y: number, height: number, motion: boolean | CameraMovementOptions, timedMode = mode + 7): Buffer {
   const captured = typeof motion !== "boolean";
   const timed = captured && "cycles" in motion;
   if (captured) {
@@ -1508,7 +1641,7 @@ function encodeCameraPosition(mode: number, x: number, y: number, height: number
     if (timed && !CAMERA_EASINGS.includes(motion.easing)) throw new RangeError("Invalid camera easing");
   }
   const payload = Buffer.alloc(timed ? 11 : captured ? 10 : 8);
-  payload[0] = timed ? mode + 7 : captured ? mode + 3 : mode;
+  payload[0] = timed ? timedMode : captured ? mode + 3 : mode;
   payload.writeUInt16BE(x & 0xffff, 1);
   payload.writeUInt16BE(y & 0xffff, 3);
   payload.writeUInt16BE(height & 0xffff, 5);
@@ -1532,6 +1665,13 @@ export function encodeCameraMoveTo(x: number, y: number, height: number, motion:
 
 export function encodeCameraLookAt(x: number, y: number, height: number, motion: boolean | CameraMovementOptions): Buffer {
   return encodeCameraPosition(2, x, y, height, motion);
+}
+
+/** cam_rotateto_coordinate: ease to angles resolved from the coordinate at receipt. */
+export function encodeCameraRotateToCoordinate(x: number, y: number, height: number, cycles: number, easing: CameraEasing = "linear"): Buffer {
+  // Share the existing coordinate/cycle validation, but retain a distinct wire contract:
+  // CAM_LOOKAT_CYCLES interpolates coordinates, rather than fixed angular endpoints.
+  return encodeCameraPosition(2, x, y, height, { cycles, easing }, 13);
 }
 
 /** cam_rotateby: turns the view by a pitch/yaw delta (2048 units a turn) over client cycles. */
@@ -1577,6 +1717,18 @@ export function encodeCameraUnlock(unlock: boolean): Buffer {
   return encodeServerPacket(ServerPacketId.CAMERA_CONTROL, Buffer.from([6, unlock ? 1 : 0]));
 }
 
+/**
+ * Draws a cache model as the sky around the camera (OSRS's cam_skybox), or clears it with -1.
+ * The skybox stays until an explicit -1: cam_reset does not clear it.
+ */
+export function encodeCameraSkybox(model: number): Buffer {
+  if (!Number.isSafeInteger(model) || model < -1 || model > 0x7fffffff) throw new RangeError("Invalid skybox model");
+  const payload = Buffer.alloc(5);
+  payload[0] = 14;
+  payload.writeInt32BE(model, 1);
+  return encodeServerPacket(ServerPacketId.CAMERA_CONTROL, payload);
+}
+
 /** Rebase an active shot when a private scene returns to its source map. */
 export function encodeCameraTranslate(dx: number, dy: number): Buffer {
   if (!Number.isSafeInteger(dx) || !Number.isSafeInteger(dy) || Math.abs(dx) > 0x7fffffff || Math.abs(dy) > 0x7fffffff) throw new RangeError("Invalid camera translation");
@@ -1609,6 +1761,23 @@ export function encodeResetInteractionMode(worldId: number): Buffer {
   const payload = Buffer.alloc(2);
   payload.writeInt16BE(worldId, 0);
   return encodeServerPacket(ServerPacketId.RESET_INTERACTION_MODE, payload);
+}
+
+/**
+ * set_hide_npc_actions (hidenpcops): one boolean for the whole client. While hidden, NPC
+ * menus keep Examine but drop Use, Cast, every action and Attack.
+ */
+export function encodeHideNpcOps(hidden: boolean): Buffer {
+  return encodeServerPacket(ServerPacketId.HIDE_NPC_OPS, Buffer.from([hidden ? 1 : 0]));
+}
+
+/**
+ * set_item_ops_disabled (hideobjops): one boolean for the whole client. While hidden, ground-item
+ * menus drop Use, Cast and every ground action (including the Take fallback); Examine stays only
+ * when no spell is selected.
+ */
+export function encodeHideObjOps(hidden: boolean): Buffer {
+  return encodeServerPacket(ServerPacketId.HIDE_OBJ_OPS, Buffer.from([hidden ? 1 : 0]));
 }
 
 /** Puts the camera back on the player and stops any shake (cam_reset). */
@@ -2013,8 +2182,26 @@ export function encodeChatFilterSettings(publicMode: number, privateMode: number
   return encodeServerPacket(ServerPacketId.CHAT_FILTER_SETTINGS, Buffer.from([publicMode & 0xff, privateMode & 0xff, tradeMode & 0xff]));
 }
 
-export function encodeRunEnergy(percent: number, running: boolean): Buffer {
-  return encodeServerPacket(ServerPacketId.RUN_ENERGY, Buffer.from([Math.max(0, Math.min(100, percent)), running ? 1 : 0]));
+/** OSRS run energy is 0-10,000 units; 100 units is 1%. */
+const RUN_ENERGY_MAX_UNITS = 10_000;
+
+/**
+ * percent(1) + running(1) + units(2) + weight kg signed(2) + stamina ticks(2) + stamina
+ * active(2). The percent stays for older readers; units are the exact value the orb and the
+ * Run Energy plugin use.
+ */
+export function encodeRunEnergy(units: number, running: boolean, weightKg: number, staminaTicks = 0): Buffer {
+  const clampedUnits = Math.max(0, Math.min(RUN_ENERGY_MAX_UNITS, Math.floor(units)));
+  const clampedWeight = Math.max(-32768, Math.min(32767, Math.round(weightKg)));
+  const clampedStamina = Math.max(0, Math.min(65535, Math.floor(staminaTicks)));
+  const payload = Buffer.alloc(10);
+  payload[0] = Math.floor(clampedUnits / 100) & 0xff;
+  payload[1] = running ? 1 : 0;
+  payload.writeUInt16BE(clampedUnits, 2);
+  payload.writeInt16BE(clampedWeight, 4);
+  payload.writeUInt16BE(clampedStamina, 6);
+  payload.writeUInt16BE(clampedStamina > 0 ? 1 : 0, 8);
+  return encodeServerPacket(ServerPacketId.RUN_ENERGY, payload);
 }
 
 /** Remaining shutdown countdown in centiseconds (0 clears the client's countdown HUD). */
@@ -2193,6 +2380,18 @@ export function encodeWidgetSetAngle(uid: number, angleX: number, angleY: number
   return encodeServerPacket(ServerPacketId.WIDGET_SET_ANGLE, payload);
 }
 
+/**
+ * IF_SETROTATESPEED: the model's rotation speeds in graphics-cycle units. Recording 1723
+ * (rev 227) sends the component uid, then one packed int with the y (yaw) speed in the high
+ * short and the x speed in the low short, both signed.
+ */
+export function encodeWidgetSetRotateSpeed(uid: number, speedX: number, speedY: number): Buffer {
+  const payload = Buffer.alloc(8);
+  payload.writeInt32BE(uid | 0, 0);
+  payload.writeInt32BE((((speedY | 0) & 0xffff) << 16) | ((speedX | 0) & 0xffff), 4);
+  return encodeServerPacket(ServerPacketId.WIDGET_SET_ROTATE_SPEED, payload);
+}
+
 export function encodeWidgetSetItem(uid: number, itemId: number, quantity = 1): Buffer {
   const payload = Buffer.alloc(10);
   payload.writeInt32BE(uid | 0);
@@ -2243,41 +2442,6 @@ export function encodeWidgetSetAnimation(uid: number, animationId: number): Buff
   payload.writeInt32BE(uid | 0);
   payload.writeInt16BE(animationId, 4);
   return encodeServerPacket(ServerPacketId.WIDGET_SET_ANIMATION, payload);
-}
-
-export type QuestListEntry = {
-  slot: number;
-  status: number;
-  key: string;
-  displayName: string;
-};
-
-export type QuestListGroup = {
-  title: string;
-  quests: QuestListEntry[];
-};
-
-/** Mirrors the client's WIDGET_SET_QUEST_LIST decoder (ServerBinaryDecoder.ts). */
-export function encodeWidgetSetQuestList(groups: readonly QuestListGroup[]): Buffer {
-  const parts: Buffer[] = [];
-  const groupCount = Buffer.alloc(2);
-  groupCount.writeUInt16BE(groups.length & 0xffff);
-  parts.push(groupCount);
-  for (const group of groups) {
-    parts.push(string(group.title));
-    const questCount = Buffer.alloc(2);
-    questCount.writeUInt16BE(group.quests.length & 0xffff);
-    parts.push(questCount);
-    for (const quest of group.quests) {
-      const slot = Buffer.alloc(2);
-      slot.writeUInt16BE(quest.slot & 0xffff);
-      parts.push(slot);
-      parts.push(Buffer.from([quest.status & 0xff]));
-      parts.push(string(quest.key));
-      parts.push(string(quest.displayName));
-    }
-  }
-  return encodeServerPacket(ServerPacketId.WIDGET_SET_QUEST_LIST, Buffer.concat(parts));
 }
 
 export type ScriptInventorySnapshot = {
@@ -2492,7 +2656,7 @@ export function encodeGameframeTabSetup(group: number, root: number = 161): Buff
 
 // Transient player attribute set from the handshake's clientType byte.
 export const MOBILE_CLIENT_ATTRIBUTE = "mobile-client";
-// The session is an official OSRS client behind the gateway (gateway/): it gets the fields the
+// The session is an official OSRS client behind the gateway (runelite-gateway/): it gets the fields the
 // browser wire leaves out. Transient, set from HANDSHAKE_CAPABILITY_NATIVE_CLIENT.
 export const NATIVE_CLIENT_ATTRIBUTE = "native-client";
 export const HANDSHAKE_CAPABILITY_NATIVE_CLIENT = 0x1;
@@ -2525,11 +2689,28 @@ export function orbsGroupFor(root: number): number {
   return root === MOBILE_GAMEFRAME_ROOT ? MOBILE_ORBS_GROUP_ID : ORBS_GROUP_ID;
 }
 
-export function encodeGameframeBootstrap(playerName: string, root: number = 161, xpDropsEnabled = false): Buffer[] {
+/** `orbs_disabled`: All Settings' "Show data orbs" (row 8) off, or a tutorial hiding them. */
+export const ORBS_DISABLED_VARBIT = 4084;
+
+/** Whether the orbs pane stays empty: live leaves the orbs closed while `orbs_disabled` is 1. */
+export function dataOrbsHidden(player: { getPacketSender(): { getVarbit(id: number): number } }): boolean {
+  return player.getPacketSender().getVarbit(ORBS_DISABLED_VARBIT) === 1;
+}
+
+/**
+ * The gameframe a login (or the welcome screen's Play) opens. Script 876 ends it: its name and
+ * world-type strings go to script 5450, which keeps them in varc strings 564 and 944 (live sends
+ * "REGULAR", or "HARDCORE WORLD" on a Hardcore world). With `orbsShown` false the orbs are not
+ * opened, as live logs in while `orbs_disabled` is set. Its first argument is the tick (map_clock)
+ * the gameframe opens on, as live sends it: script 4687 stores it in the buff bar's varcs, and the
+ * cooldowns read from a varbit (the dragonfire shield's and ward's among them) draw only once it is set.
+ */
+export function encodeGameframeBootstrap(playerName: string, root: number = 161, xpDropsEnabled = false, worldTypeLabel = "REGULAR", orbsShown = true, mapClock = 0): Buffer[] {
   const mounts = [
     // pm_chat -> toplevel_osrs_stretch:pm_container (93), xp_drops -> :xp_drops (9).
     // 161:7 (hud_container_back) has no fixed-layout pane, so XP drops mounted there vanished.
-    [96, 162], [93, 163], [33, orbsGroupFor(root)], ...(xpDropsEnabled ? [[9, 122]] : []), [6, 651, 5929],
+    // The modified stats overlay (stat_boosts_hud -> :stat_boosts_hud, 5) opens next to the buff bar.
+    [96, 162], [93, 163], ...(orbsShown ? [[33, orbsGroupFor(root)]] : []), ...(xpDropsEnabled ? [[9, 122]] : []), [6, 651, 5929], [5, 708],
     [76, 593], [77, 320], [78, 629], [79, MAIN_INVENTORY_GROUP_ID], [80, 387], [81, 541],
     [82, 218], [83, SIDE_CHANNELS_GROUP_ID], [84, 109], [85, 429], [86, 182], [87, 116],
     [88, 216], [89, 239],
@@ -2540,7 +2721,7 @@ export function encodeGameframeBootstrap(playerName: string, root: number = 161,
   cameraScript.writeUInt16BE(626, 0);
   const rootPayload = Buffer.alloc(2);
   rootPayload.writeUInt16BE(root);
-  const loginScript = Buffer.concat([Buffer.alloc(4), scriptArgs([0, 0, playerName, playerName]), Buffer.alloc(4)]);
+  const loginScript = Buffer.concat([Buffer.alloc(4), scriptArgs([mapClock, 0, playerName, worldTypeLabel]), Buffer.alloc(4)]);
   loginScript.writeInt32BE(876, 0);
   return [
     packet(ServerPacket.RUN_CLIENT_SCRIPT, cameraScript, 2),
@@ -2642,6 +2823,39 @@ export function encodeLoginResponse(
   return packet(
     ServerPacket.LOGIN_RESPONSE,
     Buffer.concat([fixed, string(error), string(displayName), string(loginToken)])
+  );
+}
+
+export interface CharacterListEntry {
+  name: string;
+  combatLevel: number;
+  totalLevel: number;
+  lastPlayedAt: number;
+  primary: boolean;
+  hasSave: boolean;
+}
+
+export function encodeCharacterList(
+  maxCharacters: number,
+  defaultIndex: number,
+  entries: CharacterListEntry[]
+): Buffer {
+  const parts: Buffer[] = [Buffer.from([maxCharacters, defaultIndex, entries.length])];
+  for (const entry of entries) {
+    const fixed = Buffer.alloc(12);
+    fixed[0] = entry.combatLevel;
+    fixed.writeUInt16BE(entry.totalLevel, 1);
+    fixed.writeBigInt64BE(BigInt(entry.lastPlayedAt), 3);
+    fixed[11] = (entry.primary ? 1 : 0) | (entry.hasSave ? 2 : 0);
+    parts.push(string(entry.name), fixed);
+  }
+  return packet(ServerPacket.CHARACTER_LIST, Buffer.concat(parts), 2);
+}
+
+export function encodeCharacterResult(ok: boolean, code: number, message: string): Buffer {
+  return packet(
+    ServerPacket.CHARACTER_RESULT,
+    Buffer.concat([Buffer.from([ok ? 1 : 0, code]), string(message)])
   );
 }
 
@@ -2797,7 +3011,7 @@ export function encodePlayerAppearance(
   const equipmentSlot = (wireSlot: number): number => {
     const itemSlot = itemSlots[wireSlot];
     const itemId = itemSlot === undefined ? -1 : appearance.equip[itemSlot] ?? -1;
-    if (itemId >= 0) return itemId + 512;
+    if (itemId >= 0) return itemId + 2048;
     const kitSlot = kitSlots[wireSlot];
     const kitId = kitSlot === undefined ? -1 : appearance.kits[kitSlot] ?? -1;
     return kitId >= 0 ? kitId + 256 : 0;
@@ -2823,7 +3037,7 @@ export function encodePlayerAppearance(
   text(name);
   byte(combatLevel);
   short(skillLevel);
-  byte(0); // visible
+  byte(appearance.hidden ? 1 : 0);
   short(0); // no colour/texture overrides
   text("");
   text("");
@@ -3401,6 +3615,7 @@ export function encodeNpcSync(
   state: NpcSyncState,
   deckLocal?: Tile,
   deckBase?: (worldView: number) => Tile | undefined,
+  crossFloor = false,
 ): Buffer {
   const writer = new BitWriter();
   const desired = new Map<number, NpcView>();
@@ -3415,7 +3630,7 @@ export function encodeNpcSync(
   for (const index of state.indices.slice(0, 255)) {
     const view = desired.get(index);
     const last = state.lastTiles.get(index);
-    if (!view || !last || view.level !== local.level || state.typeIds.get(index) !== view.typeId
+    if (!view || !last || (crossFloor ? view.level !== last.level : view.level !== local.level) || state.typeIds.get(index) !== view.typeId
       || (state.worldViews.get(index) ?? -1) !== (view.worldView ?? -1)) {
       writer.writeBits(1, 1);
       writer.writeBits(2, 3);
@@ -3481,7 +3696,8 @@ export function encodeNpcSync(
   const signed = (value: number, bits: number) => (value < 0 ? value + (1 << bits) : value) & ((1 << bits) - 1);
   for (const view of additions) {
     const base = baseFor(view);
-    if (nextIndices.length >= 255 || view.level !== local.level) break;
+    if (nextIndices.length >= 255) break;
+    if (!crossFloor && view.level !== local.level) continue;
     writer.writeBits(16, view.index);
     const writeInteraction = (view.interactionIndex ?? -1) >= 0;
     const writeHeadIcon = (view.headIcon ?? -1) >= 0;
@@ -3495,6 +3711,7 @@ export function encodeNpcSync(
     writer.writeBits(large ? 8 : 5, signed(view.x - base.x, large ? 8 : 5));
     writer.writeBits(3, view.rotation & 7);
     writer.writeBits(16, view.typeId & 0xffff);
+    if (crossFloor) writer.writeBits(2, view.level & 3);
     nextIndices.push(view.index);
     nextSet.add(view.index);
     if (block) updateBlocks.push(writeNpcUpdateBlock(view, writeInteraction, writeHeadIcon));
@@ -3522,7 +3739,7 @@ export function encodeNpcSync(
   // a boat deck, otherwise their own).
   const header = Buffer.alloc(11);
   header.writeInt32BE(loopCycle | 0, 0);
-  header[4] = large ? 1 : 0;
+  header[4] = (large ? 1 : 0) | (crossFloor ? 2 : 0);
   header.writeUInt16BE(local.x & 0xffff, 5);
   header.writeUInt16BE(local.y & 0xffff, 7);
   header.writeUInt16BE(sync.length, 9);

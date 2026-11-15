@@ -31,6 +31,8 @@ OSRS calls the kill count "Essence" in the dungeon, and so does tsps.
 
 Every monster in the dungeon attacks on sight, whatever the player's combat level, unless the player wears something of its god; one item per god is enough (Wiki). The generals and bodyguards ignore god items and attack anyone who comes into their chamber.
 
+A chamber is a scripted public arena, so `Combat.engage` gives its general and bodyguards the existing `combat:no-retreat` flag when the area claims them: a player crossing the room cannot outrun the ordinary aggression leash and leave the boss walking home. Followers are not flagged - they still attack on sight through `npcAggression`, but keep the normal leash. The chamber's own reset when it empties (`Dungeon.resetChamber`) and the private instance's arena rules are unchanged.
+
 ### God items
 
 Each god's `protectionItems` in the data file is the Wiki's protection table for it ([God Wars Dungeon](https://oldschool.runescape.wiki/w/God_Wars_Dungeon), "God equipment", read 28 October 2026), written as the cache's item names and compared without case. Zaros's list (`ancient`) is there too. The same list drives aggression, the altar's Prayer boost, `godwars:kill`'s `godItems` and anything else that calls `godItemCount`.
@@ -45,9 +47,14 @@ This needs a generic core hook: `Area.npcAggression(player, npc)` returns false 
 
 | Step | What happens | Source |
 | --- | --- | --- |
-| Boulder, crack | Troll Stronghold (Dad defeated); the boulder needs 60 Strength or Agility. | Wiki |
+| Boulder | Troll Stronghold (Dad defeated); 60 Strength or Agility. | Wiki |
+| Little crack | Troll Stronghold (Dad defeated) and 60 Agility, no XP. From the op: +1 the screen fades out (`fade_overlay` 174, script 948 `[0, 255, 0, 0, 50]`) and the health overlay is hidden, +3 `godwars_human_crawling` (7041), +6 the teleport from (2899, 3713) to (2904, 3720), +7 the fade overlay closes. No message. The north crack (2904, 3719) mirrors it back to (2899, 3713); not captured. The refusal below 60 Agility is live's "You need an Agility level of 60 to do that." from other checks; not captured here. | rsprox captures 224/01461 t167-174, 234/00801 t374-381, 234/03279 t1944-1951 (league); Wiki |
 | Hole | The first visit ties a rope (varbit `godwars_entrance_rope` 3966, kept for good). After that: "You climb down the rope.", the ladder animation (828), the move to (2882, 5311, 2) a tick later. | capture |
 | Rope back up | Back to the surface by the hole. | |
+
+## The Wilderness dungeon's Strength route
+
+Boulder NPC 6621 at 3053,10165,3 needs 60 Strength, which can be boosted, and gives 5.5 XP going in (Wiki). Crevice 26767 at 3049,10165,3 behind it leads to 26769 at 3035,10158,0 (cache map). No capture moves the boulder or uses these two crevices, so these tiles are inferred: the boulder's landings 3052,10165,3 and 3055,10165,3, read off the corridor's collision, and the crevice landings 3034,10158,0 and 3050,10165,3, on each crevice's facing side, as the captured crevice at 3066,10142 lands. The Agility route is `gwdJuttingWall`.
 
 ## Strongholds
 

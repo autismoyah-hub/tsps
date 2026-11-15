@@ -1,6 +1,12 @@
 /** Desert Treasure II - The Fallen Empire. */
 module.exports = function registerDesertTreasureII(api) {
   const { Skill, Item, MagicSpellbook, ItemIdentifiers: I, NpcIdentifiers: N, ObjectIdentifiers: O } = api.core;
+
+  /** Room for one more of `itemId` (`adds` never reports a failure); a slotless stand-in falls back to free slots. */
+  function hasRoom(inventory, itemId) {
+    if (typeof inventory.getAddableAmount === "function") return inventory.getAddableAmount(new Item(itemId, 1)) >= 1;
+    return (inventory.getFreeSlots?.() ?? 1) > 0;
+  }
   const { registerQuest, startTranscript } = require("../QuestRuntime");
   const PAGE = "Desert Treasure II - The Fallen Empire";
   const { findBestPickaxe } = require("../../skills/Mining.plugin");
@@ -131,6 +137,13 @@ module.exports = function registerDesertTreasureII(api) {
   };
   // A chapter's varbit value. Before the chapters open it is 0; a placed medallion, the finale
   // and completion read the chapter's done value (post-quest logins: 56/48/70/50, rsprox 3285).
+  /** "desert-treasure-ii:boss-defeated" { player, boss: chapter key }: whether the quest's fight is won. */
+  function answerBossDefeated(request) {
+    const chapter = CHAPTERS[request?.boss];
+    if (!request?.player || !chapter) return;
+    if (chapterValue(request.player, request.boss) >= chapter.killed) request.defeated = true;
+  }
+
   function chapterValue(player, key) {
     const s = stage(player);
     const chapter = CHAPTERS[key];
@@ -330,7 +343,6 @@ module.exports = function registerDesertTreasureII(api) {
   const STRANGLEWOOD_CITY_ENTERED = "desert-treasure-ii:city-entered";
   const SUCELLUS_AREA = "desert-treasure-ii:sucellus-area";
   const WHISPERER_AREA = "desert-treasure-ii:whisperer-area";
-  const SUCELLUS_MUSHROOMS = "desert-treasure-ii:sucellus-mushrooms";
   const SUCELLUS_VATS = "desert-treasure-ii:sucellus-vats";
   const SUCELLUS_POISONS = "desert-treasure-ii:sucellus-poisons";
   const SUCELLUS_ENCOUNTER_STARTED = "desert-treasure-ii:sucellus-encounter-started";
@@ -2153,8 +2165,7 @@ module.exports = function registerDesertTreasureII(api) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
     const regionManager = api.core.RegionManager;
     if (typeof regionManager?.getClipping !== "function") return true;
-    // Match the walkable-tile test used by the existing boss hazard plugins.
-    return (regionManager.getClipping(x, y, z, area) & 0x1280100) === 0;
+    return (regionManager.getClipping(x, y, z, area) & regionManager.BLOCKED_MASK) === 0;
   }
   function finalWightHasProjectileLine(area, source, destination) {
     const regionManager = api.core.RegionManager;
@@ -2854,7 +2865,6 @@ module.exports = function registerDesertTreasureII(api) {
         // recipe progress so the normal cache suppliers can make two fresh
         // poisons instead of leaving a spent attempt permanently locked.
         p.setAttribute(SUCELLUS_POISONS, 0);
-        p.setAttribute(SUCELLUS_MUSHROOMS, { musca: 0, arder: 0 });
         p.setAttribute(SUCELLUS_VATS, {});
         p.setAttribute(SUCELLUS_ENCOUNTER_STARTED, false);
         p.sendMessage("The Duke has returned to his slumber. The mushrooms and vats are ready for another attempt.");
@@ -2981,10 +2991,10 @@ module.exports = function registerDesertTreasureII(api) {
     return npc;
   }
 
+  /** Banked in any tab (not the search tab, which repeats them; placeholders hold 0). */
   function hasBankedItem(player, itemId) {
-    const bank = player.getBank?.(0);
-    return (bank?.getAmount?.(itemId) ?? bank?.getItems?.().reduce((amount, item) =>
-      amount + (item?.getId?.() === itemId ? item.getAmount?.() ?? 0 : 0), 0) ?? 0) > 0;
+    return (player.getBanks?.() ?? []).some((bank, tab) =>
+      tab !== api.core.Bank.BANK_SEARCH_TAB_INDEX && Number(bank?.getAmount?.(itemId) ?? 0) > 0);
   }
 
   function recoverLostSucellusKey(player) {
@@ -3646,10 +3656,11 @@ module.exports = function registerDesertTreasureII(api) {
     const mazeThree = owned?.scarMazeThreeLightLeeches?.includes(npc);
     if (!owned?.scarLightLeeches?.includes(npc) && !mazeThree) return false;
     if (Math.random() < 0.5) {
-      if (p.getInventory().adds(I.ILLUMINATING_LURE, 1) === false) {
+      if (!hasRoom(p.getInventory(), I.ILLUMINATING_LURE)) {
         p.sendMessage("You need inventory space to take the illuminating lure.");
         return true;
       }
+      p.getInventory().adds(I.ILLUMINATING_LURE, 1);
       const area = mazeThree ? p.getAttribute(ATTR_SCAR_MAZE_THREE) : p.getAttribute(ATTR_SCAR_MAZE_ONE);
       area?.remove?.(npc);
       if (npc.isRegistered?.() && !api.core.World.getRemoveNPCQueue().includes(npc)) api.core.World.getRemoveNPCQueue().push(npc);
@@ -3738,10 +3749,11 @@ module.exports = function registerDesertTreasureII(api) {
       p.sendMessage("That nerve ending is still regrowing.");
       return true;
     }
-    if (p.getInventory().adds(itemId, 1) === false) {
+    if (!hasRoom(p.getInventory(), itemId)) {
       p.sendMessage("You need inventory space to take the rune nerve.");
       return true;
     }
+    p.getInventory().adds(itemId, 1);
     // shortcut: the Wiki says endings regrow shortly; calibrate these four ticks against a live capture.
     p.setAttribute(attribute, { ...regrowAt, [tileKey]: now + 4 });
     p.sendMessage("You break the nerve ending and take its rune nerve.");
@@ -4317,9 +4329,17 @@ module.exports = function registerDesertTreasureII(api) {
     return true;
   }
 
+  /**
+   * The Wiki has a lost medallion recovered from the remains. Not during the last chapter's trial, where
+   * rsprox 1703 t16397 has it missing as the story and it comes back by its own drop.
+   */
+  function whispererMedallionOpen(p) {
+    return inChapter(p, "whisperer") && !inLastMedallionTrial(p);
+  }
+
   function syncWhispererRemains(p, state = p?.getAttribute?.(LASSAR) ?? {}) {
     const existing = whispererRemains.get(p);
-    const shouldExist = state.whispererDefeated === true && state.medallion !== true
+    const shouldExist = state.whispererDefeated === true && whispererMedallionOpen(p)
       && !has(p, I.WHISPERERS_MEDALLION);
     if (shouldExist && !existing) {
       // Wiki/QH place the entrails at the fight's material return tile. The
@@ -5149,6 +5169,9 @@ module.exports = function registerDesertTreasureII(api) {
   }
   const setStage = (p, v) => { if (stage(p) < v) quest.setStage(p, v); };
   const has = (p, id) => p.getInventory().getAmount(id) > 0;
+  const BLACKSTONE_FRAGMENTS = [I.BLACKSTONE_FRAGMENT, I.BLACKSTONE_FRAGMENT_2, I.BLACKSTONE_FRAGMENT_3];
+  /** Ketla's fragment is replaced only when none is carried or banked. */
+  const ownsBlackstoneFragment = (p) => BLACKSTONE_FRAGMENTS.some((id) => has(p, id) || hasBankedItem(p, id));
   function talk(p, npcId, variant, next) {
     const select = variant === "the-desert-treasure-aftermath" ? (steps) => {
       const selected = steps.slice();
@@ -5480,7 +5503,7 @@ module.exports = function registerDesertTreasureII(api) {
           const manager = p.getSkillManager();
           if (manager.getMaxLevel(skill) < 60) return null;
           const before = manager.getExperience(skill);
-          manager.addExperience(skill, 100000, false);
+          manager.addExperience(skill, 100000, true);
           if (manager.getExperience(skill) === before) return null;
           inventory.deleteAtSlot(slot, 1);
           // dt2_reward_lamp is set by the first lamp used (rsprox 1703).
@@ -5797,11 +5820,19 @@ module.exports = function registerDesertTreasureII(api) {
       && p.getAttribute(LASSAR)?.whispererDefeated
       && (option === "search" || option === "take" || option === "inspect")) {
       const state = p.getAttribute(LASSAR) ?? {};
-      if (!state.medallion && !has(p, I.WHISPERERS_MEDALLION)) p.getInventory().adds(I.WHISPERERS_MEDALLION, 1);
+      if (has(p, I.WHISPERERS_MEDALLION) || !whispererMedallionOpen(p)) return true;
+      if (p.getInventory().getFreeSlots() < 1) {
+        // As Vardorvis' does. No capture of this: the wording is ours.
+        p.sendMessage("You need inventory space for the Whisperer's medallion.");
+        return true;
+      }
+      p.getInventory().adds(I.WHISPERERS_MEDALLION, 1);
       setLassar(p, { ...state, medallion: true });
       markMedallionFound(p, "whisperer");
       syncWhispererRemains(p, { ...state, medallion: true });
-      p.sendMessage("You search the Whisperer's remains and recover her medallion.");
+      // Rsprox 1703 t16262 (341501-341515): the mesbox chat line, then an item box (objectbox 193) with the medallion.
+      p.getDialogueManager().startDialogues(new api.core.DialogueChainBuilder().add(
+        new api.core.ItemStatementDialogue(0, I.WHISPERERS_MEDALLION, "You find a medallion amongst the entrails.")));
       return true;
     }
     if (inChapter(p, "whisperer") && visibleId === 48310 && p.getAttribute(LASSAR)?.medallion
@@ -5928,7 +5959,6 @@ module.exports = function registerDesertTreasureII(api) {
           if (area instanceof SucellusArea && !area.isDestroyed()) p.moveTo(area.tile(101, 104, 2));
           return true;
         }
-        const mushrooms = p.getAttribute(SUCELLUS_MUSHROOMS) ?? { musca: 0, arder: 0 };
         if ([O.PESTLE_AND_MORTAR, O.PESTLE_AND_MORTAR_2].includes(visibleId)) {
           if (!has(p, I.PESTLE_AND_MORTAR)) p.getInventory().adds(I.PESTLE_AND_MORTAR, 1);
           p.sendMessage("You take a pestle and mortar from the shelf.");
@@ -5939,22 +5969,17 @@ module.exports = function registerDesertTreasureII(api) {
           p.sendMessage("You take a pickaxe from the rack.");
           return true;
         }
-        if ([O.MUSCA_MUSHROOMS, O.MUSCA_MUSHROOMS_2].includes(visibleId)) {
-          const count = Math.min(3, mushrooms.musca + 1);
-          if (count === mushrooms.musca) return p.sendMessage("You have gathered enough Musca mushrooms.");
-          mushrooms.musca = count;
-          p.setAttribute(SUCELLUS_MUSHROOMS, mushrooms);
-          p.getInventory().adds(I.MUSCA_MUSHROOM, 1);
-          p.sendMessage(`You gather a Musca mushroom (${count}/3).`);
-          return true;
-        }
-        if ([O.ARDER_MUSHROOMS, O.ARDER_MUSHROOMS_2].includes(visibleId)) {
-          const count = Math.min(3, mushrooms.arder + 1);
-          if (count === mushrooms.arder) return p.sendMessage("You have gathered enough Arder mushrooms.");
-          mushrooms.arder = count;
-          p.setAttribute(SUCELLUS_MUSHROOMS, mushrooms);
-          p.getInventory().adds(I.ARDER_MUSHROOM, 1);
-          p.sendMessage(`You gather an Arder mushroom (${count}/3).`);
+        // Rsprox 91 t10587-t10681 and 1703 t10504-t10842: no cap, and these two lines. The capture's
+        // repeat picking isn't modelled: each click picks one.
+        const mushroom = [O.MUSCA_MUSHROOMS, O.MUSCA_MUSHROOMS_2].includes(visibleId) ? I.MUSCA_MUSHROOM
+          : [O.ARDER_MUSHROOMS, O.ARDER_MUSHROOMS_2].includes(visibleId) ? I.ARDER_MUSHROOM : null;
+        if (mushroom !== null) {
+          if (p.getInventory().getFreeSlots() < 1) {
+            return p.sendMessage("You don't have enough inventory space for any more mushrooms.");
+          }
+          p.getInventory().adds(mushroom, 1);
+          // A spam line, as captured (226/01703.txt:221125, 227/00091.txt:257527).
+          p.getPacketSender().sendTypedMessage(api.core.ChatType.SPAM, "You pick a mushroom.");
           return true;
         }
         if ([O.SALT_DEPOSIT, O.SALT_DEPOSIT_2].includes(visibleId)) {
@@ -6007,6 +6032,10 @@ module.exports = function registerDesertTreasureII(api) {
           const vat = { ...(vats[vatKey] ?? { powders: [], salt: 0 }) };
           if (vat.powders?.includes(I.ARDER_POWDER) && vat.powders?.includes(I.MUSCA_POWDER)
             && vat.salt >= 6 && action.includes("empty")) {
+            if (p.getInventory().getFreeSlots() < 1 && !has(p, I.ARDER_MUSCA_POISON)) {
+              // No capture of this: the wording is ours.
+              return p.sendMessage("You need inventory space for the poison.");
+            }
             vat.powders = [];
             vat.salt = 0;
             vats[vatKey] = vat;
@@ -7803,7 +7832,7 @@ module.exports = function registerDesertTreasureII(api) {
         }
         if (state.escapedVision && state.perfectTorchSchematic)
           return talk(p, npcId, "the-whisperer-inspecting-the-totem-in-the-cistern-talking-to-ketla-again");
-        if (state.cameTo && (state.ringShown || state.blackstone) && ![I.BLACKSTONE_FRAGMENT, I.BLACKSTONE_FRAGMENT_2, I.BLACKSTONE_FRAGMENT_3].some(id => has(p, id))) {
+        if (state.cameTo && (state.ringShown || state.blackstone) && !ownsBlackstoneFragment(p)) {
           return talk(p, npcId, "the-whisperer-talking-to-ketla-with-the-ring-of-visibility-reclaiming-the-blackstone-fragment");
         }
         if (state.cameTo && !state.blackstone && has(p, I.RING_OF_VISIBILITY)) {
@@ -7992,7 +8021,7 @@ module.exports = function registerDesertTreasureII(api) {
     const attackType = attacker.getAsPlayer?.().getFightType?.()?.getBonusType?.();
     if (!Number.isInteger(attackType)) return;
     const style = attackType === 3 ? 3 : attackType === 4 ? 4 : 0;
-    if (npc.__dt2FinalFigurePrayer === style) {
+    if (npc.__dt2FinalFigurePrayer === style && !hit.bypassesProtectionPrayer?.()) {
       for (const damage of hit.getHits?.() ?? []) damage.setDamage(0);
       hit.updateTotalDamage?.();
     }
@@ -8311,7 +8340,7 @@ module.exports = function registerDesertTreasureII(api) {
     if (["5mQjA2", "FLyW0o", "WWa1TU"].includes(stepId) && inChapter(p, "whisperer")) {
       const current = p.getAttribute(LASSAR) ?? {};
       if (!current.cameTo || !current.ringShown && !current.blackstone) return;
-      if (!has(p, I.BLACKSTONE_FRAGMENT) && !has(p, I.BLACKSTONE_FRAGMENT_2) && !has(p, I.BLACKSTONE_FRAGMENT_3)) p.getInventory().adds(I.BLACKSTONE_FRAGMENT, 1);
+      if (!ownsBlackstoneFragment(p)) p.getInventory().adds(I.BLACKSTONE_FRAGMENT, 1);
       setLassar(p, { ...current, blackstone: true });
     }
     if (stepId === "tOep7b" && inChapter(p, "whisperer")) {
@@ -8969,7 +8998,7 @@ module.exports = function registerDesertTreasureII(api) {
   [FINAL_CELL_ACTIVE, FINAL_CELL_SOLUTION, FINAL_CELL_GUESS, FINAL_CELL_ATTEMPTS, FINAL_CELL_OPEN, FINAL_CELL_GEAR,
     FINAL_CELL_CHEST, FINAL_FIGURE_STARTED, FINAL_FIGURE_DEFEATED, "desert-treasure-ii:final-cell-pending",
     "desert-treasure-ii:final-cutscene-started", FINAL_WIGHT_INDEX, FINAL_WIGHTS_STARTED, FINAL_WIGHTS_COMPLETE].forEach((key) => api.persistAttribute(key));
-  [SUCELLUS_MUSHROOMS, SUCELLUS_VATS, SUCELLUS_POISONS, SUCELLUS_ENCOUNTER_STARTED, SUCELLUS_DEFEATED, SUCELLUS_WEST_ROOM,
+  [SUCELLUS_VATS, SUCELLUS_POISONS, SUCELLUS_ENCOUNTER_STARTED, SUCELLUS_DEFEATED, SUCELLUS_WEST_ROOM,
     SUCELLUS_WEST_ASSASSIN_TALKED,
     SUCELLUS_CELL_PROGRESS, SUCELLUS_CELL_ENTERED, SUCELLUS_CELL_ESCAPED, SUCELLUS_ASSASSIN_GONE, SUCELLUS_CAPTAIN_ACCEPTED,
     SUCELLUS_PRISON_GEAR, SUCELLUS_PRISON_PROGRESS, SUCELLUS_PRISON_CHECKPOINT, SUCELLUS_PRISON_COMPLETE].forEach((key) => api.persistAttribute(key));
@@ -9006,6 +9035,7 @@ module.exports = function registerDesertTreasureII(api) {
   api.onCanBankItem(preventBankingMedallions);
   api.onCustomEvent("player:widget-action", onWidgetAction);
   api.onCustomEvent("npc-dialogue:action", handleDialogueAction);
+  api.onCustomEvent("desert-treasure-ii:boss-defeated", answerBossDefeated);
   api.onCustomEvent("interface:closed", closeGolemRecord);
   api.onNpcDialogueCondition(resolveGolemSearchCondition);
   api.onNpcDialogueCondition(resolveSerumSpaceCondition);

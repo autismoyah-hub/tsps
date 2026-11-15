@@ -19,9 +19,9 @@
  * Requirements: the OSRS Wiki marks Alfred Grimhand's Barcrawl as the only
  * "[required to start]" requirement and 31 Prayer as "[not required to start]"
  * (it is needed to enter the Monastery 1st floor, shared Doors/Ladders content
- * this plugin does not own). This server has no Barcrawl quest or attribute, so
- * the start gate cannot be enforced here and the quest is offered as it comes;
- * Prayer is therefore not used as a substitute for the missing requirement.
+ * this plugin does not own). The Barcrawl is answered through the quest runtime by
+ * name, so the start gate is enforced here; Prayer is still not treated as a
+ * substitute for it.
  *
  * Picking a scorpion up stings for 3 hitpoints (OSRS Wiki, "The first
  * scorpion"), and the post-quest battlestaff service uses the cache interface
@@ -55,10 +55,13 @@ module.exports = function registerScorpionCatcherQuest(api) {
 
   /** Cache interface "thormac": "What would you like to enchant?". */
   const ENCHANT_INTERFACE = 332;
+  const MAIN_MODAL_TARGET_UID = (161 << 16) | 16;
   /** The transcript's target name for that interface. */
   const ENCHANT_TARGET = "Thormac's battlestaff enchanting";
   /** OSRS Wiki (Battlestaff): 40,000 coins; 30,000/20,000 with the Hard/Elite Kandarin diaries. */
   const ENCHANT_PRICE = 40000;
+  const HARD_ENCHANT_PRICE = 30000;
+  const ELITE_ENCHANT_PRICE = 20000;
   const COINS = ItemIdentifiers.COINS;
   /** The interface's "Enchant" buttons, one per elemental battlestaff (cache script 330). */
   const ENCHANT_STAFF_BY_BUTTON = new Map([
@@ -85,6 +88,18 @@ module.exports = function registerScorpionCatcherQuest(api) {
     [ItemIdentifiers.SMOKE_BATTLESTAFF, ItemIdentifiers.MYSTIC_SMOKE_STAFF],
     [ItemIdentifiers.MIST_BATTLESTAFF, ItemIdentifiers.MYSTIC_MIST_STAFF],
     [ItemIdentifiers.DUST_BATTLESTAFF, ItemIdentifiers.MYSTIC_DUST_STAFF],
+    // Wiki (Thormac): the ornamented steam and lava battlestaves become the ornamented mystic staves.
+    [ItemIdentifiers.STEAM_BATTLESTAFF_3, ItemIdentifiers.MYSTIC_STEAM_STAFF_3],
+    [ItemIdentifiers.LAVA_BATTLESTAFF_3, ItemIdentifiers.MYSTIC_LAVA_STAFF_3],
+  ]);
+  /**
+   * The steam and lava buttons also show the ornamented staff (cache script 330, thormac_setup: steam_battlestaff_pretty,
+   * lava_battlestaff_pretty) and take whichever is held, the plain one first. The cache's highlight (proc 332) counts
+   * only the ornamented steam staff; the Wiki lists both, so both are taken.
+   */
+  const ORNAMENTED_BY_BATTLESTAFF = new Map([
+    [ItemIdentifiers.STEAM_BATTLESTAFF, ItemIdentifiers.STEAM_BATTLESTAFF_3],
+    [ItemIdentifiers.LAVA_BATTLESTAFF, ItemIdentifiers.LAVA_BATTLESTAFF_3],
   ]);
 
   /** cage item -> which scorpions it holds (bit 1 first, 2 second, 4 third). */
@@ -122,6 +137,12 @@ module.exports = function registerScorpionCatcherQuest(api) {
   const enchanting = new WeakSet();
 
   const has = (player, itemId) => player.getInventory().getAmount(itemId) > 0;
+
+  function barcrawlComplete(player) {
+    const request = { player, name: "Alfred Grimhand's Barcrawl", complete: false };
+    api.emitCustomEvent("quest:is-complete", request);
+    return request.complete === true;
+  }
   const ownsAnyCage = (player) => CAGE_ITEM_IDS.some((itemId) => has(player, itemId));
   const ownsFullCage = (player) => has(player, FULL_CAGE);
 
@@ -140,7 +161,7 @@ module.exports = function registerScorpionCatcherQuest(api) {
         "I can start this quest by speaking to <col=800000>Thormac</col>",
         "in the <col=800000>Sorcerer's Tower</col> south-west of Catherby.",
         "",
-        "I need level 31 <col=800000>Prayer</col> to enter the Monastery upstairs.",
+        "I need to complete Alfred Grimhand's Barcrawl first.",
       ];
     }
     const lines = ["<str>Thormac asked me to recover his three Kharid scorpions.</str>", ""];
@@ -196,10 +217,9 @@ module.exports = function registerScorpionCatcherQuest(api) {
         return "finishing-up";
       }
       if (stage === 0) {
-        // The only start requirement is Alfred Grimhand's Barcrawl, which this
-        // server has no quest or attribute for, so the quest is offered as it
-        // comes rather than refused on a requirement that cannot be read.
-        return "starting-off-with-the-requirements";
+        return barcrawlComplete(player)
+          ? "starting-off-with-the-requirements"
+          : "starting-off-without-the-requirements";
       }
       return "starting-off-subsequent-dialogue";
     }
@@ -274,8 +294,23 @@ module.exports = function registerScorpionCatcherQuest(api) {
     // an interface opened now. Open Thormac's screen once that close has finished.
     later(player, 1, () => {
       if (!enchanting.has(player) || !quest.isComplete(player)) return;
-      player.getPacketSender().sendInterface(ENCHANT_INTERFACE);
+      const sender = player.getPacketSender();
+      // A newer main interface takes priority over this deferred optional service.
+      if (sender.getSubInterfaceAt(MAIN_MODAL_TARGET_UID)) {
+        enchanting.delete(player);
+        return;
+      }
+      sender.sendInterface(ENCHANT_INTERFACE);
     });
+  }
+
+  function enchantPrice(player) {
+    const request = { player, diary: "kandarin", tier: "elite", complete: false };
+    api.emitCustomEvent("diary:is-complete", request);
+    if (request.complete) return ELITE_ENCHANT_PRICE;
+    request.tier = "hard";
+    api.emitCustomEvent("diary:is-complete", request);
+    return request.complete ? HARD_ENCHANT_PRICE : ENCHANT_PRICE;
   }
 
   /** "Enchant" on one of the interface's battlestaff buttons. */
@@ -283,22 +318,25 @@ module.exports = function registerScorpionCatcherQuest(api) {
     const { player } = event;
     if (event.groupId !== ENCHANT_INTERFACE) return;
     if (!enchanting.has(player)) return;
-    const staff = MYSTIC_STAFF_BY_BATTLESTAFF.has(event.itemId)
+    const button = MYSTIC_STAFF_BY_BATTLESTAFF.has(event.itemId)
       ? event.itemId
       : ENCHANT_STAFF_BY_BUTTON.get(event.childId);
-    if (staff === undefined) return;
+    if (button === undefined) return;
     event.handled = true;
     const inventory = player.getInventory();
+    const ornamented = ORNAMENTED_BY_BATTLESTAFF.get(button);
+    const staff = !inventory.getAmount(button) && ornamented !== undefined && inventory.getAmount(ornamented) ? ornamented : button;
     if (!inventory.getAmount(staff)) {
       player.sendMessage("You do not have that battlestaff.");
       return;
     }
-    if (inventory.getAmount(COINS) < ENCHANT_PRICE) {
+    const price = enchantPrice(player);
+    if (inventory.getAmount(COINS) < price) {
       player.sendMessage("You do not have enough coins to pay for that.");
       return;
     }
     inventory.deleteNumber(staff, 1);
-    inventory.deleteNumber(COINS, ENCHANT_PRICE);
+    inventory.deleteNumber(COINS, price);
     inventory.adds(MYSTIC_STAFF_BY_BATTLESTAFF.get(staff), 1);
     player.sendMessage("Thormac enchants your battlestaff into a mystic staff.");
   }

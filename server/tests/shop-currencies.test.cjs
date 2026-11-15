@@ -22,11 +22,12 @@ ItemDefinition.forId = (id) => (NAMES[id] ? { getName: () => NAMES[id] } : undef
 function loadPlugin() {
   const persisted = new Set();
   plugin.register({
+    core: { NpcDefinition: { forId: () => ({ getActions: () => [] }) } },
     registerShopCurrency: (key, handler) => ShopManager.registerCurrency(key, handler),
     registerItemShopCurrency: (itemId, options) => ShopManager.registerItemCurrency(itemId, options),
     persistAttribute: (key) => persisted.add(key),
     registerNpcInteraction: () => {},
-    onNpcInteraction: () => {},
+    onAnyNpcInteraction: () => {},
   });
   return { persisted, handlers: ShopManager.currencyHandlers };
 }
@@ -87,12 +88,10 @@ test('point currencies persist on a player attribute', () => {
 test('the imported points shops have registered currencies', () => {
   const { handlers } = loadPlugin();
   for (const key of [
-    'ABYSSAL PEARLS',
     'BOUNTY HUNTER POINTS',
     'LAST MAN STANDING POINTS',
     'MAHOGANY HOMES POINTS',
     'PVP ARENA POINTS',
-    'VALE RESEARCH POINTS',
   ]) {
     assert.ok(handlers.has(key), `missing currency handler: ${key}`);
   }

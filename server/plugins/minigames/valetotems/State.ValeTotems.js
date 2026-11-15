@@ -17,8 +17,14 @@
  * They are saved as one snapshot (VARPS_ATTRIBUTE) and sent again on login.
  */
 const Shared = require("./Shared.ValeTotems");
+const Spirits = require("./Spirits.ValeTotems");
+const pendingSpirits = new WeakMap();
+// RSProx 232/03127 ticks 253/255 and 237/01108 ticks 6608/6610.
+const SPIRIT_TRANSITION_TICKS = 2;
 
 const VARPS_ATTRIBUTE = "vale-totems:varps";
+/** What the Sacraments of Ent Folk's own notes count; server-side, as live sends no var for them. */
+const COUNTERS = { "totems-built": "vale-totems:totems-built", rummages: "vale-totems:rummages" };
 const SITES = Shared.DATA.sites.map((site) => site.site);
 const PIECES = ["low", "mid", "top"];
 const CARVED_OFFSET = 9;
@@ -83,6 +89,14 @@ function setResearchPoints(player, points) {
   save(player);
 }
 
+/** A counter's value, or one more of it with `add`. */
+function count(player, name, add = 1) {
+  const attribute = COUNTERS[name];
+  const value = Math.max(0, Math.floor(Number(player.getAttribute(attribute)) || 0)) + add;
+  if (add) player.setAttribute(attribute, value);
+  return value;
+}
+
 /** The totem at a site: its wood (1-6, 0 for none), carvings (0 uncarved, 1-5 animal) and so on. */
 function totem(player, site) {
   const wood = get(player, site, "base");
@@ -131,11 +145,39 @@ function rollAnimals(player, site) {
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
   const chosen = pool.slice(0, 3);
-  const fields = { animal_1: chosen[0], animal_2: chosen[1], animal_3: chosen[2] };
-  Shared.DATA.animals.forEach((animal, index) => {
-    fields[`multianimal_${animal.key}_1`] = chosen.includes(index + 1) ? 1 : 0;
-  });
-  set(player, site, fields);
+  const shown = Shared.DATA.animals.flatMap((animal, index) =>
+    get(player, site, `multianimal_${animal.key}_1`) ? [index + 1] : []);
+  let pending = pendingSpirits.get(player);
+  if (!pending) pendingSpirits.set(player, pending = new Map());
+  const previous = pending.get(site);
+  previous?.task?.stop();
+  const removed = shown.filter(animal => !chosen.includes(animal));
+  const added = chosen.filter(animal => !shown.includes(animal));
+  const transition = { chosen, removed, task: null };
+  pending.set(site, transition);
+  // Save the final selection before its transient visibility change. save() normalizes the
+  // snapshot's mask so an unrelated save or logout during these two ticks cannot restore it stale.
+  set(player, site, { animal_1: chosen[0], animal_2: chosen[1], animal_3: chosen[2] });
+  Spirits.animate(player, site, removed, "despawn");
+  // A developer-triggered reroll may keep an actor that was already despawning: restore it.
+  Spirits.animate(player, site, (previous?.removed ?? []).filter(animal => chosen.includes(animal)), "spawn");
+  const finish = (effects) => {
+    if (pending.get(site) !== transition) return;
+    set(player, site, spiritMask(chosen));
+    pending.delete(site);
+    if (effects) Spirits.animate(player, site, added, "spawn");
+  };
+  transition.finish = finish;
+  if (shown.length === 0 || (removed.length === 0 && added.length === 0)) {
+    finish(true);
+  } else {
+    transition.task = Shared.later(SPIRIT_TRANSITION_TICKS, () => finish(true));
+  }
+}
+
+function spiritMask(chosen) {
+  return Object.fromEntries(Shared.DATA.animals.map((animal, index) =>
+    [`multianimal_${animal.key}_1`, chosen.includes(index + 1) ? 1 : 0]));
 }
 
 function save(player) {
@@ -144,6 +186,15 @@ function save(player) {
   for (const name of PERSISTED_VARPS) {
     const value = sender.getVarp(varpId(name));
     if (value !== 0) snapshot[name] = value;
+  }
+  for (const [site, transition] of pendingSpirits.get(player) ?? []) {
+    for (const [field, value] of Object.entries(spiritMask(transition.chosen))) {
+      const { baseVar, startBit, endBit } = Shared.core().CacheDefinitions.getVarbit(siteVarbit(site, field));
+      const name = PERSISTED_VARPS.find(name => varpId(name) === baseVar);
+      if (!name) throw new Error(`ValeTotems: spirit varbit outside persisted site varps`);
+      const mask = ((1 << (endBit - startBit + 1)) - 1) << startBit;
+      snapshot[name] = ((snapshot[name] ?? 0) & ~mask) | ((value << startBit) & mask);
+    }
   }
   player.setAttribute(VARPS_ATTRIBUTE, snapshot);
 }
@@ -184,6 +235,11 @@ function enterSquare({ player, location }) {
 }
 
 function leave({ player }) {
+  for (const transition of [...(pendingSpirits.get(player)?.values() ?? [])]) {
+    transition.task?.stop();
+    transition.finish(false);
+  }
+  pendingSpirits.delete(player);
   active.delete(player);
 }
 
@@ -193,6 +249,7 @@ function activePlayers() {
 
 function attach(api) {
   api.persistAttribute(VARPS_ATTRIBUTE);
+  for (const attribute of Object.values(COUNTERS)) api.persistAttribute(attribute, 0);
   api.onPlayerLogin(restore);
   api.onPlayerMapSquareChange(enterSquare);
   api.onPlayerLogout(leave);
@@ -200,5 +257,5 @@ function attach(api) {
 
 module.exports = {
   SITES, attach, siteOfLoc, tileOf, get, set, totem, animals, erect, carve, collapse, rollAnimals,
-  researchPoints, setResearchPoints, join, activePlayers,
+  researchPoints, setResearchPoints, count, join, activePlayers,
 };

@@ -29,6 +29,7 @@ class Fight {
     this.basics = 0;
     this.style = "ranged";
     this.shielded = true;
+    this.empowered = false;
     this.transitionUntil = 0;
     this.tickCount = 0;
     this.pools = [];
@@ -90,6 +91,7 @@ class Fight {
     this.attacks = 0;
     this.basics = 0;
     this.shielded = !this.enraged && this.phase < 3;
+    this.empowered = false;
     if (this.enraged) this.style = this.style === "ranged" ? "magic" : "ranged";
     Common.later(Common.data.combat.phaseChangeTicks, () => {
       if (this.stopped) return;
@@ -98,7 +100,7 @@ class Fight {
     });
   }
 
-  /** Every few ticks the vents erupt: by its own vent the Hydra loses its shield. */
+  /** Every few ticks the vents erupt: by its own vent the Hydra loses its shield, by another it rages. */
   eruptVents(players) {
     const want = PHASES()[this.phase].vent;
     for (const [colour, tile] of Object.entries(Common.data.vents)) {
@@ -106,11 +108,39 @@ class Fight {
       if (!near) continue;
       if (colour === want && this.shielded) {
         this.shielded = false;
+        this.empowered = false;
+        this.npc.forceChat?.(Common.message("roar"));
         for (const player of players) player.sendMessage(Common.message("weakened"));
-      } else if (colour !== want && want) {
+      } else if (colour !== want && want && this.shielded) {
+        this.empowered = true;
         for (const player of players) player.sendMessage(Common.message("empowered"));
       }
     }
+  }
+
+  /** This phase's row of the Wiki infobox's max hits (none once enraged). */
+  phaseHits() {
+    if (this.enraged) return null;
+    return Common.data.combat.phaseHits?.[PHASES()[this.phase]?.name] ?? null;
+  }
+
+  /**
+   * The most a hit can take off the player, by the Wiki's infobox: serpentine 17 (26 empowered),
+   * electric 35 (26 empowered), flame 35 (52 empowered), 55 once enraged.
+   */
+  maxHit() {
+    const { combat } = Common.data;
+    if (this.enraged) return combat.enragedMaxHit;
+    const row = this.phaseHits();
+    if (!row) return this.empowered ? combat.empoweredMaxHit : combat.maxHit;
+    return this.empowered ? row.empoweredMax : row.max;
+  }
+
+  /** Hits an auto-attack deals: the infobox's "x2" is two (serpentine, and electric empowered). */
+  hitCount() {
+    const row = this.phaseHits();
+    if (!row) return 1;
+    return this.empowered ? row.empoweredHits : row.hits;
   }
 
   /** onNpcHitModify: 75% less damage while shielded (the enraged form keeps no shield). */
@@ -162,7 +192,8 @@ class Fight {
     for (const player of players) {
       if (chebyshev(player.getLocation(), centre) > 1) continue;
       Common.hurtPlayer(player, Common.randomInt(0, poison.splashMax), true);
-      Common.core.CombatFactory.poisonEntity(player, player === aimedAt ? poison.poisonTargeted : poison.poisonNear);
+      // Severity, hit x 5: the Wiki's hits are 6 on the target and 4 beside it (Alchemical Hydra/Strategies). No recording.
+      Common.core.CombatFactory.poisonEntity(player, (player === aimedAt ? poison.poisonTargeted : poison.poisonNear) * 5);
     }
     const until = this.tickCount + poison.poolTicks;
     for (let dx = -1; dx <= 1; dx++) {

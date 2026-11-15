@@ -11,6 +11,22 @@ let game;
 let core;
 let data;
 
+/**
+ * Wiki (Castle Wars, 2013 update): "Your prayer points and other stats are now restored when you leave Castle Wars".
+ * (2015): "Active prayers will now be disabled upon leaving a game of Castle Wars". Runs on leaving a waiting room and
+ * the game. Drained skills, Hitpoints and Prayer back to their resting levels (a permanent boost such as a League one
+ * included, as natural restoration has it) and run energy full, prayers off; a boost stays.
+ */
+function restoreStats(player) {
+  const skills = player.getSkillManager();
+  for (const skill of core.Skill.values()) {
+    const resting = skills.getRestingLevel(skill);
+    if (skills.getCurrentLevel(skill) < resting) skills.setCurrentLevel(skill, resting, true);
+  }
+  player.setRunEnergy(100);
+  core.PrayerHandler.deactivatePrayers(player);
+}
+
 function playerOf(character) {
   return character.getAsPlayer?.() ?? null;
 }
@@ -68,8 +84,10 @@ function defineAreas() {
       if (player.getAttribute(game.TRANSITION_KEY) === true) {
         return;
       }
+      // Leaving takes back the game's items and team and restores stats (Wiki), but not the player's own skull,
+      // Tele Block, poison, antifire or boosts: a full resetAttributes cleared those for free.
       game.clearCastleWarsItems(player);
-      player.resetAttributes();
+      restoreStats(player);
       game.setTeamId(player, null);
       game.closeOverlay(player);
       if (player.isPlayerBot?.() !== true) {
@@ -127,6 +145,7 @@ function defineAreas() {
         game.returnToLobby(player);
         return;
       }
+      game.startParticipation(player);
       player.setAttribute(game.TRANSITION_KEY, false);
       player.getPacketSender().sendSubInterface(data.OVERLAY_HUD_UID, data.STATUS_OVERLAY_INTERFACE[game.getTeamId(player)], 1);
       sendGameVars(player, game.getTeamId(player));
@@ -143,8 +162,12 @@ function defineAreas() {
       player.getPacketSender().sendPlayerOption(data.TAKE_FROM_OPTION_SLOT, "", false);
       game.closeOverlay(player);
       player.getPacketSender().sendEntityHintRemoval(true);
+      // A carrier leaving any way (logout, disconnect) drops the flag as a death or an unequip does, before the banner is
+      // stripped: it stayed "carried" by a gone player, so no one could take it from the stand for the rest of the game.
+      game.dropCarriedFlag(player);
       game.clearCastleWarsItems(player);
       game.clearBraceletEffect(player);
+      restoreStats(player);
       if (logout) {
         game.returnToLobby(player);
       }
@@ -296,10 +319,25 @@ function friendlyFireVerdict(attackerMobile, targetMobile) {
   return true;
 }
 
+/**
+ * Players whose death began in a Castle Wars area. The game ending during the death animation moves them to the lobby,
+ * which is not one, and the death then dropped their items there: a Castle Wars death is safe (as LMS guards).
+ */
+const dyingInCastleWars = new WeakSet();
+
+/** Every death starts here, so one begun outside drops a mark an earlier death left (handled first, or never finished). */
+function rememberDying(event) {
+  if (game.castleWarsAreas.has(event.player?.getArea?.())) dyingInCastleWars.add(event.player);
+  else if (event.player) dyingInCastleWars.delete(event.player);
+}
+
 function respawnInStartRoom(event) {
   const { player } = event;
+  const diedInCastleWars = dyingInCastleWars.delete(player);
   const teamId = player?.getArea?.() === game.gameArea ? game.getTeamId(player) : null;
   if (!teamId) {
+    // The game ended while they were dying: they are in the lobby already, and stay there.
+    if (diedInCastleWars && !game.castleWarsAreas.has(player?.getArea?.())) event.handled = true;
     return;
   }
   game.dropCarriedFlag(player);
@@ -310,13 +348,14 @@ function respawnInStartRoom(event) {
 }
 
 function keepItemsOnDeath(event) {
-  if (game.castleWarsAreas.has(event.player?.getArea?.())) {
+  if (game.castleWarsAreas.has(event.player?.getArea?.()) || dyingInCastleWars.has(event.player)) {
     event.shouldDrop = false;
   }
 }
 
 function preventBonesOnDeath(event) {
-  if (game.castleWarsAreas.has(event.player?.getArea?.())) {
+  // The bones roll at tick 0, before the respawn hook forgets a death begun in the game (ended mid-death).
+  if (game.castleWarsAreas.has(event.player?.getArea?.()) || dyingInCastleWars.has(event.player)) {
     event.allow = false;
   }
 }
@@ -336,6 +375,7 @@ module.exports = function attachCastleWarsAreas(api, castleWars) {
   api.onPlayerLogin(restoreLoginInsideCastleWars);
   api.onCanEquip(protectTeamColours);
   api.onCanUnequip(protectTeamColours);
+  api.onPlayerBeforeDeath(rememberDying);
   api.onPlayerDeath(respawnInStartRoom);
   api.onShouldDropItemsOnDeath(keepItemsOnDeath);
 };

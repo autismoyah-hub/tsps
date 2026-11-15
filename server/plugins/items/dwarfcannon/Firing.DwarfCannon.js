@@ -8,10 +8,16 @@ const Cannon = require("./Common.DwarfCannon");
 const Data = require("./Data.DwarfCannon");
 const Ammo = require("./Ammo.DwarfCannon");
 const Decay = require("./Decay.DwarfCannon");
+const SeaCombat = require("../../skills/sailing/seacombat/Common.SeaCombat");
 
 /** Captured once (rsprox 1510), red. */
 const OUT_OF_AMMO = "<col=ef1020>Your cannon is out of ammo.</col>";
 const SEARCH_RANGE = 20;
+// All Settings 248-250: the low ammo popup (on/off and its amount) and the out of ammo popup.
+const LOW_NOTIFICATION_VARBIT = 14175;
+const LOW_AMOUNT_VARBIT = 14176;
+const NO_AMMO_NOTIFICATION_VARBIT = 14177;
+const NOTIFICATION_TITLE = "Dwarf multicannon";
 
 let cannonballMethod = null;
 
@@ -73,10 +79,26 @@ function tick(cannon) {
   cannon.direction = (cannon.direction + 1) % Data.DIRECTIONS.length;
   Cannon.areaSound(cannon.centre, Data.SOUND.TURN);
   Cannon.animate(cannon, kind.turn + cannon.direction);
+  if (target) ammoNotification(owner, Cannon.balls(cannon));
   if (target && Cannon.balls(cannon) === 0) {
     Ammo.stopFiring(cannon);
     owner.sendMessage(OUT_OF_AMMO);
   }
+}
+
+/**
+ * After a shot: the popup the owner chose, when the cannon is down to the low amount or empty. The
+ * red chat line for an empty cannon is always sent. Ours: the popups' wording.
+ */
+function ammoNotification(owner, balls) {
+  const sender = owner.getPacketSender();
+  let text = null;
+  if (balls === 0) {
+    if (sender.getVarbit(NO_AMMO_NOTIFICATION_VARBIT)) text = "Your cannon is out of ammo.";
+  } else if (sender.getVarbit(LOW_NOTIFICATION_VARBIT) && balls === sender.getVarbit(LOW_AMOUNT_VARBIT)) {
+    text = "Your cannon is low on ammo.";
+  }
+  if (text) Cannon.api?.emitCustomEvent("notification:show", { player: owner, title: NOTIFICATION_TITLE, text });
 }
 
 /** Whether the cannon may shoot `npc` for `owner` (Wiki: singles only at what attacks you). */
@@ -88,6 +110,8 @@ function canTarget(owner, npc) {
   const definition = npc.getDefinition();
   if (!definition?.getActions?.()?.includes("Attack")) return false;
   if (Data.NO_CANNON_NPCS.includes(definition.getName())) return false;
+  // Wiki (Dwarf multicannon, 18 March 2026): "no longer fires at sea creatures".
+  if (SeaCombat.creatureOf(npc)) return false;
   if (npc.getTimers().has(TimerKey.ATTACK_IMMUNITY)) return false;
   if (!CombatFactory.multiCombatBetween(owner, npc)) {
     const ownerFoe = owner.getCombat().getAttacker();
@@ -117,9 +141,22 @@ function targetFor(cannon, owner) {
   return best;
 }
 
-/** One ball (granite first): projectile now, the hit next tick, Ranged XP for its damage. */
+/**
+ * Wiki: the roll is the owner's Ranged accuracy with a ranged weapon and their melee accuracy
+ * otherwise, any magic staff included; a powered staff takes whichever of the two is higher.
+ */
+function accuracyStyle(owner, npc) {
+  const { CombatFactory, CombatType, AccuracyFormulasDpsCalc } = Cannon.core;
+  const method = CombatFactory.getMethod(owner);
+  if (method.type() === CombatType.RANGED) return CombatType.RANGED;
+  if (method.poweredStaff !== true) return CombatType.MELEE;
+  const attack = (style) => AccuracyFormulasDpsCalc.specialRolls(owner, npc, style, CombatType.RANGED, "heavy")?.attack ?? 0;
+  return attack(CombatType.RANGED) > attack(CombatType.MELEE) ? CombatType.RANGED : CombatType.MELEE;
+}
+
+/** One ball (granite first): projectile now, the hit next tick (its Ranged XP in payExperience). */
 function shoot(cannon, owner, npc) {
-  const { Projectile, PendingHit, CombatFactory, CombatType, AccuracyFormulasDpsCalc, Skill } = Cannon.core;
+  const { Projectile, PendingHit, CombatFactory, CombatType, AccuracyFormulasDpsCalc } = Cannon.core;
   const granite = cannon.granite > 0;
   if (granite) cannon.granite--;
   else cannon.steel--;
@@ -131,15 +168,23 @@ function shoot(cannon, owner, npc) {
     0, cycles, Data.PROJECTILE.startHeight, Data.PROJECTILE.endHeight, null)
     .withAngle(Data.PROJECTILE.angle).withProgress(Data.PROJECTILE.progress).sendProjectile();
 
-  // The owner's Ranged accuracy with a ranged weapon, otherwise their melee, against Ranged defence (Wiki).
-  const style = CombatFactory.getMethod(owner).type() === CombatType.RANGED ? CombatType.RANGED : CombatType.MELEE;
+  const style = accuracyStyle(owner, npc);
   const accurate = AccuracyFormulasDpsCalc.rollAccuracy(owner, npc, style, CombatType.RANGED, "heavy");
   const max = granite ? Data.MAX_HIT.granite : Data.MAX_HIT.steel;
   const damage = accurate ? Math.min(npc.getHitpoints(), Math.floor(Math.random() * (max + 1))) : 0;
   const hit = new PendingHit(owner, npc, method(), { delay: 0, rollAccuracy: false, experience: false, handleAfterHitEffects: false });
   hit.setTotalDamage(damage);
   CombatFactory.addPendingHit(hit);
-  if (damage > 0) owner.getSkillManager().addExperience(Skill.RANGED, damage * Data.RANGED_XP_PER_DAMAGE, true);
 }
 
-module.exports = { start, tick, canTarget, targetFor, shoot, OUT_OF_AMMO };
+/**
+ * A cannonball's Ranged XP, paid on the damage it deals when it lands: the target's own hit hooks (a harpie bug swarm
+ * without a lit bug lantern, a kurask) may zero it after the roll.
+ */
+function payExperience({ attacker, hit }) {
+  if (!cannonballMethod || hit?.getCombatMethod?.() !== cannonballMethod || !attacker?.isPlayer?.()) return;
+  const damage = hit.getTotalDamage();
+  if (damage > 0) attacker.getAsPlayer().getSkillManager().addExperience(Cannon.core.Skill.RANGED, damage * Data.RANGED_XP_PER_DAMAGE, true);
+}
+
+module.exports = { start, tick, canTarget, targetFor, shoot, payExperience, ammoNotification, OUT_OF_AMMO };

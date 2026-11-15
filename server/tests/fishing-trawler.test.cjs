@@ -17,25 +17,38 @@ let Shared, Voyage, Rewards, Lobby, Sea;
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, '..'));
   Shared = require('../plugins/minigames/fishingtrawler/Shared.FishingTrawler');
-  Shared.bind({ core });
+  Shared.bind({ core, emitCustomEvent: () => {} });
   ({ Voyage } = require('../plugins/minigames/fishingtrawler/Voyage.FishingTrawler'));
   Rewards = require('../plugins/minigames/fishingtrawler/Rewards.FishingTrawler');
   Lobby = require('../plugins/minigames/fishingtrawler/Lobby.FishingTrawler');
   Sea = require('../plugins/minigames/fishingtrawler/Sea.FishingTrawler');
 });
 
-function fakePlayer({ fishing = 99 } = {}) {
+function fakePlayer({ fishing = 99, registered = true, hitpoints = 10, location = [2665, 3170, 1], privateArea = null, dying = false } = {}) {
   const attributes = new Map();
+  const banked = new Map();
+  const bank = {
+    contains: (id) => (banked.get(id) ?? 0) > 0,
+    getAmount: (id) => banked.get(id) ?? 0,
+    getFreeSlots: () => 800,
+    getAddableAmount: (item) => item.getAmount(),
+    add: (item) => banked.set(item.getId(), (banked.get(item.getId()) ?? 0) + item.getAmount()),
+  };
+  const at = new core.Location(location[0], location[1], location[2]);
   const player = {
     messages: [],
     sendMessage: (text) => player.messages.push(text),
-    isRegistered: () => true,
+    isRegistered: () => registered,
+    getHitpoints: () => hitpoints,
+    isDyingReturn: () => dying,
+    getPrivateArea: () => privateArea,
+    getLocation: () => at,
     getAttribute: (key) => attributes.get(key),
     setAttribute: (key, value) => attributes.set(key, value),
     getSkillManager: () => ({ getMaxLevel: () => fishing, getCurrentLevel: () => fishing }),
     getInventory: () => ({ contains: () => false, getAmount: () => 0 }),
     getEquipment: () => ({ contains: () => false, getAmount: () => 0 }),
-    getBank: () => ({ contains: () => false, getAmount: () => 0, getFreeSlots: () => 800 }),
+    getBank: () => bank,
     getCurrentBankTab: () => 0,
   };
   return player;
@@ -184,6 +197,18 @@ test('the trip comes back after five minutes, and the share follows the HUD mete
   assert.equal(voyage.shareFor(player), 30);
   voyage.contribution.set(player, 178);
   assert.equal(voyage.shareFor(player), 25);
+
+  // Wiki (Fishing Trawler): "Completing the elite Ardougne Diary yields 50% more fish".
+  const api = Shared.api();
+  Shared.bind({ ...api, emitCustomEvent: (name, event) => { if (name === 'diary:is-complete' && event.diary === 'ardougne' && event.tier === 'elite') event.complete = true; } });
+  try {
+    voyage.contribution.set(player, 80);
+    assert.equal(voyage.shareFor(player), 30, '20 fish, half as many again');
+    voyage.contribution.set(player, 255);
+    assert.equal(voyage.shareFor(player), 45, 'with a full meter too');
+  } finally {
+    Shared.bind(api);
+  }
 });
 
 test('a bigger crew catches less each, down to the floor', () => {
@@ -261,6 +286,82 @@ test('sailing again throws back a catch left in the net', () => {
   assert.deepEqual(launched, [player]);
 });
 
+test('the Ardougne easy task completes when the lobby launches a voyage', () => {
+  const api = Shared.api();
+  const emitCustomEvent = api.emitCustomEvent;
+  const launch = Sea.launch;
+  const { area, departAt, task } = Lobby.lobby;
+  const { voyage } = Sea.sea;
+  const events = [];
+  const first = fakePlayer();
+  const second = fakePlayer();
+  const outside = fakePlayer({ location: [2674, 3170, 1] });
+  const privatePlayer = fakePlayer({ privateArea: {} });
+  const dead = fakePlayer({ hitpoints: 0 });
+  const dying = fakePlayer({ dying: true });
+  const unregistered = fakePlayer({ registered: false });
+  Shared.bind({ ...api, emitCustomEvent: (name, event) => events.push([name, event]) });
+  Lobby.lobby.area = { getPlayers: () => [first, second, first, outside, privatePlayer, dead, dying, unregistered] };
+  Sea.launch = (players) => {
+    const launched = { players };
+    Sea.sea.voyage = launched;
+    return launched;
+  };
+
+  try {
+    Lobby.lobby.departAt = 0;
+    Lobby.tickLobby();
+    assert.deepEqual(Sea.sea.voyage.players, [first, second]);
+    assert.deepEqual(events, [first, second].map((player) => ["diary:task", {
+      player,
+      diary: "ardougne",
+      task: "go-out-fishing-on-the-fishing-trawler",
+    }]));
+
+    Lobby.tickLobby();
+    assert.equal(events.length, 2, 'the queued tick does not credit the same departure again');
+  } finally {
+    Shared.bind(api);
+    Sea.launch = launch;
+    Sea.sea.voyage = voyage;
+    Lobby.lobby.area = area;
+    Lobby.lobby.departAt = departAt;
+    Lobby.lobby.task = task;
+  }
+  assert.equal(Shared.api().emitCustomEvent, emitCustomEvent);
+});
+
+test('the Ardougne easy task does not complete while queued or when launch fails', () => {
+  const api = Shared.api();
+  const launch = Sea.launch;
+  const { area, departAt, task } = Lobby.lobby;
+  const { voyage } = Sea.sea;
+  const events = [];
+  const player = fakePlayer();
+  Shared.bind({ ...api, emitCustomEvent: (name, event) => events.push([name, event]) });
+  Lobby.lobby.area = { getPlayers: () => [player] };
+
+  try {
+    Sea.sea.voyage = {};
+    Lobby.lobby.departAt = 0;
+    Lobby.tickLobby();
+    assert.deepEqual(events, [], 'waiting for the trawler at sea does not count');
+
+    Sea.sea.voyage = null;
+    Lobby.lobby.departAt = 0;
+    Sea.launch = () => null;
+    Lobby.tickLobby();
+    assert.deepEqual(events, [], 'a failed launch does not count');
+  } finally {
+    Shared.bind(api);
+    Sea.launch = launch;
+    Sea.sea.voyage = voyage;
+    Lobby.lobby.area = area;
+    Lobby.lobby.departAt = departAt;
+    Lobby.lobby.task = task;
+  }
+});
+
 test("the crates only answer for the trawler's own: other Hammers crates fall through", () => {
   const Actions = require('../plugins/minigames/fishingtrawler/Actions.FishingTrawler');
   const ids = Shared.ids();
@@ -276,10 +377,14 @@ test("the crates only answer for the trawler's own: other Hammers crates fall th
 test('a full bank keeps the rest of the catch in the net', () => {
   const player = fakePlayer();
   const banked = [];
-  player.getBank = () => ({ contains: () => false, getAmount: () => 0,
+  const amounts = new Map();
+  player.getBank = () => ({ contains: (id) => (amounts.get(id) ?? 0) > 0, getAmount: (id) => amounts.get(id) ?? 0,
     getFreeSlots: () => banked.length === 0 ? 1 : 0,
     getAddableAmount: (item) => banked.length === 0 ? item.getAmount() : 0,
-    add: (item) => banked.push(item.getId()) });
+    add: (item) => {
+      banked.push(item.getId());
+      amounts.set(item.getId(), (amounts.get(item.getId()) ?? 0) + item.getAmount());
+    } });
   player.getSkillManager = () => ({ getMaxLevel: () => 99, getCurrentLevel: () => 99, addExperiences: () => {} });
   player.setAttribute(Shared.REWARD_ATTRIBUTE, { items: [[317, 3], [321, 2]], xp: 10 });
   Rewards.inspectNet({ player });
@@ -290,7 +395,10 @@ test('a full bank keeps the rest of the catch in the net', () => {
 
 test('real capped stacks retain the catch and only delivered fish earn XP', t => {
   const { Player } = require('../dist/game/entity/impl/player/Player');
-  const p = new Player(null), xp = [];
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true, send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+  const p = new Player(new PlayerSession(channel)), xp = [];
+  p.setUsername('trawlercatch');
   t.mock.method(p, 'sendMessage', () => {});
   t.mock.method(p.getSkillManager(), 'addExperiences', (_skill, amount) => xp.push(amount));
   const fish = Shared.ids().fish.find(fish => fish.id === 317), bank = p.getBank(0);
@@ -311,6 +419,7 @@ test('real capped stacks retain the catch and only delivered fish earn XP', t =>
   assert.equal(xp.reduce((sum, amount) => sum + amount, 0), 3 * fish.xp);
   Rewards.inspectNet({ player: p });
   assert.equal(xp.length, 2, 'collected XP cannot be earned twice');
+  assert.ok(p.getDialogueManager().getCurrent() instanceof core.PlayerDialogue);
 });
 
 test('the catch is banked while the bank has space, however full its tab', t => {
@@ -357,4 +466,82 @@ test('balance: an idle crew sinks before the end, a steady patcher lasts the who
   }
   assert.equal(busy.result, 'returned');
   assert.equal(busy.contribution.get(player), Shared.DATA.points.max);
+});
+
+test('an angler piece is credited to the collection log when it reaches the bank', () => {
+  const obtains = [];
+  Shared.bind({ core, emitCustomEvent: (name, event) => { if (name === 'collection-log:obtain') obtains.push(event); } });
+  const player = fakePlayer();
+  const ids = Shared.ids();
+  player.getInventory = () => ({ contains: () => false, getAmount: () => 0, getAddableAmount: () => 1, adds: () => {} });
+  const banked = new Map();
+  player.getBank = () => ({ contains: id => (banked.get(id) ?? 0) > 0, getAmount: id => banked.get(id) ?? 0, getFreeSlots: () => 800,
+    getAddableAmount: item => item.getAmount(), add: item => banked.set(item.getId(), (banked.get(item.getId()) ?? 0) + item.getAmount()) });
+  player.getSkillManager = () => ({ getMaxLevel: () => 99, getCurrentLevel: () => 99, addExperiences: () => {} });
+  player.setAttribute(Shared.REWARD_ATTRIBUTE, { items: [[ids.items.anglerHat, 1], [317, 1]], xp: 1 });
+  Rewards.inspectNet({ player });
+  assert.deepEqual(obtains.map((event) => [event.itemId, event.amount]), [[ids.items.anglerHat, 1]]);
+  Shared.bind({ core, emitCustomEvent: () => {} });
+});
+
+test('the shore a sunk crew swims to is land, not open sea', () => {
+  const [x, y, z] = Shared.DATA.shore;
+  assert.deepEqual([x, y, z], [2658, 3210, 0]);
+  core.ObjectDefinition.init();
+  core.RegionManager.init();
+  core.RegionManager.loadMapFiles(x, y);
+  assert.equal(core.RegionManager.isWater(new core.Location(2672, 3209, 0)), true, 'the old landing was open sea');
+  assert.equal(core.RegionManager.isWater(new core.Location(x, y, z)), false, 'the landing is not a water tile');
+  assert.equal(core.RegionManager.blocked(new core.Location(x, y, z), null), false, 'the landing is walkable');
+});
+
+test("Murphy at sea answers with his take-me-back talk, and its wreck action sinks the trip", () => {
+  const Murphy = require('../plugins/minigames/fishingtrawler/Murphy.FishingTrawler');
+  const aboard = fakePlayer({ location: [1887, 4825, 1] });
+  const ashore = fakePlayer({ location: [2668, 3162, 0] });
+  const voyage = new Voyage([aboard], sequence([], 0.99));
+  Sea.sea.voyage = voyage;
+  try {
+    const seaMurphy = core.NpcIdentifiers.MURPHY_2;
+    assert.deepEqual(Murphy.selectVariant({ npcId: seaMurphy, player: aboard }), { page: 'Murphy', variant: 'standard-dialogue-when-at-sea' });
+    assert.equal(Murphy.selectVariant({ npcId: seaMurphy, player: ashore }), null, 'only for the crew aboard');
+    assert.equal(Murphy.selectVariant({ npcId: core.NpcIdentifiers.MURPHY, player: aboard }), null, 'the port Murphy keeps his own talk');
+    Murphy.wreck({ player: aboard, npcId: seaMurphy, stepId: 'nqzBKN' });
+    assert.equal(voyage.ended, true);
+    assert.equal(voyage.result, 'sunk');
+  } finally {
+    Sea.sea.voyage = null;
+  }
+});
+
+// Wiki (Fishing Trawler, contribution table): a fixed rail gives 5 Construction XP, only with a player-owned house.
+test('fixing a rail gives 5 Construction XP to a house owner, and none without a house', () => {
+  const Actions = require('../plugins/minigames/fishingtrawler/Actions.FishingTrawler');
+  Actions.resolveSpots();
+  const railId = core.CacheDefinitions.getLocId('shiprail_port');
+  for (const owns of [true, false]) {
+    Shared.bind({ core, emitCustomEvent: (name, request) => { if (name === 'construction:owns-house') request.owns = owns; } });
+    const player = fakePlayer();
+    const xp = [];
+    player.getInventory = () => ({ contains: () => true, getAmount: () => 1 });
+    player.getSkillManager = () => ({ getMaxLevel: () => 99, getCurrentLevel: () => 99, addExperiences: (skill, amount) => xp.push([skill, amount]) });
+    player.performAnimation = () => {};
+    player.getPacketSender = () => new Proxy({}, { get: () => () => {} });
+    const voyage = new Voyage([player], () => 0.99);
+    voyage.sync = () => {};
+    voyage.rails.port = 2;
+    Sea.sea.voyage = voyage;
+    try {
+      assert.equal(Actions.fixRail({ player, objectId: railId }), true);
+      assert.deepEqual(xp.filter(([skill]) => skill === core.Skill.CONSTRUCTION).map(([, amount]) => amount), owns ? [5] : [], `owns a house: ${owns}`);
+    } finally {
+      Sea.sea.voyage = null;
+    }
+  }
+  Shared.bind({ core, emitCustomEvent: () => {} });
+});
+
+test("the angler piece uses the Wiki's line", () => {
+  // Wiki (Fishing Trawler, trivia).
+  assert.equal(Shared.message('angler'), 'The luck of the sea is in today. You spot a piece of fishing gear caught up in the netting!');
 });

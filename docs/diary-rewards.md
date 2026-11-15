@@ -4,7 +4,21 @@ The achievement diaries' reward items (Ardougne cloak, Karamja gloves, Explorer'
 
 **What's not here yet:**
 - the Explorer's ring's free alchemy (the Alchemy option and using items on the ring);
-- the passive perks: shop discounts, Kandarin headgear's extra logs, Rada's blessing's extra fish, Morytania legs as a ghostspeak amulet, desert heat protection, and the like.
+- the passive perks: shop discounts, Morytania legs as a ghostspeak amulet, desert heat protection, and the like.
+
+## Peer the Seer's deposit box
+
+Once the easy Fremennik Diary is complete, Peer the Seer (south of the Rellekka market) works as a bank deposit box ([Peer the Seer](https://oldschool.runescape.wiki/w/Peer_the_Seer), [Fremennik Diary](https://oldschool.runescape.wiki/w/Fremennik_Diary)). The unit is `server/plugins/items/diaryrewards/PeerTheSeer.DiaryRewards.js`.
+
+- **Deposit-items** opens the same deposit box as a deposit box loc, with nothing said and no animation (rsprox captures, index rec 1757, rev 227 Leagues world).
+- Before the easy tier is complete, Deposit-items has him say "I cannot do that for you until you have completed the easy tier of the Fremennik achievement diary." (Wiki transcript).
+- His after-trials Talk-to "Can you bank my stuff?" opens the deposit box under the same rule. Ours: without the diary that branch plays the same refusal line; no source shows what it does then.
+- The tier only needs completing, not claiming from Thorodin.
+- Tests: `server/tests/peer-the-seer-deposit.test.cjs`.
+
+## Zaff's battlestaves
+
+The barrel in Zaff's shop sells one noted stack of battlestaves a day at 7,000 coins each: 15 / 30 / 60 / 120 for the highest Varrock tier claimed from Toby. The barrel checks room first, then offers the price (Yes. / No.); Yes. re-checks coins and room, takes the coins, gives the stack and sets `zaff_last_claimed`. The day is the UTC date in the daily attribute; the barrel is a multiloc on `zaff_last_claimed`, so a claim and each login of a claimed player schedule a task that sends the varbit back to 0 at 00:00 UTC (Wiki, 23 July 2025: no relog). The flow is as captured in rsprox archive 3216; the reset is from the Wiki and the cache, no capture shows it. Not done: the Wiki also says the battlestaves are only purchasable after partial completion of What Lies Below (the quest page ties it to defeating King Roald). No capture or cache check shows that gate and no refusal text is known, so it is not enforced. A player with no claimed tier clicking the full barrel gets no response (no text is known).
 
 ## Options
 
@@ -31,12 +45,14 @@ Every option works whether the item is worn or carried. The inventory names and 
 | | Check | The day's restores left | |
 | Explorer's ring | Energy (Functions > Energy on rings 2–4) | Restores 50% / 50% / 50% / 100% run energy | 2 / 3 / 4 / 3 |
 | | Check | The day's alchemy and energy charges, and ring 2's teleports | |
+| Robin | Claim-slime | Bones to bonemeal and a bucket of slime each (rsprox 703, 1857; varbit 4543, RuneLite's MORYTANIA_SLIME_CLAIMED) | – / 13 / 26 / 39 |
+| Lundail | Claim-runes, or Talk-to > Claim free runes. | One random rune type of mind, body, nature, chaos, law, cosmic or death, once a day (Wiki: Lundail; no rsprox capture) | 40 / 80 / 120 / 200 |
 
 "–" means the tier has no such option in the cache. "locked" means the option is there but does nothing until a later tier (Wiki).
 
 - **Daily limits** reset at 00:00 UTC.
 - **Counting is per destination,** not per item. Upgrading keeps the day's uses: Ardougne cloak 2's 3 farm teleports used leaves cloak 3 with 2 of 5 (Wiki trivia).
-- **The Falador shield** spends nothing when Prayer is already full (Wiki changelog). The restore rounds down.
+- **The Falador shield** spends nothing when Prayer is already full (Wiki changelog). The restore rounds down. A recharge that spends a charge also clears the prayer drain counter ([prayer-drain.md](prayer-drain.md)).
 
 ## From the captures
 
@@ -119,3 +135,32 @@ Source: [Explorer’s ring4](https://oldschool.runescape.wiki/w/Explorer%27s_rin
 Native QA exposed an additional overwrite: PacketSender’s spell-unlock defaults incorrectly labelled varbit4554 as Bones to Peaches and set it to30 whenever the magic tab refreshed. The active cache identifies4554 as lumbridge_free_alchs. Removing that one incorrect default preserves the ring’s saved counter; the separate legitimate Bones to Peaches default1505 is unchanged. A real PacketSender regression reproduces30 instead of the saved17 before this removal.
 
 Final verification: fresh build and32/32 focused diary/alchemy/gameframe checks. Full suite8,772/8,773 with only minigame-teleports.test.cjs:204 failing when a real minute rolled over (19 versus20 remaining); its complete file passes8/8 on rerun, and clean baseline7cbfc71dc reproduces the clock-boundary failure with a controlled rollover. No teleport source/tests changed. Native final server retains counters4553=1/4554=17 through login, then a prepared previous-day login resets both0 and Check reports30/30 alchemy and2/2 energy. Owned slot88 server saved and shut down.
+
+## Rada's blessing and fishing
+
+Worn Rada's blessing 1 to 4 give a 2/4/6/8% chance, per landed fish, of the same catch again (a stackable catch doubles, so 14 karambwanji become 28), with no extra experience or bait (no extra crystal harpoon charge either, which is inferred, not Wiki), and the message "Rada's blessing enabled you to catch an extra fish." (Wiki; no capture confirms the wording or channel). On an infernal harpoon the extra fish has its own chance to be cooked, which gives Cooking XP and uses an infernal charge. Junk from a big net is left out, which the Wiki doesn't settle. Fishing Trawler, Tempoross and drift nets don't use it. Spirit flakes in ordinary fishing are not built. See `server/plugins/skills/fishing/RadasBlessing.Fishing.js`.
+
+## Kandarin headgear and normal trees
+
+Worn in the head slot, any of Kandarin headgear 1 to 4 doubles the regular logs a normal tree gives, with
+no additional experience ([Kandarin headgear 1](https://oldschool.runescape.wiki/w/Kandarin_headgear_1),
+[Kandarin Diary](https://oldschool.runescape.wiki/w/Kandarin_Diary)). No recording in the capture index mentions it, so the Wiki is the only source.
+
+- Only regular `Logs` double: oak and the other trees give one, and a headgear that is only carried does nothing.
+- Each chop still gives the tree's XP once. Both logs go through the same storage hand-off as a single log; a basket taking only part of the pair is not covered by a test. With one free slot, one log goes to the inventory and the other to the floor.
+- It is a members' benefit: on a free world a headgear saved as worn gives no extra log.
+- The unit is `server/plugins/skills/woodcutting/KandarinHeadgear.Woodcutting.js`; `Woodcutting.plugin.js` asks it for the logs per chop.
+- Not covered: whether the logs-chopped tracker counts the second log (it counts one per chop here); no capture says.
+- Tests: `server/tests/woodcutting-pet-priority.test.cjs` (worn tiers 1 to 4, carried, oak, free world).
+
+## Ardougne pickpocketing
+
+The Ardougne Diary improves pickpocketing, in `server/plugins/items/diaryrewards/Pickpocketing.DiaryRewards.js`, which answers the pickpocket's `thieving:pickpocket-target` request. Neither needs the Ardougne cloak worn or carried.
+
+| Tier completed | Coin pouches held | Success |
+| --- | --- | --- |
+| Medium | 56 | +10% on NPCs in Ardougne |
+| Hard | 84 | +10% on any NPC (not 20% in the city) |
+| Elite | 140 | as Hard |
+
+Sources, all fetched for this change: [Ardougne Diary](https://oldschool.runescape.wiki/w/Ardougne_Diary) (rewards list), [Pickpocketing](https://oldschool.runescape.wiki/w/Pickpocketing) ("a 10% increased success rate for pickpocketing NPCs in Ardougne", Hard "all NPCs around Gielinor", cloak not needed) and [Coin pouch](https://oldschool.runescape.wiki/w/Coin_pouch) (28 / 56 / 84 / 140 by completed tier). No capture shows these. Inferred and not on the Wiki: completing the tier is enough (the Wiki says "completing"), the bonus scales the success chart as the gloves of silence and the Thieving cape do, and "in Ardougne" is a rectangle over East and West Ardougne (x 2432-2690, y 3262-3336), judged by the NPC's tile and taken from where the city's guards, knights, paladins, heroes, men and women stand. The master farmer's patch north of the walls is outside it. The Easy tier's stall success bonus the Wiki mentions in its trivia is not built: it says stalls have no odds, only a chance of being seen.

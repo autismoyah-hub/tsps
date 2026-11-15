@@ -42,6 +42,8 @@ function restoreLoweredStats(player) {
 }
 
 function restorePrayer(player) {
+  // Wiki: Prayer - a rejuvenation pool clears the prayer drain counter.
+  player.setPrayerPointDrain(0);
   const skillManager = player.getSkillManager?.();
   if (!skillManager) {
     return;
@@ -88,7 +90,7 @@ function clearBleed(player) {
 
 function restoreFromPool(player, tier) {
   restoreSpecialAttack(player);
-  pluginApi?.emitCustomEvent("rejuvenation-pool:restored", { player });
+  pluginApi?.emitCustomEvent("rejuvenation-pool:restored", { player, tier });
   if (tier >= 1) restoreRunEnergy(player);
   if (tier >= 2) restorePrayer(player);
   if (tier >= 3) restoreLoweredStats(player);
@@ -129,6 +131,7 @@ function fancyRejuvenation(event) { return drinkFromPool(event, 3); }
 
 module.exports = {
   name: "RejuvenationPool",
+  description: "The player-owned house restoration, revitalisation, rejuvenation, fancy and ornate pools, which restore stats when drunk from.",
   register(api) {
     TaskManager = api.getTaskManager();
     pluginApi = api;

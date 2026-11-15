@@ -4,6 +4,8 @@ const { test } = require('node:test');
 const { once } = require('node:events');
 const { WebSocket, WebSocketServer } = require('ws');
 
+// Accounts writes its file to this path; keep it off the real data/saves, before `dist` is required.
+process.env.TSPS_ACCOUNTS_FILE = require('node:path').join(require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'accounts-')), 'accounts.json');
 const { Server } = require('../dist/Server');
 Server.installProductionPathResolver();
 
@@ -417,7 +419,8 @@ test('an accepted logout first sets clicks back to walking, then logs out', () =
   new PlayerSession(channel).logout();
   const bytes = [...Buffer.concat(frames)];
   // SET_INTERACTION_MODE (145): default world (-2), walk, all entities (rsprox: before every
-  // logout_withreason), then LOGOUT_RESPONSE (4).
+  // logout_withreason), then LOGOUT_RESPONSE (4). No HIDE_NPC_OPS/HIDE_OBJ_OPS reset: no recorded
+  // logout has one (47 of 3,157 with NPC ops hidden); the client clears both itself.
   assert.deepEqual(bytes.slice(0, 5), [145, 0xff, 0xfe, 1, 1]);
   assert.equal(bytes[5], 4);
 });
@@ -870,7 +873,7 @@ test('changing floors in one map region refreshes ground items, including Drayno
   const channel = { isOpen: true };
   const session = new PlayerSession(channel);
   session.sendRebuildNormal = () => false; // Stop after the actual region/plane bookkeeping.
-  session.lastMusicRegion = ((3109 >> 6) << 8) | (3357 >> 6);
+  session.lastMusicArea = require('../dist/game/Music').Music.tracksAt(3109, 3357, 0);
   session.lastMusicMode = 1;
   const player = {
     getUsername: () => 'fish537',
@@ -930,7 +933,7 @@ test('NPC spell targeting requires explicit area permission for actionless puzzl
     getPrivateArea:()=>privateArea,getOwner:()=>null,getContentId:()=>1};
   const spell={canCastOnTarget:()=>valid,canCast:()=>true,spellId:()=>1,castSound:()=>null,
     startCast(){},baseExperience:()=>0};
-  const player={getHitpoints:()=>99,busy:()=>false,getArea:()=>null,getPrivateArea:()=>privateArea,
+  const player={sendMessage(){},getHitpoints:()=>99,busy:()=>false,getArea:()=>null,getPrivateArea:()=>privateArea,
     getLocation:()=>({getX:()=>1,getY:()=>1,getZ:()=>0,isWithinDistance:()=>true}),isPlayer:()=>true,getSize:()=>1,
     getMovementQueue:()=>({reset(){}}),getCombat:()=>({castSpellOn:(target,chosen)=>{assert.equal(target,npc);assert.equal(chosen,spell);casts++;}})};
   World.getNpcs=()=>({capacityReturn:()=>10,get:()=>npc});CombatSpells.getCombatSpell=()=>spell;

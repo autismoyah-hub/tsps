@@ -26,37 +26,77 @@ before(async () => {
 test('shared scene controls publish and clear the cinematic marker in step with 542', () => {
   const scenes = createQuestScenes({ core });
   const varbits = new Map();
+  const hides = [];
   const player = () => ({
     getMovementQueue: () => ({ reset() { return this; }, setBlockMovement() {} }),
     setUntargetable() {},
-    getPacketSender: () => ({ sendVarbit(id, value) { varbits.set(id, value); return this; } }),
+    getPacketSender: () => ({
+      sendVarbit(id, value) { varbits.set(id, value); return this; },
+      sendHideNpcOps(hidden) { hides.push(['npc', hidden]); return this; },
+      sendHideObjOps(hidden) { hides.push(['obj', hidden]); return this; },
+    }),
   });
   const other = new Map();
+  const otherHides = [];
   const otherPlayer = {
     getMovementQueue: () => ({ reset() { return this; }, setBlockMovement() {} }),
     setUntargetable() {},
-    getPacketSender: () => ({ sendVarbit(id, value) { other.set(id, value); return this; } }),
+    getPacketSender: () => ({
+      sendVarbit(id, value) { other.set(id, value); return this; },
+      sendHideNpcOps(hidden) { otherHides.push(['npc', hidden]); return this; },
+      sendHideObjOps(hidden) { otherHides.push(['obj', hidden]); return this; },
+    }),
   };
 
   const p = player();
   scenes.controls(p, true, true);
   assert.equal(varbits.get(542), 1, 'cinematic sets cutscene_status');
   assert.equal(varbits.get(12139), 1, 'cinematic sets the shared QH marker');
+  assert.deepEqual(hides, [['npc', true], ['obj', true]], 'cinematic hides NPC and ground-item ops in the same tick');
 
   varbits.clear();
+  hides.length = 0;
   scenes.controls(p, true);
   assert.equal(varbits.has(542), false, 'non-cinematic controls do not mark a cutscene');
   assert.equal(varbits.has(12139), false, 'non-cinematic controls do not mark a cutscene');
+  assert.deepEqual(hides, [], 'non-cinematic controls leave the hide flags alone');
 
   scenes.controls(p, false);
   assert.equal(varbits.get(542), 0, 'controls off clears cutscene_status');
   assert.equal(varbits.get(12139), 0, 'controls off clears the shared QH marker');
+  assert.deepEqual(hides, [['npc', false], ['obj', false]], 'controls off restores NPC and ground-item ops');
 
   scenes.controls(otherPlayer, true, true);
   assert.equal(other.get(542), 1);
   assert.equal(other.get(12139), 1);
   assert.equal(varbits.get(542), 0, 'another player does not change the first marker');
   assert.equal(varbits.get(12139), 0, 'another player does not change the first marker');
+  assert.deepEqual(otherHides, [['npc', true], ['obj', true]]);
+});
+
+test('singing bowl Inspect stays on the near rim or routes to the captured approach tile', () => {
+  const h = harness('EyesOfGlouphrie');
+  const p = player();
+  p.moveTo(new core.Location(2391, 9816, 0));
+  const route = h.hooks.onObjectRoute.find((fn) => fn.name === 'routeBowlInspect');
+  const event = {
+    player: p,
+    objectId: core.ObjectIdentifiers.SINGING_BOWL,
+    clickType: 1,
+    object: new core.GameObject(core.ObjectIdentifiers.SINGING_BOWL, new core.Location(2388, 9813, 0), 10, 0),
+  };
+  route(event);
+  assert.deepEqual(event.destination, { x: 2391, y: 9816, z: 0 });
+
+  delete event.destination;
+  event.clickType = 2;
+  route(event);
+  assert.equal(event.destination, undefined, 'Sing-crystal keeps its ordinary route');
+
+  event.clickType = 1;
+  p.moveTo(new core.Location(2392, 9817, 0));
+  route(event);
+  assert.deepEqual(event.destination, { x: 2388, y: 9817, z: 0 }, 'distant Inspect routes to the north rim');
 });
 
 function harness(pluginName, options = {}) {
@@ -220,6 +260,7 @@ function player(overrides = {}) {
         sendVarbit: (id, value) => { varbits.set(id, value); return packet; },
         sendConfig: (id, value) => { varbits.set(id, value); return packet; },
         sendSubInterface: (...args) => { log.push(['sendSubInterface', ...args]); return packet; },
+        mountSubInterface: (...args) => { log.push(['sendSubInterface', ...args]); return {}; },
         sendInterface: (...args) => { log.push(['sendInterface', ...args]); return packet; },
         closeSubInterface: (...args) => { log.push(['closeSubInterface', ...args]); return packet; },
         sendCameraMoveTo: (...args) => { log.push(['sendCameraMoveTo', ...args]); return packet; },
@@ -594,9 +635,12 @@ test('LOTG machine only runs at stage 50 and completes once through the box', ()
   h.action(p, N.ZANIK_7, 'Eh5lL0');
   assert.equal(h.quest.getStage(p), 54);
   assert.ok(p.log.some((row) => row[0] === 'sendCameraMoveTo' && row[1] === 3546 && row[2] === 4389 && row[3] === 580), 'strange-box camera track');
+  const formEnded = [];
+  (h.events['goblin-form:ended'] ??= []).push((event) => formEnded.push(event.player));
   h.action(p, N.OLDAK, 'dfkFWY');
   assert.equal(h.quest.getStage(p), 56);
   assert.equal(h.quest.isComplete(p), true);
+  assert.ok(formEnded.includes(p), 'completion ends the goblin form, so goblin mail comes off (GoblinMail)');
   assert.equal(h.quest.complete(p), false);
   assert.deepEqual(p.xp.map((entry) => entry[1]), [8000, 8000, 8000, 8000]);
 });
@@ -1338,4 +1382,131 @@ test('POG lost crystal chime seed is recoverable from the golden chest, respecti
   held.items.set(I.CRYSTAL_CHIME, 1);
   openGolden(h, held);
   assert.equal(held.items.get(I.CRYSTAL_CHIME_SEED), undefined, 'held chime prevents duplicate seed');
+});
+
+test('EOG Brimstail counts a banked crystal saw or seed: no second seed to hand out', () => {
+  const h = harness('EyesOfGlouphrie');
+  const condition = h.hooks.onNpcDialogueCondition[0];
+  const text = 'If the player does not have a crystal saw or crystal seed:';
+  const brimstail = core.NpcIdentifiers.BRIMSTAIL_2;
+  // A real Player's bank: a banked seed, and the zero-amount placeholder withdrawing it leaves behind.
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const bankOf = (amount) => {
+    const real = new Player(null);
+    real.getBank(0).add(new core.Item(core.ItemIdentifiers.CRYSTAL_SAW_SEED, amount), false);
+    return real.getBanks();
+  };
+  const banked = player({ getBanks: () => bankOf(1) });
+  assert.equal(condition({ player: banked, npcId: brimstail, text }), false, 'a banked seed is owned');
+  const placeholder = bankOf(0);
+  assert.equal(placeholder[0].contains(core.ItemIdentifiers.CRYSTAL_SAW_SEED), true, 'control: the placeholder is in the bank');
+  assert.equal(condition({ player: player({ getBanks: () => placeholder }), npcId: brimstail, text }), true,
+    'a placeholder is not a seed: Brimstail offers one');
+  const none = player({ getBanks: () => new Player(null).getBanks() }); // an empty real bank
+  assert.equal(condition({ player: none, npcId: brimstail, text }), true, 'none owned: Brimstail offers one');
+});
+
+test('Eyes machine object opens native panel and validates disc slots through cancel and activation', () => {
+  const h = harness('EyesOfGlouphrie');
+  const ids = [I.RED_SQUARE, I.YELLOW_TRIANGLE, I.GREEN_SQUARE, I.BLUE_TRIANGLE, I.YELLOW_PENTAGON, I.VIOLET_PENTAGON];
+  let slots = Array.from({ length: 28 }, (_, i) => new core.Item(ids[i] ?? -1, i === 0 ? 2 : i < ids.length ? 1 : 0));
+  const packets = [], inventory = {
+    getItems: () => slots,
+    getAmount: (id) => slots.filter((item) => item.getId() === id).reduce((n, item) => n + item.getAmount(), 0),
+    setItems: (items) => { slots = items; },
+    refreshItems: noop,
+  };
+  let opened = -1;
+  const sender = new Proxy({
+    sendInterface: (id) => { opened = id; packets.push(['open', id]); return sender; },
+    sendInterfaceRemoval: () => { opened = -1; return sender; },
+    sendSubInterface: (...args) => { packets.push(['sub', ...args]); return sender; },
+    sendInventory: (...args) => { packets.push(['inventory', ...args]); return sender; },
+    sendClientScript: (...args) => { packets.push(['script', ...args]); return sender; },
+  }, { get: (target, key) => target[key] ?? (() => sender) });
+  const p = player({ getInventory: () => inventory, getPacketSender: () => sender, getInterfaceId: () => opened });
+  h.quest.setStage(p, 8);
+  const objectAction = (name, id) => h.hooks.onObjectInteraction.find((fn) => fn.name === name)({ player: p, objectId: id });
+  const button = (uid, slot, itemId) => {
+    const event = { player: p, buttonId: uid, action: 1, slot, itemId, handled: false };
+    h.hooks.onInterfaceActionButton.find((fn) => fn.name === 'machineButton')(event);
+    return event;
+  };
+  const select = (slot) => button(185 << 16, slot, ids[slot]);
+  objectAction('unlockMachine', 17247);
+  assert.equal(opened, 145);
+  assert.ok(packets.some((p) => p[0] === 'sub' && p[2] === 185));
+  assert.ok(packets.some((p) => p[0] === 'inventory' && p[1] === 440));
+  assert.ok(packets.some((p) => p[0] === 'script' && p[1] === 149));
+  button((145 << 16) | 13);
+  assert.equal(opened, -1, 'explicit lock close removes the interface');
+  objectAction('unlockMachine', 17247);
+  h.emit('interface:closed', { player: p, interfaceId: 185 });
+  select(0); button((145 << 16) | 8); button((145 << 16) | 12);
+  assert.equal(h.quest.getStage(p), 8, 'closing the side invalidates subsequent actions');
+  objectAction('unlockMachine', 17247);
+  button(185 << 16, 27, undefined); // malformed empty slot must not throw
+  button(185 << 16, 0, I.BLUE_TRIANGLE); // stale packet must not select the red square
+  button((145 << 16) | 8);
+  button((145 << 16) | 12);
+  assert.equal(h.quest.getStage(p), 8);
+  objectAction('unlockMachine', 17247);
+  select(0); button((145 << 16) | 8); button((145 << 16) | 12);
+  assert.equal(h.quest.getStage(p), 9);
+  assert.equal(inventory.getAmount(I.RED_SQUARE), 2, 'unlock retains the existing quest approximation');
+  objectAction('operateMachine', 17245);
+  assert.equal(opened, 189);
+  button((189 << 16) | 42);
+  assert.equal(opened, -1, 'explicit machine close removes the interface');
+  objectAction('operateMachine', 17245);
+  select(2); button((189 << 16) | 24);
+  button((189 << 16) | 38);
+  assert.equal(inventory.getAmount(I.GREEN_SQUARE), 1, 'cancel leaves inventory intact');
+  select(2); button((189 << 16) | 24);
+  select(2); button((189 << 16) | 25); // one slot cannot fill two positions
+  button((189 << 16) | 27);
+  assert.equal(h.quest.getStage(p), 9);
+  assert.equal(inventory.getAmount(I.GREEN_SQUARE), 1, 'incomplete row activation consumes nothing');
+  objectAction('operateMachine', 17245);
+  h.hooks.onPlayerLogout[0]({ player: p });
+  button((189 << 16) | 39);
+  assert.equal(h.quest.getStage(p), 9, 'a stale click after logout cannot activate');
+  const fillPanel = () => {
+    for (const [slot, child] of [[2,24], [3,25], [4,25], [0,26], [1,26], [5,26]]) {
+      select(slot); button((189 << 16) | child);
+    }
+  };
+  objectAction('operateMachine', 17245);
+  fillPanel();
+  h.quest.setStage(p, 8);
+  button((189 << 16) | 39);
+  assert.equal(opened, -1, 'stage regression closes the stale panel');
+  for (const id of ids) assert.equal(inventory.getAmount(id), id === I.RED_SQUARE ? 2 : 1, 'stage regression consumes nothing');
+  h.quest.setStage(p, 9);
+  objectAction('operateMachine', 17245);
+  fillPanel();
+  h.quest.setStage(p, 10);
+  button((189 << 16) | 39);
+  assert.equal(opened, -1, 'completed stage closes the stale panel');
+  for (const id of ids) assert.equal(inventory.getAmount(id), id === I.RED_SQUARE ? 2 : 1, 'completed stage consumes nothing');
+  h.quest.setStage(p, 9);
+  objectAction('operateMachine', 17245);
+  fillPanel();
+  const setStage = h.quest.setStage;
+  h.quest.setStage = () => { throw new Error('stage failure'); };
+  assert.throws(() => button((189 << 16) | 39), /stage failure/);
+  for (const id of ids) assert.equal(inventory.getAmount(id), id === I.RED_SQUARE ? 2 : 1, 'stage failure restores inventory');
+  h.quest.setStage = setStage;
+  button((189 << 16) | 28);
+  assert.equal(h.quest.getStage(p), 10);
+  for (const id of ids) assert.equal(inventory.getAmount(id), id === I.RED_SQUARE ? 1 : 0, `disc ${id} consumed once`);
+  button((189 << 16) | 28);
+  assert.equal(inventory.getAmount(I.RED_SQUARE), 1, 'a repeated activation cannot consume another disc');
+  slots = Array.from({ length: 28 }, (_, i) => new core.Item(ids[i] ?? -1, i < ids.length ? 1 : 0));
+  h.quest.setStage(p, 9);
+  objectAction('operateMachine', 17245);
+  fillPanel();
+  button((189 << 16) | 39);
+  assert.equal(h.quest.getStage(p), 10, 'final activation control also advances the quest');
+  for (const id of ids) assert.equal(inventory.getAmount(id), 0, `final control consumes disc ${id} once`);
 });

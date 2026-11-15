@@ -13,6 +13,11 @@ const UPGRADE_LEVEL_MESSAGE = (level) => `You need level ${level} Herblore to up
 const SUPER_ANTIFIRE_QUEST_MESSAGE = "You don't know how to make super antifire potions yet. Maybe someone can teach you.";
 
 function hasIngredients(inventory, recipe) {
+  return recipe.ingredients.every(({ id, count }) => Common.plainAmount(inventory, id) >= count);
+}
+
+/** Whether restricted copies are all that keeps the inventory from the recipe. */
+function onlyRestrictedShort(inventory, recipe) {
   return recipe.ingredients.every(({ id, count }) => inventory.getAmount(id) >= count);
 }
 
@@ -36,13 +41,17 @@ function message(recipe) {
 function makeOne(player, recipe) {
   const inventory = player.getInventory();
   if (!hasIngredients(inventory, recipe)) return false;
-  // Content may keep an ingredient or change the product ("herblore:mix", a league relic's saved secondaries and 4-dose potions).
+  // Content may keep an ingredient or change the product ("herblore:mix", a league relic's saved secondaries and 4-dose
+  // potions, the amulet of chemistry's extra dose); `stop`, set by a "herblore:made" listener, ends the batch after this potion.
   const mix = {
     player, recipe, productId: recipe.productId,
     consume: recipe.ingredients.map((item) => ({ ...item })), returns: recipe.returns.map((item) => ({ ...item })),
   };
   Common.api.emitCustomEvent("herblore:mix", mix);
-  for (const { id, count } of mix.consume) if (count > 0) inventory.deleteNumber(id, count);
+  // A listener may have changed what is taken: it still has to be there as unrestricted copies.
+  if (!mix.consume.every(({ id, count }) => count <= 0 || Common.plainAmount(inventory, id) >= count)) return false;
+  for (const { id, count } of mix.consume) if (count > 0) Common.takePlain(inventory, id, count);
+  inventory.refreshItems();
   inventory.addItem(new Common.core.Item(mix.productId, 1));
   for (const { id, count } of mix.returns) if (count > 0) inventory.addItem(new Common.core.Item(id, count));
   if (recipe.cleaned) {
@@ -54,19 +63,25 @@ function makeOne(player, recipe) {
   }
   Common.spam(player, message(recipe));
   Common.addXp(player, recipe.xp);
-  Common.api.emitCustomEvent("herblore:made", { player, itemId: mix.productId });
+  Common.api.emitCustomEvent("herblore:made", { player, itemId: mix.productId, mix });
   Common.api.emitCustomEvent("skills:produced", { player, skill: Common.core.Skill.HERBLORE, itemId: mix.productId, amount: 1, xp: recipe.xp, kind: "mix" });
-  return true;
+  // A "herblore:made" listener may end the batch after this potion (an amulet of chemistry that crumbled, set to stop).
+  return mix.stop !== true;
 }
 
+/** The vials an unfinished potion starts from (herblore.json): water, blood and coconut milk. */
+const UNFINISHED_VIALS = ["vial_water", "vial_blood", "vial_coconut_milk"];
+
 /**
- * Wiki (Herblore cape): wearing it, a grimy herb goes straight into the vial if the player could
- * clean it; these are the clean herb's recipes taking the grimy herb instead.
+ * Wiki (Herblore cape): "while the cape is equipped, grimy herbs can be used to create unfinished potions", if the
+ * player could clean them; these are the clean herb's unfinished-potion recipes taking the grimy herb instead. A grimy
+ * herb never finishes a potion (a grimy torstol on an anti-venom, or with the three super potions).
  */
 function capeRecipes(player, firstId, secondId) {
   for (const [grimyId, otherId] of [[firstId, secondId], [secondId, firstId]]) {
     const herb = Common.herbFor(grimyId);
     if (!herb || Common.level(player) < herb.level || !Common.wearsHerbloreCape(player)) continue;
+    if (!UNFINISHED_VIALS.some((name) => Common.gameval("obj", name) === otherId)) continue;
     return Common.recipesWith(herb.cleanId, otherId).map((recipe) => ({
       ...recipe,
       cleaned: herb,
@@ -89,27 +104,34 @@ function missingIngredients(recipe) {
 /** The recipe these two items make for this player, or null after saying why not. */
 function chooseRecipe(player, recipes) {
   if (!Common.canUseHerblore(player)) return null;
-  const known = recipes.filter((recipe) => !recipe.quest || Common.questDone(player, recipe.quest));
+  const known = recipes.filter((recipe) => (!recipe.quest || Common.questDone(player, recipe.quest))
+    && (!recipe.unlock || Common.unlocked(player, recipe.unlock))
+    && (recipe.questStage == null || (Common.questStage(player, recipe.questKey) ?? 0) >= recipe.questStage));
   if (known.length === 0) {
     player.sendMessage(recipes.some((recipe) => recipe.quest === "dragon_slayer_ii")
       ? SUPER_ANTIFIRE_QUEST_MESSAGE : "Nothing interesting happens.");
     return null;
   }
   const level = Common.level(player);
-  const able = known.filter((recipe) => level >= recipe.level);
+  const able = known.filter((recipe) => (recipe.nonBoostable
+    ? player.getSkillManager().getMaxLevel(Common.core.Skill.HERBLORE) : level) >= recipe.level);
   if (able.length === 0) {
     const lowest = known[0];
     player.sendMessage((lowest.upgrade ? UPGRADE_LEVEL_MESSAGE : COMBINE_LEVEL_MESSAGE)(lowest.level));
     return null;
   }
   const recipe = able.find((candidate) => hasIngredients(player.getInventory(), candidate));
-  if (!recipe) Common.mesbox(player, missingIngredients(able[0]));
+  if (!recipe) {
+    // The right ingredients, but some only as preset copies: refuse rather than turn them into plain ones.
+    if (able.some((candidate) => onlyRestrictedShort(player.getInventory(), candidate))) player.sendMessage(Common.PRESET_REFUSAL);
+    else Common.mesbox(player, missingIngredients(able[0]));
+  }
   return recipe ?? null;
 }
 
 /** How many of the recipe the inventory holds the ingredients for. */
 function makeable(inventory, recipe) {
-  return Math.min(...recipe.ingredients.map(({ id, count }) => Math.floor(inventory.getAmount(id) / count)));
+  return Math.min(...recipe.ingredients.map(({ id, count }) => Math.floor(Common.plainAmount(inventory, id) / count)));
 }
 
 /**
@@ -147,14 +169,19 @@ function start(player, recipe, amount) {
  * argument 0) showing the product, or for a recipe with `"menu": "upgrade"` (amylase, crushed
  * crystal) "How many would you like to upgrade?" (15) showing the potion it upgrades; the most
  * the inventory makes is both the limit and the amount it opens on. With only one to make, or a
- * manual recipe such as a Sanfew step, it is made at once.
+ * manual recipe such as a Sanfew step or a barbarian mix, it is made at once; a barbarian mix
+ * gets the menu when the player's "Make-X barbarian potions" setting is on.
  */
 const MAKE_MENU = { title: "How many do you wish to make?", mode: 0 };
+/** settings_barbarian_potion_makex: All Settings "Make-X barbarian potions" (off: one at a time). */
+const BARBARIAN_MAKEX_VARBIT = 5983;
+const isBarbarianMix = (recipe) => typeof recipe.unlock === "string" && recipe.unlock.startsWith("barbarian_herblore");
 const UPGRADE_MENU = { title: "How many would you like to upgrade?", mode: 15 };
 
 function offer(player, recipe) {
   const most = makeable(player.getInventory(), recipe);
-  if (recipe.manual || most <= 1) {
+  const barbarianMakeX = isBarbarianMix(recipe) && player.getPacketSender().getVarbit(BARBARIAN_MAKEX_VARBIT) === 1;
+  if ((recipe.manual && !barbarianMakeX) || most <= 1) {
     makeOne(player, recipe);
     return;
   }

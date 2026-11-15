@@ -93,19 +93,12 @@ function bankFor(player, id) {
 
 /** Moves one entry to the inventory or bank; returns how many moved. */
 function take(player, entry, destination) {
-  const { Item, ItemDefinition } = Shared.core();
-  if (destination === "bank") {
-    const bank = bankFor(player, entry.id);
-    if (!bank) return 0;
-    bank.add(new Item(entry.id, entry.amount), false);
-    return entry.amount;
-  }
-  const inventory = player.getInventory();
-  const stackable = ItemDefinition.forId(entry.id)?.isStackable?.() === true;
-  const moved = stackable ? (inventory.contains(entry.id) || inventory.getFreeSlots() > 0 ? entry.amount : 0)
-    : Math.min(entry.amount, inventory.getFreeSlots());
+  const { Item } = Shared.core();
+  const target = destination === "bank" ? bankFor(player, entry.id) : player.getInventory();
+  if (!target) return 0;
+  const moved = target.getAddableAmount(new Item(entry.id, entry.amount));
   if (moved <= 0) return 0;
-  inventory.add(new Item(entry.id, moved), false);
+  target.add(new Item(entry.id, moved), false);
   return moved;
 }
 
@@ -166,13 +159,24 @@ function lookInChest({ player }) {
   return true;
 }
 
+/**
+ * The chest's buttons answer only while it is open: a click on them with it closed took or banked the loot from
+ * anywhere (the Wilderness and other no-bank areas too).
+ */
+function whileOpen(handler) {
+  return function openChestOnly(event) {
+    if (event?.player?.getInterfaceId?.() !== INTERFACE) return true;
+    return handler(event);
+  };
+}
+
 module.exports = function registerDoomRewards(api) {
   Shared.bind(api);
-  api.onInterfaceActionButton(uid(COMPONENT.CLAIM), clickClaim);
-  api.onInterfaceActionButton(uid(COMPONENT.DESCEND), clickDescend);
-  api.onInterfaceActionButton(uid(COMPONENT.LEAVE), clickLeave);
-  api.onInterfaceActionButton(uid(COMPONENT.TAKE_ALL), clickTakeAll);
-  api.onInterfaceActionButton(uid(COMPONENT.BANK_ALL), clickBankAll);
+  api.onInterfaceActionButton(uid(COMPONENT.CLAIM), whileOpen(clickClaim));
+  api.onInterfaceActionButton(uid(COMPONENT.DESCEND), whileOpen(clickDescend));
+  api.onInterfaceActionButton(uid(COMPONENT.LEAVE), whileOpen(clickLeave));
+  api.onInterfaceActionButton(uid(COMPONENT.TAKE_ALL), whileOpen(clickTakeAll));
+  api.onInterfaceActionButton(uid(COMPONENT.BANK_ALL), whileOpen(clickBankAll));
   onObject(api, Shared.OBJECT.REWARD_CHEST, lookInChest);
 };
 

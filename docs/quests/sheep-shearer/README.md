@@ -2,10 +2,10 @@
 quest: Sheep Shearer
 key: sheep_shearer
 status: passed-with-issues
-tested: 2026-10-29
+tested: 2026-11-07
 tester: agent
-model: grok-4.7
-commit: b6edd9b4ac46
+model: claude-opus-5-5
+commit: 756db7e10
 cache: osrs-241_2026-10-20
 start: fresh
 travel: travel_to
@@ -13,18 +13,98 @@ travel: travel_to
 
 # Sheep Shearer
 
-A watched account with the quest unstarted finished the normal route: Fred's start, twenty
-sheared sheep, the Lumbridge castle spinning wheel, the hand-in, the reward scroll, a repeat
-talk, and a relog. The Thing's escape animation played. `travel_to` still notes a staircase
-id mismatch on the way up into the castle.
+Two live captures back this quest. rsprox 1718 (rev 227) covers Fred's start conversation while
+already carrying 20 balls of wool, which starts and finishes the quest in one talk. A user capture
+from 2026-11-06 (rev 242, file `20261106T224400-5ab63b4.bin`, kept outside Git) covers the ordinary
+route: start with shears already held, shearing, The Thing escaping, "I've seen The Thing!", a talk
+with wool and no balls, a 19-ball hand-in and the final ball. Every page, option, stage change and
+reward on both routes now matches the captures.
 
 ## Findings
 
+Newest first.
+
+- **fixed** Talk-to on The Thing (NPC 731) played Cold War's "I can't speak to the penguins when I'm
+  not in my disguise." for every player. Live, with Cold War not started, the player says "That's a
+  sheep...I think. I can't talk to sheep." (2026-11-06 capture, tick 333). Cold War now leaves the
+  sheep to its own page until Cold War is started. Found in a hand check on a live client.
+- **fixed** After meeting The Thing, Fred's "I need to talk to you about shearing these sheep!"
+  always ran the hand-in, so a player with no balls said "I have some." and handed nothing over.
+  Live (2026-11-06 capture, tick 499) plays the conversation for what the player carries; with
+  wool only: "How many more do I need to give you?" … "Well go find a spinning wheel then…".
+- **fixed** The final hand-in after earlier deliveries showed a "You give Fred N balls of wool."
+  box. Live (2026-11-06, ticks 932–934) goes "Give 'em here then." → "That's the last of them." →
+  "I guess I'd better pay you then." with no box; varp 179 goes 20 → 21 with the coins on the last
+  page. The start-with-20 branch keeps its box (1718). A 20-at-once final hand-in from stage 1 has
+  no capture and keeps the Wiki's box. (rsprox.net search hit 1686 for "That's the last of them",
+  but that is Marika's Halloween line, not Fred.)
+- **fixed** When Fred handed out shears, the has-shears lines ("Well, you're half way there
+  already!…") played straight after, because that branch was checked once the new shears were
+  held. The hand-out now continues to "Do you know how to spin wool?" as the Wiki's jump says. No
+  capture covers the no-shears start; the has-shears start matches the 2026-11-06 capture.
+- **fixed** "This icon denotes a Spinning Wheel on the world map." was a chat message; live shows it
+  in an object box with obj 7670 `crafting_icon_dummy` (2026-11-06, tick 250). The same box in
+  "Remind me how to spin wool." uses it too.
+- **open** (cosmetic) Live raises varp 179 once per ball handed in (19 updates in one tick for 19
+  balls); the server sets the final value once. The client ends in the same state.
+- **fixed** The "Fred! Fred! I've seen The Thing!" option showed in `finishing-up` and after the
+  quest even if the player never met The Thing. Transcript:Sheep Shearer gives `finishing-up` the
+  after-The-Thing menu ("Same as above"), the hand-in without The Thing has no menu, and
+  Transcript:Fred the Farmer guards the option "If the player has interacted with the Thing". Without
+  it, `finishing-up` now goes straight into the shearing talk and the post-quest menu drops the option.
+  No capture covers the never-met case.
+- **fixed** "You've started a new quest: Sheep Shearer" was never sent; it now follows
+  "Yes, okay. I can do that." as in 1718.
+- **fixed** The 20 balls of wool left at the "You give Fred 20 balls of wool." box; 1718 takes
+  them with the coins on the last page, in the same inventory update.
+- **fixed** Completion played jingle 238; 1718 plays 154.
+- **fixed** The player says "a little **woolly**" (1718); the wiki has "wooly". Corrected in
+  the dumper ([RSPSApp/osrsreboxed-db#35](https://github.com/RSPSApp/osrsreboxed-db/pull/35)) and regenerated.
+- **fixed** Added the captured Fred and player chat-head animations from 1718.
+- **open** The post-quest "Fred! Fred! I've seen The Thing!" option shows to players who never
+  met The Thing; the wiki gates it. No capture covers post-quest Fred.
+- **open** (all quests) The level-up message arrives before the completion message; in 1718 it
+  arrives after the scroll closes. The scroll's item is sent at zoom 1 without
+  `IfSetPosition` (live: 400 and a position), and the scroll opens a tick after completion.
+  Shared quest runtime.
+- **open** (all quests) Dialogue pages are not echoed to chat history (live sends type 114/115
+  game messages for every page and box). Shared dialogue runtime.
 - **open** `travel_to` Climb-up on the Lumbridge castle staircase at 3204, 3207 used object
   56230, found by name. The live transport id is 16671. The hop still arrived. Climb-down
   on 16672 at the same tile had no note.
 
 ## Runs
+
+### 2026-11-07 — agent — Claude Opus 5.5
+
+- **Start:** fresh account (varp 179 = 0, empty inventory, Crafting 1), placed at Fred with
+  `::tele` (the only teleport). A second fresh account was given shears (1735) with `::item` to
+  check the has-shears start. The worktree's own agent MCP was used, on port 39826 for this session
+  because Windows holds the slot's 49826.
+- **Route:** "I'm looking for a quest.", "Yes.": Fred handed out shears, then "Do you know how to
+  spin wool?" once, and the icon as an item box. `travel_to` into the field: The Thing got away
+  ("The... whatever it is..."), a sheep gave wool. At Fred: the Thing menu, then the wool-only talk
+  as captured. Then 19 balls of wool (1759) were supplied with `::item` as declared setup (the
+  shear/spin loop was played on 2026-10-29), and the 19-ball hand-in matched the capture page for
+  page. One more ball: the final hand-in with no box.
+- **Result:** varp 179 = 21, quest points 1, 60 coins, Crafting 0 → 150 XP. A relog kept stage,
+  quest point, coins and XP. The has-shears start matched the capture (no hand-out, one spinning
+  question).
+- **Not checked:** spinning on the wheel and walking to Lumbridge (2026-10-29 run), the chat-head
+  animations and box zoom on a real client, post-quest Fred.
+
+### 2026-11-03 — agent — Claude Opus 5.5
+
+- **Start:** fresh account (varp 179 = 0, 0 quest points, Crafting 1), placed at Fred with
+  `::tele` (the only teleport); 20 balls of wool (1759) supplied as declared setup, as in 1718.
+- **Route:** Fred, "I'm looking for a quest.", the Thing lines, "Yes.", the 20-ball branch.
+  Text, options and order matched 1718 page for page, including "woolly".
+- **Result:** "You've started a new quest" and varp 179 = 1 after "Yes, okay. I can do that.";
+  the statement box "You give Fred 20 balls of wool." with the wool still carried; on the last
+  page varp 179 = 21, 1 quest point, the wool replaced by 60 coins, 150 Crafting XP. Repeat
+  talk opened Fred's post-quest menu; a relog kept stage, quest point, coins and XP.
+- **Not checked:** the shear/spin route and the partial hand-in branches (no capture; played
+  2026-10-29), chat-head animations on screen, the jingle on a client.
 
 ### 2026-10-29 · agent · grok-4.7
 

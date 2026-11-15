@@ -42,7 +42,7 @@ function fixture() {
   const sender = new Proxy({}, { get: (_, name) => (...args) => (sent.push([name, ...args]), sender) });
   const skills = { level: 1, xp: 0, getCurrentLevel() { return this.level; }, addExperiences(skill, xp) { this.xp += xp; } };
   const player = { getUsername: () => "Tester", getDisplayName: () => "Tester", getInventory: () => inventory, getSkillManager: () => skills, getEquipment: () => ({ getItems: () => worn }),
-    getPacketSender: () => sender, getLocation: () => position, getPrivateArea: () => null, isPlayer: () => true,
+    getPacketSender: () => sender, getLocation: () => position, getPrivateArea: () => null, isPlayer: () => true, getAsPlayer: () => player,
     getAttribute: key => attributes.get(key), setAttribute: (key, value) => attributes.set(key, value),
     sendMessage: message => sent.push(["message", message]), performAnimation: value => sent.push(["animation", value]),
     setEnteredAmountAction() {}, getDialogueManager: () => ({ startDialogues: value => { chain = value; } }) };
@@ -124,10 +124,12 @@ test("hot/cold starts from Jorral and three-part steps draw their parts; the tar
   assert.deepEqual(rollable().filter(step => step.family === "cryptic").map(step => step.key).sort(),
     ["cluehelper_cryptic_master_falo_the_bard", "cluehelper_cryptic_master_jorral"]);
   assert.ok(rollable().some(step => step.key === "cluehelper_skillchallenge_master_25"), "the three-part step");
-  // Viggora (no Curse of the Empty Lord), Piles (no Resource Area fee) and Lovada (not spawned) are never parts.
-  assert.equal(data.parts.length, 27);
-  assert.deepEqual(ofKind("cryptic").filter(step => !step.falo && !/_(jorral|watson)$/.test(step.key) && !data.parts.includes(step)).map(step => step.key).sort(),
-    ["cluehelper_cryptic_master_lovada", "cluehelper_cryptic_master_piles", "cluehelper_cryptic_master_viggora"]);
+  // Every part is in the pool, Viggora too (drawn only for players who reached him in Curse of the
+  // Empty Lord). Piles stands behind the Resource Area's paid gate, and Lovada is spawned as her
+  // current-cache NPC, so both are.
+  assert.equal(data.parts.length, 30);
+  assert.deepEqual(ofKind("cryptic").filter(step => !step.falo && !/_(jorral|watson)$/.test(step.key) && !data.parts.includes(step)).map(step => step.key), []);
+  assert.ok(["piles", "lovada"].every(name => data.parts.some(step => step.key === `cluehelper_cryptic_master_${name}`)));
   for (const family of ["anagram", "coordinate", "emote"]) assert.ok(ofKind(family).every(step => rollable().includes(step)), family);
   for (const step of ofKind("skillchallenge").filter(entry => entry.target !== "none")) assert.equal(rollable().includes(step), Boolean(SKILL_CHALLENGES[step.key]), step.key);
 });
@@ -508,7 +510,7 @@ test("feeling the device tells the temperature against last time and hurts; with
   assert.equal(f.hits.length, 1);
   assert.ok(f.hits[0].getDamage() >= 3 && f.hits[0].getDamage() <= 8);
   for (const [x, said] of [[60, "The device is very hot, and warmer than last time."], [60, "The device is very hot, and the same temperature as last time."],
-    [600, "The device is ice cold, but colder than last time."], [2, "The device is visibly shaking, and warmer than last time."]]) {
+    [600, "The device is ice cold, but colder than last time."], [2, "The device is visibly shaking and burns to the touch. This must be the spot."]]) {
     f.sent.length = 0;
     f.player.setLocation(target.x + x, target.y, target.z);
     feel(f);
@@ -532,6 +534,7 @@ test("a hot/cold dig summons the target's fight, and once it is beaten the devic
   for (const npc of f.spawned) { npc.hitpoints = 0; Runtime.encounterDied({ npc }); }
   f.sent.length = 0;
   dig(); f.finish();
+  assert.ok(f.sent.some(([name, id]) => name === "sendSoundEffect" && id === 1470), "dig sound");
   assert.ok(messages(f).includes("The strange device cools as you find your treasure."));
   assert.equal(f.state().completed, 2);
   assert.equal(f.state().hotcold, undefined, "the next step has no target");
@@ -549,6 +552,7 @@ test("a three-part clue reads its three cryptics, striking each through once its
   f.items[1] = new core.Item(I.SPADE, 1);
   const shown = shownDuring(f, () => Parts.dig({ player: f.player, itemId: I.SPADE, option: "Dig", allow: true }));
   assert.deepEqual(shown, ["You find a torn part of a clue scroll."]);
+  assert.ok(f.sent.some(([name, id]) => name === "sendSoundEffect" && id === 1470), "dig sound");
   assert.ok(f.items.some(item => item?.getId() === C.getObjId("trail_master_part2")), "the second cryptic's part is part 2");
   assert.deepEqual(f.state().found, [false, true, false]);
   f.sent.length = 0;
@@ -619,6 +623,85 @@ test("the equipment checks: Robin, Ghommal, Cromperty, the Abbot, god items, whi
   assert.deepEqual(f.state().found, [true, false, false]);
 });
 
+test("Viggora's part is drawn and handed over only with Curse of the Empty Lord up to him, his outfit and the player's own spot", () => {
+  const f = masterFixture();
+  const viggora = part("viggora");
+  const progress = { ready: false, spawn: viggora.npcIds[0] };
+  f.api.onCustomEvent("curse-of-the-empty-lord:viggora", request => {
+    request.ready = progress.ready;
+    request.here = !request.npc || request.npc.getId() === progress.spawn;
+  });
+  /** Whether 300 three-part steps drawn for the player ever hold Viggora's part. */
+  const draws = ready => {
+    progress.ready = ready;
+    const rows = Runtime.data(MASTER).rollable;
+    for (let i = 0; i < 300; i++) {
+      let seed = i * 7919 + 3, first = true;
+      const random = () => first ? (first = false, (rows.indexOf(threePart()) + 0.5) / rows.length) : (seed = (seed * 16807) % 2147483647) / 2147483647;
+      f.place(jorral(), { completed: 1, length: 7 });
+      const state = Runtime.nextItem({ tier: MASTER, state: f.state() }, random, f.player).item.getMetaValue(Runtime.metaKey(MASTER));
+      assert.equal(state.row, threePart().row);
+      if (state.parts.includes(viggora.row)) return true;
+    }
+    return false;
+  };
+  assert.equal(Runtime.partOffered(null, viggora), false, "no player to ask");
+  progress.ready = false;
+  assert.equal(Runtime.partOffered(f.player, viggora), false);
+  progress.ready = true;
+  assert.equal(Runtime.partOffered(f.player, viggora), true);
+  assert.equal(draws(false), false, "never drawn before Dhalak sends the player to him");
+  assert.equal(draws(true), true, "drawn once he has");
+
+  placeParts(f, ["viggora", "key_master", "biblia"]);
+  // The cache's own option for the ghosts is "Talk-To".
+  assert.equal(core.NpcDefinition.forId(C.getNpcId("secret_ghost_swordsman")).getActions()[0], "Talk-To");
+  const ghost = spawn => ({ ...npcEvent(f, viggora, C.getNpcId("secret_ghost_swordsman")), npc: { getId: () => spawn, getLocation: () => viggora.location },
+    definition: { getActions: () => ["Talk-To"] } });
+  progress.ready = true;
+  Parts.talk(ghost(progress.spawn)); f.finish();
+  assert.deepEqual(f.state().found, [false, false, false], "no ring of visibility or ghostspeak worn");
+  viggora.equipment.forEach((requirement, index) => { f.worn[index === 0 ? core.Equipment.RING_SLOT : core.Equipment.AMULET_SLOT] = outfit({ equipment: [requirement] })[0]; });
+  const other = C.getNpcId("secret_ghost15");
+  const wrongSpot = ghost(other);
+  Parts.talk(wrongSpot); f.finish();
+  assert.equal(wrongSpot.handled, false, "another sequence's Viggora carries on as a ghost");
+  progress.ready = false;
+  const early = ghost(progress.spawn);
+  Parts.talk(early); f.finish();
+  assert.equal(early.handled, false, "before Dhalak has sent the player to him");
+  progress.ready = true;
+  played.length = 0;
+  const right = ghost(progress.spawn);
+  Parts.talk(right); f.finish();
+  assert.equal(right.handled, true);
+  assert.deepEqual(f.state().found, [true, false, false]);
+  assert.ok(f.items.some(item => item?.getId() === C.getObjId("trail_master_part1")));
+});
+
+test("the real Curse of the Empty Lord plugin answers Viggora's gate: stage, sequence and spot", () => {
+  const f = masterFixture();
+  require("../plugins/quests/quests/CurseOfTheEmptyLord.Quest")(new Proxy(f.api, { get: (target, key) => target[key] ?? (() => {}) }));
+  const viggora = part("viggora");
+  const stage = value => f.player.setAttribute("quest.curse_of_the_empty_lord.stage", value);
+  f.player.setAttribute("curse-of-the-empty-lord:sequence", 2);
+  stage(4);
+  assert.equal(Runtime.partOffered(f.player, viggora), false, "Lennissa is not done yet");
+  stage(5);
+  assert.equal(Runtime.partOffered(f.player, viggora), true, "Dhalak has sent the player to him");
+  placeParts(f, ["viggora", "key_master", "biblia"]);
+  viggora.equipment.forEach((requirement, index) => { f.worn[index === 0 ? core.Equipment.RING_SLOT : core.Equipment.AMULET_SLOT] = outfit({ equipment: [requirement] })[0]; });
+  const at = name => ({ ...npcEvent(f, viggora, C.getNpcId("secret_ghost_swordsman")), npc: { getId: () => C.getNpcId(name), getLocation: () => viggora.location },
+    definition: { getActions: () => ["Talk-To"] } });
+  const rogues = at("secret_ghost14");
+  Parts.talk(rogues); f.finish();
+  assert.equal(rogues.handled, false, "sequence 2's Viggora is in the Slayer Tower, not Rogues' Castle");
+  const tower = at("secret_ghost15");
+  Parts.talk(tower); f.finish();
+  assert.equal(tower.handled, true);
+  assert.deepEqual(f.state().found, [true, false, false]);
+});
+
 test("Robin says why he isn't impressed; the torn parts combine only all together and with the clue", () => {
   const f = masterFixture();
   placeParts(f, ["robin", "key_master", "biblia"]);
@@ -645,6 +728,17 @@ test("Robin says why he isn't impressed; the torn parts combine only all togethe
   assert.equal(f.state().completed, 2);
   assert.deepEqual(["trail_master_part1", "trail_master_part2", "trail_master_part3"].map(slotOf), [-1, -1, -1], "the parts are used");
   assert.equal(f.state().parts, undefined);
+});
+
+test("Piles in the Resource Area and Lovada in Lovakengj hand over their torn parts", () => {
+  for (const name of ["piles", "lovada"]) {
+    const f = masterFixture();
+    placeParts(f, [name, "biblia", "mage_of_zamorak"]);
+    assert.ok(part(name).npcIds.includes(core.NpcIdentifiers[name.toUpperCase()]), name);
+    Parts.talk(npcEvent(f, part(name))); f.finish();
+    assert.ok(f.items.some(item => item?.getId() === C.getObjId("trail_master_part1")), name);
+    assert.deepEqual(f.state().found, [true, false, false], name);
+  }
 });
 
 test("a lost torn part is found again by solving its part again, but not while it is carried or banked", () => {
@@ -680,6 +774,28 @@ test("a lost torn part is found again by solving its part again, but not while i
   assert.deepEqual(f.state().found, [true, true, true]);
   assert.ok(shownDuring(f, () => Parts.combine({ player: f.player, slot: slotOf("trail_master_part1") })).includes("You've obtained a new clue!"), "the clue can still be finished");
   assert.equal(f.state().completed, 2);
+});
+
+test("torn parts left over from one three-part step don't complete the trail's next one", () => {
+  const f = masterFixture();
+  placeParts(f, ["key_master", "biblia", "lovada"]);
+  for (const key of ["key_master", "biblia", "lovada"]) { Parts.talk(npcEvent(f, part(key))); f.finish(); }
+  const names = ["trail_master_part1", "trail_master_part2", "trail_master_part3"];
+  const slotOf = name => f.items.findIndex(item => item?.getId() === C.getObjId(name));
+  // Copies of this step's parts (a dropped part solved again, then picked back up).
+  const leftovers = names.map(name => f.items[slotOf(name)]).map(item => new core.Item(item.getId(), 1).setMetaValue(Runtime.metaKey(MASTER), { ...item.getMetaValue(Runtime.metaKey(MASTER)) }));
+  assert.ok(shownDuring(f, () => Parts.combine({ player: f.player, slot: slotOf("trail_master_part1") })).includes("You've obtained a new clue!"));
+  const state = f.state();
+  assert.equal(state.completed, 2);
+  // The trail's next step is another three-part step.
+  f.items[0] = new core.Item(I.CLUE_SCROLL_MASTER_, 1).setMetaValue(Runtime.metaKey(MASTER), { ...state, row: threePart().row,
+    parts: ["key_master", "biblia", "lovada"].map(key => part(key).row), found: [false, false, false] });
+  for (const item of leftovers) f.items[f.items.indexOf(null)] = item;
+  assert.deepEqual(shownDuring(f, () => Parts.combine({ player: f.player, slot: slotOf("trail_master_part1") })), ["I cannot combine the pieces without having all 3."]);
+  assert.equal(f.state().completed, 2, "the step isn't skipped");
+  const handed = npcEvent(f, part("key_master"));
+  Parts.talk(handed); f.finish();
+  assert.equal(handed.handled, true, "a leftover part isn't this step's: the NPC hands over the real one");
 });
 
 test("a three-part step draws three different parts this server can finish", () => {

@@ -1,12 +1,14 @@
 "use strict";
 
-const { api, Skill, ItemDefinition, ItemIdentifiers: Items, DialogueChainBuilder, NpcDialogue, StatementDialogue, ActionDialogue, EndDialogue } = require("./Core.Construction");
+const { api, Skill, ItemDefinition, ItemIdentifiers: Items, DialogueChainBuilder, NpcDialogue, StatementDialogue, ItemStatementDialogue, ActionDialogue, EndDialogue } = require("./Core.Construction");
 const Data = require("./Data.Construction");
 const Ids = require("./Ids.Construction");
 const Estate = require("./Estate.Construction");
 const House = require("./House.Construction");
 const Menu = require("./Menu.Construction");
 
+const VARROCK_ESTATE_AGENT = { x: 3240, y: 3476, z: 0 };
+const VARROCK_FANCY_STONE_TASK = "have-the-varrock-estate-agent-decorate-your-hous";
 const KOUREND_VISITED_VARBIT = Ids.varbit("zeah_playerhasvisited");
 const VARLAMORE_VISITED_VARBIT = Ids.varbit("varlamore_visited");
 const SONG_OF_THE_ELVES_VARBIT = Ids.varbit("sote");
@@ -199,17 +201,57 @@ function changeHouse(event, kind, index) {
     if (returnedBlueprint && inventory.getFreeSlots() + freedSlots < 1) {
       say(event, "Make room for me to return your Twisted blueprints before changing styles."); return;
     }
-    if (!pay(event, choice.cost, noCoins)) return;
-    House.releaseHouse(player, false);
-    if (blueprint) inventory.delete(blueprint, 1);
-    if (returnedBlueprint) inventory.adds(Items.TWISTED_BLUEPRINTS, 1);
-    if ((style.blueprint && index !== TWISTED_STYLE) || style.holiday) saved.unlockedStyles = [...new Set([...(saved.unlockedStyles ?? []), index])];
-    saved.style = index;
-    if (index === TWISTED_STYLE) lines.push({ npc: "Absolutely, let me borrow your blueprints and I'll make it happen! You will get them back if you redecorate your house to a different theme." });
-    if (returnedBlueprint) lines.push({ statement: "The Estate agent returns your blueprints." });
-    lines.push({ npc: "Your house has been redecorated." });
+    if (blueprint) {
+      // rsprox_transcripts/229/02546.txt (Twisted) and 236/03950.txt (Wilderness): the agent's line, then "Hand in your
+      // blueprints for the <style>?" Yes/No; only Yes takes the blueprints and changes the style. No keeps both.
+      const line = index === TWISTED_STYLE
+        ? "Absolutely, let me borrow your blueprints and I'll make it happen! You will get them back if you redecorate your house to a different theme."
+        : "Absolutely, let me take your blueprints and I'll make it happen!";
+      say(event, line, () => api.sendMultiChatboxPrompt(player, `Hand in your blueprints for the ${style.name}?`,
+        "Yes", () => restyle(event, index, blueprint, returnedBlueprint), "No", () => {}));
+      return;
+    }
+    restyle(event, index, blueprint, returnedBlueprint);
+    return;
   }
+  finishChange(event, kind, choice, lines);
+}
+
+/** Pays for and applies a house style, then the agent's lines (rsprox captures: "Your house has been redecorated."). */
+function restyle(event, index, blueprint, returnedBlueprint) {
+  if (!stillAtAgent(event)) return;
+  const player = event.player, saved = House.houseStateFor(player), inventory = player.getInventory();
+  const style = Estate.HOUSE_STYLES[index];
+  if (blueprint && !inventory.contains(blueprint)) { say(event, "Bring me the blueprints for that style first."); return; }
+  if (!pay(event, style.cost, `Hmph. Come back when you have ${style.cost.toLocaleString("en-US")} coins.`)) return;
+  House.releaseHouse(player, false);
+  if (blueprint) inventory.delete(blueprint, 1);
+  if (returnedBlueprint) inventory.adds(Items.TWISTED_BLUEPRINTS, 1);
+  if ((style.blueprint && index !== TWISTED_STYLE) || style.holiday) saved.unlockedStyles = [...new Set([...(saved.unlockedStyles ?? []), index])];
+  saved.style = index;
+  const lines = [];
+  if (returnedBlueprint) lines.push({ statement: "The Estate agent returns your blueprints." });
+  lines.push({ npc: "Your house has been redecorated." });
+  finishChange(event, "style", style, lines);
+}
+
+/** Saves the house, credits the redecoration and plays the agent's closing lines. */
+function finishChange(event, kind, choice, lines) {
+  const player = event.player;
   saveHouse(player);
+  if (kind === "style" && choice.name === "Fancy stone" && event.npc?.getLocation) {
+    const agent = event.npc.getLocation();
+    if (agent.getZ() === VARROCK_ESTATE_AGENT.z
+      && Math.abs(agent.getX() - VARROCK_ESTATE_AGENT.x) <= 4
+      && Math.abs(agent.getY() - VARROCK_ESTATE_AGENT.y) <= 4) {
+      api.emitCustomEvent("diary:task", { player, diary: "varrock", task: VARROCK_FANCY_STONE_TASK });
+    }
+  }
+  if (kind === "style") {
+    api.emitCustomEvent("construction:house-redecorated", {
+      player, style: choice.name, npc: event.npc, location: event.npc?.getLocation?.(),
+    });
+  }
   const chain = new DialogueChainBuilder();
   lines.forEach((line, step) => chain.add(line.npc ? new NpcDialogue(step, event.npcId, line.npc) : new StatementDialogue(step, line.statement)));
   chain.add(new EndDialogue(lines.length));
@@ -234,8 +276,21 @@ function talk(event) {
   return true;
 }
 
+/**
+ * Inspect, as captured on the Twisted blueprints (rsprox 2548, rev 229, cycle 35): the chat line
+ * as a message box type, then the object box beside the item. Hosidius's words are the Wiki's.
+ */
+function inspectBlueprints(theme) {
+  return ({ player, itemId }) => {
+    const text = `These blueprints appear to be a set of instructions for<br>creating the ${theme} player-owned house theme.<br>Perhaps an Estate Agent can make use of these?`;
+    player.getDialogueManager().startDialogues(new DialogueChainBuilder().add(new ItemStatementDialogue(0, itemId, text)));
+    return true;
+  };
+}
 
 function attachEstateAgents(api) {
+  api.onItemAction("Twisted blueprints", { Inspect: inspectBlueprints("Twisted") });
+  api.onItemAction("Hosidius blueprints", { Inspect: inspectBlueprints("Hosidius") });
   api.onNpcInteraction("Estate agent", { "Talk-to": talk, Relocate: relocate, Redecorate: redecorate });
   api.onNpcInteraction("Estate Agent", { "Talk-to": talk, Relocate: relocate, Redecorate: redecorate });
   api.onNpcInteraction("Alwyn", { "Talk-to": talk, Relocate: relocate, Redecorate: redecorate });

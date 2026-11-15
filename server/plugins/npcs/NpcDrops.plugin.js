@@ -14,6 +14,8 @@
  */
 
 const OrderedRewards = require("./OrderedRewards.NpcDrops");
+const SeedCategories = require("./SeedCategories.NpcDrops");
+const RollCounts = require("./RollCounts.NpcDrops");
 const fs = require("fs");
 const path = require("path");
 
@@ -34,6 +36,10 @@ const OVERRIDES_FILE = "npc-drop-overrides.json";
 const CUSTOM_FILE = "npc-drops-custom.json";
 const MAX_STACK = 2147483647;
 const CURRENCY_IDS = new Set([995, 6529, 21555]);
+/** loottracker_add_loot (npc, key, obj, count); cache script 7192. */
+const LOOT_TRACKER_SCRIPT = 7192;
+/** Each kill's loot key (script 7192), counting up as live's do. */
+let lootKey = 1;
 const RING_OF_WEALTH_TABLES = new Set(["rareDrop", "gem", "megaRare"]);
 /** Brimstone key, Larran's key. */
 const SLAYER_KEYS = new Set([23083, 23490]);
@@ -50,10 +56,29 @@ const LOOTING_BAG = "Looting bag";
 const LOOTING_BAG_EXCLUDED = new Set(["Aviansie", "Abyssal demon", "Black chinchompa"]);
 
 /**
+ * Rows the Wiki gates behind a quest that the dump may describe only in prose. Dragon token: "only
+ * dropped during the Sir Amik Varze subquest of Recipe for Disaster" (the Recipe for Disaster plugin
+ * answers `npc-drops:quest-item` for it by item id and hands the token out itself).
+ */
+const QUEST_REQUIREMENT_BY_ITEM = new Map([
+  [7478, { key: "quest_recipefordisasterfreeingsiramikvarze", mode: "RequiresDuring" }],
+]);
+/**
  * The dumper's quest condition for a row, still free text until the export carries it as a
  * field: "Quest requirement: WikiQuestDropRequirement(questKey=..., mode=...)".
  */
 const QUEST_REQUIREMENT_NOTE = /^Quest requirement: WikiQuestDropRequirement\(questKey=([^,]+), mode=([A-Za-z]+)\)$/;
+
+/**
+ * A row's place limit, from the Wiki footnote the export keeps as free text: "Only dropped in
+ * Ruins of Tapoyauik", "only dropped by those found in/within the Forthos Dungeon", "Only dropped
+ * by giants on the Giants' Plateau" ("not on" turns it round). The place is capitalised words and
+ * ends the sentence or clause, which leaves out clue-scroll conditions ("...in Handelmort Mansion
+ * when completing a clue"), the Wilderness (handled elsewhere) and "members worlds". The boxes for
+ * each place are in data/drop-locations.json.
+ */
+const LOCATION_NOTE = /[Oo]nly dropped (?:in|by [^.,]*?\b(not )?(?:on|in|within)) (?:the )?([A-Z][\w']*(?: (?:of |the )?[A-Z][\w']*)*)(?:[.,]|$)/;
+const DROP_LOCATIONS = JSON.parse(fs.readFileSync(path.join(__dirname, "data", "drop-locations.json"), "utf8"));
 
 /** NPC param the cache sets on bosses. */
 const NPC_BOSS_PARAM = 1361;
@@ -78,6 +103,8 @@ function lootingBagDrops(npc) {
 const tablesByNpc = new Map();
 /** shared table name -> [{ itemId, quantity, weight }] */
 const sharedTables = new Map();
+/** shared table name -> { multiplier, categories: [{ maximum_exclusive, entries }] } for tables the Wiki splits by combat level */
+const sharedCategories = new Map();
 
 let itemOnGroundManager = null;
 let pluginApi = null;
@@ -141,7 +168,20 @@ function isNotedQuantity(raw) {
 function applyOverrides(dump, subtables, overrides) {
   for (const id of Object.keys(overrides.removeNpcs ?? {})) delete dump.npcs[id];
   for (const [id, npc] of Object.entries(overrides.addNpcs ?? {})) {
-    if (id !== "$comment" && !dump.npcs[id]) dump.npcs[id] = npc;
+    if (id === "$comment") continue;
+    const existing = dump.npcs[id];
+    if (!existing) {
+      dump.npcs[id] = npc;
+      continue;
+    }
+    // The dump maps this NPC but not every table the override names: the dumper exports each
+    // dropversion table of a page and maps only one of them (the zombie pirates' Medium
+    // Wilderness Diary table). Append the missing ones; the dump's own order stays first, so
+    // the default table is unchanged.
+    existing.tables ??= [];
+    for (const table of npc.tables ?? []) {
+      if (!existing.tables.includes(table)) existing.tables.push(table);
+    }
   }
   for (const [tableId, change] of Object.entries(overrides.tables ?? {})) {
     const table = dump.tables[tableId];
@@ -176,11 +216,23 @@ function isDropQuantity(quantity) {
 
 /**
  * A world's own edits, saved by the browser host's NPC Drops tab to npc-drops-custom.json and
- * absent everywhere else. Rows are addressed by their position in the dump, so this runs before
- * applyOverrides changes the arrays.
+ * absent everywhere else. New saves replace complete tables by name; old index-based saves
+ * remain supported. Both run before applyOverrides changes the arrays.
  */
 function applyCustomDrops(dump, custom) {
   for (const [tableId, edits] of Object.entries(custom.tables ?? {})) {
+    if (edits?.replacement !== undefined) {
+      const table = edits.replacement;
+      if (!table || typeof table !== "object" || Array.isArray(table) ||
+          ["entries", "tertiary"].some(field => table[field] !== undefined &&
+            (!Array.isArray(table[field]) || table[field].some(row => !row || typeof row !== "object" || Array.isArray(row))))) {
+        console.error(`[NpcDrops] invalid saved table '${tableId}'; using the default`);
+        continue;
+      }
+      // Clone: runtime corrections must never mutate the world's saved definition.
+      dump.tables[tableId] = structuredClone(table);
+      continue;
+    }
     const table = dump.tables[tableId];
     if (!table) {
       console.error(`[NpcDrops] npc-drops-custom.json changes unknown table '${tableId}'`);
@@ -227,7 +279,51 @@ function questRequirement(entry) {
       break;
     }
   }
+  // The dump names a quest only when its title is a known quest page, so a Wiki gate on a subquest
+  // can arrive as prose alone. These items are gated by id, whatever the note says.
+  requirement ??= QUEST_REQUIREMENT_BY_ITEM.get(entry.item_id) ?? null;
   return entry.quest_requirement = requirement;
+}
+
+/** The place a row is limited to, as { place, not }, or null. Cached on the entry like the quest requirement. */
+function locationRequirement(entry) {
+  if (entry.location_requirement !== undefined) return entry.location_requirement;
+  let found = null;
+  for (const note of entry.notes || []) {
+    const match = LOCATION_NOTE.exec(note);
+    if (match && !match[2].startsWith("Wilderness")) {
+      found = { place: match[2], not: !!match[1] };
+      break;
+    }
+  }
+  return entry.location_requirement = found;
+}
+
+/** Whether the NPC stands where the row's place says (or, for "not on", elsewhere). */
+function inRequiredLocation(entry, npc) {
+  const requirement = locationRequirement(entry);
+  if (!requirement) return true;
+  const boxes = DROP_LOCATIONS[requirement.place]?.boxes;
+  if (!boxes) {
+    if (!unknownConditionTypes.has(requirement.place)) {
+      unknownConditionTypes.add(requirement.place);
+      console.warn(`[NpcDrops] no bounds for the drop place '${requirement.place}'; its rows are not limited`);
+    }
+    return true;
+  }
+  const at = npc?.getLocation?.();
+  const inside = !!at && boxes.some(([x1, y1, x2, y2]) => at.getX() >= x1 && at.getX() <= x2 && at.getY() >= y1 && at.getY() <= y2);
+  return inside !== requirement.not;
+}
+
+/** The table without the rows limited to a place the NPC is not in. */
+function withoutOtherLocations(table, npc) {
+  const rows = (field) => (table[field] || []).filter((entry) => inRequiredLocation(entry, npc));
+  const entries = rows("entries");
+  const tertiary = rows("tertiary");
+  return entries.length === (table.entries || []).length && tertiary.length === (table.tertiary || []).length
+    ? table
+    : { ...table, entries, tertiary };
 }
 
 function applyWikiCorrections(tableById) {
@@ -257,6 +353,7 @@ function applyWikiCorrections(tableById) {
   correctMadAngel(tableById.mad_angel);
   correctSkotizo(tableById.skotizo);
   correctAmoxliatl(tableById.amoxliatl);
+  correctAlchemicalHydra(tableById.alchemical_hydra);
   const kalphiteQueen = tableById.kalphite_queen;
   if (!kalphiteQueen) {
     return;
@@ -331,9 +428,19 @@ function correctAmoxliatl(table) {
   }
 }
 
+/** Two rolls per kill; the first can hit the unique pre-roll, the second is always on the standard table (Wiki, Drops). */
+function correctAlchemicalHydra(table) {
+  if (!table) return;
+  table.rolls = 2;
+  for (const entry of table.entries || []) {
+    if (entry.pre_roll) entry.once_per_kill = true;
+  }
+}
+
 function loadDrops() {
   tablesByNpc.clear();
   sharedTables.clear();
+  sharedCategories.clear();
   bossUniqueItemIds = null;
   unusableSubtableRows = 0;
 
@@ -389,9 +496,9 @@ function loadDrops() {
   }
   const tableCount = Object.keys(tableById).length;
 
-  for (const [name, table] of Object.entries(subtables)) {
+  const sharedRows = (rows) => {
     const entries = [];
-    for (const entry of table.entries || []) {
+    for (const entry of rows || []) {
       const rarity = parseSharedRarity(entry.rarity_raw);
       if (!rarity) {
         unusableSubtableRows++;
@@ -415,6 +522,21 @@ function loadDrops() {
         unusableSubtableRows++;
       }
     }
+    return entries;
+  };
+
+  for (const [name, table] of Object.entries(subtables)) {
+    if (SeedCategories.validCategories(table)) {
+      // Each category is its own pool with its own denominator, selected per kill by combat level.
+      const categories = table.categories.map((category) => ({
+        maximum_exclusive: category.maximum_exclusive,
+        entries: sharedRows(category.entries),
+      }));
+      sharedCategories.set(name, { multiplier: table.combat_level_multiplier, categories });
+      sharedTables.set(name, categories.flatMap((category) => category.entries));
+      continue;
+    }
+    const entries = sharedRows(table.entries);
     if (entries.length > 0) {
       sharedTables.set(name, entries);
     }
@@ -496,7 +618,8 @@ function hits(entry, multiplier = 1) {
   if (!Number.isInteger(outOf) || outOf <= 0) {
     return false;
   }
-  const weight = Number.isInteger(entry.weight) ? entry.weight : 1;
+  // Fractional weights are allowed (npc-drops-custom.json, #1749): a 2.5/400 row is 2.5, not 1.
+  const weight = Number.isFinite(entry.weight) && entry.weight > 0 ? entry.weight : 1;
   return Math.random() * outOf < Math.min(outOf, weight * multiplier);
 }
 
@@ -531,7 +654,8 @@ function isUniqueItem(entry) {
 /** Rarity alone does not make supplies, equipment or a shared drop table a boss unique. */
 function isUniqueEntry(entry) {
   const outOf = Number(entry.out_of);
-  const weight = Number.isInteger(entry.weight) ? entry.weight : 1;
+  // Fractional weights are allowed (npc-drops-custom.json, #1749): a 2.5/400 row is 2.5, not 1.
+  const weight = Number.isFinite(entry.weight) && entry.weight > 0 ? entry.weight : 1;
   const chance = outOf > 0 ? weight / outOf : 0;
   if (!(chance > 0 && chance < SPECIAL_MAX_CHANCE)) return false;
   // An ordered access may contain a pool of uniques; never boost a pool with ordinary supplies.
@@ -610,16 +734,54 @@ function rulesMultiplier(entry, rules) {
   return Math.max(multiplier, floor);
 }
 
-function rollSharedTable(name, player, depth = 0) {
+/**
+ * Wiki (Gem drop table, note 4): "The Mega-rare drop table is replaced by a talisman if Legends' Quest is not
+ * completed" (Rare drop table: Legends' Quest "IS required to access it via the gem drop table"; the rare drop table's
+ * own mega-rare slot needs nothing). The talisman is the gem table's own: "a nature talisman will drop above ground
+ * level and a chaos talisman will drop underground" (underground: the map's y + 6400 band).
+ */
+const GEM_TABLE = "gem";
+const MEGA_RARE_TABLE = "megaRare";
+const UNDERGROUND_Y = 6400;
+
+function legendsQuestComplete(player) {
+  const query = { player, key: "legends_quest", complete: false };
+  pluginApi?.emitCustomEvent?.("quest:is-complete", query);
+  return query.complete === true;
+}
+
+/**
+ * The map y a tile stands for. A templated instance sits in a grid of slots outside the real map, and
+ * slots from row 22 on are at y 6400+, so its own y says nothing: the chunk it copies says where it is.
+ */
+function mapY(player) {
+  const location = player?.getLocation?.();
+  const y = location?.getY?.() ?? 0;
+  const area = player?.getPrivateArea?.();
+  if (!location || !area?.usesTemplateMap?.() || typeof area.getChunk !== "function" || !area.contains?.(location)) return y;
+  const chunk = area.getChunk(location.getZ(), (location.getX() - area.getBaseX()) >> 3, (y - area.getBaseY()) >> 3);
+  return chunk ? chunk.sourceChunkY * 8 : y;
+}
+
+function locationTalisman(player) {
+  const { ItemIdentifiers } = pluginApi.core;
+  return mapY(player) >= UNDERGROUND_Y ? ItemIdentifiers.CHAOS_TALISMAN : ItemIdentifiers.NATURE_TALISMAN;
+}
+
+/** `ringOfWealth: false` rolls the full pool even with a ring of wealth worn. */
+function rollSharedTable(name, player, depth = 0, { ringOfWealth = true, combatLevel = null } = {}) {
   // Shared tables reference each other (rare -> gem -> mega-rare), so cap the chain.
   if (depth > 4) {
     return [];
   }
-  const entries = sharedTables.get(name);
+  const split = sharedCategories.get(name);
+  const entries = split
+    ? SeedCategories.select(split.categories, split.multiplier, combatLevel, randomInt).entries
+    : sharedTables.get(name);
   if (!entries || entries.length === 0) {
     return [];
   }
-  const pool = isWearingRingOfWealth(player) && RING_OF_WEALTH_TABLES.has(name)
+  const pool = ringOfWealth && isWearingRingOfWealth(player) && RING_OF_WEALTH_TABLES.has(name)
     ? entries.filter((entry) => !entry.nothing)
     : entries;
   // Published as per-item n/outOf slots sharing one pool, so roll the pool once and walk
@@ -635,7 +797,10 @@ function rollSharedTable(name, player, depth = 0) {
         return [];
       }
       if (entry.ref) {
-        return rollSharedTable(entry.ref, player, depth + 1);
+        if (name === GEM_TABLE && entry.ref === MEGA_RARE_TABLE && !legendsQuestComplete(player)) {
+          return [{ itemId: locationTalisman(player), amount: 1, noted: false }];
+        }
+        return rollSharedTable(entry.ref, player, depth + 1, { ringOfWealth, combatLevel });
       }
       const [min, max] = entry.quantity;
       return [{
@@ -653,7 +818,12 @@ function resolveEntry(entry, player, context = null) {
     return [];
   }
   if (entry.shared_table) {
-    return rollSharedTable(entry.shared_table, player);
+    // A row the Wiki gives several rolls of its shared table (the spectres' herb roll) rolls it that many times.
+    const drops = [];
+    for (let roll = RollCounts.pick(entry.roll_count_weights, randomInt); roll > 0; roll--) {
+      drops.push(...rollSharedTable(entry.shared_table, player, 0, { combatLevel: context?.combatLevel ?? null }));
+    }
+    return drops;
   }
   if (!Number.isInteger(entry.item_id)) {
     return [];
@@ -690,22 +860,28 @@ function rollWeighted(entries, outOf, rules) {
 }
 
 /**
- * One roll on a table: its pre-roll, main roll and separate rolls. Separate rolls marked
- * `once_per_kill` are made on the first of a table's `rolls` only. `rules` are the kill's chance
- * rules (chanceRules), applied to every entry.
+ * One roll on a table: its pre-roll, main roll and separate rolls. Pre-roll and separate rolls
+ * marked `once_per_kill` are made on the first of a table's `rolls` only. `rules` are the kill's
+ * chance rules (chanceRules), applied to every entry.
  */
 function rollOnce(table, entries, player, first = true, context = null, rules = []) {
   const drops = [];
   const main = [];
   const boostedMain = [];
   const separateGroups = new Map();
+  const preRollGroups = new Map();
   let preRollHit = false;
 
   for (const entry of entries) {
     if (entry.always) {
       continue;
     } else if (entry.pre_roll) {
-      if (!preRollHit && hits(entry, entryMultiplier(table, entry, rules))) {
+      if (entry.once_per_kill && !first) continue;
+      if (entry.roll_group) {
+        const group = preRollGroups.get(entry.roll_group) || [];
+        group.push(entry);
+        preRollGroups.set(entry.roll_group, group);
+      } else if (!preRollHit && hits(entry, entryMultiplier(table, entry, rules))) {
         drops.push(...resolveEntry(entry, player, context));
         preRollHit = true;
       }
@@ -722,6 +898,31 @@ function rollOnce(table, entries, player, first = true, context = null, rules = 
       if (rareMultiplier(table, entry) > 1) boostedMain.push(entry);
       else main.push(entry);
     }
+  }
+
+  // A weighted pre-roll group: one access roll, then exactly one weighted item.
+  // A hit replaces the main roll, like the source's "1/585 chance of hitting the
+  // sigil drop table" (Corporeal Beast).
+  for (const group of preRollGroups.values()) {
+    if (preRollHit) break;
+    const first = group[0];
+    const accessOutOf = Number(first.group_access_out_of);
+    const accessWeight = Number(first.group_access_weight);
+    if (!(accessOutOf > 0) || !(accessWeight > 0)) continue;
+    // Boost the marginal rarity, not merely the choice after gaining access.
+    // A uniform boost must increase access while preserving the group's ratios.
+    const weighted = group.map((entry) => ({
+      ...entry,
+      weight: entry.weight * entryMultiplier(table, {
+        ...entry, out_of: Number(entry.out_of) * accessOutOf / accessWeight,
+      }, rules),
+    }));
+    const totalWeight = weighted.reduce((sum, entry) => sum + entry.weight, 0);
+    const boostedAccess = accessWeight * totalWeight / Number(first.out_of);
+    if (Math.random() * accessOutOf >= Math.min(accessOutOf, boostedAccess)) continue;
+    preRollHit = true;
+    const entry = rollWeighted(weighted, totalWeight, []);
+    if (entry) drops.push(...resolveEntry(entry, player, context));
   }
 
   for (const group of separateGroups.values()) {
@@ -752,8 +953,14 @@ function rollOnce(table, entries, player, first = true, context = null, rules = 
  * Plugins fill source-stated conditions for this kill. `handledItemIds` contains
  * rewards already owned by a quest/encounter handler, including bundled/shared loot.
  */
+/** The killed NPC's combat level, which picks the general seed table's subtable; null when unknown. */
+function npcCombatLevel(npc) {
+  const level = Number((npc?.getCurrentDefinition?.() ?? npc?.getDefinition?.())?.getCombatLevel?.());
+  return Number.isSafeInteger(level) && level > 0 ? level : null;
+}
+
 function killContext(player, npc) {
-  const context = { perfectKill: false, bountyTask: null, preferredMethodLocation: null, handledItemIds: new Set() };
+  const context = { perfectKill: false, bountyTask: null, preferredMethodLocation: null, handledItemIds: new Set(), combatLevel: npcCombatLevel(npc) };
   pluginApi?.emitCustomEvent("npc-drops:context", { player, npc, npcId: npc?.getId?.() ?? null, context });
   return context;
 }
@@ -792,6 +999,7 @@ function questItemVerdicts(player, npc, table) {
  * `source` names the kill for npc-drops:chance (the NPC's name unless the caller says otherwise).
  */
 function rollTable(table, player, npc, context = killContext(player, npc), source = sourceName(npc)) {
+  table = withoutOtherLocations(table, npc);
   const chance = chanceRules(player, npc, source);
   const questVerdicts = questItemVerdicts(player, npc, table);
   const selected = OrderedRewards.select(table, player, pluginApi, Math.random,
@@ -869,18 +1077,51 @@ function rollTable(table, player, npc, context = killContext(player, npc), sourc
  */
 function extraRolls(event) {
   ensureDropsLoaded?.();
-  const table = tableForNpc(event.npcId);
+  const table = tableForNpc(event.npcId, event.player, event.npc);
   if (!table || !Array.isArray(event.drops)) return;
   const rolling = { ...table, entries: (table.entries || []).filter((entry) => !entry.always), tertiary: [] };
   for (let i = 0; i < (event.rolls ?? 0); i++) event.drops.push(...rollTable(rolling, event.player, event.npc));
 }
 
+/**
+ * Answers npc-drops:table-rolls { player, npc, npcId, rolls }: how many times one kill of this NPC rolls
+ * its table (the exported `rolls`, e.g. 3 for a superior Slayer monster), 1 when the table has none.
+ */
+function tableRolls(event) {
+  ensureDropsLoaded?.();
+  const table = tableForNpc(event.npcId, event.player, event.npc);
+  event.rolls = Number.isInteger(table?.rolls) && table.rolls > 1 ? table.rolls : 1;
+}
+
+/**
+ * Answers npc-drops:roll-shared { player, table, drops, ringOfWealth }: one roll of a shared table
+ * by name ("gem", "rareSeed", "usefulHerb" ...), pushed onto `drops`; an empty slot pushes nothing.
+ * For content outside NPC kills that rolls the same tables (sorting salvage). `ringOfWealth: false`
+ * keeps the empty slots when a ring of wealth is worn.
+ */
+function rollSharedRequest(event) {
+  ensureDropsLoaded?.();
+  if (!Array.isArray(event?.drops) || typeof event.table !== "string") return;
+  event.drops.push(...rollSharedTable(event.table, event.player, 0, { ringOfWealth: event.ringOfWealth !== false, combatLevel: Number.isSafeInteger(event.combatLevel) ? event.combatLevel : null }));
+}
+
 let ensureDropsLoaded = null;
 
-function tableForNpc(npcId) {
+/**
+ * The table an NPC's kill rolls. A plugin may answer npc-drops:table { player, npc, npcId, tables,
+ * table } to pick a different one for this player: the Wiki lists NPCs with a second table for a
+ * condition the data cannot express on its own (the Medium Wilderness Diary's zombie pirates).
+ * Without an answer the first table is used, as before.
+ */
+function tableForNpc(npcId, player = null, npc = null) {
   const tables = tablesByNpc.get(npcId);
   if (!tables || tables.length === 0) {
     return null;
+  }
+  if (tables.length > 1 && player && pluginApi) {
+    const request = { player, npc, npcId, tables, table: null };
+    pluginApi.emitCustomEvent("npc-drops:table", request);
+    if (request.table) return request.table;
   }
   // ponytail: ID variants are resolved by the exporter; context-dependent tables still
   // use the first entry until encounter/quest conditions have an executable contract.
@@ -888,7 +1129,7 @@ function tableForNpc(npcId) {
 }
 
 function dropFor(player, npc, npcId, location, damagers = []) {
-  const table = tableForNpc(npcId);
+  const table = tableForNpc(npcId, player, npc);
   if (!itemOnGroundManager) {
     return 0;
   }
@@ -909,38 +1150,71 @@ function dropFor(player, npc, npcId, location, damagers = []) {
   const where = { player, npc, npcId, location, public: false };
   pluginApi.emitCustomEvent("npc-drops:location", where);
   placeDrops(player, drops, where.location, where.public === true ? { public: true } : {});
+  reportLoot(player, npcId, drops);
   return drops.length;
 }
 
 /**
- * Puts rolled drops on the ground for `player` (noted where the table says), or currency in the
- * pack when a worn ring of wealth has Coin collection on.
+ * Whether a rolled drop may be spawned: an item id that exists (not negative, an integer) and a whole, positive
+ * amount. NaN, Infinity, fractions and unsafe integers come from a malformed row or a plugin's own drops.
  */
-function placeDrops(player, drops, location, options = {}) {
+function validDrop(drop) {
+  return Number.isInteger(drop?.itemId) && drop.itemId >= 0 && Number.isSafeInteger(drop.amount) && drop.amount > 0;
+}
+
+/**
+ * Tells the killer's client what the kill dropped: live runs loottracker_add_loot (script 7192)
+ * once per item with the NPC, the kill's key, the item and its amount, and RuneLite's loot
+ * tracker counts NPC loot only from that script.
+ */
+function reportLoot(player, npcId, drops) {
+  const sender = player.getPacketSender?.();
+  if (!sender) return;
+  const key = lootKey++;
   for (const drop of drops) {
-    if (!Number.isInteger(drop.itemId) || drop.amount <= 0) {
+    if (!validDrop(drop)) continue;
+    sender.sendClientScript(LOOT_TRACKER_SCRIPT, npcId, key, droppedItemId(drop), drop.amount);
+  }
+}
+
+/** The item a drop lands as: its note when the table drops it noted and a note exists. */
+function droppedItemId(drop) {
+  const noteId = ItemDefinition.forId(drop.itemId).getNoteId();
+  return drop.noted && noteId >= 0 && ItemDefinition.forId(noteId).isNoted() ? noteId : drop.itemId;
+}
+
+/**
+ * Puts rolled drops on the ground for `player` (noted where the table says), or currency in the
+ * pack when a worn ring of wealth has Coin collection on. A drop may carry its own `ground`
+ * ({ goesGlobal, despawnDelay }, as ItemOnGroundManager.registerLocation takes them) for a stack
+ * that lies longer or stays the killer's; every other drop keeps the placement's options.
+ */
+function placeDrops(player, drops, location, placement = {}) {
+  for (const drop of drops) {
+    if (!validDrop(drop)) {
       continue;
     }
+    const options = drop.ground ? { ...placement, ...drop.ground } : placement;
+    let amount = drop.amount;
     if (CURRENCY_IDS.has(drop.itemId) && isWearingRingOfWealth(player) && autoCollectCurrencies(player)) {
+      // Into the pack up to the stack cap; anything past it drops to the ground as it would without the ring.
       const inventory = player.getInventory();
-      if (inventory.contains(drop.itemId) || inventory.getFreeSlots() > 0) {
-        inventory.adds(drop.itemId, drop.amount);
-        continue;
-      }
+      const collected = typeof inventory.getAddableAmount === "function"
+        ? inventory.getAddableAmount(new Item(drop.itemId, amount))
+        : (inventory.contains(drop.itemId) || inventory.getFreeSlots() > 0 ? amount : 0);
+      if (collected > 0) inventory.adds(drop.itemId, collected);
+      amount -= collected;
+      if (amount <= 0) continue;
     }
-    const definition = ItemDefinition.forId(drop.itemId);
-    const noteId = definition.getNoteId();
-    const itemId = drop.noted && noteId >= 0 && ItemDefinition.forId(noteId).isNoted()
-      ? noteId
-      : drop.itemId;
-    const item = new Item(itemId, drop.amount);
+    const itemId = droppedItemId(drop);
+    const item = new Item(itemId, amount);
     const stackable = item.getDefinition && item.getDefinition()
       ? item.getDefinition().isStackable()
       : false;
     if (stackable) {
       itemOnGroundManager.registerLocation(player, item, location, undefined, options);
     } else {
-      for (let i = 0; i < drop.amount; i++) {
+      for (let i = 0; i < amount; i++) {
         itemOnGroundManager.registerLocation(player, new Item(itemId, 1), location, undefined, options);
       }
     }
@@ -949,6 +1223,13 @@ function placeDrops(player, drops, location, options = {}) {
 
 module.exports = {
   name: "NpcDrops",
+  description: "Rolls NPC drop tables from the Wiki-derived drop data, with subtables, tertiary drops and hand-edited overrides.",
+  config: {
+    "NpcDrops:bossRareMultiplier": {
+      type: "number", label: "Boss unique drop multiplier", default: 1, min: 1,
+      help: "Makes bosses' unique drops this many times likelier. 1 is the normal rate; values of 1 or less change nothing.",
+    },
+  },
   register(api) {
     pluginApi = api;
     itemOnGroundManager = api.getItemOnGroundManager();
@@ -962,6 +1243,8 @@ module.exports = {
     };
     ensureDropsLoaded = ensureDrops;
     api.onCustomEvent("npc-drops:extra-rolls", extraRolls);
+    api.onCustomEvent("npc-drops:table-rolls", tableRolls);
+    api.onCustomEvent("npc-drops:roll-shared", rollSharedRequest);
 
     // "npc-drops:roll-table" { player, table, drops }: a table outside an NPC's own (a boss's
     // chest) rolled with the same roller and shared tables; the drops are pushed onto `drops`.
@@ -972,7 +1255,7 @@ module.exports = {
     api.onCustomEvent("npc-drops:roll-table", (request) => {
       ensureDrops();
       const npcId = Number.isInteger(request.npcId) ? request.npcId : request.npc?.getId?.() ?? null;
-      let table = request.table ?? tableForNpc(npcId);
+      let table = request.table ?? tableForNpc(npcId, request.player, request.npc);
       if (table && typeof request.entryFilter === "function") {
         table = {
           ...table,
@@ -1030,8 +1313,8 @@ module.exports = {
 
     api.log("registered", { lazy: true });
   },
-  _test: { loadDrops, tablesByNpc, sharedTables },
+  _test: { loadDrops, tablesByNpc, sharedTables, sharedCategories, rollSharedTable, rollSharedRequest },
 
   // Exposed for the smoke test.
-  __internals: { loadDrops, rollTable, rollOnce, rollSharedTable, placeDrops, tablesByNpc, sharedTables, applyOverrides, applyCustomDrops, isUniqueEntry, rareMultiplier },
+  __internals: { questRequirement, npcCombatLevel, withoutOtherLocations, locationRequirement, DROP_LOCATIONS, loadDrops, rollTable, rollOnce, rollSharedTable, placeDrops, dropFor, tablesByNpc, sharedTables, applyOverrides, applyCustomDrops, isUniqueEntry, rareMultiplier, tableForNpc },
 };

@@ -32,6 +32,7 @@ const BIT_TALKED_GUARD = 1 << 5;
 const BIT_TALKED_JOHANHUS = 1 << 6;
 const BIT_TRAPDOOR = 1 << 7;
 const BIT_CRATE = 1 << 12;
+const BIT_GOBLIN = 1 << 3;
 
 function harness(realFollower = false) {
   const hooks = {}, events = {}, tasks = [], zones = [], objects = [], npcs = [], removed = [];
@@ -192,6 +193,46 @@ test('q018 robe hand-in consumes one set and moves to the tour wire value 3', ()
   one.h.action(one.p, N.ZANIK, 'ottYm8');
   assert.equal(one.h.quest.getStage(one.p), 1, 'one set is not enough');
   assert.equal(one.p.inventory.getAmount(I.HAM_SHIRT), 1, 'robes are not taken without two sets');
+});
+
+test('q018 goblin tour stop triggers by walking near the goblins, without an owner-only goblin', () => {
+  const { h, p } = dttd(2);
+  const zone = h.zones.find(({ zone }) => zone.minX === 3236);
+  assert.ok(zone, 'the east-Lumbridge goblin field is a tour zone');
+  h.clearChat(p);
+  zone.fn({ player: p });
+  assert.ok(p.manager.getCurrent(), 'Zanik speaks when the player walks into the goblin field');
+  assert.equal(p.manager.getCurrent()?.getText?.(), 'Are those... goblins?',
+    'the tour transcript plays, not the goblin’s standard dialogue');
+  assert.notEqual((p.attrs.get(BITS_KEY) ?? 0) & BIT_GOBLIN, 0, 'the goblin tour bit is earned');
+  assert.equal(h.npcs.some(npc => npc.id === N.GOBLIN_104 && npc.owner === p), false,
+    'no owner-only talkable goblin is spawned');
+  h.clearChat(p);
+  zone.fn({ player: p });
+  assert.ok(!p.manager.getCurrent(), 'walking in again does not repeat the stop');
+
+  const teleported = dttd(2);
+  teleported.p.moveTo(new core.Location(3245, 3250, 0));
+  for (const fn of teleported.h.hooks.onPlayerProcess ?? []) fn({ player: teleported.p });
+  assert.ok(teleported.p.manager.getCurrent(), 'a teleport into the field also starts the stop');
+  assert.notEqual((teleported.p.attrs.get(BITS_KEY) ?? 0) & BIT_GOBLIN, 0);
+});
+
+test('q018 Zanik is brought back after the engine drops her on a plane change', () => {
+  const { h, p } = dttd(2);
+  h.login(p);
+  const follower = h.npcs.find(npc => npc.getFollowing?.() === p);
+  assert.ok(follower, 'Zanik spawns on login');
+  p.moveTo(new core.Location(p.getLocation().getX(), p.getLocation().getY(), 1));
+  follower.setFollowing(null);
+  for (const fn of h.hooks.onPlayerProcess ?? []) fn({ player: p });
+  assert.equal(follower.getFollowing(), p, 'the quest re-attaches her after the plane change');
+  assert.equal(follower.getLocation().getZ(), 1, 'she moves onto the player’s plane');
+
+  p.configs.set(447, (123 << 16) | 0);
+  follower.setFollowing(null);
+  for (const fn of h.hooks.onPlayerProcess ?? []) fn({ player: p });
+  assert.equal(follower.getFollowing(), null, 'another follower owner is left alone');
 });
 
 test('q018 five gated tour stops enable the mark story and move the wire to 4', () => {
@@ -461,4 +502,80 @@ test('q018 rapid follow stop/restart keeps one pending watcher for the same NPC'
   for(const fn of h.hooks.onPlayerLogout??[])fn({player:p});
   h.tick(1);
   assert.equal(pending().length,0,'logout terminates its observer');
+});
+
+test('q018 the cellar Zanik (npc 4507 via varbit 2264) shows only until she joins as the follower', () => {
+  const { h, p } = dttd(0);
+  h.emit('npc-dialogue:hook', { player: p, hook: START_HOOK, npcId: N.MISTAG_4 });
+  assert.equal(h.quest.getStage(p), 1);
+  assert.equal(p.varbits.get(2264), 1, 'she waits in the cellar once the quest starts');
+  giveHamSet(p, 2);
+  h.action(p, N.ZANIK, 'ottYm8');
+  assert.equal(h.quest.getStage(p), 2);
+  assert.equal(p.varbits.get(2264), 0, 'no second, cellar Zanik beside the follower');
+  for (const stage of [3, 4, 10, 14]) {
+    const later = dttd(stage);
+    later.h.login(later.p);
+    assert.equal(later.p.varbits.get(2264), 0, `stage ${stage} hides the cellar Zanik on login`);
+  }
+});
+
+test('q018 store-room cracks and lock-pick doors cross their own wall edge', () => {
+  const { h, p } = dttd(5);
+  const at = (x, y) => p.moveTo(new core.Location(x, y, 0));
+  const where = () => [p.getLocation().getX(), p.getLocation().getY()];
+  const use = (objectId, x, y, option) => {
+    const event = { player: p, objectId, definition: { id: objectId }, location: { x, y, z: 0 }, option, handled: false };
+    (h.hooks.onObjectInteraction ?? []).forEach(fn => fn(event));
+    return event;
+  };
+  // Crack on the south edge of 2569,5190: from the corridor (5189) into 5190, and back.
+  at(2569, 5189); use(O.CRACK_8, 2569, 5190, 'squeeze-through');
+  assert.deepEqual(where(), [2569, 5190]);
+  use(O.CRACK_8, 2569, 5190, 'squeeze-through');
+  assert.deepEqual(where(), [2569, 5189]);
+  // Crack on the north edge of 2569,5194: 5194 <-> 5195.
+  at(2569, 5194); use(O.CRACK_8, 2569, 5194, 'squeeze-through');
+  assert.deepEqual(where(), [2569, 5195]);
+  // Door on the west edge of 2567,5192: Open is locked, Pick-lock crosses 2566 <-> 2567.
+  at(2566, 5192);
+  const open = use(O.DOOR_362, 2567, 5192, 'open');
+  assert.equal(open.handled, true); assert.deepEqual(where(), [2566, 5192]);
+  assert.ok(p.messages.includes('The door is locked.'));
+  use(O.DOOR_362, 2567, 5192, 'pick-lock');
+  assert.deepEqual(where(), [2567, 5192]);
+  // Door on the east edge of 2576,5198: 2576 <-> 2577.
+  at(2577, 5198); use(O.DOOR_362, 2576, 5198, 'pick-lock');
+  assert.deepEqual(where(), [2576, 5198]);
+});
+
+test('q018 all declared cracks and lock-pick doors cross in both directions and enforce skill checks', () => {
+  const { h, p } = dttd(5);
+  const cases = [
+    [O.CRACK_8,2569,5190,2569,5189,'squeeze-through'],
+    [O.CRACK_8,2569,5194,2569,5195,'squeeze-through'],
+    [O.DOOR_362,2567,5192,2566,5192,'pick-lock'],
+    [O.DOOR_362,2567,5198,2566,5198,'pick-lock'],
+    [O.DOOR_362,2576,5192,2577,5192,'pick-lock'],
+    [O.DOOR_362,2576,5198,2577,5198,'pick-lock'],
+  ];
+  const use = (objectId,x,y,option) => {
+    const event = { player:p,objectId,definition:{id:objectId},location:{x,y,z:0},option,handled:false };
+    (h.hooks.onObjectInteraction ?? []).forEach(fn => fn(event)); return event;
+  };
+  for (const [id,x,y,ox,oy,option] of cases) {
+    p.moveTo(new core.Location(x,y,0)); use(id,x,y,option);
+    assert.deepEqual([p.getLocation().getX(),p.getLocation().getY()],[ox,oy]);
+    use(id,x,y,option);
+    assert.deepEqual([p.getLocation().getX(),p.getLocation().getY()],[x,y]);
+  }
+  const skills = p.getSkillManager;
+  p.getSkillManager = () => ({ ...skills(), getCurrentLevel: () => 22 });
+  p.moveTo(new core.Location(2566,5192,0)); use(O.DOOR_362,2567,5192,'pick-lock');
+  assert.equal(p.getLocation().getX(),2566);
+  p.moveTo(new core.Location(2569,5189,0)); use(O.CRACK_8,2569,5190,'squeeze-through');
+  assert.equal(p.getLocation().getY(),5189);
+  p.moveTo(new core.Location(2566,5192,0));
+  const open = {player:p,objectId:O.DOOR_362,location:{x:2567,y:5192,z:0},handled:false};
+  h.emit('door:toggle',open); assert.equal(open.handled,true); assert.equal(p.getLocation().getX(),2566);
 });

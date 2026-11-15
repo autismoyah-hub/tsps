@@ -13,12 +13,21 @@ const { pauseForLevelUp, actionInterval } = require("../SkillActions");
 const FIRST_COOK_TICKS = 2;
 const SECOND_COOK_TICKS = 3;
 const COOK_INTERVAL_TICKS = 4;
+/**
+ * Ticks from a manual re-use of raw karambwan while it is already cooking to the next food.
+ * The Wiki's 1-tick Cooking method re-opens the cooking dialogue on the tick a karambwan is
+ * cooked, so the next one follows a tick later instead of restarting the first-food delay.
+ * The Wiki documents this method for raw karambwan; other foods keep their queued timing.
+ */
+const KARAMBWAN_RECLICK_TICKS = 1;
 const ONE_TYPE_TITLE = "How many would you like to cook?";
 const MANY_TYPES_TITLE = "What would you like to cook?";
 /** clientscript skillmulti_setup's first argument on every captured cooking menu. */
 const COOK_MENU_MODE = 6;
 const NOTHING_TO_COOK_MESSAGE = "You haven't got anything to cook.";
 const CANNOT_COOK_MESSAGE = "You can't cook that.";
+/** Wiki (Karambwanji): a quest-only food outside its quest. */
+const NOT_USEFUL_MESSAGE = "You don't feel that would be useful now.";
 /** One more for each food cooked in a row; a burn sets it back to 0 (rsprox captures). */
 const SUCCESS_COUNT_VARBIT = "cooking_success_count";
 const SUCCESS_COUNT_ATTRIBUTE = "cooking:success-count";
@@ -26,19 +35,32 @@ const SUCCESS_COUNT_ATTRIBUTE = "cooking:success-count";
 const BUSY_VARBIT = "busy";
 
 /**
- * Wiki (Cooked meat): unlike other food it can be burnt on purpose on a fire or range, for no
- * XP. Kept apart from the cookables so content that cooks raw food leaves it alone.
+ * Wiki (Burnt chicken: https://oldschool.runescape.wiki/w/Burnt_chicken): cooked meat and
+ * chicken can be burnt on purpose. Keep them apart from the raw-food cookables.
  */
 const DELIBERATE_BURN = { name: "meat", level: 1, xp: 0, stopBurn: 1, deliberate: true, message: "You deliberately burn the nicely cooked meat." };
 
 function deliberateBurnFor(itemId) {
   const { ItemIds } = Common.core;
-  if (itemId !== ItemIds.COOKED_MEAT) return undefined;
-  return { ...DELIBERATE_BURN, raw: ItemIds.COOKED_MEAT, cooked: ItemIds.BURNT_MEAT, burnt: ItemIds.BURNT_MEAT };
+  if (itemId === ItemIds.COOKED_MEAT) {
+    return { ...DELIBERATE_BURN, raw: ItemIds.COOKED_MEAT, cooked: ItemIds.BURNT_MEAT, burnt: ItemIds.BURNT_MEAT };
+  }
+  if (itemId === ItemIds.COOKED_CHICKEN) {
+    return { ...DELIBERATE_BURN, name: "chicken", message: "You deliberately burn the nicely cooked chicken.",
+      raw: ItemIds.COOKED_CHICKEN, cooked: ItemIds.BURNT_CHICKEN, burnt: ItemIds.BURNT_CHICKEN };
+  }
+  return undefined;
+}
+
+// Free worlds cannot use members-only raw food, including through a range's Cook option.
+function availableOnWorld(cookable) {
+  return Common.core.WorldDefinition.isMembersWorld()
+    || (!cookable.gnomeTutorial && Common.core.CacheDefinitions.getItem(cookable.raw)?.isMembers !== true);
 }
 
 function cookableFor(itemId) {
-  return Common.cookables().get(itemId) ?? deliberateBurnFor(itemId);
+  const cookable = Common.cookables().get(itemId) ?? deliberateBurnFor(itemId);
+  return cookable && !cookable.facility && availableOnWorld(cookable) ? cookable : undefined;
 }
 
 // Wiki: cooking a raw karambwan yields a poison karambwan until Tinsay teaches
@@ -46,12 +68,14 @@ function cookableFor(itemId) {
 const KARAMBWAN_TAUGHT_ATTRIBUTE = "quest.tai_bwo_wannai_trio.tinsay";
 const KARAMBWAN_TAUGHT_VALUE = 8;
 
+function untrainedKarambwan(player, cookable) {
+  return cookable.raw === Common.core.ItemIds.RAW_KARAMBWAN
+    && (Number(player.getAttribute?.(KARAMBWAN_TAUGHT_ATTRIBUTE)) || 0) < KARAMBWAN_TAUGHT_VALUE;
+}
+
 function cookedResult(player, cookable) {
   const { ItemIds } = Common.core;
-  if (cookable.raw !== ItemIds.RAW_KARAMBWAN) return cookable;
-  if ((Number(player.getAttribute?.(KARAMBWAN_TAUGHT_ATTRIBUTE)) || 0) >= KARAMBWAN_TAUGHT_VALUE) {
-    return cookable;
-  }
+  if (!untrainedKarambwan(player, cookable)) return cookable;
   return { ...cookable, cooked: ItemIds.POISON_KARAMBWAN, xp: 80, message: "You cook the karambwan. It looks very dodgy." };
 }
 
@@ -64,7 +88,7 @@ function successMessage(cookable) {
 }
 
 function burnMessage(cookable) {
-  return `You accidentally burn the ${cookable.name}.`;
+  return cookable.burnMessage ?? `You accidentally burn the ${cookable.name}.`;
 }
 
 // Fires and a house's firepits cook with human_firecooking, and so do the house's ovens and
@@ -72,7 +96,9 @@ function burnMessage(cookable) {
 // oven, such as the main-game "Range" and "Oven", cooks with human_cooking.
 const FIRE_OBJECT_NAMES = new Set(["Fire", "Forester's Campfire", "Firepit", "Firepit with hook", "Firepit with pot"]);
 const HOUSE_RANGE_NAMES = new Set(["Small oven", "Large oven", "Steel range", "Fancy range"]);
-const RANGE_OBJECT_NAMES = new Set(["Cooking range", "Range", "Stove", "Oven"]);
+// The cache spells the clay ovens two ways: "Clay oven" in Hosidius (the kitchen and the mess) and
+// on Neitiznot, "Clay Oven" in Nardah.
+const RANGE_OBJECT_NAMES = new Set(["Cooking range", "Range", "Stove", "Oven", "Clay oven", "Clay Oven"]);
 const COOKABLE_OBJECT_NAMES = new Set([...RANGE_OBJECT_NAMES, ...HOUSE_RANGE_NAMES, ...FIRE_OBJECT_NAMES]);
 
 function cookAnimationFor(name) {
@@ -81,56 +107,103 @@ function cookAnimationFor(name) {
 }
 
 /**
- * Wiki: cooking gauntlets only affect lobster, swordfish, kyatt, monkfish,
- * shark and anglerfish, lowering the level at which they stop burning.
+ * Wiki (Hosidius Kitchen): its two ranges add 12 to a food's low and high values, or 25 with the
+ * elite Kourend & Kebos Diary. They are clay ovens; the one in the mess next door has no bonus.
  */
-const GAUNTLETS_STOP_BURN = new Map([
-  ["raw_lobster", 64],
-  ["raw_swordfish", 80],
-  ["hunting_kyatt_meat", 80],
-  ["raw_monkfish", 86],
-  ["raw_shark", 89],
-  ["raw_anglerfish", 93],
-]);
+const HOSIDIUS_KITCHEN = { minX: 1674, maxX: 1684, minY: 3616, maxY: 3626 };
+const HOSIDIUS_BONUS = 12;
+const HOSIDIUS_ELITE_BONUS = 25;
+/** Wiki (Hosidius Kitchen): the two ranges need the easy Kourend & Kebos Diary. The line is ours. */
+const HOSIDIUS_DIARY_MESSAGE = "You need to complete the easy Kourend & Kebos Diary to use these ranges.";
+/** Levels the stop-burn search tries; past this a food is treated as never stopping. */
+const HIGHEST_STOP_LEVEL = 200;
 
-function gauntletsStopBurn(rawId) {
-  for (const [name, level] of GAUNTLETS_STOP_BURN) {
-    if (Common.core.CacheDefinitions.getObjId(name) === rawId) return level;
-  }
-  return undefined;
+function wearsCookingGauntlets(player) {
+  const { Equipment, ItemIds } = Common.core;
+  return player.getEquipment?.()?.getItems?.()[Equipment.HANDS_SLOT]?.getId?.() === ItemIds.COOKING_GAUNTLETS;
 }
 
-function stopBurnLevel(player, cookable, objectId) {
-  const { Equipment, ItemIds, ObjectIdentifiers } = Common.core;
-  if (objectId !== undefined && objectId === ObjectIdentifiers.COOKING_RANGE && cookable.lumbridgeStopBurn !== undefined) {
-    return cookable.lumbridgeStopBurn;
-  }
-  const hands = player.getEquipment?.()?.getItems?.()[Equipment.HANDS_SLOT]?.getId?.();
-  if (hands !== ItemIds.COOKING_GAUNTLETS) {
-    return cookable.stopBurn;
-  }
-  return gauntletsStopBurn(cookable.raw) ?? cookable.stopBurn;
+function isHosidiusKitchen(objectId, location) {
+  if (objectId !== Common.core.ObjectIdentifiers.CLAY_OVEN_3 || !location) return false;
+  const x = location.getX(), y = location.getY();
+  return location.getZ() === 0 && x >= HOSIDIUS_KITCHEN.minX && x <= HOSIDIUS_KITCHEN.maxX
+    && y >= HOSIDIUS_KITCHEN.minY && y <= HOSIDIUS_KITCHEN.maxY;
 }
 
-function isSuccess(player, cookable, objectId) {
-  const cookingLevel = Common.level(player);
-  if (Common.wearsCookingCape(player)) {
-    return true;
-  }
-  const stopBurn = stopBurnLevel(player, cookable, objectId);
-  if (cookingLevel >= stopBurn) {
-    return true;
-  }
-  if (stopBurn <= cookable.level) {
-    return true;
-  }
+/** Whether the player has completed a tier of the Kourend & Kebos Diary ("diary:is-complete"). */
+function diaryComplete(player, tier) {
+  const request = { player, diary: "kourend", tier, complete: false };
+  Common.api?.emitCustomEvent("diary:is-complete", request);
+  return request.complete === true;
+}
 
-  const burnBonus = 3;
-  let burnChance = 45.0 - burnBonus;
-  const burnDec = burnChance / (stopBurn - cookable.level);
-  burnChance -= (cookingLevel - cookable.level) * burnDec;
-  const roll = Math.random() * 100.0;
-  return burnChance <= roll;
+/** Whether this object is a range or oven rather than a fire (by its cache name); false without one. */
+function onRange(objectId) {
+  if (objectId === undefined) return false;
+  const name = Common.core.CacheDefinitions.getObject(objectId)?.name;
+  return !!name && !FIRE_OBJECT_NAMES.has(name);
+}
+
+/** The cooker kind a session gives; without one, the object's ("range" when there is no object either). */
+function cookerKind(cooker, objectId) {
+  if (cooker) return cooker;
+  return objectId !== undefined && !onRange(objectId) && Common.core.CacheDefinitions.getObject(objectId) ? "fire" : "range";
+}
+
+function hosidiusBonus(player, objectId, location) {
+  if (!isHosidiusKitchen(objectId, location)) return 0;
+  return diaryComplete(player, "elite") ? HOSIDIUS_ELITE_BONUS : HOSIDIUS_BONUS;
+}
+
+/**
+ * The [low, high] values this food cooks with here (Wiki charts): worn cooking gauntlets for the
+ * foods they help, the Lumbridge Castle range for the foods it helps, else the fire's or the
+ * range's, plus the Hosidius Kitchen's bonus. Null for a food without Wiki values.
+ */
+function chanceValues(player, cookable, objectId, cooker, location) {
+  const chance = cookable.chance;
+  if (!chance) return null;
+  cooker = cookerKind(cooker, objectId);
+  let values;
+  if (chance.gauntlets && wearsCookingGauntlets(player)) values = chance.gauntlets;
+  else if (chance.lumbridge && objectId === Common.core.ObjectIdentifiers.COOKING_RANGE) values = chance.lumbridge;
+  else values = cooker === "fire" ? chance.fire ?? chance.range : chance.range ?? chance.fire;
+  const bonus = cooker === "fire" ? 0 : hosidiusBonus(player, objectId, location);
+  return [values[0] + bonus, values[1] + bonus];
+}
+
+/** The level this food stops burning at here (Infinity: not by HIGHEST_STOP_LEVEL). */
+function stopBurnLevel(player, cookable, objectId, cooker, location) {
+  const values = chanceValues(player, cookable, objectId, cooker, location);
+  if (!values) {
+    return objectId === Common.core.ObjectIdentifiers.COOKING_RANGE && cookable.lumbridgeStopBurn !== undefined
+      ? cookable.lumbridgeStopBurn : cookable.stopBurn;
+  }
+  for (let level = 1; level <= HIGHEST_STOP_LEVEL; level++) {
+    if (Common.successChance(values[0], values[1], level) >= 1) return level;
+  }
+  return Infinity;
+}
+
+/**
+ * The chance of cooking this food here at the player's Cooking level, boosts included and with
+ * no cap at 99. A food without Wiki values falls back to a straight line from 58% at its level
+ * to 100% at its `stopBurn`.
+ */
+function successChance(player, cookable, objectId, cooker, location) {
+  if (Common.wearsCookingCape(player)) return 1;
+  const level = Common.level(player);
+  const values = chanceValues(player, cookable, objectId, cooker, location);
+  if (values) return Common.successChance(values[0], values[1], level);
+  const stopBurn = stopBurnLevel(player, cookable, objectId, cooker, location);
+  if (level >= stopBurn || stopBurn <= cookable.level) return 1;
+  const burnChance = 42 - ((level - cookable.level) * 42) / (stopBurn - cookable.level);
+  return 1 - burnChance / 100;
+}
+
+/** The roll, as before: a roll at or above the burn chance cooks the food (a roll of 0 burns anything that can burn). */
+function isSuccess(player, cookable, objectId, cooker, location, random = Math.random) {
+  return random() >= 1 - successChance(player, cookable, objectId, cooker, location);
 }
 
 const activeSessions = new Map();
@@ -167,6 +240,18 @@ function sendSuccessCount({ player }) {
 
 /** Whether the player may cook this here; says why not in a message box. */
 function canCook(player, object, cookable) {
+  if (!availableOnWorld(cookable)) {
+    player.sendMessage("To use this item please login to a members' world.");
+    return false;
+  }
+  if (cookable.gnomeTutorial && FIRE_OBJECT_NAMES.has(object.getDefinition().getName())) {
+    Common.mesbox(player, CANNOT_COOK_MESSAGE);
+    return false;
+  }
+  if (isHosidiusKitchen(object.getId(), object.getLocation?.()) && !diaryComplete(player, "easy")) {
+    Common.mesbox(player, HOSIDIUS_DIARY_MESSAGE);
+    return false;
+  }
   if (object.getId() === Common.core.ObjectIdentifiers.COOKING_RANGE) {
     const request = { player, key: "cooks_assistant", complete: null };
     Common.api.emitCustomEvent("quest:is-complete", request);
@@ -175,36 +260,105 @@ function canCook(player, object, cookable) {
       return false;
     }
   }
-  if (Common.level(player) < cookable.level) {
-    Common.mesbox(player, `You need a Cooking level of ${cookable.level} to cook ${withArticle(cookable)}.`);
+  const requiredLevel = untrainedKarambwan(player, cookable) ? 1 : cookable.level;
+  if (Common.level(player) < requiredLevel) {
+    Common.mesbox(player, `You need a Cooking level of ${requiredLevel} to cook ${withArticle(cookable)}.`);
+    return false;
+  }
+  if (!duringQuestMet(player, cookable)) {
+    // Wiki (Karambwanji): raw karambwanji cook only during Tai Bwo Wannai Trio.
+    player.sendMessage(NOT_USEFUL_MESSAGE);
+    return false;
+  }
+  if (!rumoursMet(player, cookable)) {
+    // Wiki (Hunter meat): the better meats need Hunters' Rumours; the line is ours, the Wiki has none.
+    Common.mesbox(player, `You need to have completed ${cookable.rumours} Hunters' Rumours to cook ${withArticle(cookable)}.`);
     return false;
   }
   return true;
 }
 
+/** The Wiki's quest gate: a `duringQuest` food cooks only while that quest is under way. */
+function duringQuestMet(player, cookable) {
+  return !cookable.duringQuest || questInProgress(player, cookable.duringQuest);
+}
+
+/** The Wiki's Hunters' Rumours gate: 25 for graahk, kyatt and pyre fox, 50 for the antelopes and dashing kebbit. */
+function rumoursMet(player, cookable) {
+  return !cookable.rumours || rumoursCompleted(player) >= cookable.rumours;
+}
+
+/**
+ * Whether the player may cook this food on a fire or range, without messages: not food for one
+ * facility (the Camdozaal preparation table), a members' world, the Cooking level and the quest
+ * and rumour gates. Bots pick their food with it; canCook adds the
+ * cooker's own checks and tells a player why not.
+ */
+function canCookFood(player, cookable) {
+  const requiredLevel = untrainedKarambwan(player, cookable) ? 1 : cookable.level;
+  return !cookable.facility && availableOnWorld(cookable) && Common.level(player) >= requiredLevel
+    && duringQuestMet(player, cookable) && rumoursMet(player, cookable);
+}
+
+/** Whether the quest is started and not yet complete. */
+function questInProgress(player, key) {
+  const started = { player, key, started: false };
+  Common.api.emitCustomEvent("quest:is-started", started);
+  const complete = { player, key, complete: false };
+  Common.api.emitCustomEvent("quest:is-complete", complete);
+  return started.started === true && complete.complete !== true;
+}
+
+/** How many Hunters' Rumours the player has finished ("hunter:rumours-completed"). */
+function rumoursCompleted(player) {
+  const request = { player, completed: 0 };
+  Common.api.emitCustomEvent("hunter:rumours-completed", request);
+  return Number(request.completed) || 0;
+}
+
 /**
  * Cooks `amount` of the food (all of it by default), the first FIRST_COOK_TICKS after this tick.
- * Clicks are handled after the tick's tasks, so the cooking task has already run this tick.
+ * Re-using raw karambwan while it cooks (the Wiki's 1-tick method) makes the next one due
+ * KARAMBWAN_RECLICK_TICKS later instead of restarting the first-food delay. Clicks are handled
+ * after the tick's tasks, so the cooking task has already run this tick.
  */
-function startCooking(player, object, cookable, sessions = activeSessions, amount = Infinity) {
+function validSelectedInput(player, cookable, selected) {
+  const item = selected?.item;
+  return Number.isInteger(selected?.slot) && player.getInventory().getItems()[selected.slot] === item
+    && item?.getId() === cookable.raw && item.getAmount() === 1
+    && !item.isPresetItem() && !item.isUntradeable() && !item.isUnbankable();
+}
+
+function startCooking(player, object, cookable, sessions = activeSessions, amount = Infinity, selected = null, alternates = []) {
   if (!canCook(player, object, cookable)) return false;
+  if (selected && !validSelectedInput(player, cookable, selected)) return false;
   if (!player.getInventory().contains(cookable.raw)) {
     return false;
   }
 
+  const previous = sessions.get(player);
+  const reusing = !!previous && previous.cookable.raw === cookable.raw
+    && cookable.raw === Common.core.ItemIds.RAW_KARAMBWAN;
   stopCooking(player, false);
   ensureCookTask();
   sessions.set(player, {
-    cookable,
+    cookable, selected, alternates,
     animation: cookAnimationFor(object.getDefinition().getName()),
+    cooker: FIRE_OBJECT_NAMES.has(object.getDefinition().getName()) ? "fire" : "range",
     objectId: object.getId(),
+    objectType: object.getType(),
+    objectFace: object.getFace(),
     location: object.getLocation().clone(),
     privateArea: object.getPrivateArea(),
-    nextCookTick: (cookingTask?.cycle ?? 0) + FIRST_COOK_TICKS,
-    cooked: 0,
+    // Repeated clicks must not shorten the initial captured first-food delay.
+    nextCookTick: reusing && previous.cooked === 0 ? previous.nextCookTick
+      : (cookingTask?.cycle ?? 0) + (reusing
+        ? KARAMBWAN_RECLICK_TICKS
+        : (cookable.firstCookTicks ?? FIRST_COOK_TICKS)),
+    cooked: reusing ? previous.cooked : 0,
     remaining: amount,
   });
-  Common.sendVarbit(player, BUSY_VARBIT, 1);
+  if (!reusing || previous.cooked === 0) Common.sendVarbit(player, BUSY_VARBIT, 1);
 
   return true;
 }
@@ -215,7 +369,8 @@ function carriedCookables(player, onFire) {
   for (const item of player.getInventory().getItems()) {
     if (!item || Common.core.ItemDefinition.forId(item.getId()).isNoted()) continue;
     const cookable = Common.cookables().get(item.getId());
-    if (cookable && !(cookable.rangeOnly && onFire) && !found.has(cookable.raw)) found.set(cookable.raw, cookable);
+    if (cookable && !cookable.facility && availableOnWorld(cookable)
+      && !(cookable.rangeOnly && onFire) && !found.has(cookable.raw)) found.set(cookable.raw, cookable);
   }
   return [...found.values()];
 }
@@ -225,31 +380,38 @@ function carriedCookables(player, onFire) {
  * item, several are "What would you like to cook?" showing what they cook into. The most it
  * offers is the most carried of one food. One raw item on its own cooks without a menu.
  */
-function offerCook(player, object, cookables) {
+function offerCook(player, object, cookables, singleClick = false, selected = null) {
   const inventory = player.getInventory();
   if (cookables.length === 1) {
     const [cookable] = cookables;
     if (!canCook(player, object, cookable)) return;
     const carried = inventory.getAmount(cookable.raw);
     if (carried <= 1) {
-      startCooking(player, object, cookable, activeSessions, 1);
+      if (startCooking(player, object, cookable, activeSessions, 1, selected) && singleClick && cookable.firstCookTicks === undefined) {
+        // Wiki Cooking#2-tick_cooking: left-clicking a range with one raw item cooks without delay.
+        cookStep(player, activeSessions.get(player), cookingTask.cycle);
+        stopCooking(player, false);
+      }
       return;
     }
     openCookMenu(player, ONE_TYPE_TITLE, [cookable.raw], carried, (id, amount) => {
-      startCooking(player, object, cookable, activeSessions, amount);
+      startCooking(player, object, cookable, activeSessions, amount, selected);
     });
     return;
   }
-  // Keyed by what this player gets (a karambwan is poison until Tinsay's training), valued by the recipe.
+  // Keyed by what this player gets (a karambwan is poison until Tinsay's training), valued by the recipes:
+  // one entry cooks every raw with that product (raw beef, then raw rat meat), in inventory order.
   const byProduct = new Map();
   for (const cookable of cookables) {
     const product = cookedResult(player, cookable).cooked;
-    if (!byProduct.has(product)) byProduct.set(product, cookable);
+    if (!byProduct.has(product)) byProduct.set(product, []);
+    byProduct.get(product).push(cookable);
   }
-  const most = Math.max(...cookables.map((cookable) => inventory.getAmount(cookable.raw)));
+  const most = Math.max(...[...byProduct.values()].map((group) =>
+    group.reduce((total, cookable) => total + inventory.getAmount(cookable.raw), 0)));
   openCookMenu(player, MANY_TYPES_TITLE, [...byProduct.keys()], most, (id, amount) => {
-    const cookable = byProduct.get(id);
-    if (cookable) startCooking(player, object, cookable, activeSessions, amount);
+    const [cookable, ...alternates] = byProduct.get(id) ?? [];
+    if (cookable) startCooking(player, object, cookable, activeSessions, amount, null, alternates);
   });
 }
 
@@ -259,29 +421,56 @@ function openCookMenu(player, title, items, most, choose) {
     { mode: COOK_MENU_MODE, maxAmount: most, lastAmount: most }));
 }
 
+/** The active cooker can be unchanged scenery lazily copied into a template. */
+function currentCooker(session) {
+  const { MapObjects, ObjectManager, World } = Common.core;
+  const { objectId, location, privateArea } = session;
+  if (privateArea?.isDestroyed()) return null;
+  const matches = (object) => object && object.getId() === objectId
+    && object.getPrivateArea() === privateArea && object.getLocation().equals(location)
+    && object.getType() === session.objectType && object.getFace() === session.objectFace;
+  const current = MapObjects.get(objectId, location, privateArea)
+    ?? ObjectManager.objectsAt(location).find(matches);
+  if (current) return matches(current) ? current : null;
+  if (!privateArea?.usesTemplateMap()) return null;
+  const cooker = privateArea.resolveObject(objectId, location);
+  if (!matches(cooker)) return null;
+  const sameSlot = (object) => object.getPrivateArea() === privateArea
+    && object.getType() === session.objectType && object.getLocation().equals(location);
+  if (privateArea.getObjects().some(sameSlot)
+    || ObjectManager.objectsAt(location).some(sameSlot)
+    || World.getRemovedObjects().some(sameSlot)) return null;
+  return cooker;
+}
+
 /** One step of the cook loop for every cooking player, once a tick. */
 function cookTick(task) {
   task.cycle++;
-  const { MapObjects, Sound, Sounds } = Common.core;
-
   for (const [player, session] of activeSessions) {
-    if (!player || !player.isRegistered() || player.getHitpoints() <= 0) {
+    if (!player || !player.isRegistered()) {
       activeSessions.delete(player);
       continue;
     }
+    // Dying before the first food is cooked must still clear busy, as stopping any other way does.
+    if (player.getHitpoints() <= 0) {
+      stopCooking(player, false);
+      continue;
+    }
 
-    if (player.getMovementQueue().size() > 0 || player.getForceMovement() != null) {
+    // Global tasks precede player turns; the last step may have drained the route.
+    const movement = player.getMovementQueue();
+    if (movement.size() > 0 || movement.isMovings?.() || player.getForceMovement() != null) {
       stopCooking(player);
       continue;
     }
     if (session.levelUpPaused) continue;
 
-    if (session.remaining <= 0 || !player.getInventory().contains(session.cookable.raw)) {
+    if (session.remaining <= 0 || !carriedRaw(player, session)) {
       stopCooking(player);
       continue;
     }
 
-    const object = MapObjects.get(session.objectId, session.location, session.privateArea);
+    const object = currentCooker(session);
     if (!object || !object.isWithinInteractionDistance(player.getLocation())) {
       stopCooking(player);
       continue;
@@ -290,48 +479,133 @@ function cookTick(task) {
     if (task.cycle < session.nextCookTick) {
       continue;
     }
-    // Content may cook faster ("skills:action-interval", a league relic's 2-tick pace).
-    const pace = session.cooked === 0 ? SECOND_COOK_TICKS : COOK_INTERVAL_TICKS;
-    session.nextCookTick = task.cycle + actionInterval(Common.api, player, Common.core.Skill.COOKING, "cook", pace);
-    if (session.cooked === 0) Common.sendVarbit(player, BUSY_VARBIT, 0);
-    session.cooked++;
-    session.remaining--;
-    Sounds.sendSound(player, Sound.COOKING_COOK);
-    player.performAnimation(session.animation);
+    cookStep(player, session, task.cycle);
+  }
+}
 
-    // Content may cook several in the one cycle ("skills:actions-per-cycle", a league relic's all at once).
-    const actions = Common.actionsPerCycle(player, "cook");
-    for (let done = 0; done < actions && player.getInventory().contains(session.cookable.raw); done++) {
-      cookOne(player, session);
-    }
+/** Whether a raw is left to cook, moving on to the menu entry's next raw with the same product once one runs out. */
+function carriedRaw(player, session) {
+  const inventory = player.getInventory();
+  if (inventory.contains(session.cookable.raw)) return true;
+  const next = session.alternates?.find((cookable) => inventory.contains(cookable.raw) && canCookFood(player, cookable));
+  if (!next) return false;
+  session.cookable = next;
+  return true;
+}
+
+function cookStep(player, session, cycle) {
+  const { Sound, Sounds } = Common.core;
+  // Content may cook faster ("skills:action-interval", a league relic's 2-tick pace).
+  const pace = session.cooked === 0 ? SECOND_COOK_TICKS : COOK_INTERVAL_TICKS;
+  session.nextCookTick = cycle + actionInterval(Common.api, player, Common.core.Skill.COOKING, "cook", pace);
+  if (session.cooked === 0) Common.sendVarbit(player, BUSY_VARBIT, 0);
+  session.cooked++;
+  session.remaining--;
+  Sounds.sendSound(player, Sound.COOKING_COOK);
+  player.performAnimation(session.animation);
+
+  // Content may cook several in the one cycle ("skills:actions-per-cycle", a league relic's all at once), but
+  // never past the amount chosen: the first is already counted above, each further one is counted here.
+  const actions = Math.min(Common.actionsPerCycle(player, "cook"), session.remaining + 1);
+  for (let done = 0; done < actions && carriedRaw(player, session); done++) {
+    if (done > 0) session.remaining--;
+    if (cookOne(player, session) === false) { stopCooking(player); break; }
   }
 }
 
 function cookOne(player, session) {
   const { Item, Skill } = Common.core;
   const cookable = cookedResult(player, session.cookable);
-  player.getInventory().deleteNumber(session.cookable.raw, 1);
+  const inventory = player.getInventory();
+  if (!availableOnWorld(cookable)) return false;
   if (cookable.deliberate) {
+    inventory.deleteNumber(session.cookable.raw, 1);
     player.getInventory().addItem(new Item(cookable.cooked, 1));
     Common.spam(player, successMessage(cookable));
     return;
+  }
+  if (session.selected && !validSelectedInput(player, session.cookable, session.selected)) return false;
+  const rawSlot = cookable.gnomeTutorial ? (session.selected?.slot ?? inventory.getItems().findIndex((item) =>
+    item?.getId() === session.cookable.raw && item.getAmount() === 1
+      && !item.isPresetItem() && !item.isUntradeable() && !item.isUnbankable())) : -1;
+  if (cookable.gnomeTutorial && rawSlot < 0) { player.sendMessage("Preset items cannot be used for this."); return false; }
+  const rawItem = cookable.gnomeTutorial ? inventory.getItems()[rawSlot]
+    : inventory.getItems().find((item) => item?.getId() === session.cookable.raw);
+  const rawRestore = rawItem?.clone ? rawItem.clone().setAmount(1) : new Item(session.cookable.raw, 1);
+  if (cookable.gnomeTutorial) {
+    // Success may return the tray/tin as a second nonstackable item. Reserve
+    // that slot before the roll or any mutation; burns retain the burnt item.
+    if (rawItem.getDefinition().isStackable() || new Item(cookable.cooked, 1).getDefinition().isStackable()
+      || (cookable.returnItem !== undefined && new Item(cookable.returnItem, 1).getDefinition().isStackable())) return false;
+    if (cookable.returnItem !== undefined && inventory.getFreeSlots() < 1) { inventory.full(); return false; }
+  } else {
+    // A cake tin comes back as well as the cake: room for it before anything changes.
+    if (cookable.returnItem !== undefined && inventory.getFreeSlots() < 1) { inventory.full(); return false; }
+    inventory.deleteNumber(session.cookable.raw, 1);
   }
   const burnRequest = {
     player,
     rawId: session.cookable.raw,
     itemId: cookable.cooked,
-    burn: !isSuccess(player, session.cookable, session.objectId),
+    burn: !isSuccess(player, session.cookable, session.objectId, session.cooker, session.location),
   };
   Common.api.emitCustomEvent("cooking:burn", burnRequest);
+  if (cookable.gnomeTutorial) {
+    // The burn hook may run other content: revalidate the selected input and
+    // the reserved capacity before consuming anything.
+    if (inventory.getItems()[rawSlot] !== rawItem || rawItem.getId() !== session.cookable.raw
+      || rawItem.getAmount() !== 1 || rawItem.isPresetItem() || rawItem.isUntradeable() || rawItem.isUnbankable()
+      || (cookable.returnItem !== undefined && inventory.getFreeSlots() < 1)) return false;
+    inventory.deleteAtSlot(rawSlot, 1);
+    session.selected = null;
+  }
   if (!burnRequest.burn) {
-    player.getInventory().addItem(new Item(cookable.cooked, 1));
+    const output = new Item(cookable.cooked, 1);
+    if (typeof inventory.getAddableAmount === "function" && inventory.getAddableAmount(output) === 0) {
+      inventory.addItem(rawRestore);
+      return;
+    }
+    const before = inventory.getAmount(cookable.cooked);
+    inventory.addItem(output);
+    const amount = Math.max(0, inventory.getAmount(cookable.cooked) - before);
+    if (amount === 0) {
+      inventory.addItem(rawRestore);
+      return;
+    }
+    if (cookable.returnItem !== undefined) inventory.addItem(new Item(cookable.returnItem, 1));
     Common.spam(player, successMessage(cookable));
     countCook(player, false);
-    Common.api.emitCustomEvent("cooking:success", { player, skill: Skill.COOKING, itemId: cookable.cooked });
+    if (amount > 0) {
+      const location = session.location.clone();
+      Common.api.emitCustomEvent("items:obtained", {
+        player,
+        itemId: cookable.cooked,
+        rawId: cookable.raw,
+        amount,
+        source: "cooking",
+        location,
+      });
+    }
+    Common.api.emitCustomEvent("cooking:success", {
+      player,
+      skill: Skill.COOKING,
+      rawId: cookable.raw,
+      itemId: cookable.cooked,
+      amount,
+      location: session.location.clone(),
+      objectId: session.objectId,
+      objectLocation: session.location,
+    });
     Common.addXp(player, cookable.xp);
     Common.api.emitCustomEvent("skills:produced", { player, skill: Skill.COOKING, itemId: cookable.cooked, amount: 1, xp: cookable.xp, kind: "cook" });
+  } else if (cookable.failsWithoutBurning) {
+    // Wiki (Drunk dragon): "sometimes no experience is gained" until 38 Cooking, but "you will always
+    // receive a finished drunk dragon": the item, no XP, no burn line (none is recorded for it).
+    player.getInventory().addItem(new Item(session.cookable.burnt, 1));
+    countCook(player, false);
   } else {
     player.getInventory().addItem(new Item(session.cookable.burnt, 1));
+    if (cookable.returnOnBurn && cookable.returnItem !== undefined) inventory.addItem(new Item(cookable.returnItem, 1));
     // "cooking:burnt" { player, rawId, itemId }: the food burnt (a league's "Burn Some Food").
     Common.api.emitCustomEvent("cooking:burnt", { player, rawId: session.cookable.raw, itemId: session.cookable.burnt });
     Common.spam(player, burnMessage(cookable));
@@ -361,7 +635,9 @@ function handleCook(event) {
   }
 
   event.handled = true;
-  offerCook(event.player, event.object, [cookable]);
+  const selected = cookable.gnomeTutorial ? { item: event.item, slot: event.itemSlot } : null;
+  if (selected && !validSelectedInput(event.player, cookable, selected)) return;
+  offerCook(event.player, event.object, [cookable], false, selected);
 }
 
 /** Anything else used on a cooker, when no other content takes it (rsprox captures 269, 1718). */
@@ -371,19 +647,20 @@ function refuseCook(event) {
   Common.mesbox(event.player, CANNOT_COOK_MESSAGE);
 }
 
-function handleRangeCook(event) {
-  const cookables = carriedCookables(event.player, false);
+function handleCookClick(event) {
+  const onFire = FIRE_OBJECT_NAMES.has(event.object.getDefinition().getName());
+  const cookables = carriedCookables(event.player, onFire);
   if (cookables.length === 0) {
     Common.mesbox(event.player, NOTHING_TO_COOK_MESSAGE);
     return;
   }
-  offerCook(event.player, event.object, cookables);
+  offerCook(event.player, event.object, cookables, true);
 }
 
 /** "cooking:cooked": what request.rawId cooks into and the XP, for content that cooks as it gathers (a league relic). */
 function answerCooked(request) {
   const cookable = Common.cookables().get(request.rawId);
-  if (cookable) {
+  if (cookable && !cookable.facility) {
     request.cookedId = cookable.cooked;
     request.xp = cookable.xp;
   }
@@ -392,7 +669,7 @@ function answerCooked(request) {
 /** "cooking:raw-xp": the Cooking XP for cooking request.rawId, e.g. for the infernal harpoon. */
 function answerRawXp(request) {
   const cookable = Common.cookables().get(request.rawId);
-  if (cookable) {
+  if (cookable && !cookable.facility) {
     request.xp = cookable.xp;
   }
 }
@@ -427,22 +704,25 @@ function attachCookers(api) {
 
   api.onItemOnObject(handleCook, { noted: false });
   api.onItemOnObject(refuseCook, { noted: false, fallback: true });
-  api.onObjectInteraction("Range", { Cook: handleRangeCook });
-  api.onObjectInteraction("Cooking range", { Cook: handleRangeCook });
-  api.onObjectInteraction("Stove", { Cook: handleRangeCook });
-  api.onObjectInteraction("Oven", { Cook: handleRangeCook });
-  api.onObjectInteraction("Small oven", { Cook: handleRangeCook });
-  api.onObjectInteraction("Large oven", { Cook: handleRangeCook });
-  api.onObjectInteraction("Steel range", { Cook: handleRangeCook });
-  api.onObjectInteraction("Fancy range", { Cook: handleRangeCook });
+  api.onObjectInteraction("Fire", { Cook: handleCookClick });
+  api.onObjectInteraction("Range", { Cook: handleCookClick });
+  api.onObjectInteraction("Cooking range", { Cook: handleCookClick });
+  api.onObjectInteraction("Stove", { Cook: handleCookClick });
+  api.onObjectInteraction("Oven", { Cook: handleCookClick });
+  api.onObjectInteraction("Clay oven", { Cook: handleCookClick });
+  api.onObjectInteraction("Clay Oven", { Cook: handleCookClick });
+  api.onObjectInteraction("Small oven", { Cook: handleCookClick });
+  api.onObjectInteraction("Large oven", { Cook: handleCookClick });
+  api.onObjectInteraction("Steel range", { Cook: handleCookClick });
+  api.onObjectInteraction("Fancy range", { Cook: handleCookClick });
   api.onCustomEvent("cooking:raw-xp", answerRawXp);
   api.onCustomEvent("cooking:cooked", answerCooked);
 }
 
 module.exports = Object.assign(attachCookers, {
-  isCookingActive, COOKABLE_OBJECT_NAMES, FIRE_OBJECT_NAMES,
+  isCookingActive, isCooker, canCookFood, COOKABLE_OBJECT_NAMES, FIRE_OBJECT_NAMES,
   _test: {
-    startCooking, offerCook, isSuccess, stopBurnLevel, successMessage, burnMessage, cookAnimationFor, cookableFor,
-    GAUNTLETS_STOP_BURN, activeSessions,
+    startCooking, offerCook, cookOne, isSuccess, successChance, stopBurnLevel, successMessage, burnMessage, cookAnimationFor,
+    cookableFor, canCook, activeSessions,
   },
 });

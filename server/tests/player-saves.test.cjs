@@ -313,6 +313,24 @@ test("offline purchases write the updated account and keep a history entry", asy
   assert.deepEqual(await historyRows("kara"), ["logout", "offline-purchase"]);
 });
 
+test("an unmade save (a Hardcore World Reset) is written, and loads back holding only the account", async () => {
+  const p = player("Ruth");
+  p.setPasswordHashWithSalt("salt:hash");
+  setGold(p, 50);
+  p.setAttribute("login:tokens", [{ hash: "t", expires: Date.now() + DAY }]);
+  persistence.save(p, "logout");
+  await persistence.flush();
+  assert.equal(await persistence.updateOffline("Ruth", (save) => save.unmake(), "hardcore-reset"), true);
+  const save = persistence.load("Ruth");
+  assert.equal(save.isUnmade(), true, "the writer's validation accepted it");
+  assert.equal(save.getPasswordHashWithSalt(), "salt:hash", "the name stays guarded by its password");
+  assert.deepEqual(Object.keys(save.attributes), ["login:tokens"]);
+  assert.equal(save.getInventory().every((item) => item.getId() === -1), true);
+  const { Skills } = require("../dist/game/content/skill/SkillManager");
+  assert.deepEqual(save.getSkills().maxLevel, new Skills().maxLevel, "a new character's levels");
+  assert.equal(persistence.exists("Ruth"), true, "never no save");
+});
+
 test("offline delivery refuses an online account without applying the purchase", async () => {
   const { World } = require("../dist/game/World");
   const lookup = World.getPlayerByName;
@@ -393,10 +411,43 @@ for (const [name, backend] of persistenceBackends) {
     }
   });
 
+  test(`${name}: item meta saved under the old camelCase keys loads under the kebab-case ones (#226)`, () => {
+    const item = backend.hydrateItem({ id: 12926, amount: 1, meta: { toxicBlowpipe: { scales: 100, darts: { id: 11230, amount: 50 } }, "barrows:lockpickCharges": 7 } });
+    assert.deepEqual(item.getMeta(), { "toxic-blowpipe": { scales: 100, darts: { id: 11230, amount: 50 } }, "barrows:lockpick-charges": 7 });
+    const both = backend.hydrateItem({ id: 11907, amount: 1, meta: { tridentCharges: 1, "trident-charges": 2500 } });
+    assert.deepEqual(both.getMeta(), { "trident-charges": 2500 }, "a kebab-case key already there wins");
+    const current = backend.hydrateItem({ id: 4241, amount: 1, meta: { "blood-fury": { charges: 9 } } });
+    assert.deepEqual(current.getMeta(), { "blood-fury": { charges: 9 } });
+    const bag = backend.hydrateItem({ id: 11941, amount: 1, meta: { lootingBag: [{ id: 995, amount: 5 }] } });
+    assert.deepEqual(bag.getMeta(), { lootingBag: [{ id: 995, amount: 5 }] }, "only the keys #226 renamed move");
+  });
+
+  // #4705 review: the looting bag still keeps its contents under the camelCase "lootingBag", so only #226's own
+  // renamed keys may be migrated; two save/load round trips keep the bag's contents.
+  test(`${name}: a looting bag's contents survive save and login load twice`, async () => {
+    const { Item } = require("../dist/game/model/Item");
+    const contents = [{ id: 995, amount: 1000 }, { id: 4151, amount: 1 }];
+    const original = player(`Looting Bag ${name}`);
+    original.getInventory().setItem(0, new Item(11941, 1, { lootingBag: contents, "lootingBag:open": true }));
+    backend.save(original, "logout");
+    await backend.flush();
+    const loggedIn = player(original.getUsername());
+    backend.load(original.getUsername()).applyToPlayer(loggedIn);
+    assert.deepEqual(loggedIn.getInventory().getItems()[0].getMeta(), { lootingBag: contents, "lootingBag:open": true });
+    loggedIn.getInventory().getItems()[0].setMetaValue("lootingBag", [...contents, { id: 536, amount: 3 }]);
+    backend.save(loggedIn, "logout");
+    await backend.flush();
+    const reloaded = player(original.getUsername());
+    backend.load(original.getUsername()).applyToPlayer(reloaded);
+    assert.deepEqual(reloaded.getInventory().getItems()[0].getMetaValue("lootingBag"), [...contents, { id: 536, amount: 3 }],
+      "what the next session added is kept");
+    assert.equal(reloaded.getInventory().getItems()[0].getMetaValue("looting-bag"), undefined);
+  });
+
   test(`${name}: missing or invalid saved combat styles retain the safe default`, () => {
     for (const fightType of [undefined, null, {}, "UNARMED_BLOCK", { animation: -123456 }]) {
       const save = backend.hydratePlayerSave({ fightType });
-      assert.equal(save.getFightType(), FightType.UNARMED_KICK);
+      assert.equal(save.getFightType(), FightType.UNARMED_PUNCH);
     }
   });
 }
@@ -430,7 +481,7 @@ for (const [name, backend] of persistenceBackends) {
       assert.equal(loggedIn.getPacketSender().getVarp(43), fightType.getChildId());
       for (const invalid of [undefined, null, {}, { animation: -123456 }]) {
         const invalidSave = backend.hydratePlayerSave({ ...save, fightType: invalid });
-        assert.equal(invalidSave.getFightType(), FightType.UNARMED_KICK, "invalid styles keep the safe fallback with equipment too");
+        assert.equal(invalidSave.getFightType(), FightType.UNARMED_PUNCH, "invalid styles keep the safe fallback with equipment too");
       }
     }
   });
@@ -445,4 +496,162 @@ test("legacy combat style fields resolve uniquely within every weapon family", (
       assert.equal(FightType.resolve(legacy, weapon.getFightType()), fightType, `${weapon.getName()} style ${fightType.getChildId()}`);
     }
   }
+});
+
+test("deleting a save removes the row, keeps its history under a deleted key, and frees the name", async () => {
+  const p = player("Doomed");
+  setGold(p, 1);
+  persistence.save(p, "save");
+  setGold(p, 2);
+  persistence.save(p, "logout");
+  await persistence.flush();
+  await persistence.delete("Doomed");
+  assert.equal(persistence.exists("Doomed"), false);
+  assert.equal(persistence.load("Doomed"), null);
+  assert.deepEqual(await snapshots("Doomed"), []);
+  const kept = persistence.database.prepare("SELECT username, reason FROM player_save_history WHERE username LIKE 'deleted:%:doomed' ORDER BY id").all();
+  assert.equal(kept.length, 2, "every older copy was re-keyed");
+  // The final copy equals the newest one already recorded, so history skips a duplicate.
+  assert.equal(kept.at(-1).reason, "logout");
+  const fresh = player("Doomed");
+  setGold(fresh, 9);
+  persistence.save(fresh, "fresh");
+  assert.deepEqual((await snapshots("Doomed")).map((s) => s.reason), ["fresh"]);
+  assert.equal(await savedGold("Doomed"), 9);
+});
+
+test("deleting a save records an unrecorded final copy as character-delete", async () => {
+  const p = player("Doomed Two");
+  setGold(p, 1);
+  persistence.save(p, "save");
+  await persistence.flush();
+  persistence.database.prepare("DELETE FROM player_save_history WHERE username = 'doomed_two'").run();
+  await persistence.delete("Doomed Two");
+  const reasons = persistence.database.prepare("SELECT reason FROM player_save_history WHERE username LIKE 'deleted:%:doomed_two' ORDER BY id").all().map((r) => r.reason);
+  assert.equal(reasons.at(-1), "character-delete");
+});
+
+test("deleting a save that does not exist resolves and writes nothing", async () => {
+  const before = persistence.sequence;
+  await persistence.delete("Never Existed");
+  assert.equal(persistence.sequence, before);
+  assert.equal(persistence.exists("Never Existed"), false);
+});
+
+test("deleting right after a save still in flight leaves nothing behind", async () => {
+  const p = player("Racer");
+  setGold(p, 3);
+  persistence.save(p, "save");
+  assert.ok(persistence.unwritten.has("racer"));
+  const done = persistence.delete("Racer");
+  assert.equal(persistence.exists("Racer"), false, "gone at once");
+  assert.equal(persistence.load("Racer"), null);
+  await done;
+  await persistence.flush();
+  assert.equal(persistence.findSave.get("racer"), undefined);
+  assert.equal(persistence.exists("Racer"), false);
+});
+
+test("a delete answers for its own write: another player's failed save doesn't fail it", async () => {
+  const bystander = player("Bystander");
+  setGold(bystander, 1);
+  persistence.save(bystander, "logout");
+  const doomed = player("Doomed Three");
+  setGold(doomed, 1);
+  persistence.save(doomed, "logout");
+  await persistence.flush();
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    // An unrelated save the writer refuses (as in the Hank test) is still reported by flush.
+    persistence.enqueue("bystander", [{ kind: "row", json: "{\"position\":{}}" }]);
+    await persistence.delete("Doomed Three");
+    assert.equal(persistence.findSave.get("doomed_three"), undefined, "the delete was committed");
+    await assert.rejects(persistence.flush(), /Refusing to save bystander/);
+  } finally {
+    console.error = quiet;
+  }
+  persistence.save(bystander, "logout");
+  await persistence.flush();
+});
+
+test("a delete whose own write fails rejects and keeps the save", async () => {
+  const p = player("Doomed Four");
+  setGold(p, 4);
+  persistence.save(p, "logout");
+  await persistence.flush();
+  const writer = persistence.writer;
+  const post = writer.postMessage.bind(writer);
+  // A row that fails validation in the same message makes the writer roll the delete back.
+  writer.postMessage = (message) => post(message.writes.some((write) => write.kind === "delete")
+    ? { ...message, writes: [...message.writes, { kind: "row", json: "{\"position\":{}}" }] }
+    : message);
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    await assert.rejects(persistence.delete("Doomed Four"), /Refusing to save doomed_four/);
+  } finally {
+    writer.postMessage = post;
+    console.error = quiet;
+  }
+  assert.equal(persistence.exists("Doomed Four"), true, "the save is still there");
+  assert.equal(await savedGold("Doomed Four").catch(() => null), null, "flush reports the failed write");
+  persistence.save(p, "logout");
+  assert.equal(await savedGold("Doomed Four"), 4);
+});
+
+test("JSON backend deletes the file, even one still queued; Null backend ignores delete", async () => {
+  const p = player("Json Doomed");
+  jsonPersistence.save(p);
+  await jsonPersistence.flush();
+  const file = jsonPersistence.resolveFilePath("Json Doomed");
+  assert.ok(fs.existsSync(file));
+  await jsonPersistence.delete("Json Doomed");
+  assert.equal(jsonPersistence.exists("Json Doomed"), false);
+  assert.ok(!fs.existsSync(file));
+  jsonPersistence.save(p);
+  await jsonPersistence.delete("Json Doomed");
+  await jsonPersistence.flush();
+  assert.ok(!fs.existsSync(file), "a queued write does not land after the delete");
+  const idb = new IndexedDbPlayerPersistence();
+  idb.save(p);
+  await idb.delete("Json Doomed");
+  assert.equal(idb.exists("Json Doomed"), false);
+  const { NullPlayerPersistence } = require("../dist/game/entity/impl/player/persistence/NullPlayerPersistence");
+  await new NullPlayerPersistence().delete("anyone");
+});
+
+test("a pending delete hides the save's history and refuses a restore", async () => {
+  const p = player("Hidden");
+  setGold(p, 1);
+  persistence.save(p, "save");
+  setGold(p, 2);
+  persistence.save(p, "logout");
+  await persistence.flush();
+  const id = (await snapshots("Hidden"))[0].id;
+  const done = persistence.delete("Hidden");
+  assert.deepEqual(persistence.listSnapshots("Hidden"), []);
+  assert.equal(persistence.restoreSnapshot("Hidden", id), null);
+  await done;
+  assert.equal(persistence.exists("Hidden"), false);
+  assert.equal(persistence.findSave.get("hidden"), undefined, "the refused restore wrote nothing");
+});
+
+test("JSON delete forgets a write that fails while it waits", async () => {
+  const p = player("Json Failing");
+  const file = jsonPersistence.resolveFilePath("Json Failing");
+  const fsp = require("node:fs/promises");
+  const original = fsp.mkdir;
+  fsp.mkdir = async () => { throw new Error("disk full"); };
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    jsonPersistence.save(p);
+    await jsonPersistence.delete("Json Failing");
+  } finally {
+    fsp.mkdir = original;
+    console.error = quiet;
+  }
+  await jsonPersistence.flush();
+  assert.ok(!fs.existsSync(file));
 });

@@ -58,3 +58,29 @@ When the inventory fills: spam "You have run out of inventory space.", on the ti
 
 - **Harvest a grown Hespori:** a tick later game "The Hespori doesn't take kindly to your attempt to harvest it.", sound 4059, the player is moved to (1246, 10085) in front of the patch, and the fight starts.
 - **Clear after the fight:** spam "You start digging the farming patch...", `human_dig` + 1470 at 0 and +3, then at +5 the loot and spam "You have successfully cleared this patch for new crops.". No spade: "You need a spade to clear a farming patch."; fewer than two free slots: message box "You need at least two free spaces in your inventory to clear this patch."
+
+## Seed box (rsprox captures 960, 966, 982, 1022, 1029, 3883, 3906, 4222, 4293, 4295)
+
+- Fill answers one `Stored N x <Seed> in your seed box.` line per kind stored; with no seed to store it says
+  `You have no seeds that will fit in the seed box.` (960). `You don't have space in your seed box for that.` is also
+  recorded on Fill (966, 974); the captures do not show its trigger, so ours sends it when the box takes none of the
+  seeds carried because its six kind slots are full (and for a seed used on such a box).
+- Empty answers `Emptied N x <Seed> to your inventory.` per kind; the native bank Empty op answers
+  `Your seed box is now empty.` or `Your seed box is already empty.` (1029).
+- Check opens `hosidius_seedbox` (modal over `seed_box`, six slots, the `busy` varbit set while open). Ops 1-5 are
+  `Withdraw 1`, `Withdraw 3`, `Withdraw 4`, `Withdraw X`, `Withdraw All` (each prints the Emptied line), op 10 examines
+  the seed. Close lists `The seed box contains:` then `N x <Seed>.` per kind (3906, 1022).
+- Slot order: the box is six fixed slots. Kinds keep the order they were stored in (4222: Fill stored Belladonna,
+  Potato cactus, Poison ivy, Cactus, Magic, Watermelon and the window and Close list them so); a kind withdrawn in full
+  leaves its slot empty (`slot=4, id=-1`, 4293), and the next new kind fills that slot (4293: Snapdragon in slot 4).
+  Empty follows the same order (3883: Toadflax, Avantoe, Cadantine, Kwuarm, Snapdragon, Irit). From rev 238 the slots
+  carry DEPTH1 and DRAGTARGET and `interface_inv_init`'s fifth argument is 1; a drag of slot 1 onto slot 0 swaps the
+  two (4222, one `if_buttond` and the `update_inv_partial` naming both). A drop on an empty slot moves the kind there
+  (ours: not recorded). Boxes saved before the order was kept list their kinds by item id.
+- Used on a patch, the box plants the first stored seed, in slot order, that suits the patch (Wiki: Seed box, 3 June
+  2026; no recording shows a planting). With none, a mesbox: `Your seed box does not contain any seeds that can be
+  planted in this patch.` (4222, herb patch). On a tree patch, which takes saplings, `Nothing interesting happens.`
+  (4222). Ours: the first seed of the patch's type is the one tried, and the planting then answers as that seed used
+  from the inventory would (weeds, level, tool, seed count).
+- The Wiki's Seed_box page (fetched this session) says Check lists the contents in chat; the captures show the window
+  instead, so the captures are followed.

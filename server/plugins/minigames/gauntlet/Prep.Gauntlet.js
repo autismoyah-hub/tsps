@@ -8,23 +8,29 @@
  * Vials are filled at the water pump or a fishing spot; a grym leaf in a water-filled vial makes
  * a grym potion (unf); the pestle and mortar grinds 10 shards into 10 dust; 10 dust in the
  * potion makes an Egniol potion (3) for 10 Herblore XP. Raw paddlefish cook into paddlefish
- * for 15 Cooking XP; the burn chance and the one-a-tick pace of the pump and range are
- * Near-Reality's, as the Wiki gives neither. The range's first fish, its sound, its spam-channel
+ * for 15 Cooking XP, succeeding with the Wiki's chart (Paddlefish: low 155, high 368, rising
+ * past 99 like other cooking); the one-a-tick pace of the pump and range is Near-Reality's, as
+ * the Wiki does not give it. The range's first fish, its sound, its spam-channel
  * line, the cooking_success_count it moves and its empty-handed message box are from rsprox
  * captures (recordings 1158, 3276, 3285).
  */
 
 const Shared = require("./Shared.Gauntlet");
+const Cooking = require("../../skills/cooking/Common.Cooking");
 const Run = require("./RunState.Gauntlet");
 const Items = require("./Items.Gauntlet");
 const Resources = require("./Resources.Gauntlet");
 const Rewards = require("./Rewards.Gauntlet");
 
+/** The Gauntlet's own full-inventory line (takeTools). */
+const NO_ROOM_TEXT = "You don't have enough inventory space.";
 const ANIMATION = { FILL: 827, COOK: 896, GRIND: 364, MIX: 363 };
 /** synth_sound 2577 with each cooked fish (rsprox captures). */
 const COOK_SOUND = 2577;
 /** The first fish is two ticks after the player reaches the range (rsprox captures). */
 const FIRST_COOK_TICKS = 2;
+/** Wiki (Paddlefish): the range's low and high values out of 256. */
+const PADDLEFISH_CHANCE = [155, 368];
 /** A weapon made at this tier is attuned (0 basic, 2 perfected). */
 const ATTUNED_TIER = 1;
 const TOOL_NAMES = [["sceptre", "a sceptre"], ["axe", "an axe"], ["pickaxe", "a pickaxe"], ["harpoon", "a harpoon"], ["pestle", "a pestle and mortar"]];
@@ -75,7 +81,7 @@ function takeTools(event) {
   const give = (tools) => () => {
     for (const [key] of tools) {
       if (player.getInventory().getFreeSlots() <= 0) {
-        player.sendMessage("You don't have enough inventory space.");
+        player.sendMessage(NO_ROOM_TEXT);
         break;
       }
       player.getInventory().adds(items[key], 1);
@@ -147,7 +153,7 @@ function cook(event) {
     animate(player, ANIMATION.COOK);
     player.getPacketSender().sendSound(COOK_SOUND, 1, 0);
     const level = player.getSkillManager().getCurrentLevel(Skill.COOKING);
-    const burnt = Math.floor(run.random() * 100) < Math.min(48 - level, 34);
+    const burnt = run.random() < 1 - Cooking.successChance(PADDLEFISH_CHANCE[0], PADDLEFISH_CHANCE[1], level);
     player.getInventory().delete(items.rawPaddlefish, 1);
     player.getInventory().adds(burnt ? items.burntPaddlefish : items.paddlefish, 1);
     player.getInventory().refreshItems();
@@ -193,10 +199,15 @@ function sing(player, run, recipe, amount) {
   const times = recipe.gear ? 1 : Math.max(1, amount);
   let made = 0;
   let changedSlot = -1;
+  let noRoom = false;
   for (; made < times; made++) {
     const affordable = count(player, items.shards) >= recipe.shards
       && recipe.needs.every(([id, need]) => count(player, id) + (equipmentSlotOf(player, id) >= 0 ? 1 : 0) >= need);
     if (!affordable) break;
+    if (!roomFor(player, recipe, items)) {
+      noRoom = true;
+      break;
+    }
     // An upgraded piece that is worn is upgraded where it is.
     let wornSlot = -1;
     for (const [id, need] of recipe.needs) {
@@ -227,11 +238,26 @@ function sing(player, run, recipe, amount) {
   player.getInventory().refreshItems();
   player.getEquipment().refreshItems();
   if (made === 0) {
-    Shared.statement(player, "You do not have the materials required to make that.");
+    if (noRoom) player.sendMessage(NO_ROOM_TEXT);
+    else Shared.statement(player, "You do not have the materials required to make that.");
     return;
   }
   if (changedSlot >= 0) refreshGear(player, changedSlot);
   player.sendMessage("With the help of the crystal bowl, you sing a beautiful song and shape the crystals.");
+}
+
+/** Whether one more of `recipe` has somewhere to go: a free slot, the worn piece it upgrades, or a slot its inputs free. */
+function roomFor(player, recipe, items) {
+  const inventory = player.getInventory();
+  if (inventory.getFreeSlots() > 0) return true;
+  const { ItemDefinition } = Shared.core();
+  const stackable = (id) => ItemDefinition.forId(id)?.isStackable?.() === true;
+  if (stackable(recipe.id) && inventory.contains(recipe.id)) return true;
+  if (recipe.shards > 0 && count(player, items.shards) === recipe.shards) return true;
+  return recipe.needs.some(([id, need]) => {
+    if (equipmentSlotOf(player, id) >= 0 && count(player, id) < need) return true;
+    return count(player, id) >= need && (!stackable(id) || count(player, id) === need);
+  });
 }
 
 function equipmentSlotOf(player, id) {
@@ -287,8 +313,13 @@ function grindShards(event) {
     player.sendMessage(`You need at least ${Items.DUST_PER_POTION} shards to make anything useful.`);
     return true;
   }
-  player.getInventory().delete(items.shards, Items.DUST_PER_POTION);
-  player.getInventory().adds(items.dust, Items.DUST_PER_POTION);
+  const inventory = player.getInventory();
+  if (inventory.getFreeSlots() <= 0 && !inventory.contains(items.dust) && count(player, items.shards) !== Items.DUST_PER_POTION) {
+    player.sendMessage(NO_ROOM_TEXT);
+    return true;
+  }
+  inventory.delete(items.shards, Items.DUST_PER_POTION);
+  inventory.adds(items.dust, Items.DUST_PER_POTION);
   player.getInventory().refreshItems();
   animate(player, ANIMATION.GRIND);
   player.sendMessage("You grind the shards into dust.");

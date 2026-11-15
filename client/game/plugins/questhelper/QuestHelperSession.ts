@@ -27,6 +27,8 @@ export class QuestHelperSession {
     constructor(private readonly send: (data: unknown) => void, private readonly sessionId = () => globalThis.crypto.randomUUID()) { }
     getState = (): HelperSessionState => this.state;
     hasPendingEvaluation(): boolean { return this.inFlight; }
+    /** The browser session the server knows this helper by, or "" between sessions. */
+    currentSession(): string { return this.session; }
     isCurrentMessage(data: {
         protocol?: unknown;
         session?: unknown;
@@ -36,9 +38,17 @@ export class QuestHelperSession {
         session?: unknown;
         sequence?: unknown;
         message?: unknown;
+        code?: unknown;
     }): boolean {
         if (!this.isCurrentMessage(data) || (data.sequence !== undefined && data.sequence !== this.sequence) || typeof data.message !== "string")
             return false;
+        if (data.code === "QUEST_HELPER_REUSE_STALE") {
+            // The server lost the sections this snapshot reused: the guide shown still holds, so it stays up
+            // while the next tick resends every section in full.
+            this.inFlight = false;
+            this.lastTick = -1;
+            return true;
+        }
         this.fail(data.message.slice(0, 16384));
         return true;
     }
@@ -110,9 +120,12 @@ export class QuestHelperSession {
             return false;
         this.noteStarted(catalog.quests);
         this.patch({ catalog, status: this.state.selected ? this.state.status : "Choose a quest." });
+        if (this.state.selected === "learning_the_ropes" && catalog.quests.some(quest => quest.questKey === this.state.selected && quest.eligibility?.eligible === false)) {
+            this.select("");
+        }
         if (this.autoSelectTutorial && !this.state.selected) {
             this.autoSelectTutorial = false;
-            const tutorial = catalog.quests.find(quest => quest.questKey === "learning_the_ropes" && quest.supported && (quest.status === "NOT_STARTED" || quest.status === "IN_PROGRESS"));
+            const tutorial = catalog.quests.find(quest => quest.questKey === "learning_the_ropes" && quest.supported && quest.eligibility?.eligible !== false && (quest.status === "NOT_STARTED" || quest.status === "IN_PROGRESS"));
             if (tutorial) this.select(tutorial.questKey, tutorial.helperVariant);
         }
         return true;

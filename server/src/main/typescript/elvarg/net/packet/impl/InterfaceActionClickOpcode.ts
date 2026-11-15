@@ -1,6 +1,9 @@
 import { PluginManager } from "../../../plugins/PluginManager";
 
 export class InterfaceActionClickOpcode {
+  /** A refuseWhileBusy button's answer to a locked player. */
+  public static readonly BUSY_MESSAGE = "Please finish what you are doing first.";
+
   public static handle(
     player: any,
     interfaceId: number,
@@ -12,6 +15,8 @@ export class InterfaceActionClickOpcode {
       itemId?: number;
       slot?: number;
       option?: string;
+      /** The op's submenu entry, 1-based (absent or 0 for none). */
+      subOpId?: number;
       targetWidgetId?: number;
       targetSlot?: number;
       targetItemId?: number;
@@ -23,11 +28,16 @@ export class InterfaceActionClickOpcode {
     } = {}
   ): boolean {
 
-    if (
-      player == null ||
-      player.getHitpoints() <= 0 ||
-      player.isTeleportingReturn()
-    ) {
+    if (player == null || player.getHitpoints() <= 0) {
+      return false;
+    }
+
+    if (PluginManager.refusesWhileBusy(interfaceId) && player.isLocked()) {
+      player.sendMessage(InterfaceActionClickOpcode.BUSY_MESSAGE);
+      return true;
+    }
+
+    if (player.isTeleportingReturn()) {
       return false;
     }
 

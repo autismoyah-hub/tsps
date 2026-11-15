@@ -1,5 +1,6 @@
 const ObstacleRunner = require("./agility/ObstacleRunner.Agility");
 const { COURSES } = require("./agility/courses/Courses.Agility");
+const Pyramid = require("./agility/courses/AgilityPyramid.Agility");
 const { SHORTCUTS } = require("./agility/shortcuts/Shortcuts.Agility");
 
 /** Attribute holding { course, index } for the lap in progress. */
@@ -32,6 +33,10 @@ const MARK_COOLDOWN_MINUTES = 3;
 const MARK_SHORT_COOLDOWN_MINUTES = 2;
 const MARK_DESPAWN_TICKS = 1000;
 const MINUTE_MS = 60_000;
+const YANILLE_GRAPPLE_CROSSINGS = [
+  { object: [2556, 3074, 0], start: [2556, 3075, 0], landing: [2556, 3074, 1] },
+  { object: [2556, 3073, 0], start: [2556, 3072, 0], landing: [2556, 3073, 1] },
+];
 
 /**
  * The Agility course helper (rsprox captures). A lap's first obstacle sets
@@ -43,6 +48,8 @@ const MINUTE_MS = 60_000;
 const HIGHLIGHTED_COURSE_VARBIT = 13140;
 const START_LAP_SCRIPT = 5173;
 const END_LAP_SCRIPT = 5174;
+/** The loot tracker's category for an Agility course (rsprox: every rooftop lap's script 7197). */
+const LOOT_TRACKER_CATEGORY = 5;
 const ADD_XP_SCRIPT = 5175;
 /** The lap clock counts game ticks; the client only reads differences. From 2024 so it fits an int. */
 const LAP_CLOCK_EPOCH_MS = Date.UTC(2024, 0, 1);
@@ -56,6 +63,7 @@ const OBSTACLES_BY_NPC = new Map();
 const OBSTACLES_BY_TILE = new Map();
 /** player -> the tile key they last stepped onto inside a tile obstacle's area. */
 const lastTileStepped = new WeakMap();
+const logoutObstacleCompletions = new WeakSet();
 
 let pluginApi;
 let core;
@@ -180,6 +188,32 @@ function resolve(value, context) {
   return typeof value === "function" ? value(context) : value;
 }
 
+/** The configured action's cache slot, or the first click for ordinary shortcuts. */
+function interactionClickType(obstacle, definition) {
+  if (!obstacle.option) return 1;
+  const actions = definition?.getActions?.() ?? definition?.getInteractions?.();
+  if (!Array.isArray(actions)) return null;
+  const index = actions.indexOf(obstacle.option);
+  return index < 0 ? null : index + 1;
+}
+
+/** Register option-specific shortcuts by the cache's exact object name and action. */
+function registerOptionInteractions(api) {
+  const handlersByName = new Map();
+  for (const [objectId, obstacles] of OBSTACLES_BY_OBJECT) {
+    const name = core.CacheDefinitions.getObject(objectId)?.name;
+    for (const obstacle of obstacles) {
+      if (!obstacle.option || !name || name === "null") continue;
+      const handlers = handlersByName.get(name) ?? {};
+      handlers[obstacle.option] = operateObstacle;
+      handlersByName.set(name, handlers);
+    }
+  }
+  for (const [name, handlers] of handlersByName) {
+    api.onObjectInteraction(name, handlers);
+  }
+}
+
 function agilityLevel(player) {
   return player.getSkillManager().getCurrentLevel(core.Skill.AGILITY);
 }
@@ -280,7 +314,7 @@ function completeLap(player, course) {
   const laps = { ...getLaps(player) };
   laps[course.key] = (laps[course.key] ?? 0) + Math.max(1, reward.count | 0);
   player.setAttribute(LAPS_ATTRIBUTE, laps);
-  rollMarkOfGrace(player, course);
+  const found = rollMarkOfGrace(player, course);
   if (reward.xp > 0) {
     addAgilityXp(player, reward.xp, course);
   }
@@ -300,18 +334,30 @@ function completeLap(player, course) {
     player.getPacketSender().sendVarbit(HIGHLIGHTED_COURSE_VARBIT, 0);
     player.getPacketSender().sendClientScript(END_LAP_SCRIPT, lapClock(), Math.max(1, reward.count | 0) - 1);
   }
+  // The lap goes in the loot tracker after the helper's end, with what spawned for it (rsprox: 7197, then 7198).
+  if (course.lootSource != null) {
+    pluginApi.emitCustomEvent("loot-tracker:add", { player, source: course.lootSource, category: LOOT_TRACKER_CATEGORY, items: found });
+  }
   pluginApi.emitCustomEvent("agility:lap", { player, course: course.key, laps: laps[course.key], count: Math.max(1, reward.count | 0) });
   // The giant squirrel rolls once per completed course.
   pluginApi.emitCustomEvent("agility:success", { player, skill: core.Skill.AGILITY, petBase: course.petBase });
 }
 
-/** Grace's Toggle Counter: turns the lap count message off or back on. Guessed messages. */
-function toggleLapCounter({ player }) {
+/**
+ * Grace's Toggle Counter: turns the lap count message off or back on. Grace says so with her
+ * chathead (chat_left, chathap3 569), as rsprox 233/03247.txt:25731 and :25773 record.
+ */
+const GRACE_HAPPY = 569; // chathap3
+function toggleLapCounter({ player, npc }) {
   const off = !player.getAttribute(LAP_COUNTER_OFF_ATTRIBUTE);
   player.setAttribute(LAP_COUNTER_OFF_ATTRIBUTE, off);
-  player.sendMessage(off
-    ? "Your lap count will no longer be shown when you complete a lap."
-    : "Your lap count will now be shown when you complete a lap.");
+  const text = off
+    ? "I've disabled your lap counter messages, if you want to turn it back on, so you can see your total laps after you finish one, speak to me again."
+    : "I've turned on your lap counter, you'll get a message when you complete a lap on a course. To help you keep track.";
+  const graceId = npc?.getId?.() ?? core.NpcIdentifiers.GRACE;
+  player.getDialogueManager().startDialogues(new core.DialogueChainBuilder().add(
+    new core.NpcDialogue(0, graceId, text, "Grace", GRACE_HAPPY),
+  ));
 }
 
 /**
@@ -352,11 +398,12 @@ function diaryBonusChance(player, bonuses) {
   return bonus ? bonus.chance : 0;
 }
 
+/** Rolls the lap's mark of grace (see MARK_COOLDOWN_ATTRIBUTE) and returns what spawned, [] for nothing. */
 function rollMarkOfGrace(player, course) {
   const marks = course.marks;
-  if (!marks || marks.tiles.length === 0) return;
+  if (!marks || marks.tiles.length === 0) return [];
   const minute = clockMinute();
-  if (minute < (player.getAttribute(MARK_COOLDOWN_ATTRIBUTE) ?? 0)) return;
+  if (minute < (player.getAttribute(MARK_COOLDOWN_ATTRIBUTE) ?? 0)) return [];
   let chance = marks.chance ?? MARK_LAP_CHANCE;
   const unboosted = player.getSkillManager().getMaxLevel(core.Skill.AGILITY);
   if (marks.overlevelPenalty !== false && unboosted >= marks.level + MARK_OVERLEVEL_THRESHOLD) {
@@ -366,7 +413,7 @@ function rollMarkOfGrace(player, course) {
   const request = { player, course: course.key, chance };
   pluginApi.emitCustomEvent("agility:mark-chance", request);
   if (Number.isFinite(request.chance)) chance = request.chance;
-  if (Math.random() >= chance && Math.random() >= diaryBonusChance(player, marks.rerolls)) return;
+  if (Math.random() >= chance && Math.random() >= diaryBonusChance(player, marks.rerolls)) return [];
   const short = Math.random() < diaryBonusChance(player, marks.shortCooldown);
   player.setAttribute(MARK_COOLDOWN_ATTRIBUTE, minute + (short ? MARK_SHORT_COOLDOWN_MINUTES : MARK_COOLDOWN_MINUTES));
   const tile = marks.tiles[Math.floor(Math.random() * marks.tiles.length)];
@@ -380,6 +427,7 @@ function rollMarkOfGrace(player, course) {
     ItemOnGroundManager.registerLocation(player, new core.Item(itemId, amount), position,
       player.getPrivateArea(), { goesGlobal: false, despawnDelay: MARK_DESPAWN_TICKS });
   }
+  return spawn.items;
 }
 
 /** The player's course marks on the floor; dropped marks go public and age as usual. */
@@ -398,25 +446,46 @@ function courseOfMark({ x, y, z }) {
 }
 
 /**
- * A course mark picked up (one the inventory has room for). Content may make it finish a lap of
- * its course ("agility:mark-taken", a league relic): the lap is recorded and paid as the last
- * obstacle would, and `items` go to the inventory (the floor when it has no room).
+ * A course mark picked up and credited to the inventory. Content may make it finish a lap of its course
+ * ("agility:mark-taken", a league relic): the lap is recorded and paid as the last obstacle would, and `items` go
+ * to the inventory (the floor when it has no room). It is paid only once the mark is in the inventory: paid on the
+ * click, a pickup that then failed (the lap's coins taking the last slot) left the mark down to be clicked again.
  */
-function takeMark(event) {
-  const { player, groundItem } = event;
-  if (!isCourseMark(groundItem) || ItemOnGroundManager.inventoryCapacity(player, groundItem.getItem()) <= 0) return;
-  const course = courseOfMark(event.location);
+function creditMarkTaken({ player, groundItem, source, itemId, amount }) {
+  if (!player || !groundItem || itemId !== core.ItemIds.MARK_OF_GRACE || !(amount > 0)) return;
+  if (!isCourseMark(groundItem)) return;
+  const position = groundItem.getPosition();
+  const course = position ? courseOfMark({ x: position.getX(), y: position.getY(), z: position.getZ() }) : null;
   if (!course) return;
+  pluginApi.emitCustomEvent("collection-log:obtain", { player, itemId, amount });
+  if (source !== "pickup") return;
+  finishLapOnFind(player, course);
+}
+
+/**
+ * A course find picked up that isn't a mark ("agility:course-find-taken" { player, course }: the Colossal Wyrm
+ * courses' termites). Content may make it finish the lap as a mark does (Wiki, Hotfoot: "Picking up some termites
+ * or a mark of grace from a course will automatically complete the lap").
+ */
+function courseFindTaken({ player, course: key }) {
+  const course = COURSES.find((entry) => entry.key === key);
+  if (player && course) finishLapOnFind(player, course);
+}
+
+/** "agility:mark-taken": content may make the find finish the lap, paid as the last obstacle would, with `items`. */
+function finishLapOnFind(player, course) {
   const request = { player, course: course.key, completesLap: false, items: [] };
   pluginApi.emitCustomEvent("agility:mark-taken", request);
   if (!request.completesLap) return;
   player.setAttribute(PROGRESS_ATTRIBUTE, null);
   completeLap(player, course);
-  for (const [itemId, amount] of request.items) {
-    const item = new core.Item(itemId, amount);
-    const added = Math.min(amount, player.getInventory().getAddableAmount(item));
-    if (added > 0) player.getInventory().adds(itemId, added);
-    if (amount > added) ItemOnGroundManager.registerLocation(player, new core.Item(itemId, amount - added), player.getLocation().clone());
+  for (const [rewardId, rewardAmount] of request.items) {
+    const item = new core.Item(rewardId, rewardAmount);
+    const added = Math.min(rewardAmount, player.getInventory().getAddableAmount(item));
+    if (added > 0) player.getInventory().adds(rewardId, added);
+    if (rewardAmount > added) {
+      ItemOnGroundManager.registerLocation(player, new core.Item(rewardId, rewardAmount - added), player.getLocation().clone());
+    }
   }
 }
 
@@ -436,6 +505,11 @@ function giveCourseItem(player, course, gives) {
   const added = Math.min(amount, player.getInventory().getAddableAmount(item));
   if (added > 0) player.getInventory().adds(itemId, added);
   if (amount > added) ItemOnGroundManager.registerLocation(player, new core.Item(itemId, amount - added), player.getLocation().clone());
+}
+
+/** No run energy comes back while an Agility obstacle is being crossed (Wiki: Energy). */
+function pauseEnergyRecoveryMidObstacle(entity, units) {
+  return ObstacleRunner.isCrossingAgilityObstacle(entity, core.World.getProcessCycle()) ? 0 : units;
 }
 
 function pauseMarksOnLogout({ player }) {
@@ -530,6 +604,13 @@ function unmet(player, requirement) {
     pluginApi.emitCustomEvent("diary:is-complete", request);
     if (request.complete === false) return message;
   }
+  if (requirement.slayerTask) {
+    const request = { player, task: null };
+    pluginApi.emitCustomEvent("slayer:current-task", request);
+    const taskName = String(request.task?.name ?? "").toLowerCase();
+    const accepted = [].concat(requirement.slayerTask).some((name) => taskName.includes(String(name).toLowerCase()));
+    if (!accepted) return requirement.slayerTaskMessage ?? "You need an appropriate Slayer task to attempt this.";
+  }
   return null;
 }
 
@@ -541,7 +622,7 @@ function unmet(player, requirement) {
 function usable(player, obstacle, level) {
   if (!obstacle.requires) {
     return agilityLevel(player) < level
-      ? { refusal: `You need an Agility level of at least ${level} to attempt this.` }
+      ? { refusal: obstacle.levelMessage ?? `You need an Agility level of at least ${level} to attempt this.` }
       : { obstacle };
   }
   let refusal = null;
@@ -549,7 +630,7 @@ function usable(player, obstacle, level) {
     const reason = unmet(player, alternative);
     if (!reason) {
       const { steps, start, end } = alternative;
-      return { obstacle: { ...obstacle, ...(steps ? { steps } : {}), ...(start ? { start } : {}), ...(end ? { end } : {}) } };
+      return { obstacle: { ...obstacle, ...(alternative.method ? { method: alternative.method } : {}), ...(steps ? { steps } : {}), ...(start ? { start } : {}), ...(end ? { end } : {}) } };
     }
     refusal ??= reason;
   }
@@ -561,7 +642,7 @@ function attemptObstacle(player, context, entry) {
   const level = resolve(entry.level, context);
   const { obstacle, refusal } = usable(player, entry, level);
   if (refusal) {
-    player.sendMessage(refusal);
+    ObstacleRunner.sendMessage(player, refusal);
     return;
   }
   const blocked = obstacle.precondition?.(context);
@@ -578,6 +659,8 @@ function attemptObstacle(player, context, entry) {
   const success = roll.success;
   const resolved = resolve(success ? obstacle.steps : fail.steps, context);
   if (!resolved) return;
+  const actionStart = obstacle.method ? [context.pos.x, context.pos.y, context.pos.z] : null;
+  const actionPrivateArea = obstacle.method ? player.getPrivateArea?.() ?? null : null;
   const lapStart = success && startsLap(obstacle, context);
   const steps = lapStart && obstacle.course.helper != null ? withHighlight(resolved, obstacle.course.helper) : resolved;
   pluginApi.emitCustomEvent("agility:obstacle-start", { player, objectId, location: context.obj, success });
@@ -588,11 +671,33 @@ function attemptObstacle(player, context, entry) {
   ObstacleRunner.run(context, steps, {
     render: success ? obstacle.render : fail?.render ?? obstacle.render,
     busyVarbit: obstacle.course != null,
+    agility: true,
+    keepAnimation: success && obstacle.keepAnimation,
     onFinish: (completed) => {
       finishObstacle(player, obstacle, success, completed, fail, lapStart);
       if (completed && success) {
         // A shortcut's own name (agility-shortcuts.json's, "Stepping stone (Shilo Village)"); a course obstacle has none.
-        pluginApi.emitCustomEvent("agility:obstacle", { player, objectId, location: context.obj, shortcut: obstacle.course ? null : obstacle.name ?? null });
+        const event = { player, objectId, location: context.obj, shortcut: obstacle.course ? null : obstacle.name ?? null };
+        if (obstacle.method) event.method = obstacle.method;
+        pluginApi.emitCustomEvent("agility:obstacle", event);
+        const location = player.getLocation();
+        if (
+          obstacle.method === "grapple" && obstacle.name === "Wall (Yanille)" && [17047, 17049, 17050].includes(objectId) &&
+          YANILLE_GRAPPLE_CROSSINGS.some(({ object, start, landing }) =>
+            context.obj.x === object[0] && context.obj.y === object[1] && context.obj.z === object[2] &&
+            actionStart?.[0] === start[0] && actionStart?.[1] === start[1] && actionStart?.[2] === start[2] &&
+            location.getX() === landing[0] && location.getY() === landing[1] && location.getZ() === landing[2]) &&
+          actionPrivateArea == null && (player.getPrivateArea?.() ?? null) == null &&
+          player.getHitpoints() > 0 && !logoutObstacleCompletions.has(player)
+        ) {
+          pluginApi.emitCustomEvent("agility:yanille-grapple", {
+            player,
+            objectId,
+            location: context.obj,
+            method: obstacle.method,
+            start: { x: actionStart[0], y: actionStart[1], z: actionStart[2] },
+          });
+        }
       }
       if (completed && success && obstacle.skipTo != null) {
         skipAhead(player, obstacle, context);
@@ -604,7 +709,7 @@ function attemptObstacle(player, context, entry) {
 function routeToObstacle(event) {
   const location = event.object.getLocation();
   const obstacle = findObstacle(event.objectId, { x: location.getX(), y: location.getY(), z: location.getZ() }, event.player);
-  if (!obstacle?.route || event.clickType !== 1) return;
+  if (!obstacle?.route || interactionClickType(obstacle, event.definition ?? event.object.getDefinition?.()) !== event.clickType) return;
   const tile = resolve(obstacle.route, objectContext(event.player, event.object));
   if (tile) {
     event.destination = { x: tile[0], y: tile[1], z: tile[2] ?? location.getZ() };
@@ -613,7 +718,7 @@ function routeToObstacle(event) {
 
 function operateObstacle(event) {
   const obstacle = findObstacle(event.objectId, event.location, event.player);
-  if (!obstacle) return false;
+  if (!obstacle || interactionClickType(obstacle, event.definition ?? event.object.getDefinition?.()) !== event.clickType) return false;
   if (ObstacleRunner.isBusy(event.player)) return true;
   attemptObstacle(event.player, objectContext(event.player, event.object), obstacle);
   return true;
@@ -639,7 +744,7 @@ function operateNpcObstacle(event) {
   const { refusal } = usable(player, obstacle, obstacle.level);
   const blocked = refusal ?? obstacle.precondition?.({ player, npc, core });
   if (blocked) {
-    player.sendMessage(blocked);
+    ObstacleRunner.sendMessage(player, blocked);
     return true;
   }
   finishObstacle(player, obstacle, true, true);
@@ -695,13 +800,16 @@ function blockTeleportMidObstacle(event) {
 }
 
 function finishObstacleOnLogout({ player }) {
+  logoutObstacleCompletions.add(player);
   ObstacleRunner.completeNow(player);
+  logoutObstacleCompletions.delete(player);
 }
 
 buildIndex();
 
 module.exports = {
   name: "Agility",
+  description: "The Agility skill: rooftop and other obstacle courses, lap counting, marks of grace and Grace's lap-counter toggle.",
   members: true,
   register(api) {
     pluginApi = api;
@@ -713,17 +821,25 @@ module.exports = {
     api.persistAttribute(LAPS_ATTRIBUTE);
     api.persistAttribute(LAP_COUNTER_OFF_ATTRIBUTE);
     api.persistAttribute(MARK_COOLDOWN_ATTRIBUTE, 0);
+    api.persistAttribute(Pyramid.PYRAMID_TOP_ATTRIBUTE, false);
     api.onNpcInteraction("Grace", { "Toggle Counter": toggleLapCounter });
     api.onObjectRoute(routeToObstacle);
     api.onObjectFirstClick([...OBSTACLES_BY_OBJECT.keys()], operateObstacle);
+    registerOptionInteractions(api);
     api.onCustomEvent("ladders:climb", claimLadderObstacle);
     api.onNpcInteraction("Agility Trainer", { "Give-Stick": operateNpcObstacle });
     api.registerArea(createTileObstacleArea());
     api.onCanTeleport(blockTeleportMidObstacle);
+    api.registerRunEnergyRestoreModifier(pauseEnergyRecoveryMidObstacle);
     api.onPlayerLogout(finishObstacleOnLogout);
     api.onPlayerLogout(pauseMarksOnLogout);
     api.onPlayerLogin(resumeMarksOnLogin);
-    api.onGroundItemPickup(takeMark);
+    api.onPlayerLogin(Pyramid.syncPyramidTop);
+    api.onPlayerLogin(Pyramid.syncPyramidLevel);
+    // A taken top clears once its player is off the pyramid by any way but the doorway (a teleport, a death).
+    api.onPlayerProcess(({ player }) => Pyramid.clearPyramidTop(player));
+    api.onCustomEvent("ground-items:taken", creditMarkTaken);
+    api.onCustomEvent("agility:course-find-taken", courseFindTaken);
 
     api.log("registered", {
       courses: COURSES.length,

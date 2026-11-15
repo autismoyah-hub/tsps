@@ -1,6 +1,8 @@
 const assert = require("node:assert/strict");
 const path = require("node:path");
-const {before, test} = require("node:test");
+const {before, after, test} = require("node:test");
+// The bots spawn on load, which keeps the process alive after the tests, and nothing here needs them.
+process.env.DISABLE_PLAYER_BOTS = "1";
 require("../dist/Server").Server.installProductionPathResolver();
 const {CachePipeline} = require("../dist/game/cache/CachePipeline");
 const {PluginManager: PM} = require("../dist/plugins/PluginManager");
@@ -13,7 +15,11 @@ before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
   PM.loadFromDirectory(path.resolve(__dirname, "../plugins"));
   core = PM.getCoreApi();
+  core.RegionManager.init();
+  core.RegionManager.loadMapFiles(3222, 3218);
+  PM.emitServerStartup({});
 });
+after(() => PM.emitServerShutdown({}));
 const id = name => core.CacheDefinitions.getObjId(name);
 const uid = name => core.CacheDefinitions.getComponentId(name);
 function actor(t, tier = "elite") {
@@ -161,7 +167,12 @@ test("native All Settings inventory-alchemy warning toggle persists and restores
 });
 test("real untradeable confirmation accepts, cancels and rejects same-id replacement",async t=>{
   for(const mode of ["accept","cancel","replace"]){
-    const f=actor(t);await f.open();const itemId=core.ItemIdentifiers.FIRE_CAPE;
+    // An alchemisable untradeable (Iban's staff (broken), rsprox 3215): the Fire cape is "Not alchemisable" (Wiki).
+    // Login sends the settings' live defaults (Settings.plugin.js restoreSettings), among them row 65's: an untradeable
+    // item warns before Alchemy (varbit 6092, on). This fixture never logs in, so it sends that default itself.
+    const f=actor(t);const row=require("../plugins/interface/data/settings.json").settings["65"];
+    f.p.getPacketSender().sendVarbit(row.varbit,row.default);
+    await f.open();const itemId=1410;
     f.p.getInventory().add(new core.Item(itemId),false);
     const slot=f.p.getInventory().getItems().findIndex(i=>i.getId()===itemId);
     await cast(f,{slot,itemId});assert.equal(used(f),0);
@@ -237,5 +248,114 @@ test("native item-on-ring prompt accepts, cancels and cannot resume after logout
     if(mode==="logout")PM.emitPlayerLogout({player:f.p,username:f.p.getUsername()});
     await resume(f,(219<<16)|1,mode==="cancel"?2:1);
     assert.equal(used(f),mode==="accept"?1:0,mode);
+  }
+});
+
+// Gateway IF_BUTTONT reaches this native widget_target route. The clicked copy remains
+// a valid target while successive casts consume equivalent copies from earlier slots.
+test("both alchemy spells take equivalent copies in inventory order through native packets", async t => {
+  for (const name of ["High Level Alchemy", "Low Level Alchemy"]) {
+    const f = actor(t), inv = f.p.getInventory(), itemId = id("bronze_dagger");
+    inv.add(new core.Item(core.ItemIdentifiers.NATURE_RUNE, 20), false);
+    inv.add(new core.Item(core.ItemIdentifiers.FIRE_RUNE, 100), false);
+    inv.add(new core.Item(itemId, 3), false);
+    const slots = inv.getItems().flatMap((item, slot) => item.getId() === itemId ? [slot] : []);
+    const clicked = inv.forSlot(slots[2]), spell = core.CacheDefinitions.getSpellByName(name);
+    const before = inv.getAmount(core.ItemIdentifiers.NATURE_RUNE);
+    for (const consumed of slots) {
+      f.p.setAttribute("magic:alchemy-next-cast", 0);
+      await f.c.dispatch([{ type: "widget_target", sourceWidgetId: spell.widgetId,
+        sourceItemId: spell.itemId, sourceSlot: -1, targetWidgetId: uid("inventory:items"),
+        targetSlot: slots[2], targetItemId: itemId }]);
+      f.c.processTurnPackets();
+      assert.notEqual(inv.forSlot(consumed).getId(), itemId, name + " consumes the earliest remaining slot");
+      if (consumed !== slots[2]) assert.equal(inv.forSlot(slots[2]), clicked, "clicked copy survives earlier casts");
+    }
+    assert.equal(inv.getAmount(core.ItemIdentifiers.NATURE_RUNE), before - 3, "one payment per item");
+  }
+});
+
+test("alchemy keeps different item state separate and gives ring hooks the consumed slot", async t => {
+  const f = actor(t), inv = f.p.getInventory(), itemId = id("bronze_dagger");
+  const charged = new core.Item(itemId).setMetaValue("test:charges", 5);
+  inv.add(charged, false); await f.open();
+  inv.add(new core.Item(itemId, 2), false);
+  const slots = inv.getItems().flatMap((item, slot) => item.getId() === itemId ? [slot] : []);
+  const clicked = inv.forSlot(slots[2]);
+  await cast(f, { slot: slots[2], itemId });
+  assert.equal(used(f), 1);
+  assert.equal(inv.forSlot(slots[0]).getMetaValue("test:charges"), 5);
+  assert.notEqual(inv.forSlot(slots[1]).getId(), itemId, "earliest matching state is consumed");
+  assert.equal(inv.forSlot(slots[2]), clicked);
+  const arrows = id("rune_arrow"), earlier = 6, later = 7;
+  inv.setItem(earlier, new core.Item(arrows, 2));
+  inv.setItem(later, new core.Item(arrows, 5));
+  f.p.setAttribute("magic:alchemy-next-cast", 0);
+  await cast(f, { slot: later, itemId: arrows });
+  assert.equal(inv.forSlot(earlier).getAmount(), 1, "quantity does not distinguish otherwise equivalent split stacks");
+  assert.equal(inv.forSlot(later).getAmount(), 5);
+  assert.equal(used(f), 2, "the ring pays exactly once for the selected stack");
+});
+
+test("queued and confirmed duplicate alchemy still rejects replacement of the clicked copy", async t => {
+  for (const pending of ["queue", "confirmation"]) {
+    const f = actor(t), inv = f.p.getInventory(), itemId = pending === "queue" ? id("bronze_dagger") : core.ItemIdentifiers.FIRE_CAPE;
+    inv.add(new core.Item(itemId, 2), false); await f.open();
+    const slots = inv.getItems().flatMap((item, slot) => item.getId() === itemId ? [slot] : []);
+    const tasks = [];
+    if (pending === "queue") {
+      t.mock.method(core.World, "getProcessCycle", () => 1000);
+      f.p.setAttribute("magic:alchemy-next-cast", 1005);
+      t.mock.method(core.TaskManager, "submit", task => tasks.push(task));
+    }
+    await cast(f, { slot: slots[1], itemId });
+    inv.setItem(slots[1], new core.Item(itemId));
+    if (pending === "queue") {
+      t.mock.method(core.World, "getProcessCycle", () => 1005); tasks[0].execute();
+    } else {
+      await resume(f, 193 << 16, 1); await resume(f, (219 << 16) | 1, 1);
+    }
+    assert.equal(used(f), 0, pending + " cannot spend a charge");
+    assert.equal(inv.getAmount(itemId), 2, pending + " cannot consume either copy");
+  }
+});
+
+// The ring panel's alchemy isn't a spell from the book (any book may use it), so it isn't a Spellbook Swap's one
+// spell: a Lunar player swapped to Ancient keeps the swap through it, and the next Ancient spell is still theirs.
+test("the ring panel's alchemy leaves a Spellbook Swap alone", async t => {
+  const { LunarSpells } = require("../dist/game/content/combat/magic/LunarSpells");
+  const f = actor(t);
+  for (const skill of core.Skill.values()) f.p.getSkillManager().setMaxLevels(skill, 99, false).setCurrentLevels(skill, 99, false);
+  const quests = require("../plugins/quests/QuestRuntime").getRegisteredQuests();
+  // Lunar Diplomacy and Dream Mentor for the swap, Desert Treasure I for the Ancient book.
+  for (const key of ["lunar_diplomacy", "dream_mentor", "desert_treasure_i"]) { const q = quests.find((quest) => quest.key === key); q.setStage(f.p, q.completionValue); }
+  f.p.setSpellbook(core.MagicSpellbook.LUNAR);
+  const I = core.ItemIdentifiers;
+  for (const [rune, n] of [[I.ASTRAL_RUNE, 10], [I.COSMIC_RUNE, 10], [I.LAW_RUNE, 10]]) f.p.getInventory().add(new core.Item(rune, n), false);
+  LunarSpells.handleSelf(f.p, "spellbook swap", 3);
+  assert.equal(f.p.getSpellbook(), core.MagicSpellbook.ANCIENT, "swapped to the Ancient book");
+  await f.open();
+  const x = target(f);
+  await cast(f, x);
+  assert.equal(used(f), 1, "the ring's alchemy was cast");
+  assert.equal(f.p.getSpellbook(), core.MagicSpellbook.ANCIENT, "the swap is still on");
+  assert.ok(f.p.getAttribute("lunar:spellbook-swap"), "and its one spell is still to come");
+});
+
+// #1407 review: Close returned on the session check (the exact ring object held) before it was read, so a ring
+// banked (or banked and withdrawn, a new object) with the panel open left the panel mounted and no inventory.
+test("Close restores the inventory after the ring is banked, or banked and withdrawn",async t=>{
+  const panel=core.CacheDefinitions.getInterfaceId("lumbridge_alchemy"),inventory=core.CacheDefinitions.getInterfaceId("inventory");
+  for(const withdraw of [false,true]){
+    const f=actor(t);await f.open();
+    const sender=f.p.getPacketSender();assert.equal(sender.isSubInterfaceOpen(panel),true);
+    const ring=id("lumbridge_ring_elite");
+    f.p.getBank(0).open();core.Bank.deposit(f.p,ring,0,1,false);assert.equal(f.p.getInventory().getAmount(ring),0);
+    if(withdraw){const tab=core.Bank.getTabForItem(f.p,ring),bank=f.p.getBank(tab);core.Bank.withdraw(f.p,ring,bank.getSlotForItemId(ring),1,tab);
+      assert.equal(f.p.getInventory().getAmount(ring),1,"a new ring object");}
+    sender.sendInterfaceRemoval();
+    await click(f,"close");
+    assert.equal(sender.isSubInterfaceOpen(panel),false,`the panel closes (withdrawn: ${withdraw})`);
+    assert.equal(sender.isSubInterfaceOpen(inventory),true,"the inventory is back");
   }
 });

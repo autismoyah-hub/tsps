@@ -53,13 +53,14 @@ module.exports = function registerHorrorFromTheDeepQuest(api) {
   // lightness the low 7) identifies the visible forms: 983 neutral white,
   // 984 hue 42 blue, 985 hue 0 red, 986 hue 5 orange, 987 hue 21 green,
   // 988 hue 7 brown. Spell IDs below are CombatSpell.spellId() values.
+  // Overheads: Transcript:Horror_from_the_Deep, "When dagannoth mother changes to <colour>".
   const MOTHER_PHASES = [
-    { colour: "white", weakness: "air", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_4 },
-    { colour: "blue", weakness: "water", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_5 },
-    { colour: "orange", weakness: "melee", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_7 },
-    { colour: "brown", weakness: "earth", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_9 },
-    { colour: "red", weakness: "fire", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_6 },
-    { colour: "green", weakness: "ranged", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_8 },
+    { colour: "white", weakness: "air", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_4, overhead: "Tktktktktktkt" },
+    { colour: "blue", weakness: "water", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_5, overhead: "Krrrrrrk" },
+    { colour: "orange", weakness: "melee", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_7, overhead: "Chkhkhkhkhk" },
+    { colour: "brown", weakness: "earth", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_9, overhead: "Krrrrrrssssssss" },
+    { colour: "red", weakness: "fire", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_6, overhead: "Sssssrrrkkkkk" },
+    { colour: "green", weakness: "ranged", npcId: NpcIdentifiers.DAGANNOTH_MOTHER_8, overhead: "Krkrkrkrkrkrkrkr" },
   ];
   const ELEMENTAL_SPELLS = new Map([
     [1152, "air"], [1160, "air"], [1172, "air"], [1183, "air"], [21876, "air"],
@@ -100,6 +101,9 @@ module.exports = function registerHorrorFromTheDeepQuest(api) {
 
   // The cache carries the lighthouse twice; all four landings are the quest map's.
   const BASEMENT_LANDING = new Location(2519, 9995, 0);
+  // The quest transcript page (npc-dialogues.json "Horror from the Deep") and its post-kill variant.
+  const PAGE = "Horror from the Deep";
+  const MOTHER_KILLED_VARIANT = "upon-killing-the-dagannoth-mother";
   const LIGHTHOUSE_LANDING = new Location(2508, 3645, 0);
   const FOYER_LANDING = new Location(2515, 10005, 0);
   const DUNGEON_LANDING = new Location(2515, 4632, 0);
@@ -141,6 +145,10 @@ module.exports = function registerHorrorFromTheDeepQuest(api) {
   const FLAG_WALL_SWORD = 1 << 11;
   const FLAG_WALL_ARROW = 1 << 12;
   const FLAG_BOOK_CLAIMED = 1 << 13;
+  /** Every step's flag; the post-quest god-book claim is not a step. */
+  const COMPLETED_FLAGS = FLAG_BRIDGE_LEFT | FLAG_BRIDGE_RIGHT | FLAG_KEY_GIVEN | FLAG_DOOR_UNLOCKED
+    | FLAG_TAR | FLAG_GLASS | FLAG_LIGHT | FLAG_WALL_AIR | FLAG_WALL_WATER | FLAG_WALL_EARTH
+    | FLAG_WALL_FIRE | FLAG_WALL_SWORD | FLAG_WALL_ARROW;
   const WALL_BITS = [
     FLAG_WALL_AIR,
     FLAG_WALL_WATER,
@@ -198,13 +206,18 @@ module.exports = function registerHorrorFromTheDeepQuest(api) {
   const bossesByPlayer = new Map();
   const motherPhasesByPlayer = new Map();
 
-  const getFlags = (player) => Number(player.getAttribute(ATTR_FLAGS)) || 0;
+  // A completed account has every step's flag (its login sends varbits 35-48 all as 1,
+  // rsprox_transcripts/224/01512.txt), however the quest was completed: a Leagues quest pack or
+  // start quest completes it through the runtime without the steps ever being played (#3851).
+  const getFlags = (player) => (Number(player.getAttribute(ATTR_FLAGS)) || 0)
+    | (quest?.isComplete(player) ? COMPLETED_FLAGS : 0);
   const hasFlag = (player, bit) => (getFlags(player) & bit) !== 0;
   const hasItem = (player, itemId, amount = 1) => player.getInventory().getAmount(itemId) >= amount;
 
   const VARBIT_BASEMENT_DOOR = 35; // HORRORDOOR
   const AUXILIARY_FLAGS = [
     [36, FLAG_BRIDGE_LEFT], [37, FLAG_BRIDGE_RIGHT], [38, FLAG_KEY_GIVEN],
+    [39, FLAG_DOOR_UNLOCKED], // HORRORLIGHTHOUSEENTRANCE, the keyed front door
     [46, FLAG_TAR], [47, FLAG_GLASS], [48, FLAG_LIGHT],
     [43, FLAG_WALL_AIR], [41, FLAG_WALL_WATER], [42, FLAG_WALL_EARTH],
     [40, FLAG_WALL_FIRE], [44, FLAG_WALL_SWORD], [45, FLAG_WALL_ARROW],
@@ -221,8 +234,14 @@ module.exports = function registerHorrorFromTheDeepQuest(api) {
     syncAuxiliaryState(player);
   }
 
+  // Completion (played through or not) shows the completed flags at once, not at the next login.
+  function handleStageChanged({ player, key }) {
+    if (key === "horror_from_the_deep" && player) syncAuxiliaryState(player);
+  }
+
   function setFlag(player, bit, value = true) {
-    const flags = getFlags(player);
+    // The saved flags only: the completed flags getFlags derives are never written back.
+    const flags = Number(player.getAttribute(ATTR_FLAGS)) || 0;
     player.setAttribute(ATTR_FLAGS, value ? (flags | bit) : (flags & ~bit));
     syncAuxiliaryState(player);
   }
@@ -433,16 +452,24 @@ module.exports = function registerHorrorFromTheDeepQuest(api) {
     return null;
   }
 
-  /** 35 Agility is checked here; Alfred Grimhand's Barcrawl has no server quest to read. */
-  function meetsStartRequirements(player) {
-    return player.getSkillManager().getMaxLevel(Skill.AGILITY) >= 35;
+  function barcrawlComplete(player) {
+    const request = { player, name: "Alfred Grimhand's Barcrawl", complete: false };
+    api.emitCustomEvent("quest:is-complete", request);
+    return request.complete === true;
   }
 
-  function handleStartHook({ player, npcId, hook }) {
+  function handleStartHook(event) {
+    const { player, npcId, hook } = event;
     if (!LARRISSA_NPC_IDS.has(npcId) || hook !== START_HOOK) return;
     if (quest.getStage(player) >= STAGE_STARTED) return;
-    if (!meetsStartRequirements(player)) {
+    if (player.getSkillManager().getMaxLevel(Skill.AGILITY) < 35) {
+      event.end = true;
       player.sendMessage("You need an Agility level of at least 35 to start this quest.");
+      return;
+    }
+    if (!barcrawlComplete(player)) {
+      event.end = true;
+      player.sendMessage("You need to complete Alfred Grimhand's Barcrawl to start this quest.");
       return;
     }
     quest.setStage(player, STAGE_STARTED);
@@ -561,6 +588,12 @@ module.exports = function registerHorrorFromTheDeepQuest(api) {
       if (bossesByPlayer.get(owner) === event.npc) bossesByPlayer.delete(owner);
       if (quest.getStage(owner) >= STAGE_DEFEATED_DAGANNOTH && !quest.isComplete(owner)) {
         quest.complete(owner);
+        // Transcript: "(The player is teleported to outside the strange wall.)", then the player and Jossik's lines.
+        // No recording gives the tile: the one west of the far strange wall (4545 at 2516,3627), where it is entered from.
+        owner.moveTo(new Location(2514, 3627, 0));
+        // The variant's first two steps are the completion and the teleport, done here; the rest is the spoken lines.
+        require("../QuestRuntime").startTranscript(api, owner, JOSSIK_DUNGEON_ID, PAGE, MOTHER_KILLED_VARIANT,
+          (steps) => steps.filter((step) => step.type !== "action"));
       }
       return;
     }
@@ -612,6 +645,7 @@ module.exports = function registerHorrorFromTheDeepQuest(api) {
         state.ticks = 0;
         state.phase = (state.phase + 1) % MOTHER_PHASES.length;
         state.npc.setNpcTransformationId?.(MOTHER_PHASES[state.phase].npcId);
+        state.npc.forceChat?.(MOTHER_PHASES[state.phase].overhead);
         player.sendMessage(`The Dagannoth changes to ${MOTHER_PHASES[state.phase].colour}...`);
       }
     }
@@ -859,6 +893,7 @@ module.exports = function registerHorrorFromTheDeepQuest(api) {
   });
 
   api.onCustomEvent("player:bootstrap-complete", handleBootstrapComplete);
+  api.onCustomEvent("quest:stage-changed", handleStageChanged);
   api.onNpcDialogueVariant(selectVariant);
   api.onNpcDialogueCondition(answerCondition);
   api.onNpcInteraction("Gunnjorn", { "Talk-to": talkToGunnjorn });

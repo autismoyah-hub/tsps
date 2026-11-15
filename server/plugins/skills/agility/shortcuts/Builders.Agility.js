@@ -42,6 +42,8 @@ const ShortcutAnim = Object.freeze({
 });
 
 const PIPE_SOUND = 2489;
+const HOLE_EXIT_SOUND = 2490;
+const UNDERWALL_SOUND = 2452;
 
 function distance(a, b) {
   return Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]));
@@ -77,14 +79,17 @@ function between({ ends, cross, ...entry }) {
   };
 }
 
-/** A two-tile stile/fence along `axis`: the player's side is `before`, the far side `after`. */
-function stile({ axis = "x", before = -1, after = 2, anim = ShortcutAnim.CLIMB_OVER, end = "You climb over the stile.", ...entry }) {
+/** A two-tile stile/fence across its rotated footprint, unless the data declares an axis. */
+function stile({ axis, before = -1, after = 2, anim = ShortcutAnim.CLIMB_OVER, end = "You climb over the stile.", ...entry }) {
   return between({
     ...entry,
     end,
-    ends: ({ obj }) => (axis === "x"
-      ? [[obj.x + before, obj.y, obj.z], [obj.x + after, obj.y, obj.z]]
-      : [[obj.x, obj.y + before, obj.z], [obj.x, obj.y + after, obj.z]]),
+    ends: ({ obj }) => {
+      const crossAxis = axis ?? (obj.sizeY > obj.sizeX ? "y" : "x");
+      return crossAxis === "x"
+        ? [[obj.x + before, obj.y, obj.z], [obj.x + after, obj.y, obj.z]]
+        : [[obj.x, obj.y + before, obj.z], [obj.x, obj.y + after, obj.z]];
+    },
     cross: (from, to) => [climbOver(to, anim)],
   });
 }
@@ -111,7 +116,9 @@ function hops(...tiles) {
  * Squeezes through a pipe in two crawls, via its middle tile, as captured (rsprox: the Edgeville,
  * Taverley and Yanille dungeon pipes): each half moves from cycle 30 to 126 and lands 4 ticks
  * later with the pipe's sound; the second half starts a tick after the first lands. The crawl
- * replays with each half, so the squeeze pose (no weapon in hand) lasts the whole way. A long pipe
+ * replays with each half. Its hand overrides apply only after the 30-cycle start delay (native
+ * `Actor.dp()` gates on `sequenceFrame`), which is the cycle the exact move starts, so the empty
+ * hands take over just as the player moves into the pipe. A long pipe
  * passes `resume`, the tile its second half starts from: the player is moved there unseen a tick
  * after the first half lands, and crawls on the tick after (rsprox 449-461, the Wilderness course).
  */
@@ -132,6 +139,41 @@ function tunnel(to, cycles = 180) {
     { anim: ShortcutAnim.EMERGE },
     { wait: 1 },
     { tele: to },
+  ];
+}
+
+/** One tile from `from` towards `to`. */
+function stepTowards(from, to) {
+  return [from[0] + Math.sign(to[0] - from[0]), from[1] + Math.sign(to[1] - from[1]), ...from.slice(2)];
+}
+
+/**
+ * The underwall tunnels (Yanille, Grand Exchange, Falador): the player faces the tunnel for a tick,
+ * then with the tunnel sound crosses in three one-tick legs - into the hole at `enter`, through the
+ * wall to `exit`, and out onto `to`. `enter` and `exit` default to the tiles next to each end.
+ */
+function underwall(from, to, enter = stepTowards(from, to), exit = stepTowards(to, from)) {
+  return [
+    { face: enter },
+    { wait: 1 },
+    { sound: UNDERWALL_SOUND },
+    { move: enter, anim: ShortcutAnim.DUCK, speed: [0, 30], ticks: 1 },
+    { move: exit, anim: ShortcutAnim.INVISIBLE, speed: [0, 30], ticks: 1 },
+    { move: to, anim: ShortcutAnim.EMERGE, speed: [0, 30], ticks: 1 },
+  ];
+}
+
+/**
+ * The hole in the Piscatoris Fishing Colony wall: into the hole over two ticks, a three-tick crawl to the
+ * tile before the far end, then out, with an entry and an exit sound.
+ */
+function hole(from, to) {
+  return [
+    { sound: PIPE_SOUND },
+    { move: stepTowards(from, to), anim: ShortcutAnim.DUCK, speed: [0, 50], ticks: 2 },
+    { move: stepTowards(to, from), anim: ShortcutAnim.INVISIBLE, speed: [0, 100], ticks: 3 },
+    { sound: HOLE_EXIT_SOUND },
+    { move: to, anim: ShortcutAnim.EMERGE, speed: [15, 33], ticks: 1 },
   ];
 }
 
@@ -186,6 +228,8 @@ module.exports = {
   hops,
   pipe,
   tunnel,
+  underwall,
+  hole,
   crevice,
   crawlDown,
   crawlUp,

@@ -4,6 +4,7 @@ import { Mobile } from "../Mobile";
 import { Sound } from "../../../Sound";
 import { World } from "../../../World";
 import { CombatFactory } from "../../../content/combat/CombatFactory";
+import { HitQueue } from "../../../content/combat/hit/HitQueue";
 import { CombatType } from "../../../content/combat/CombatType";
 import { PendingHit } from "../../../content/combat/hit/PendingHit";
 import { CombatMethod } from "../../../content/combat/method/CombatMethod";
@@ -137,6 +138,7 @@ export class NPC extends Mobile {
     private defenceBonusOverrides: Array<number | null> | null = null;
     /** This tick's glide, sent with the NPC's update and cleared after it. */
     private exactMoveState: NpcExactMove | null = null;
+    private telejumped = false;
     /** This tick's headbars besides the hitpoints one, sent with the NPC's update and cleared after it. */
     private headbars: NpcHeadbar[] = [];
     /** This tick's fade, sent with the NPC's update and cleared after it. */
@@ -167,6 +169,8 @@ export class NPC extends Mobile {
     private pet: boolean;
     private movementSteps = 1;
     private scriptedMovement: boolean = false;
+    /** Held still by a player's dialogue: set by its first NPC line, as live's chatnpc does. */
+    private heldByDialogue: Player | null = null;
     /** Hits show their damage but never lower this NPC's hitpoints (a boss whose HP is a timer). */
     private hitpointsLocked: boolean = false;
     /** The headbar (healthbar config id and its width) shown over this NPC, when not the default. */
@@ -175,6 +179,10 @@ export class NPC extends Mobile {
     private combatXpMultiplier: number = 1;
     private readonly drainedLevels = new Map<Skill, { level: number; cycle: number }>();
     private statDrainImmune = false;
+    /** Optional encounter-owned minimum combat levels; the default remains zero. */
+    private statMinimumLevels = new Map<Skill, number>();
+    /** Encounter-owned raises to this NPC's base combat levels (a boss's enrage); the definition is untouched. */
+    private maxLevelBoosts: Map<Skill, number> | null = null;
     private static readonly STAT_RESTORE_TICKS = 100;
     /** Ticks per level a drained stat comes back; a boss can restore faster (the Corporeal Beast). */
     private statRestoreTicks = NPC.STAT_RESTORE_TICKS;
@@ -220,6 +228,7 @@ export class NPC extends Mobile {
     public static readonly WALK_THROUGH_ENTITIES_FLAG = "movement:walk-through-entities";
     /** OSRS's "full" entity collision: players wait instead of stepping onto this NPC (the Agility Pyramid's moving blocks). */
     public static readonly BLOCKS_PLAYERS_FLAG = "movement:blocks-players";
+    public static readonly BLOCKS_PROJECTILES_FLAG = "combat:blocks-projectiles";
 
     public canWalkThroughNPCs(): boolean {
         if (this.pet || this.hasFlag(NPC.WALK_THROUGH_ENTITIES_FLAG)) {
@@ -240,6 +249,7 @@ export class NPC extends Mobile {
     }
 
     public onAdd() {
+        PluginManager.emitCustomEvent("npc:added", { npc: this });
         const spawnAnim = this.getCurrentDefinition().getSpawnAnim();
         if (Number.isInteger(spawnAnim) && spawnAnim >= 0) {
             this.performAnimation(new Animation(spawnAnim));
@@ -252,7 +262,44 @@ export class NPC extends Mobile {
 
     public isAggressiveTo(player: Player): boolean {
         return player.getSkillManager().getCombatLevel() <= (this.getCurrentDefinition().getCombatLevel() * 2)
-            || Wilderness.isIn(player);
+            || (Wilderness.isIn(player)
+                && Wilderness.levelAt(player.getLocation().getX(), player.getLocation().getY()) > 0);
+    }
+
+    /**
+     * An NPC talking to a player stands still while the conversation lasts (live, and LostCity's
+     * chatnpc setting npc mode playerfaceclose): from its first line of the chat it takes no step,
+     * pausing any walk it had queued, until the dialogue closes or the player is more than a tile
+     * away. The player's own opening line does not hold it, so it may finish a step first.
+     */
+    private updateDialogueHold(): boolean {
+        const target = this.getInteractingMobile();
+        const player = target?.isPlayer?.() ? target.getAsPlayer() : null;
+        const dialogue = player?.getDialogueManager?.();
+        if (!player || !dialogue?.isActive()) {
+            this.heldByDialogue = null;
+            return false;
+        }
+        const here = this.getLocation();
+        const there = player.getLocation();
+        if (here.getZ() !== there.getZ()
+            || Math.max(Math.abs(here.getX() - there.getX()), Math.abs(here.getY() - there.getY())) > 1) {
+            this.heldByDialogue = null;
+            return false;
+        }
+        if (this.heldByDialogue !== player) {
+            // Only the NPC speaking is held (live's chatnpc sets the mode on that NPC alone), not
+            // a monster or pet that happens to face a player reading someone else's line.
+            const current: any = dialogue.getCurrent();
+            const speaker = typeof current?.getNpcId === "function" ? current.getNpcId() : null;
+            const speaking = speaker !== null && (
+                player.getInteractingMobile?.() === this
+                || speaker === this.getId()
+                || speaker === this.getNpcTransformationId()
+                || speaker === this.getContentId(player));
+            this.heldByDialogue = speaking ? player : null;
+        }
+        return this.heldByDialogue !== null;
     }
 
     public process() {
@@ -263,13 +310,15 @@ export class NPC extends Mobile {
             const movement = this.getMovementQueue();
             const combat = this.getCombat();
             movement.beginCycle();
+            const heldByDialogue = this.updateDialogueHold();
             // A plugin driving this NPC's walk owns its movement: no wandering or walking home.
-            if (!this.scriptedMovement) this.movementCoordinator.process();
+            if (!this.scriptedMovement && !heldByDialogue) this.movementCoordinator.process();
             const processCombat = combat.hasPendingWork();
             if (processCombat) {
                 combat.preMovementProcess();
             }
-            if (movement.hasPendingWork()) {
+            // A held NPC keeps its walk queued and finishes it once the conversation ends.
+            if (movement.hasPendingWork() && !heldByDialogue) {
                 movement.process();
             }
             if (processCombat) {
@@ -292,7 +341,8 @@ export class NPC extends Mobile {
                     this.getFollowing() === interactingMobile
                     || this.getCombatFollowing() === interactingMobile
                     || this.getCombat().getTarget() === interactingMobile
-                    || this.hasFlag("interaction:keep");
+                    || this.hasFlag("interaction:keep")
+                    || heldByDialogue;
                 const targetUnregistered =
                     typeof interactingMobile.isRegistered === "function"
                     && !interactingMobile.isRegistered();
@@ -365,6 +415,8 @@ export class NPC extends Mobile {
             }
             // A transformed or respawned NPC must not reuse rolls cached for its old state.
             CombatFactory.clearHitRollCache(this);
+            // Hits still in the air belong to the life that launched them.
+            HitQueue.dropHitsFrom(this);
             TaskManager.submit(new NPCDeathTask(this));
             this.isDying = true;
         }
@@ -449,6 +501,10 @@ export class NPC extends Mobile {
         return true;
     }
 
+    public isPlayer(): boolean {
+        return false;
+    }
+
     public equals(other: Object): boolean {
         return other instanceof NPC && (other as NPC).getIndex() == this.getIndex() && (other as NPC).getId() == this.getId();
     }
@@ -511,7 +567,21 @@ export class NPC extends Mobile {
     public getMaxLevel(skill: Skill): number {
         const slot = [Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE, Skill.RANGED, Skill.MAGIC].indexOf(skill);
         if (slot < 0) throw new RangeError("Unsupported NPC combat skill");
-        return this.getCurrentDefinition().getStats()[slot];
+        return this.getCurrentDefinition().getStats()[slot] + (this.maxLevelBoosts?.get(skill) ?? 0);
+    }
+
+    /**
+     * Raise this NPC's base level for `skill` by `amount` (drains then clamp to, and restore up to, the raised
+     * level), or clear it with null. Only this NPC changes; its shared definition and other NPCs do not.
+     */
+    public setMaxLevelBoost(skill: Skill, amount: number | null): void {
+        this.getMaxLevel(skill); // validate the skill
+        if (amount !== null && (!Number.isFinite(amount) || amount < 0)) {
+            throw new RangeError("Invalid NPC max level boost");
+        }
+        this.maxLevelBoosts ??= new Map<Skill, number>();
+        if (amount === null || Math.floor(amount) === 0) this.maxLevelBoosts.delete(skill);
+        else this.maxLevelBoosts.set(skill, Math.floor(amount));
     }
 
     public getCurrentLevel(skill: Skill): number {
@@ -525,15 +595,40 @@ export class NPC extends Mobile {
         return drained.level;
     }
 
+    /**
+     * The level setCurrentLevels would leave for `skill`, without changing this NPC: the same
+     * stat-drain immunity; otherwise floors the level and clamps it to [min(base, configured
+     * minimum), base], where the minimum defaults to 0. Content that predicts a pending drain
+     * (a second ranged hit's defence roll) can use it without draining the NPC early.
+     */
+    public previewCurrentLevel(skill: Skill, level: number): number {
+        if (!Number.isFinite(level)) throw new RangeError("Invalid NPC combat level");
+        const base = this.getMaxLevel(skill);
+        if (this.statDrainImmune && level < base) return base;
+        const minimum = Math.min(base, this.statMinimumLevels?.get(skill) ?? 0);
+        return Math.max(minimum, Math.min(base, Math.floor(level)));
+    }
+
     public setCurrentLevels(skill: Skill, level: number): void {
         if (!Number.isFinite(level)) throw new RangeError("Invalid NPC combat level");
         const base = this.getMaxLevel(skill);
         if (this.statDrainImmune && level < base) return;
         this.getCurrentLevel(skill);
         const cycle = this.drainedLevels.get(skill)?.cycle ?? World.getProcessCycle();
-        level = Math.max(0, Math.min(base, Math.floor(level)));
+        level = this.previewCurrentLevel(skill, level);
         if (level === base) this.drainedLevels.delete(skill);
         else this.drainedLevels.set(skill, { level, cycle });
+    }
+
+    /** Set a floor for future writes and previews on this NPC, or clear it with null. */
+    public setStatMinimumLevel(skill: Skill, minimum: number | null): void {
+        this.getMaxLevel(skill); // validate the skill
+        if (minimum !== null && (!Number.isFinite(minimum) || minimum < 0)) {
+            throw new RangeError("Invalid NPC minimum combat level");
+        }
+        this.statMinimumLevels ??= new Map<Skill, number>();
+        if (minimum === null) this.statMinimumLevels.delete(skill);
+        else this.statMinimumLevels.set(skill, Math.floor(minimum));
     }
 
     /** Encounter-owned immunity; never changes another NPC or its shared definition. */
@@ -811,6 +906,22 @@ export class NPC extends Mobile {
         return this.exactMoveState;
     }
 
+    /**
+     * Moves the NPC to `destination` at once, staying in view, as OSRS's NPC telejump does: clients
+     * see it snap there in place, its animation carrying on, rather than vanish for a tick and
+     * come back (a plain moveTo) or glide (exactMove).
+     */
+    public telejump(destination: Location): NPC {
+        this.moveTo(destination);
+        this.telejumped = true;
+        return this;
+    }
+
+    /** Whether the NPC telejumped this tick (cleared with the tick's update). */
+    public isTelejumping(): boolean {
+        return this.telejumped;
+    }
+
     /** The orientation facing along (dx, dy): 0 south, 512 west, 1024 north, 1536 east. */
     public static travelAngle(dx: number, dy: number): number {
         if (dx === 0 && dy === 0) return 0;
@@ -898,6 +1009,7 @@ export class NPC extends Mobile {
     public resetUpdating() {
         super.resetUpdating();
         this.exactMoveState = null;
+        this.telejumped = false;
         this.headbars = [];
         this.faceTileState = null;
         this.transparencyState = null;

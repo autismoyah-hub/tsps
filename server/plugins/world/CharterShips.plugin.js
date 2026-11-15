@@ -60,6 +60,8 @@ const MINIMAP_STATE_VARBIT = "minimap_state";
 const BUSY_VARBIT = "busy";
 const PREVIOUS_DESTINATION_ATTRIBUTE = "charter-ships:previous-destination";
 const SKIP_CONFIRMATION_ATTRIBUTE = "charter-ships:skip-confirmation";
+/** All Settings > Warnings: "Charter Ships confirmation" (on: sail without the fare question). */
+const SKIP_CONFIRMATION_SETTING = 294;
 
 const CABIN_FEVER = "cabin_fever";
 const TRADING_POST_SHOP_ID = 1354; // shops.json "Trader Stan's Trading Post"
@@ -98,6 +100,8 @@ const RULES = {
   port_roberts: { needs: [{ varbit: "port_roberts_visited", min: 1 }] },
 };
 const CRANDOR = "crandor";
+/** The Great Conch's port, The Summer Shore (Wiki: The Great Conch), as the cache's charter row. */
+const GREAT_CONCH_PORT = "summer_shore";
 
 let core = null;
 let pluginApi = null;
@@ -351,16 +355,40 @@ function voyageInterrupted(mobile) {
  * The captured trip: pay, fade out, land on the deck on the third tick, fade back in. Its ticks
  * act only while the voyage is still the player's own and they are alive and logged in.
  */
-function sail(player, destination, fare) {
+function sail(player, destination, fare, dontAskAgain = false) {
   if (voyages.has(player)) return;
+  // The fare was worked out when the question was asked; a ring of charos taken off since makes it dearer, so
+  // ask again at the fare it is now rather than charge the old one. Away from any port there is no fare to charge.
+  const port = portOf(player);
+  // The map's own rule (script 9104) is asked again too: a quest stage, a visit or the port the player now
+  // stands at can have changed since the destination was picked, and the question doesn't settle it.
+  if (destination === port || !available(player, port, destination)) {
+    setVarbit(player, BUSY_VARBIT, 0);
+    return;
+  }
+  const now = fareFor(player, port, destination);
+  if (now === null) return;
+  if (now !== fare) {
+    // Never skipped or settled by the earlier answer: the player has not seen this fare yet.
+    offerFare(player, destination, now, true);
+    return;
+  }
   const inventory = player.getInventory();
   if (inventory.getAmount(core.ItemIdentifiers.COINS) < fare) {
     offerFare(player, destination, fare);
     return;
   }
-  const voyage = { landing: false };
+  // The deck must be a place the passenger may go before the fare is taken: a league area still locked refuses
+  // here ("You haven't unlocked that area yet.") rather than taking the coins and sending them back on landing
+  // (Wiki: Charter ship). Only the destination is asked (TeleportHandler.destinationAllowed): a voyage is no teleport,
+  // so it leaves a teleblock running, as before.
+  if (!core.TeleportHandler.destinationAllowed(player, new core.Location(destination.deck.x, destination.deck.y, destination.deck.z))) {
+    return;
+  }
+  const voyage = { landing: false, from: port };
   voyages.set(player, voyage);
   setPreviousDestination(player, destination);
+  if (dontAskAgain) setSkipConfirmation(player, true);
   inventory.deleteNumber(core.ItemIdentifiers.COINS, fare);
   inventory.refreshItems?.();
   const sender = player.getPacketSender();
@@ -399,6 +427,7 @@ function sail(player, destination, fare) {
         voyage.landing = true;
         player.moveTo(new core.Location(destination.deck.x, destination.deck.y, destination.deck.z));
         voyage.landing = false;
+        pluginApi.emitCustomEvent("charter-ships:arrived", { player, from: voyage.from, to: destination });
       }
       if (tick === FADE_IN_TICKS) {
         setVarbit(player, MINIMAP_STATE_VARBIT, 0);
@@ -425,8 +454,26 @@ function skipConfirmation(player) {
   return player.getAttribute(SKIP_CONFIRMATION_ATTRIBUTE) === true;
 }
 
-/** Live's prompts: the fare question, or (short of coins) just what it costs. */
-function offerFare(player, destination, fare) {
+function setSkipConfirmation(player, skip) {
+  player.setAttribute(SKIP_CONFIRMATION_ATTRIBUTE, skip);
+  setVarbit(player, CONFIRM_WARNING_VARBIT, skip ? 1 : 0);
+}
+
+function confirmationSettingClicked(request) {
+  if (request.settingId !== SKIP_CONFIRMATION_SETTING) return;
+  request.handled = true;
+  setSkipConfirmation(request.player, !skipConfirmation(request.player));
+}
+
+/** The tick each re-asked fare question was opened on, so a click already in flight on that tick is not its answer. */
+const reaskedAt = new WeakMap();
+
+/**
+ * Live's prompts: the fare question, or (short of coins) just what it costs. `reask` marks a question opened
+ * because the fare changed after the player answered: it is always shown (even with "don't ask again" on), and
+ * ignores an answer arriving on the tick it opened, which can only be a second click aimed at the old question.
+ */
+function offerFare(player, destination, fare, reask = false) {
   const cancel = () => setVarbit(player, BUSY_VARBIT, 0);
   const chooseAgain = () => openMap(player);
   if (player.getInventory().getAmount(core.ItemIdentifiers.COINS) < fare) {
@@ -435,26 +482,35 @@ function offerFare(player, destination, fare) {
       "Cancel", cancel);
     return;
   }
-  if (skipConfirmation(player)) {
+  if (!reask && skipConfirmation(player)) {
     sail(player, destination, fare);
     return;
   }
+  if (reask) reaskedAt.set(player, core.World.getProcessCycle());
+  const answer = (dontAskAgain) => {
+    if (reask && reaskedAt.get(player) === core.World.getProcessCycle()) {
+      offerFare(player, destination, fare, true);
+      return;
+    }
+    sail(player, destination, fare, dontAskAgain);
+  };
   pluginApi.sendMultiChatboxPrompt(player, `Sail to ${destination.name} for ${formatCoins(fare)} coins?`,
-    "Yes.", () => sail(player, destination, fare),
+    "Yes.", () => answer(false),
     "Choose again.", chooseAgain,
-    "Yes, and don't ask again.", () => {
-      player.setAttribute(SKIP_CONFIRMATION_ATTRIBUTE, true);
-      setVarbit(player, CONFIRM_WARNING_VARBIT, 1);
-      sail(player, destination, fare);
-    },
+    "Yes, and don't ask again.", () => answer(true),
     "Cancel.", cancel);
+}
+
+/** The port the player is chartering from: their own tile's, else the trader's they spoke to. */
+function portOf(player) {
+  return portAt(player.getLocation()) ?? portAt(traders.get(player)?.npc?.getLocation?.());
 }
 
 /** A destination picked on the map or list, or by Charter-to. */
 function choose(player, destination) {
   if (voyages.has(player) || !destination) return false;
   const trader = traders.get(player) ?? null;
-  const port = portAt(player.getLocation()) ?? portAt(trader?.npc?.getLocation?.());
+  const port = portOf(player);
   if (destination === port || !available(player, port, destination)) return false;
   if (destination.slug === CRANDOR) {
     closeMap(player);
@@ -535,7 +591,8 @@ function transcriptOpensMap(event) {
 
     execute() {
       this.stop();
-      if (player.isRegistered()) openMap(player);
+      // A newer main modal owns this target; do not replace it with the old map.
+      if (player.isRegistered() && !player.getPacketSender().getSubInterfaceAt(MAIN_MODAL)) openMap(player);
     }
   })());
 }
@@ -544,6 +601,8 @@ function transcriptOpensMap(event) {
 function answerTranscriptCondition({ player, definition, text }) {
   if (!TRADERS.includes(definition?.getName?.())) return null;
   const value = String(text).toLowerCase();
+  // "What brings you all the way out here?" is only asked of the crew at the Great Conch.
+  if (value === "at the great conch") return portAt(player.getLocation?.())?.slug === GREAT_CONCH_PORT;
   if (value.includes("does not have")) return !carriesRefused(player);
   if (value.includes("crandor")) return false;
   return refusalCarried(player, text);
@@ -567,10 +626,11 @@ function start(api) {
 
 module.exports = {
   name: "CharterShips",
+  description: "Charter ship crew: pay a fare to sail between ports on the map, or trade with them, with Ring of Charos discounts and Sailing ports.",
   members: true,
   _test: {
-    destinations, portAt, available, fareBetween, fareFor, choose, sail, offerFare, openMap,
-    charter, charterToLast, chooseOnMap, mapClosed, transcriptOpensMap, answerTranscriptCondition,
+    destinations, portAt, portOf, available, fareBetween, fareFor, choose, sail, offerFare, openMap,
+    charter, charterToLast, chooseOnMap, mapClosed, transcriptOpensMap, answerTranscriptCondition, confirmationSettingClicked,
     reset: () => { rows = null; fareData = null; },
     PREVIOUS_DESTINATION_ATTRIBUTE, SKIP_CONFIRMATION_ATTRIBUTE,
   },
@@ -579,6 +639,7 @@ module.exports = {
     api.persistAttribute(PREVIOUS_DESTINATION_ATTRIBUTE, 0);
     api.persistAttribute(SKIP_CONFIRMATION_ATTRIBUTE, false);
     api.onPlayerLogin(restore);
+    api.onCustomEvent("settings:setting-clicked", confirmationSettingClicked);
     api.core.Mobile.onBeforeTeleport(voyageInterrupted);
     api.onNpcsInteraction(TRADERS, { Charter: charter, Trade: openTradingPost });
     api.onNpcInteraction(charterToLast);

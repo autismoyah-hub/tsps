@@ -168,6 +168,7 @@ function player(level = 99, current = 99) {
     sendCameraReset: () => { p.camera.push(['reset']); return packet; },
     sendCameraShake: (...args) => { p.camera.push(['shake', ...args]); return packet; },
     sendSubInterface: (...args) => { p.camera.push(['sub', ...args]); return packet; },
+    mountSubInterface: (...args) => { p.camera.push(['sub', ...args]); return {}; },
     closeSubInterface: (...args) => { p.camera.push(['close', ...args]); return packet; },
     sendObjectRemoval: object => { clientRemovals.push(object); return packet; },
     sendObject: object => { clientSpawns.push(object); return packet; },
@@ -200,7 +201,7 @@ function player(level = 99, current = 99) {
     setArea: value => { area = value; },
     getMovementQueue: () => ({ reset() { return this; }, setBlockMovement(value) { p.blocked = value; return this; },
       isMovementBlocked: () => p.blocked === true, didMovePreviousCycle: () => false }),
-    getPrivateArea: () => area, getHitpoints: () => 99, performAnimation: noop,
+    getPrivateArea: () => area, getHitpoints: () => 99, performAnimation: noop, performGraphic: noop,
     setUntargetable: value => { p.untargetable = value; },
 
     getUsername: () => 'Parity', getDisplayName: () => 'Parity',
@@ -420,7 +421,7 @@ test('The Final Dawn mirrors Quest Helper progress varbits from actual progress 
   h.hooks.onPlayerLogin[0]({ player: p });
   assert.equal(p.varbits.get(16667) ?? 0, 0, 'drawers closed before the key');
   assert.equal(p.varbits.get(16666), undefined, 'unmodeled drawer choice is not faked');
-  assert.equal(p.varbits.get(16694), undefined, 'unmodeled lift is not faked');
+  assert.equal(p.varbits.get(16694), 0, 'the lift is off until its platform is inspected (#3828)');
 });
 
 
@@ -1294,13 +1295,16 @@ test('The Final Dawn Strange Tiles step between the moon chamber and final floor
         && at.getY() >= zone.minY && at.getY() <= zone.maxY) fn({ player: p });
     }
   };
+  // A Strange Tile moves the player two ticks after they step on (rsprox_transcripts/234/03285.txt).
   const step = (x, y, z) => {
     p.moveTo(new core.Location(x, y, z));
     enterCurrentZone();
+    h.tick(2);
   };
   step(1299, 9455, 1);
   assert.deepEqual([p.getLocation().getX(), p.getLocation().getY(), p.getLocation().getZ()], [1304, 9446, 2]);
   enterCurrentZone();
+  h.tick(2);
   assert.deepEqual([p.getLocation().getX(), p.getLocation().getY(), p.getLocation().getZ()], [1304, 9446, 2],
     'landing does not ping-pong');
   step(1323, 9443, 1);
@@ -1319,9 +1323,11 @@ test('The Final Dawn Strange Tiles work at stage55 before the sun/moon puzzles a
         && at.getY() >= zone.minY && at.getY() <= zone.maxY) fn({ player: p });
     }
   };
+  // A Strange Tile moves the player two ticks after they step on (rsprox_transcripts/234/03285.txt).
   const step = (x, y, z) => {
     p.moveTo(new core.Location(x, y, z));
     enterCurrentZone();
+    h.tick(2);
   };
   const at = () => [p.getLocation().getX(), p.getLocation().getY(), p.getLocation().getZ()];
 

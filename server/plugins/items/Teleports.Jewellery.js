@@ -1,19 +1,34 @@
 const { ItemIds } = require("../../src/main/typescript/elvarg/util/IdEnums");
 const { GameConstants } = require("../../src/main/typescript/elvarg/game/GameConstants");
 const { Skill } = require("../../src/main/typescript/elvarg/game/model/Skill");
+const { CacheDefinitions } = require("../../src/main/typescript/elvarg/game/cache/CacheDefinitions");
 
 /** Teleport jewellery usable up to this Wilderness level unless a piece says otherwise. */
 const DEFAULT_WILDERNESS_LEVEL = 20;
+/** Wiki (Digsite pendant): the refusal for a destination whose quest isn't done. */
+const LOCKED_DESTINATION_MESSAGE = "You have not yet unlocked that destination.";
 /** Dragonstone jewellery works deeper, through level 30 Wilderness. */
 const DRAGONSTONE_WILDERNESS_LEVEL = 30;
 
 const FARMING_GUILD_INTERMEDIATE_LEVEL = 45;
 
 /**
+ * Destinations marked `kourend` need a first trip to Great Kourend on Veos's ship: the
+ * zeah_playerhasvisited varbit (Client of Kourend saves and resends it). Wiki (Games necklace):
+ * Wintertodt Camp "Must have visited Zeah at least once". The POH jewellery box's init script
+ * strikes Wintertodt Camp, the Woodcutting Guild and the Farming Guild out on the one bit, so the
+ * skills necklace's two Kourend guilds share the rule (cache; the Wiki is silent for them).
+ */
+function visitedKourend(player) {
+  const id = CacheDefinitions.getVarbitId("zeah_playerhasvisited");
+  return id != null && (player.getPacketSender().getVarbit(id) ?? 0) > 0;
+}
+
+/**
  * Charged pieces, most charges first. `spent` is what the last charge leaves
  * behind (null when it crumbles); `eternal` ids never lose charges.
  *
- * Each destination is `{ label, tile }`; `tile` may be a function of the player.
+ * Each destination is `{ label, tile }`; `tile` may be a function of the player and plugin API.
  * `aliases` match worn-option names that differ from the dialogue label.
  */
 const JEWELLERY = [
@@ -86,9 +101,14 @@ const JEWELLERY = [
     destinations: [
       { label: "Burthorpe", tile: [2898, 3552, 0] },
       { label: "Barbarian Outpost", tile: [2519, 3572, 0] },
-      { label: "Corporeal Beast", tile: [2967, 4381, 2] },
-      { label: "Tears of Guthix", tile: [3245, 9500, 2] },
-      { label: "Wintertodt Camp", tile: [1627, 3941, 0] },
+      { label: "Corporeal Beast", tile: (player, api) => {
+        const request = { player, tile: [2967, 4381, 2] };
+        api?.emitCustomEvent?.("corporeal:teleport-destination", request);
+        return request.tile;
+      } },
+      // Wiki (Games necklace): "Requires completion of Tears of Guthix quest".
+      { label: "Tears of Guthix", tile: [3245, 9500, 2], quest: { key: "tears_of_guthix", name: "Tears of Guthix" } },
+      { label: "Wintertodt Camp", tile: [1627, 3941, 0], kourend: true },
     ],
   },
   {
@@ -146,9 +166,10 @@ const JEWELLERY = [
       { label: "Mining Guild", tile: [3048, 9763, 0] },
       { label: "Crafting Guild", tile: [2935, 3295, 0] },
       { label: "Cooking Guild", tile: [3143, 3439, 0] },
-      { label: "Woodcutting Guild", tile: [1661, 3505, 0] },
+      { label: "Woodcutting Guild", tile: [1661, 3505, 0], kourend: true },
       {
         label: "Farming Guild",
+        kourend: true,
         // Players who can enter the intermediate tier land inside the guild.
         tile: (player) => (player.getSkillManager().getMaxLevel(Skill.FARMING) >= FARMING_GUILD_INTERMEDIATE_LEVEL
           ? [1248, 3725, 0]
@@ -222,8 +243,9 @@ const JEWELLERY = [
     lastChargeMessage: "Your Digsite Pendant crumbles to dust.",
     destinations: [
       { label: "Digsite", tile: [3340, 3445, 0] },
-      { label: "Fossil Island", tile: [3763, 3870, 1] },
-      { label: "Lithkren Dungeon", aliases: ["Lithkren"], tile: [3547, 10456, 0] },
+      // Wiki (Digsite pendant): each teleport comes after its quest - Bone Voyage, and Dragon Slayer II.
+      { label: "Fossil Island", tile: [3763, 3870, 1], quest: { key: "bone_voyage", name: "Bone Voyage" } },
+      { label: "Lithkren Dungeon", aliases: ["Lithkren"], tile: [3547, 10456, 0], quest: { key: "dragon_slayer_ii", name: "Dragon Slayer II" } },
     ],
   },
   {
@@ -273,11 +295,13 @@ const JEWELLERY = [
     // Rub's submenu is actions, not destinations (item params 451-455); Teleport picks one.
     subOps: ["check", "teleport", "master", "partner", "log"],
     destinations: [
-      { label: "Slayer Tower", tile: [3429, 3538, 0] },
+      // Wiki (Slayer ring, Teleports): Slayer Tower needs Priest in Peril, Tarn's Lair Haunted Mine, Dark Beasts
+      // Mourning's End Part II.
+      { label: "Slayer Tower", tile: [3429, 3538, 0], quest: { key: "priest_in_peril", name: "Priest in Peril" } },
       { label: "Fremennik Slayer Dungeon", tile: [2807, 10002, 0] },
-      { label: "Tarn's Lair", tile: [3185, 4601, 0] },
+      { label: "Tarn's Lair", tile: [3185, 4601, 0], quest: { key: "haunted_mine", name: "Haunted Mine" } },
       { label: "Stronghold Slayer Cave", tile: [2431, 3424, 0] },
-      { label: "Dark Beasts", tile: [2027, 4637, 0] },
+      { label: "Dark Beasts", tile: [2027, 4637, 0], quest: { key: "mournings_end_part_ii", name: "Mourning's End Part II" } },
     ],
   },
   {
@@ -317,9 +341,10 @@ for (const piece of JEWELLERY) {
 /** The ring of wealth's teleports; RingOfWealth.plugin.js handles the ring itself. */
 const RING_OF_WEALTH_DESTINATIONS = [
   { label: "Grand Exchange", tile: [3163, 3478, 0] },
-  { label: "Miscellania", tile: [2539, 3864, 0] },
-  { label: "Falador Park", tile: [2994, 3377, 0] },
-  { label: "Dondakan", tile: [2824, 10168, 0] },
+  // Wiki (Ring of wealth): "Requires completion of Throne of Miscellania"; Dondakan "Requires completion of Between a Rock...".
+  { label: "Miscellania", tile: [2534, 3862, 0], quest: { key: "throne_of_miscellania", name: "Throne of Miscellania" } },
+  { label: "Falador Park", tile: [2995, 3375, 0] },
+  { label: "Dondakan", tile: [2824, 10168, 0], quest: { key: "between_a_rock", name: "Between a Rock..." } },
 ];
 
-module.exports = { JEWELLERY, RING_OF_WEALTH_DESTINATIONS, DEFAULT_WILDERNESS_LEVEL };
+module.exports = { JEWELLERY, RING_OF_WEALTH_DESTINATIONS, DEFAULT_WILDERNESS_LEVEL, LOCKED_DESTINATION_MESSAGE, visitedKourend };

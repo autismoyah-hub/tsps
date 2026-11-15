@@ -109,11 +109,13 @@ function buyResource(player, id, count) {
   const plain = uncert(id);
   const price = rewards().resourcePrices[String(plain)];
   if (price == null || count <= 0) return true;
+  // Wiki (Dom Onion's Reward Shop): ironmen buy only the scrolls of redirection from Resources. The refusal is
+  // recorded for the herb box (rsprox 237/01150.txt:342294-342295) and sent for every other resource too.
+  if (isIronman(player) && !rewards().ironmanResources.includes(plain)) {
+    player.sendMessage(Common.message("ironmanResource"));
+    return true;
+  }
   if (plain === rewards().herbBox) {
-    if (isIronman(player)) {
-      player.sendMessage(Common.message("herbBoxIronman"));
-      return true;
-    }
     const left = herbBoxesLeft(player);
     if (left <= 0) {
       player.sendMessage(Common.message("herbBoxLimit", { limit: rewards().herbBoxesPerDay }));
@@ -153,6 +155,18 @@ function buyBenefit(player, id, count) {
   return true;
 }
 
+/**
+ * The shop's buttons answer only while it is open (mounted in the main modal): a click on them with the shop closed,
+ * anywhere in the world, bought and imbued with no reward chest there.
+ */
+function whileOpen(handler) {
+  return function openShopOnly(event) {
+    const group = Common.core.CacheDefinitions.getInterfaceId(rewards().interface);
+    if (!event?.player?.getPacketSender?.()?.isSubInterfaceOpen?.(group)) return true;
+    return handler(event);
+  };
+}
+
 function resources({ player, slot, opId }) {
   const id = enumOf("resources").get(Math.floor(slot / 2));
   if (id == null || slot % 2 !== 0) return true;
@@ -190,6 +204,7 @@ function upgrades({ player, slot, opId }) {
   const meta = item.getMeta?.();
   inventory.setItem(at, new Common.core.Item(imbued, 1, meta ? { ...meta } : null));
   inventory.refreshItems?.();
+  Common.api.emitCustomEvent("nightmare-zone:imbued", { player, baseItemId: id, imbuedItemId: imbued });
   player.sendMessage(Common.message("imbued", { name }));
   return true;
 }
@@ -210,9 +225,9 @@ function attachRewards(api) {
   api.persistAttribute(HERB_BOX_DAY_ATTRIBUTE, 0);
   api.persistAttribute(HERB_BOX_COUNT_ATTRIBUTE, 0);
   api.onObjectInteraction("Rewards chest", { Search: search });
-  api.onInterfaceActionButton(uid("resources"), resources);
-  api.onInterfaceActionButton(uid("benefits"), benefits);
-  api.onInterfaceActionButton(uid("upgrades"), upgrades);
+  api.onInterfaceActionButton(uid("resources"), whileOpen(resources));
+  api.onInterfaceActionButton(uid("benefits"), whileOpen(benefits));
+  api.onInterfaceActionButton(uid("upgrades"), whileOpen(upgrades));
 }
 
 module.exports = { attachRewards, open, search, resources, benefits, upgrades, imbuePrice, uncert };

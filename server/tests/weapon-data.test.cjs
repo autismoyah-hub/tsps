@@ -90,11 +90,34 @@ test("a weapon with no same-name relative still gets a two-handed gait", () => {
   const byId = new Map(rows.map((row) => [row.id, row]));
   // A reskin: the cache gives it the rune 2h sword's own model, so it moves like it.
   assert.deepEqual(gait(ItemDefinition.forId(20155)), gait(byId.get(1319)), "Gilded 2h sword, like the Rune 2h sword");
-  // The club has no relative to copy: the blunt two-handers (Granite maul, Tzhaar-ket-om) share
-  // the maul gait, and the warhammer family, which wears in one hand, keeps the bare-handed one.
-  assert.deepEqual(gait(ItemDefinition.forId(20756)), gait(byId.get(4153)), "Hill giant club, like the Granite maul");
+  // The club has no relative to copy: the blunt two-handers (Tzhaar-ket-om) carry the Dharok
+  // two-handed gait, and the warhammer family, which wears in one hand, keeps the bare-handed one.
+  // RSProx rev 227+ shows 2065/2064/824 for the Hill giant club (rev 223 still had the staff pose).
+  assert.deepEqual(gait(ItemDefinition.forId(20756)), [1666, 2065, 2064, 824], "Hill giant club, like the Tzhaar-ket-om");
   assert.notDeepEqual(gait(ItemDefinition.forId(20756)), gait(byId.get(1347)), "... not like a warhammer");
   assert.deepEqual(gait(byId.get(1347)), [424, 808, 819, 824], "a one-handed warhammer keeps the bare-hand gait");
+});
+
+test("held-weapon stances are the game's own families", () => {
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  // RSProx rev 239 captures: the appearance packet's ready/walk/run with each weapon worn.
+  const expected = [
+    [1381, [813, 1205, 1210], "staff ready, halberd gait"],
+    [9185, [4591, 4226, 4228], "crossbow ready/walk/run"],
+    [1311, [2561, 2562, 2563], "two-handed sword ready/walk/run"],
+    [3194, [813, 1205, 1210], "halberd ready, halberd gait"],
+    [1249, [813, 1205, 1210], "spear ready, halberd gait"],
+    [4153, [1662, 1663, 1664], "granite maul ready/walk/run"],
+    [6528, [2065, 2064, 11466], "Tzhaar-ket-om uses the Dharok two-handed gait"],
+    [12926, [813, 1205, 1210], "blowpipe ready, halberd gait"],
+    [13263, [1652, 3293, 2847], "abyssal bludgeon ready/walk/run"],
+  ];
+  for (const [id, want, label] of expected) {
+    const row = byId.get(id);
+    assert.deepEqual([row.standAnim, row.walkAnim, row.runAnim], want, `${row.name}: ${label}`);
+  }
+  // 8980 is human_spellcast_degrim, not a weapon stance; the old export had it on every spear.
+  assert.deepEqual(rows.filter((row) => row.standAnim === 8980).map((row) => row.name), []);
 });
 
 test("attack speed is the cache's for the item, ahead of its weapon type's", () => {
@@ -147,13 +170,13 @@ test("issue #461: scimitars stab on Lunge, and the Colossal blade has the giant 
 
 test("Tumeken's shadow is held two-handed, all four variants", () => {
   // The wiki's equipped image holds the staff in both hands; the cache's TOA_SOT_READY
-  // sits with its cast anims (TOA_SOT_CAST_A/B). The cache has no TOA_SOT gait, so it
-  // moves with the staff's own walk/run (the same pair the staff uses one-handed).
+  // sits with its cast anims (TOA_SOT_CAST_A/B). RSProx shows the shadow walking and
+  // running with the Zamorakian spear's gait (1703/1707), not the staff's.
   for (const id of [27275, 27277, 28547, 28549]) {
     const shadow = rows.find((row) => row.id === id);
     assert.equal(shadow.standAnim, 9494, `${id} toa_sot_ready`);
-    assert.equal(shadow.walkAnim, 1146, `${id} staff walk`);
-    assert.equal(shadow.runAnim, 1210, `${id} staff run`);
+    assert.equal(shadow.walkAnim, 1703, `${id} walk`);
+    assert.equal(shadow.runAnim, 1707, `${id} run`);
     assert.equal(ItemDefinition.forId(id).isDoubleHanded(), true, `${id} two-handed`);
   }
 });
@@ -193,18 +216,18 @@ test("no weapon type attacks with a combat-tab icon id", () => {
 });
 
 test("the audited weapon families animate with their own family", () => {
-  // The spear's animations: the Keris partisan is a spear (docs/audits/weapons.md).
+  // The Keris partisan's live animations: Stab, Lunge and Block 381, Pound 419.
   assert.deepEqual(styles.weaponInterfaces.PARTISAN.fightTypes.map((key) => styles.fightTypes[key].animation),
-    [2080, 2080, 2082, 2080], "barrows_war_spear_stab/_crush");
+    [381, 381, 419, 381], "human_spear_lunge / human_spear_pound (rsprox_transcripts/227/01757.txt, 227/01788.txt, 227/01864.txt)");
   // The banners' own animations, human_banner_spike 1428 and human_banner_block 1429.
   assert.deepEqual(styles.weaponInterfaces.BANNER.fightTypes.map((key) => styles.fightTypes[key].animation),
     [1428, 1428, 1428, 1429]);
   // The abyssal bludgeon's abyssal_bludgeon_crush, not the godsword's smash.
   assert.deepEqual(styles.weaponInterfaces.ABYSSAL_BLUDGEON.fightTypes.map((key) => styles.fightTypes[key].animation),
     [3298, 3298, 3298]);
-  // The claws' dclaws_human_attack, not the axe's chop.
+  // Claws play 393 on every normal attack (rsprox_transcripts/237/04008.txt, 235/03327.txt, 227/01839.txt, 227/01845.txt).
   assert.deepEqual(styles.weaponInterfaces.CLAWS.fightTypes.map((key) => styles.fightTypes[key].animation),
-    [7527, 7527, 7527, 7527]);
+    [393, 393, 393, 393]);
   // The plain scythe (the Scythe of Vitur carries its own 8056): human_scythe_sweep.
   assert.deepEqual(styles.weaponInterfaces.SCYTHE.fightTypes.map((key) => styles.fightTypes[key].animation),
     [440, 440, 440, 440]);
@@ -220,4 +243,43 @@ test("gem machetes swing at the cache's 4 ticks, and the twisted bow at its 6", 
     assert.equal(WeaponProfiles.attackSpeed(wielding(id, WeaponInterfaces.SCIMITAR), 4), 4, `${id}`);
   }
   assert.equal(WeaponProfiles.attackSpeed(wielding(20997, WeaponInterfaces.SHORTBOW), 4), 6);
+});
+
+test("the reported weapon families use their primary/cache-sourced holding stances for every wearable variant", () => {
+  const nightmareReady = CacheDefinitions.getSeqId("human_nightmare_staff_ready");
+  const kistenReady = CacheDefinitions.getSeqId("human_weapons_crimson_kisten_ready01");
+  const kistenWalk = CacheDefinitions.getSeqId("human_weapons_crimson_kisten_walk_f");
+  const kistenRun = CacheDefinitions.getSeqId("human_weapons_crimson_kisten_run_f");
+  const kistenDefend = CacheDefinitions.getSeqId("human_weapons_crimson_kisten_def");
+  assert.ok([nightmareReady, kistenReady, kistenWalk, kistenRun, kistenDefend].every(id => Number.isInteger(id) && id >= 0));
+  let checked = 0;
+  for (const item of cacheWeapons()) {
+    const definition = ItemDefinition.forId(item.id);
+    if (/nightmare staff/i.test(item.name)) {
+      assert.equal(definition.getStandAnim(), nightmareReady, item.name + " " + item.id);
+    } else if (/^Osmumten's fang/.test(item.name)) {
+      // Official rsprox1779 tick3674: Fang(or)27246, appearance BAS809/823/819/820/821/822/824.
+      assert.equal(definition.getStandAnim(), 809, item.name + " " + item.id);
+    } else if (item.name === "Crimson kisten") {
+      assert.deepEqual([definition.getStandAnim(), definition.getWalkAnim(), definition.getRunAnim(), definition.getBlockAnim()],
+        [kistenReady, kistenWalk, kistenRun, kistenDefend]);
+    } else continue;
+    checked++;
+  }
+  assert.equal(checked, 11, "the cache's current seven staff, three fang and one kisten variants are covered");
+});
+
+
+test('recorded scimitar Lunge and Dharok Smash keep their own synth through cache regeneration', () => {
+  const { FightType } = require('../dist/game/content/combat/FightType');
+  assert.equal(FightType.SCIMITAR_LUNGE.getAttackSound().getId(),2501,'raw3151 local1714 seq386 at282/286');
+  assert.equal(FightType.SCIMITAR_SLASH.getAttackSound().getId(),2500);
+  assert.equal(FightType.GREATAXE_SMASH.getAttackSound().getId(),1316,'raw1885 local2 seq2066 at20915/20921');
+  assert.equal(FightType.GREATAXE_CHOP.getAttackSound().getId(),1321);
+  const { spawnSync } = require('node:child_process');
+  const original=fs.readFileSync(path.join(DEFINITIONS,'item-combat-styles.json'));
+  const check=spawnSync(process.execPath,['-r','ts-node/register','scripts/dump-item-combat-styles.ts','--check'],
+    {cwd:path.resolve(__dirname,'..'),encoding:'utf8',env:{...process.env,TS_NODE_COMPILER_OPTIONS:JSON.stringify({target:'es2020'})}});
+  assert.equal(check.status,0,check.stdout+check.stderr);
+  assert.deepEqual(fs.readFileSync(path.join(DEFINITIONS,'item-combat-styles.json')),original,'check mode preserves canonical metadata without rewriting the file');
 });

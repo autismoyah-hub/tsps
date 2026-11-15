@@ -1,10 +1,12 @@
 import { ItemOnGroundManager } from "../../../game/entity/impl/grounditem/ItemOnGroundManager";
+import { CrossFloor } from "../../../game/CrossFloor";
 import { State } from "../../../game/entity/impl/grounditem/ItemOnGround";
 import { ItemDefinition } from "../../../game/definition/ItemDefinition";
 import { Animation } from "../../../game/model/Animation";
 import { Graphic } from "../../../game/model/Graphic";
 import { GraphicHeight } from "../../../game/model/GraphicHeight";
 import { Item } from "../../../game/model/Item";
+import { MAX_STACK_AMOUNT } from "../../../game/model/container/StackType";
 import { Location } from "../../../game/model/Location";
 import { MagicSpellbook } from "../../../game/model/MagicSpellbook";
 import { Projectile } from "../../../game/model/Projectile";
@@ -118,6 +120,10 @@ export class MagicOnItemPacketListener {
     if (!player || player.getHitpoints?.() <= 0) {
       return;
     }
+    // A standard-book spell, as alchemy checks: the packet names the spell id, whatever book the player is on.
+    if (player.getSpellbook?.()?.getInterfaceId?.() !== MagicSpellbook.NORMAL.getInterfaceId()) {
+      return;
+    }
     if (!player.getClickDelay().elapsedTime(500)) {
       return;
     }
@@ -131,35 +137,40 @@ export class MagicOnItemPacketListener {
       new Item(ItemIdentifiers.LAW_RUNE, 1), new Item(ItemIdentifiers.AIR_RUNE, 1)
     ]);
     if (!this.hasRunes(player, runes)) {
-      player.sendMessage("You do not have the required items to cast this spell.");
+      player.sendMessage(Spell.missingItemsMessage(player, Spell.inventoryShortfall(player, runes)));
       return;
     }
 
-    const position = new Location(x, y, player.getLocation().getZ());
-    if (!CombatRange.withinApproachDistance(player, position, MagicOnItemPacketListener.TELEKINETIC_GRAB_RANGE)) {
-      // Out of approach distance: walk in and resolve the cast on arrival, rather
-      // than rejecting the click outright.
-      player.getMovementQueue().walkToTile(
-        position,
-        () => this.castGroundItem(player, groundItemId, x, y, spellId),
-        (entity: any, destination: Location) =>
-          CombatRange.withinApproachDistance(entity, destination, MagicOnItemPacketListener.TELEKINETIC_GRAB_RANGE)
-      );
-      return;
-    }
-
-    const groundItem = this.findVisibleGroundItem(player, groundItemId, position);
+    const groundItem = this.findVisibleGroundItem(player, groundItemId, x, y);
     if (!groundItem) {
       player.sendMessage("Nothing interesting happens.");
       return;
     }
+    const position = groundItem.getPosition().clone();
+    if (!this.withinTelegrabRange(player, position)) {
+      // Out of approach distance: walk in and resolve the cast on arrival, rather
+      // than rejecting the click outright.
+      const approachTile = new Location(x, y, player.getLocation().getZ());
+      player.getMovementQueue().walkToTile(
+        approachTile,
+        () => this.castGroundItem(player, groundItemId, x, y, spellId),
+        (entity: any) => {
+          const target = this.findVisibleGroundItem(entity, groundItemId, x, y);
+          return !!target && this.withinTelegrabRange(entity, target.getPosition());
+        },
+        { failWhenUnreachable: true }
+      );
+      return;
+    }
+
     if (!this.canGrabGroundItem(player, groundItem)) return;
-    if (!this.canReceiveGroundItem(player, groundItem.getItem())) {
+    if (!this.canReceiveGroundItem(player, ItemOnGroundManager.rewardItem(player, groundItem, "telegrab"))) {
       player.getInventory().full();
       return;
     }
 
     this.consumeRunes(player, runes);
+    Spell.endSpellbookSwap(player);
     player.getSkillManager().stopSkillable();
 
     player.setPositionToFace(position);
@@ -182,38 +193,61 @@ export class MagicOnItemPacketListener {
     );
     Sounds.sendSound(player, Sound.TELEKINETIC_GRAB);
     player.getClickDelay().reset();
+    // The cast itself, before the item comes away: what reacts to the grab rather than its landing.
+    PluginManager.emitCustomEvent("magic:telekinetic-grab-cast", { player, groundItem, itemId: groundItemId, position: position.clone() });
 
     // The item comes away when the projectile lands, not on the cast; the grab doesn't stall the
     // player, and anyone can still take the item first.
     const listener = this;
+    const casterFloor = player.getLocation().getZ();
     TaskManager.submit(new class extends Task {
       // Not keyed to the player, so walking off or clicking doesn't cancel a grab already flying.
       constructor() { super(Math.ceil(MagicOnItemPacketListener.TELEKINETIC_GRAB_LANDS_CYCLES / 30), false); }
       execute(): void {
         this.stop();
-        listener.landGroundItemGrab(player, groundItemId, position);
+        listener.landGroundItemGrab(player, groundItemId, position, casterFloor);
       }
     });
   }
 
   /** Generic permission query shared by cast and arrival checks. */
   private canGrabGroundItem(player: any, groundItem: any): boolean {
+    const denial = groundItem.pickupReplacement?.telegrabDenial;
+    if (denial) {
+      player.sendMessage(denial);
+      return false;
+    }
     const request = { player, groundItem, allow: true };
     PluginManager.emitCustomEvent("magic:can-telekinetic-grab", request);
     return request.allow !== false;
   }
 
+  private withinTelegrabRange(player: any, position: Location): boolean {
+    if (player.getLocation().getZ() === position.getZ()) {
+      return CombatRange.withinApproachDistance(
+        player, position, MagicOnItemPacketListener.TELEKINETIC_GRAB_RANGE,
+      );
+    }
+    return CrossFloor.visible(
+      player.getLocation(), position, MagicOnItemPacketListener.TELEKINETIC_GRAB_RANGE,
+    );
+  }
+
   /** The telegrab projectile has landed: the item is taken if it is still there. */
-  private landGroundItemGrab(player: any, groundItemId: number, position: Location): void {
+  private landGroundItemGrab(player: any, groundItemId: number, position: Location, casterFloor = position.getZ()): void {
     if (!player.isRegistered?.() || player.getHitpoints?.() <= 0) {
       return;
     }
-    if (player.getLocation().getZ() !== position.getZ()) {
+    if (casterFloor === position.getZ()
+      ? player.getLocation().getZ() !== casterFloor
+      : !this.withinTelegrabRange(player, position)) {
       player.sendMessage("Your telegrab fizzles as you move too far away.");
       return;
     }
     player.getSkillManager().addExperiences(Skill.MAGIC, MagicOnItemPacketListener.TELEKINETIC_GRAB_XP);
-    const groundItem = this.findVisibleGroundItem(player, groundItemId, position);
+    const groundItem = this.findVisibleGroundItem(
+      player, groundItemId, position.getX(), position.getY(), position.getZ(),
+    );
     if (!groundItem) {
       player.sendMessage("Too late - it's gone!");
       return;
@@ -235,13 +269,21 @@ export class MagicOnItemPacketListener {
    * waits for it (Wiki: "If you cast a second alchemy spell before your last one finishes, it's
    * now queued up"); a later click replaces the waiting one. An untradeable item asks first, as
    * live does (rsprox 3215): "That item cannot be traded." beside it, then Proceed/Cancel.
+   * "magic:alchemy-warning" { player, item, itemId, spellId, high, text } lets the All Settings
+   * warnings change that line: a valuable item's, or none (`text` null) to cast without asking.
    */
   private castAlchemy(player: any, spellId: number, slot: number, itemId: number, confirmed = false, source?: unknown): void {
     const inventory = player.getInventory();
-    const item = inventory.getItems()[slot];
-    if (!item || item.getId() !== itemId) {
+    const clickedItem = inventory.getItems()[slot];
+    if (!clickedItem || clickedItem.getId() !== itemId) {
       return;
     }
+    // Alchemy takes the first equivalent copy in inventory order. Keep custom-state and
+    // preset items separate, using the same ID/metadata matching as inventory stacking.
+    const meta = JSON.stringify(clickedItem.getMeta?.() ?? null);
+    const alchemySlot = inventory.getItems().findIndex((held: Item) => held?.getId() === itemId
+      && JSON.stringify(held.getMeta?.() ?? null) === meta);
+    const item = inventory.getItems()[alchemySlot];
     const isHighAlch = spellId === MagicOnItemPacketListener.HIGH_ALCH_SPELL_ID;
     const spell = isHighAlch ? EffectSpells.HIGH_ALCHEMY : EffectSpells.LOW_ALCHEMY;
     const requiredLevel = isHighAlch
@@ -254,6 +296,9 @@ export class MagicOnItemPacketListener {
       ? MagicOnItemPacketListener.HIGH_ALCH_XP
       : MagicOnItemPacketListener.LOW_ALCH_XP;
     const definition = item.getDefinition?.();
+    const warning = { player, item, itemId, spellId, high: isHighAlch,
+      text: definition.isTradeable?.() ? null as string | null : "That item cannot be traded." };
+    if (!confirmed) PluginManager.emitCustomEvent("magic:alchemy-warning", warning);
 
     // Untradeable items alch too, after a warning (rsprox 3215: Iban's staff for 12 coins); only
     // the server's own untradeable flag (PvP preset items) keeps an item out. A plugin that turns
@@ -262,7 +307,7 @@ export class MagicOnItemPacketListener {
       && definition.getHighAlchValue() > 0 && definition.getLowAlchValue() > 0,
       coins: isHighAlch ? definition.getHighAlchValue() : definition.getLowAlchValue(),
       castTicks: isHighAlch ? MagicOnItemPacketListener.HIGH_ALCH_CAST_TICKS : MagicOnItemPacketListener.LOW_ALCH_CAST_TICKS,
-      confirm: !definition.isTradeable?.(),
+      confirm: typeof warning.text === "string" && warning.text.length > 0,
       // Content may lower the level, waive the runes, keep the item or cast again on what is left (a league relic).
       requiredLevel, freeRunes: false, keepItem: false, recast: false };
     PluginManager.emitCustomEvent("magic:alchemy-policy", policy);
@@ -287,7 +332,7 @@ export class MagicOnItemPacketListener {
     ]);
     // Content can fund a cast through a validated alternative source. Resolve again
     // after a confirmation/queue; no payment is committed until the item is converted.
-    const payment = { player, item, itemId, slot, spellId, source, high: isHighAlch, coins: policy.coins,
+    const payment = { player, item, itemId, slot: alchemySlot, spellId, source, high: isHighAlch, coins: policy.coins,
       hasRunes: this.hasRunes(player, runes), allowed: source === undefined,
       free: false, experience, allowAnySpellbook: false, keepTab: false,
       validate: undefined as (() => boolean) | undefined,
@@ -301,35 +346,41 @@ export class MagicOnItemPacketListener {
     if (!payment.allowAnySpellbook && player.getSpellbook()?.getInterfaceId?.() !== MagicSpellbook.NORMAL.getInterfaceId()) {
       return;
     }
-    // The coins need somewhere to go: their stack, a free slot, the slot the item leaves, or a rune
-    // stack the cast uses up (consumeRunes takes the inventory's runes first).
-    const freesRuneSlot = !payment.free && runes.some(rune => {
-      const held = inventory.getAmount?.(rune.getId()) ?? 0;
-      return held > 0 && held <= rune.getAmount();
-    });
-    const noRoom = policy.coins > 0 && (inventory.getFreeSlots?.() ?? 1) <= 0
-      && !inventory.contains?.(ItemIdentifiers.COINS)
-      && !(policy.keepItem !== true && (item.getAmount?.() ?? 1) === 1)
-      && !freesRuneSlot;
-    if (noRoom) {
-      player.sendMessage("You don't have enough inventory space.");
-      return;
+    // An existing matching coin stack cannot overflow, even when other slots are free.
+    // A new stack may instead use a slot released by the item or spent runes.
+    if (policy.coins > 0) {
+      const coins = new Item(ItemIdentifiers.COINS, policy.coins);
+      const matchingCoins = inventory.getItems().some((held: any) => held?.getId?.() === ItemIdentifiers.COINS
+        && JSON.stringify(held.getMeta?.() ?? null) === JSON.stringify(coins.getMeta() ?? null));
+      const fitsNow = inventory.getAddableAmount(coins) === policy.coins;
+      const freesItemSlot = policy.keepItem !== true && (item.getAmount?.() ?? 1) === 1;
+      const freesRuneSlot = !payment.free && runes.some(rune => {
+        const held = inventory.getAmount?.(rune.getId()) ?? 0;
+        return held > 0 && held <= rune.getAmount();
+      });
+      if (!fitsNow && (matchingCoins || policy.coins > MAX_STACK_AMOUNT || !(freesItemSlot || freesRuneSlot))) {
+        player.sendMessage("You don't have enough inventory space.");
+        return;
+      }
     }
     if (!confirmed && policy.confirm) {
-      this.confirmUntradeableAlchemy(player, spellId, slot, itemId, definition.getName(), item, source);
+      this.confirmAlchemy(player, spellId, slot, itemId, definition.getName(), clickedItem, warning.text as string, source);
       return;
     }
     const now = World.getProcessCycle();
     const nextCast = Number(player.getAttribute(MagicOnItemPacketListener.ALCH_NEXT_CAST_ATTRIBUTE) ?? 0);
     if (now < nextCast) {
-      this.queueAlchemy(player, { spellId, slot, itemId, item, source }, nextCast - now);
+      this.queueAlchemy(player, { spellId, slot, itemId, item: clickedItem, source }, nextCast - now);
       return;
     }
 
-    // The clicked slot, not the first of that id: a preset-protected copy may sit earlier.
-    if (inventory.getItems()[slot] !== item || payment.validate?.() === false) return;
-    if (policy.keepItem !== true) inventory.deleteAtSlot(slot, 1);
+    if (inventory.getItems()[slot] !== clickedItem || inventory.getItems()[alchemySlot] !== item
+      || payment.validate?.() === false) return;
+    if (policy.keepItem !== true) inventory.deleteAtSlot(alchemySlot, 1);
     if (!payment.free) this.consumeRunes(player, runes);
+    // Only a cast from the spellbook is the swap's one spell: the Explorer's ring panel's own alchemy, which any book
+    // may use (allowAnySpellbook), leaves a Spellbook Swap alone.
+    if (!payment.allowAnySpellbook) Spell.endSpellbookSwap(player);
     player.setAttribute(MagicOnItemPacketListener.ALCH_NEXT_CAST_ATTRIBUTE, now + policy.castTicks);
     // "magic:item-spell-cast" { player, spell }: an alchemy cast on an item (a league's "Cast Low
     // Level Alchemy"); combat casts report "magic:cast-committed" instead.
@@ -350,12 +401,12 @@ export class MagicOnItemPacketListener {
     if (!payment.keepTab) player.getPacketSender().sendTab(6);
     // Cast again on what is left in the slot, once this cast ends (a league relic's automatic alchemy).
     if (policy.recast === true && inventory.getItems()[slot]?.getId() === itemId) {
-      this.queueAlchemy(player, { spellId, slot, itemId, item: inventory.getItems()[slot], source }, policy.castTicks);
+      this.queueAlchemy(player, { spellId, slot, itemId, item: inventory.getItems()[slot], source, automatic: true }, policy.castTicks);
     }
   }
 
   /** The waiting cast is cast once the current one ends; only one waits at a time. */
-  private queueAlchemy(player: any, cast: { spellId: number; slot: number; itemId: number; item: any; source?: unknown }, ticks: number): void {
+  private queueAlchemy(player: any, cast: { spellId: number; slot: number; itemId: number; item: any; source?: unknown; automatic?: boolean }, ticks: number): void {
     const waiting = player.getAttribute(MagicOnItemPacketListener.ALCH_QUEUED_ATTRIBUTE);
     player.setAttribute(MagicOnItemPacketListener.ALCH_QUEUED_ATTRIBUTE, cast);
     if (waiting) {
@@ -372,14 +423,20 @@ export class MagicOnItemPacketListener {
           return;
         }
         if (player.getInventory().getItems()[queued.slot] !== queued.item) return;
+        // A dialogue, menu or prompt opened while a clicked cast waited drops it: cast under a hand-in's dialogue, it
+        // would alch the item the dialogue had checked and the dialogue would still pay. A relic's automatic recast
+        // carries on (Wiki, Golden God: actions that would normally cancel Alchemy don't while it casts automatically).
+        const sender = player.getPacketSender?.();
+        if (!queued.automatic
+          && (player.getDialogueManager?.()?.isActive?.() || sender?.hasInterruptibleInterface?.() || sender?.hasInputPrompt?.())) return;
         listener.castAlchemy(player, queued.spellId, queued.slot, queued.itemId, true, queued.source);
       }
     });
   }
 
-  private confirmUntradeableAlchemy(player: any, spellId: number, slot: number, itemId: number, itemName: string, item: any, source?: unknown): void {
+  private confirmAlchemy(player: any, spellId: number, slot: number, itemId: number, itemName: string, item: any, reason: string, source?: unknown): void {
     const spellName = spellId === MagicOnItemPacketListener.HIGH_ALCH_SPELL_ID ? "High Level Alchemy" : "Low Level Alchemy";
-    const warning = `That item cannot be traded.<br>Really cast ${spellName} on it?`;
+    const warning = `${reason}<br>Really cast ${spellName} on it?`;
     player.sendMessage(warning.replace("<br>", " "));
     const chain = new DialogueChainBuilder()
       .add(new ItemStatementDialogue(0, itemId, warning))
@@ -393,32 +450,32 @@ export class MagicOnItemPacketListener {
     player.getDialogueManager().startDialogues(chain);
   }
 
-  private findVisibleGroundItem(player: any, groundItemId: number, position: Location): any | null {
-    const exact = ItemOnGroundManager.getGroundItem(player.getUsername(), groundItemId, position, player.getPrivateArea());
-    if (exact && ItemOnGroundManager.canSee(player, exact)) {
-      return exact;
-    }
-
-    for (const item of World.getItems()) {
+  private findVisibleGroundItem(player: any, groundItemId: number, x: number, y: number, z?: number): any | null {
+    const candidates = World.getItems().filter((item) => {
       if (!item || item.isPendingRemoval?.()) {
-        continue;
+        return false;
       }
       if (item.getItem?.().getId?.() !== groundItemId) {
-        continue;
+        return false;
       }
-      if (!item.getPosition?.().equals?.(position)) {
-        continue;
+      const position = item.getPosition?.();
+      if (position?.getX?.() !== x || position?.getY?.() !== y) {
+        return false;
+      }
+      if (z !== undefined && position.getZ?.() !== z) {
+        return false;
       }
       if (item.getPrivateArea?.() !== player.getPrivateArea?.()) {
-        continue;
+        return false;
       }
-      if (!ItemOnGroundManager.canSee(player, item)) continue;
+      if (!CrossFloor.visible(player.getLocation(), position, 64)) return false;
       if (item.getState?.() === State.SEEN_BY_PLAYER && item.getOwner?.() !== player.getUsername?.()) {
-        continue;
+        return false;
       }
-      return item;
-    }
-    return null;
+      return ItemOnGroundManager.canSee(player, item);
+    });
+    candidates.sort((a, b) => b.getPosition().getZ() - a.getPosition().getZ());
+    return candidates[0] ?? null;
   }
 
   public castOnItem(player: any, spellId: number, itemId: number, slot: number, source?: unknown): boolean {

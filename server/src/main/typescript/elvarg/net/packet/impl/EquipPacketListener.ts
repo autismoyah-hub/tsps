@@ -36,8 +36,34 @@ export class EquipPacketListener {
     return player?.getAttribute?.(this.PRESERVE_INTERFACE_ON_EQUIP_ATTRIBUTE) === player?.getInterfaceId?.();
   }
 
+  /** Whether add() merges these: a stack's id and metadata both have to match. */
+  private static sameStack(a: any, b: any): boolean {
+    return a.getId() === b.getId() && JSON.stringify(a.getMeta() ?? null) === JSON.stringify(b.getMeta() ?? null);
+  }
+
+  /**
+   * Empties the clicked slot for a worn item: it joins a stack it matches, else takes the slot, so a
+   * worn stack never sits beside its own kind. False, with nothing changed, if the stack has no room.
+   */
+  private static displace(inventory: any, slot: number, worn: any): boolean {
+    const joinsStack = worn.getDefinition().isStackable() &&
+      inventory.getItems().some((held: any) => EquipPacketListener.sameStack(held, worn));
+    if (!joinsStack) {
+      inventory.setItem(slot, worn);
+      return true;
+    }
+    if (inventory.getAddableAmount(worn) < worn.getAmount()) {
+      inventory.full();
+      return false;
+    }
+    inventory.deleteAtSlot(slot, inventory.getItems()[slot].getAmount(), false);
+    inventory.add(worn, false);
+    return true;
+  }
+
   public static resolveEquipmentSlot(groupId: number, childId: number): number {
-    const firstChild = groupId === 387 ? 15 : groupId === 84 ? 10 : -1;
+    // Bankmain's worn slots (enum 2777) follow the same order as the equipment screens.
+    const firstChild = groupId === 387 ? 15 : groupId === 84 ? 10 : groupId === 12 ? 68 : -1;
     return firstChild < 0
       ? -1
       : EquipPacketListener.EQUIPMENT_SLOTS[childId - firstChild] ?? -1;
@@ -142,16 +168,16 @@ export class EquipPacketListener {
 
     const currentlyEquipped = equipment.forSlot(equipmentSlot).clone();
     const stackableAndSameItem =
-      currentlyEquipped.getId() === item.getId() &&
+      EquipPacketListener.sameStack(currentlyEquipped, item) &&
       item.getDefinition().isStackable();
 
     if (stackableAndSameItem) {
-      const amount = Math.min(
-        Number.MAX_SAFE_INTEGER,
-        currentlyEquipped.getAmount() + item.getAmount()
-      );
-      inventory.deleteBoolean(item, false);
-      equipment.getItems()[equipmentSlot].setId(item.getId()).setAmount(amount);
+      if (equipment.getAddableAmount(item) < item.getAmount()) {
+        inventory.full();
+        return;
+      }
+      inventory.deleteAtSlot(slot, item.getAmount(), false);
+      equipment.getItems()[equipmentSlot].setAmount(currentlyEquipped.getAmount() + item.getAmount());
     } else if (
       item.getDefinition().isDoubleHanded() &&
       equipmentSlot === Equipment.WEAPON_SLOT
@@ -168,14 +194,13 @@ export class EquipPacketListener {
 
       const shield = equipment.getItems()[Equipment.SHIELD_SLOT].clone();
       const weapon = equipment.getItems()[Equipment.WEAPON_SLOT].clone();
+      if (weapon.getId() === -1) {
+        inventory.setItem(slot, new Item(-1, 0));
+      } else if (!EquipPacketListener.displace(inventory, slot, weapon)) {
+        return;
+      }
       equipment.setItem(Equipment.SHIELD_SLOT, new Item(-1, 0));
       equipment.setItem(Equipment.WEAPON_SLOT, item);
-
-      if (weapon.getId() !== -1) {
-        inventory.setItem(slot, weapon);
-      } else {
-        inventory.setItem(slot, new Item(-1, 0));
-      }
 
       if (shield.getId() !== -1) {
         inventory.add(shield, false);
@@ -185,7 +210,7 @@ export class EquipPacketListener {
       equipment.getItems()[Equipment.WEAPON_SLOT].getDefinition().isDoubleHanded()
     ) {
       const weapon = equipment.getItems()[Equipment.WEAPON_SLOT].clone();
-      inventory.setItem(slot, weapon);
+      if (!EquipPacketListener.displace(inventory, slot, weapon)) return;
       equipment.setItem(Equipment.WEAPON_SLOT, new Item(-1, 0));
       equipment.setItem(Equipment.SHIELD_SLOT, item);
       EquipPacketListener.resetWeapon(player, true);
@@ -195,12 +220,7 @@ export class EquipPacketListener {
         currentlyEquipped.getDefinition().getEquipmentType().getSlot() ===
           equipmentSlot
       ) {
-        if (inventory.contains(currentlyEquipped.getId())) {
-          inventory.deleteBoolean(item, false);
-          inventory.add(currentlyEquipped, false);
-        } else {
-          inventory.setItem(slot, currentlyEquipped);
-        }
+        if (!EquipPacketListener.displace(inventory, slot, currentlyEquipped)) return;
         equipment.setItem(equipmentSlot, item);
       } else {
         inventory.setItem(slot, new Item(-1, 0));
@@ -213,11 +233,14 @@ export class EquipPacketListener {
     }
 
     getBonusManager().update(player);
-    equipment.refreshItems();
+    const equipChange = { equipped: true as const, itemId: item.getId(), slot: equipmentSlot };
+    equipment.refreshItems(equipChange);
     inventory.refreshItems();
     player.getUpdateFlag().flag(Flag.APPEARANCE);
     Sounds.sendSound(player, EquipmentSounds.soundFor(item.getDefinition()));
   }
+
+  public static readonly UNEQUIP_NO_SPACE_MESSAGE = "You don't have enough free space to do that.";
 
   public static unequip(player: any, slot: number): boolean {
     if (!player || player.getHitpoints() <= 0) return false;
@@ -233,15 +256,19 @@ export class EquipPacketListener {
 
     const inventory = player.getInventory();
     const stackIntoExisting =
-      item.getDefinition().isStackable() && inventory.getAmount(item.getId()) > 0;
+      item.getDefinition().isStackable() &&
+      inventory.getItems().some((held: any) => EquipPacketListener.sameStack(held, item));
     const inventorySlot = inventory.getEmptySlot();
-    if (!stackIntoExisting && inventorySlot === -1) {
-      inventory.full();
+    if (stackIntoExisting
+      ? inventory.getAddableAmount(item) < item.getAmount()
+      : inventorySlot === -1) {
+      // Live wording for a worn item with nowhere to go (rsprox_transcripts/226/01685.txt, 238/04147.txt).
+      player.sendMessage(EquipPacketListener.UNEQUIP_NO_SPACE_MESSAGE);
       return false;
     }
 
     equipment.setItem(slot, new Item(-1, 0));
-    if (stackIntoExisting) inventory.adds(item.getId(), item.getAmount());
+    if (stackIntoExisting) inventory.add(item, false);
     else inventory.setItem(inventorySlot, item);
 
     getBonusManager().update(player);

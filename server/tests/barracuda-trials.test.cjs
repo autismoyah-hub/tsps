@@ -40,9 +40,9 @@ before(() => {
   const real = PluginManager.createApi("BarracudaTrialsTest");
   api = { ...real, persistAttribute() {}, sendMultiChatboxPrompt: (player, title, ...pairs) => { player.prompt = { title, pairs }; return true; } };
   scoreboard.setFile(path.join(fs.mkdtempSync(path.join(os.tmpdir(), "bt-")), "barracuda-trials.json"));
-  require("../plugins/skills/sailing/Sailing.plugin").register(api);
-  require("../plugins/skills/sailing/Helm.plugin").register({ ...api, onObjectInteraction() {}, onObjectRoute() {} });
-  require("../plugins/skills/sailing/BarracudaTrials.plugin").register(api);
+  require("../plugins/skills/sailing/Panel.Sailing").register(api);
+  require("../plugins/skills/sailing/Helm.Sailing").register({ ...api, onObjectInteraction() {}, onObjectRoute() {} });
+  require("../plugins/skills/sailing/BarracudaTrials.Sailing").register(api);
 });
 
 let nextIndex = 700;
@@ -136,7 +136,7 @@ function atTheHelm(player, parts = {}) {
   return boat;
 }
 
-const helm = require("../plugins/skills/sailing/Helm.plugin");
+const helm = require("../plugins/skills/sailing/Helm.Sailing");
 
 /** A run under way: started, the HUD up (T+2), and the sails set by the player, which starts the timer. */
 function begin(player, trial, rank) {
@@ -204,6 +204,25 @@ test("starting: the rank, supplies, messages and the boat at the start, then the
     assert.ok(player.varps.get(varp("sailing_bt_time_start")) > 0, "the timer starts with the sails (rsprox)");
     const hud = player.sent.filter(([key, id]) => key === "sendClientScript" && id === 8605).at(-1);
     assert.deepEqual(hud.slice(2, 11), [7243, 0, 0, 0, 0, 1, 180, 1, 14], "trial, rum, crates, rank, target, needs");
+  } finally {
+    leave(player);
+  }
+});
+
+test("a trial started from full sail stays put at the start until the sails go up (review #1438)", (t) => {
+  // Open water around the start, so a boat with way on it can move (this harness loads no map).
+  const { RegionManager } = require("../dist/game/collision/RegionManager");
+  t.mock.method(RegionManager, "isWater", () => true);
+  t.mock.method(RegionManager, "getClipping", () => 0);
+  const player = captain();
+  const boat = atTheHelm(player);
+  try {
+    helm.setSailMode(player, boat, "full");
+    boat.velocity = 128; // a tile a tick, as under full sail
+    run.start(player, TEMPOR(), 1);
+    tick(6);
+    assert.equal(player.varps.get(varp("sailing_bt_time_start")) ?? 0, 0, "the timer has not started");
+    assert.deepEqual([boat.fineX / 128, boat.fineY / 128], [3035.5, 2920.5], "moored at the start, no drift");
   } finally {
     leave(player);
   }
@@ -602,6 +621,29 @@ test("Gwenith Glide: the crystallised helm hurts its holder, up to 5, and takes 
 });
 
 
+test("Gwenith Glide: the crystallised helm's headbar NPC stands on the deck's level and leaves the deck with the crystals", () => {
+  const player = captain();
+  const boat = atTheHelm(player);
+  BoatManager.teleport(boat, GWENITH().start);
+  try {
+    resonance.crystallise(player, boat);
+    const { npc } = resonance.helmOf(boat);
+    assert.ok(npc, "the headbar NPC");
+    const helm = BoatManager.getSpec(boat).locs.find((loc) => loc.id === 59597);
+    assert.equal(helm.level, 1, "the helm loc sits on the template's deck plane");
+    assert.deepEqual([npc.getLocation().getX(), npc.getLocation().getY(), npc.getLocation().getZ()],
+      [boat.deckBaseX + helm.x, boat.deckBaseY + helm.y, 0], "on the helm, on the level the people aboard stand on");
+    const deck = BoatManager.getDeck(boat);
+    assert.ok(deck.getNpcs().includes(npc), "on the boat's deck");
+    for (let i = 0; i < 3; i++) resonance.strike(player, boat);
+    assert.equal(resonance.helmOf(boat), undefined, "the crystals off");
+    assert.equal(deck.getNpcs().includes(npc), false, "and the NPC off the deck");
+    assert.equal(npc.getArea() ?? null, null);
+  } finally {
+    leave(player);
+  }
+});
+
 const cutscene = require("../plugins/skills/sailing/barracudatrials/Cutscene.BarracudaTrials");
 
 /** A transcript line reaching the screen: its `before` runs, as NpcDialogues does. */
@@ -731,6 +773,8 @@ test("wind catcher: switched on it keeps trimmed gusts as motes, up to 2, and re
       "You trim the sails, catching the wind and storing a wind mote in your helm.",
       "For storing a wind mote, you'll receive full XP the next time you consume one.",
     ]);
+    // rsprox: both are spam lines (105), 432 times each.
+    assert.deepEqual(player.sent.filter(([key]) => key === "sendTypedMessage").slice(-2).map(([, type]) => type), [105, 105]);
     assert.equal(catcher.storeFromTrim(player, boat), false, "full at 2: an ordinary trim");
     tick();
     assert.equal(player.varbits.get(19178), 2, "the charges a tick later");
@@ -766,6 +810,104 @@ test("Collect-rum clicked on the rum boat's deck goes through the object listene
     require("../dist/game/definition/ObjectDefinition").ObjectDefinition.init();
     new ObjectActionPacketListener().executeAction(player, 59240, rum.deckBaseX + 3, rum.deckBaseY + 2, 1);
     assert.equal(player.messages().at(-1), "<col=3366ff>You collect the rum shipment. Now you need to deliver it to Rum-dashed Ralph!</col>");
+  } finally {
+    leave(player);
+  }
+});
+
+test("All Settings' Barracuda trials hint arrow off: the trial's boat gets no arrow", () => {
+  for (const off of [0, 1]) {
+    const player = captain();
+    atTheHelm(player);
+    try {
+      player.getPacketSender().sendVarbit(varbit("sailing_barracuda_trials_hintarrow_disabled"), off);
+      run.start(player, TEMPOR(), 1);
+      tick();
+      assert.equal(player.sent.some(([key]) => key === "sendWorldEntityHint"), off === 0);
+      assert.equal(player.varbits.get(varbit("current_hint_arrow")) ?? 0, off ? 0 : 6);
+    } finally {
+      leave(player);
+    }
+  }
+});
+
+/** What a run sends around its fades: the minimap varbit, the fade scripts and the HP bar resets. */
+function fadeLog(player) {
+  return player.sent.flatMap(([key, ...args]) => {
+    if (key === "sendVarbit" && args[0] === 6719) return [`minimap ${args[1]}`];
+    if (key === "sendSubInterface" && args[1] === 174) return [`fade ${args[3].postScripts[0].args[1] === 255 ? "out" : "in"}`];
+    if (key === "hpbar") return ["hp hidden"];
+    return [];
+  });
+}
+
+let fadeEvents;
+function watchFadeEvents() {
+  if (fadeEvents) return;
+  fadeEvents = PluginManager.createApi("BarracudaTrialsFadeTest");
+  fadeEvents.onCustomEvent("boss-hud:reset", ({ player }) => player.sent?.push(["hpbar"]));
+  fadeEvents.onCustomEvent("music:unlock-track", ({ player, trackId }) => {
+    if (trackId === 835) player.sendMessage("You have unlocked a new music track: <col=ff3045>Test Your Sails");
+  });
+}
+
+test("a run's fades leave the minimap shown and hide the HP bar: start, restart, exit, completion (rsprox)", () => {
+  watchFadeEvents();
+  const player = captain();
+  atTheHelm(player);
+  try {
+    const current = begin(player, TEMPOR(), 1);
+    assert.deepEqual(fadeLog(player), ["fade out", "hp hidden", "fade in", "hp hidden"], "start");
+    player.sent.length = 0;
+    run.restart(player, current);
+    tick(2);
+    assert.deepEqual(fadeLog(player), ["fade out", "hp hidden", "fade in", "hp hidden"], "restart");
+    player.sent.length = 0;
+    run.exit(player, common.runs.get(player));
+    tick(4);
+    assert.deepEqual(fadeLog(player), ["fade out", "hp hidden", "fade in", "hp hidden"], "exit");
+    const again = begin(player, TEMPOR(), 1);
+    again.remaining.clear();
+    again.crates = 14;
+    tempor.collect(player, again);
+    tempor.deliver(player, again);
+    player.sent.length = 0;
+    tick(4);
+    assert.deepEqual(fadeLog(player), ["fade out", "hp hidden", "fade in", "hp hidden"], "completion");
+  } finally {
+    leave(player);
+  }
+});
+
+test("the first start: the music unlock line comes before the two start lines (rsprox 3467)", () => {
+  watchFadeEvents();
+  const player = captain();
+  atTheHelm(player);
+  try {
+    run.start(player, TEMPOR(), 1);
+    tick();
+    assert.deepEqual(player.messages().slice(-3), [
+      "You have unlocked a new music track: <col=ff3045>Test Your Sails",
+      "You prepare to begin the <col=0090bc>Tempor Tantrum</col>...",
+      "The timer will start as soon as your boat begins to move.",
+    ]);
+  } finally {
+    leave(player);
+  }
+});
+
+test("Gwenith Glide: with colourful fades off, a portal's fade leaves the minimap and HP bar alone (rsprox 936)", () => {
+  watchFadeEvents();
+  const player = captain();
+  const boat = atTheHelm(player);
+  BoatManager.teleport(boat, GWENITH().start);
+  try {
+    begin(player, GWENITH(), 3);
+    player.varbits.set(varbit("settings_colourful_fade_disabled"), 1);
+    player.sent.length = 0;
+    sailInto(boat, [2258, 3495]);
+    tick(2);
+    assert.deepEqual(fadeLog(player), ["fade out", "fade in"]);
   } finally {
     leave(player);
   }

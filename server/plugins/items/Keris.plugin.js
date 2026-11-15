@@ -42,13 +42,23 @@ function isKalphiteOrScabarite(target) {
   if (!target?.isNpc?.()) {
     return false;
   }
-  const name = target.getAsNpc()?.getCurrentDefinition?.()?.getName?.() ?? "";
-  return /kalphite|scabarite/i.test(name);
+  // The monster data's kalphite attribute covers the scarabs too (Scarab Mage, Locust rider, Kephri, the Tombs of Amascut
+  // swarms), whose names say neither; the name is the fallback for definitions without attributes.
+  const definition = target.getAsNpc()?.getCurrentDefinition?.();
+  if (definition?.hasAttribute?.("kalphite") === true) return true;
+  return /kalphite|scabarite/i.test(definition?.getName?.() ?? "");
+}
+
+let core;
+
+/** The core API; target checks judge an area hit against its own victim (core.hitTargetOf). */
+function init(api) {
+  core = api.core;
 }
 
 function applyKerisDamage(attacker, maxHit) {
   const player = attacker?.isPlayer?.() ? attacker.getAsPlayer() : null;
-  const target = attacker?.getCombat?.()?.getTarget?.();
+  const target = core?.hitTargetOf(attacker);
   if (!player || !isKeris(player) || !isKalphiteOrScabarite(target)) {
     return maxHit;
   }
@@ -60,7 +70,7 @@ function applyKerisDamage(attacker, maxHit) {
 
 function applyBreachingAccuracy(attacker, attackRoll) {
   const player = attacker?.isPlayer?.() ? attacker.getAsPlayer() : null;
-  const target = attacker?.getCombat?.()?.getTarget?.();
+  const target = core?.hitTargetOf(attacker);
   if (!player || !BREACHING_PARTISANS.has(weaponId(player)) || !isKalphiteOrScabarite(target)) {
     return attackRoll;
   }
@@ -69,8 +79,10 @@ function applyBreachingAccuracy(attacker, attackRoll) {
 
 module.exports = {
   name: "Keris",
+  description: "Gives the keris family extra damage against Kalphites and Scabarites, with a rare triple-damage hit, and Amascut's partisan its own boost.",
   members: true,
   register(api) {
+    init(api);
     api.registerMeleeHitModifier(applyKerisDamage);
     api.registerMeleeAttackAccuracyModifier(applyBreachingAccuracy);
   },

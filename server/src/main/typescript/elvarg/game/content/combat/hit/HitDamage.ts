@@ -1,5 +1,9 @@
 import { HitMask } from './HitMask';
 import type { Mobile } from '../../../entity/impl/Mobile';
+
+/** A hit queued past the NPC hit-modify hooks: see `HitDamage.setOrigin`. */
+export type HitDamageOrigin = "thrall" | "recoil" | "vengeance";
+
 export class HitDamage {
     private damage: number;
     private hitmask: HitMask;
@@ -89,6 +93,39 @@ export class HitDamage {
         return this;
     }
 
+    /**
+     * The top of the roll this hit came from, set when a weapon or spell rolled it (not for fixed,
+     * reflected, poison or thrall damage). The hit counts as a max hit while it still equals this.
+     */
+    private rolledMaximum = 0;
+
+    public setRolledMaximum(maximum: number): HitDamage {
+        this.rolledMaximum = Math.max(0, Math.floor(maximum));
+        return this;
+    }
+
+    public isMaxHit(): boolean {
+        return this.rolledMaximum > 0 && this.damage === this.rolledMaximum;
+    }
+
+    /**
+     * Whether this reflected damage counts as its source's for the kill. A reflection is not
+     * normally anyone's damage — a monster killed by ring of recoil alone drops nothing (Wiki:
+     * Ring of recoil) — but a League's Thorns damage does count as the wearer's, which is why it
+     * could stop a "specific type of damage only" Combat Achievement and needed a fix (Jagex,
+     * Further Leagues VI Changes).
+     */
+    private creditsSource = false;
+
+    public markCreditsSource(): HitDamage {
+        this.creditsSource = true;
+        return this;
+    }
+
+    public creditsItsSource(): boolean {
+        return this.creditsSource;
+    }
+
     /** Damage rebounded by recoil, vengeance or retribution; a death from it doesn't trigger Retribution. */
     private reflected = false;
 
@@ -99,6 +136,22 @@ export class HitDamage {
 
     public isReflected(): boolean {
         return this.reflected;
+    }
+
+    /**
+     * Where a hit queued straight to the target came from, past the NPC hit-modify hooks:
+     * a thrall's attack, a ring's recoil or vengeance. Content whose rules live in those hooks
+     * applies them to these hits as they land (`combat:damage-apply`). Null for every other hit.
+     */
+    private origin: HitDamageOrigin | null = null;
+
+    public setOrigin(origin: HitDamageOrigin | null): HitDamage {
+        this.origin = origin;
+        return this;
+    }
+
+    public getOrigin(): HitDamageOrigin | null {
+        return this.origin;
     }
 
     /**

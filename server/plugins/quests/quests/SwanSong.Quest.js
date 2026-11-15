@@ -58,6 +58,7 @@
  *   are filled from live counts.
  */
 module.exports = function registerSwanSongQuest(api) {
+  const { giveReward } = require("../QuestRuntime");
   const {
     Animation,
     GameObject,
@@ -1392,7 +1393,7 @@ module.exports = function registerSwanSongQuest(api) {
 
   function grantReward(player) {
     // registerQuest adds one coin from rewardItemId; top the stack up to 25,000.
-    player.getInventory().adds(COINS_ITEM_ID, 24999);
+    giveReward(player, COINS_ITEM_ID, 24999);
     const skills = player.getSkillManager();
     skills.addExperiences(Skill.MAGIC, 15000);
     skills.addExperiences(Skill.PRAYER, 10000);
@@ -1426,6 +1427,8 @@ module.exports = function registerSwanSongQuest(api) {
     varbitId: VARBIT_SWAN_SONG,
     startedValue: STAGE_STARTED,
     completionValue: STAGE_COMPLETE,
+    // Keep persisted gameplay stages; publish the cache quest state, including its final reward phase.
+    varpValue: stage => stage >= STAGE_COMPLETE ? 200 : stage,
     questPoints: 2,
     xpRewards: [
       { skillId: Skill.MAGIC.getIndex(), amount: 15000, label: "Magic" },

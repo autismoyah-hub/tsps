@@ -27,7 +27,7 @@ function fixture() {
   };
   const sender = new Proxy({}, {get: (_, name) => (...args) => sent.push([name, ...args])});
   const player = { getInventory: () => inventory, getEquipment: () => ({getItems: () => worn}), getBanks: () => [], getBank: () => ({getItems: () => []}),
-    getPacketSender: () => sender, getLocation: () => position, getPrivateArea: () => null,
+    getPacketSender: () => sender, getLocation: () => position, getPrivateArea: () => null, isPlayer: () => true, getAsPlayer: () => player,
     getAttribute: key => attributes.get(key), setAttribute: (key, value) => attributes.set(key, value),
     sendMessage: message => sent.push(["message", message]), performAnimation: value => sent.push(["animation", value]),
     getDialogueManager: () => ({startDialogues: value => { chain = value; }}) };
@@ -165,6 +165,7 @@ test("all five maps show their cache map and require the exact tile and plane", 
     Runtime.dig(event); assert.equal(event.allow, true);
     f.move({...step.location,z:1}); Runtime.dig(event); assert.equal(event.allow,true);
     f.move(step.location); Runtime.dig(event); assert.equal(event.allow,false);
+    assert.ok(f.sent.some(([name,id])=>name==="sendSoundEffect"&&id===1470),"dig sound");
     assert.equal(f.items[0].getId(),23245,step.key);
     assert.equal(Runtime.advance(f.player,trail),false);
   }
@@ -201,7 +202,8 @@ test("Reldo supplies only beginner devices and all five hot/cold targets dig wit
     f.move(target.location);
     const deviceSlot=f.items.findIndex(i=>i?.getId()===23183);
     Runtime.feel(f.event(deviceSlot));
-    assert.match(f.sent.at(-1)[1],/visibly shaking/);
+    assert.match(f.sent.findLast(([name])=>name==="message")[1],/visibly shaking/);
+    assert.deepEqual(f.sent.at(-1).slice(0,2),["sendSoundEffect",1197],"history_key_burning");
     f.move({...target.location,x:target.location.x+5});
     let e={player:f.player,itemId:core.ItemIdentifiers.SPADE,option:"Dig",allow:true};
     Runtime.dig(e);assert.equal(e.allow,true);
@@ -233,7 +235,14 @@ test("all six emote clues require location, actual equipment and talking to pers
 test("canonical rewards cover all items with an exact full weighted probability table",()=>{
   assert.equal(Rewards.TABLE.entries.length,74);
   assert.equal(Rewards.TABLE.entries.reduce((sum,e)=>sum+e.weight,0),Rewards.TABLE.out_of);
-  for(const e of Rewards.TABLE.entries){assert.equal(core.CacheDefinitions.getItem(e.item_id).name,e.name);if(e.noted)assert.ok(core.CacheDefinitions.getItem(e.item_id).note>0);}
+  // Rev 242 renamed every sword to "shortsword". reward-caskets.json is an osrsreboxed-db export that
+  // still writes the earlier name; rewards are keyed by item_id, so only the label is behind.
+  const renamedIn242=new Map([[1283,["Black sword","Black shortsword"]]]);
+  for(const e of Rewards.TABLE.entries){
+    const name=core.CacheDefinitions.getItem(e.item_id).name,renamed=renamedIn242.get(e.item_id);
+    if(renamed)assert.deepEqual([e.name,name],renamed,e.item_id);else assert.equal(name,e.name);
+    if(e.noted)assert.ok(core.CacheDefinitions.getItem(e.item_id).note>0);
+  }
   const values=[0,0,0];
   assert.equal(Rewards.roll(()=>values.shift()??0).length,1);
   assert.equal(Rewards.roll(()=>0.99999).length,3);
@@ -247,8 +256,48 @@ test("casket opens once, grants full-inventory overflow, increments completion a
   assert.ok(f.sent.some(([name,group])=>name==="sendInterface"&&group===73));
   assert.equal(Rewards.open(e),false);
   assert.equal(f.attributes.get(Runtime.COMPLETED_ATTRIBUTE),1);
-  const request={player:f.player,category:"Treasure Trails (Beginner)",count:null};
+  const request={player:f.player,category:"Beginner Treasure Trails",count:null};
   f.api.emitCustomEvent("collection-log:category-count",request);assert.equal(request.count,1);
+});
+
+// rsprox 227/00091.txt:346300-346305: "Well done, you've completed the Treasure Trail!", then the red count and worth.
+test("opening a casket says the trail is done, the red count and the treasure's worth, in that order",()=>{
+  const f=fixture();
+  f.items[0]=new core.Item(23245,1);
+  assert.equal(Rewards.open(f.event()),true);
+  const messages=f.sent.filter(([name])=>name==="message").map(([,text])=>text);
+  assert.equal(messages[0],"Well done, you've completed the Treasure Trail!");
+  assert.equal(messages[1],"<col=ef1020>You have completed 1 beginner Treasure Trail.</col>");
+  assert.match(messages[2],/^<col=ef1020>Your treasure is worth around [\d,]+ coins!<\/col>$/);
+  assert.equal(messages.length,3);
+});
+
+// rsprox (227/00091.txt:346841, 346163): "You've found a new clue!" and "You've obtained a casket!" in an item box.
+test("a finished step shows the new clue or the casket in an item box",()=>{
+  for(const [length,itemId,text] of [[2,23182,"You've found a new clue!"],[1,23245,"You've obtained a casket!"]]){
+    const f=fixture();
+    const step=Runtime.data().steps.find(s=>s.kind==="npc");
+    const trail=f.place(step,length);
+    let box=null;
+    f.player.getDialogueManager=()=>({startDialogues:chain=>{
+      for(const d of chain.getDialogues().values()){
+        if(d instanceof core.ItemStatementDialogue) box=d;
+        if(d instanceof core.ActionDialogue) d.send(f.player);
+      }
+    }});
+    assert.equal(f.talk(trail).handled,true);
+    assert.ok(box,`${text}: an item box`);
+    assert.equal(JSON.stringify(box).includes(text),true,`${text}: ${JSON.stringify(box)}`);
+    assert.equal(JSON.stringify(box).includes(String(itemId)),true,`${text}: shows ${itemId}`);
+    assert.equal(f.sent.some(([name,t])=>name==="message"&&/found|casket/.test(t)),false,"not in chat");
+  }
+});
+
+test("Check steps: 'You have completed N steps on this beginner clue scroll.'",()=>{
+  const f=fixture();
+  const trail=f.place(Runtime.data().steps[0],3);
+  assert.equal(Runtime.checkSteps({player:f.player,slot:trail.slot,item:trail.item,itemId:trail.item.getId()}),true);
+  assert.deepEqual(f.sent.filter(([name])=>name==="message").map(([,t])=>t),["You have completed 0 steps on this beginner clue scroll."]);
 });
 
 test("Entrana blocks beginner caskets without consuming them",()=>{

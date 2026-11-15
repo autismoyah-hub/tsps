@@ -1,8 +1,11 @@
 // Kalphite Queen encounter. Evidence: docs/kalphite-queen.md.
 let core;
+let api;
 let CRAWLING, AIRBORNE, KQ_IDS, KQ_WORKER;
 let KqWorker, WorkerDespawnTask, KalphiteQueenCombat, TransformTask, RevertTask;
 const rangedPrayerDrains = new WeakSet();
+/** Queens between the first form's death and the airborne form taking over (TRANSFORMATION_TICKS). */
+const molting = new WeakSet();
 
 const KQ_HITPOINTS = 255;
 const KQ_AGGRESSION = { aggressive: true, aggressiveTolerance: false, combatFollowDistance: 9, huntRange: 9 };
@@ -12,11 +15,18 @@ const WORKER_LIFETIME_TICKS = 100;
 const ROPE_LIFETIME_TICKS = 200;
 const SURFACE_ENTRANCE = [3227, 3108, 0];
 const LAIR_ENTRANCE = [3483, 9510, 2];
-const CHAMBER_ENTRANCE = [3508, 9494, 0];
-const CHAMBER_EXIT = [3508, 9494, 2];
+// Live (rsprox 95, 96, 545, 1757, 1864): the Queen's tunnel lands at (3508, 9493, 0) and her rope
+// climbs back to (3508, 9497, 2); docs/kalphite-queen.md.
+const CHAMBER_ENTRANCE = [3508, 9493, 0];
+const CHAMBER_EXIT = [3508, 9497, 2];
 const SURFACE_TUNNEL = 3827;
 const ROPE_TUNNEL = 3828;
-const CHAMBER_TUNNEL = 19053;
+/**
+ * The Queen's tunnel as the map places it: multiloc kalphite_chamber_entrance_update (23609), whose
+ * varbit 11705 shows kalphite_chamber_entrance_norope (19053) until a rope goes in. A rope on it is
+ * used with the map's id, so both are matched.
+ */
+const CHAMBER_TUNNELS = new Set([23609, 19053]);
 const CHAMBER_ROPE_TUNNEL = 10230;
 const SURFACE_EXIT_ROPE = 3829;
 const CHAMBER_EXIT_ROPE = 3832;
@@ -167,6 +177,7 @@ function defineTypes() {
   class TransformTask extends core.Task {
     constructor(npc) { super(TRANSFORMATION_TICKS, npc); this.npc = npc; }
     execute() {
+      molting.delete(this.npc);
       if (this.npc.isRegistered?.() && this.npc.getHitpoints?.() > 0) {
         this.npc.setNpcTransformationId(AIRBORNE);
         this.npc.performAnimation(core.Animation.DEFAULT_RESET_ANIMATION);
@@ -197,6 +208,7 @@ function transformFirstForm(event) {
     return;
   }
   event.preventDeath = true;
+  molting.add(npc);
   npc.setUntargetable(true);
   npc.setHitpoints(1);
   npc.getCombat().reset();
@@ -205,6 +217,19 @@ function transformFirstForm(event) {
   npc.performAnimation(new core.Animation(MOLT_ANIMATION));
   npc.performGraphic(new core.Graphic(MOLT_GRAPHIC));
   core.TaskManager.submit(new TransformTask(npc));
+}
+
+/**
+ * Nothing hurts the Queen while she molts. Untargetable stops attacks and clearing the hit queue
+ * drops those in flight, but direct damage (a burn's tick, poison, venom) is queued straight
+ * onto her and used to take her last hitpoint, killing the airborne form before it took over
+ * (#4548). In the rsprox captures no hitsplat lands on her in the 12 ticks after any of 154
+ * molts (recordings 95, 96, 545, 1757, 1864, 3276); none of them has status damage on her.
+ * Ours: damage that still arrives is zeroed, so it shows as a 0 splat, and burn stacks keep
+ * running down meanwhile, the rest carrying over to the airborne form.
+ */
+function holdMoltDamage({ target, hit }) {
+  if (molting.has(target) && hit.getDamage() > 0) hit.setDamage(0);
 }
 
 function forceKqAccuracy(event) {
@@ -240,7 +265,8 @@ function hatchWorker(event) {
 function attachSurfaceRope(event) {
   const { player, object, item } = event;
   const objectId = object.getId?.();
-  if ((objectId !== SURFACE_TUNNEL && objectId !== CHAMBER_TUNNEL) || item.getId?.() !== core.ItemIdentifiers.ROPE) {
+  const chamber = CHAMBER_TUNNELS.has(objectId);
+  if ((objectId !== SURFACE_TUNNEL && !chamber) || item.getId?.() !== core.ItemIdentifiers.ROPE) {
     return;
   }
   const inventory = player.getInventory();
@@ -248,7 +274,7 @@ function attachSurfaceRope(event) {
     return;
   }
   inventory.delete(core.ItemIdentifiers.ROPE, 1);
-  const ropeId = objectId === SURFACE_TUNNEL ? ROPE_TUNNEL : CHAMBER_ROPE_TUNNEL;
+  const ropeId = chamber ? CHAMBER_ROPE_TUNNEL : ROPE_TUNNEL;
   const replacement = new core.GameObject(
     ropeId,
     object.getLocation().clone(),
@@ -256,14 +282,25 @@ function attachSurfaceRope(event) {
     object.getFace(),
     object.getPrivateArea()
   );
-  core.TaskManager.submit(new core.TimedObjectReplacementTask(object, replacement, ROPE_LIFETIME_TICKS));
-  player.moveTo(objectId === SURFACE_TUNNEL ? new core.Location(...LAIR_ENTRANCE) : new core.Location(...CHAMBER_ENTRANCE));
+  // Replace the chamber tunnel now so a second player cannot use a rope on it in the same tick.
+  core.TaskManager.submit(new core.TimedObjectReplacementTask(object, replacement, ROPE_LIFETIME_TICKS, chamber));
   event.handled = true;
+  // Live: the surface rope takes the player down with it; the Queen's only ties the rope on
+  // (kalphite_chamber_entrance_withrope, Climb-down), and climbing it is a separate click.
+  if (chamber) return;
+  player.moveTo(new core.Location(...LAIR_ENTRANCE));
+  enterHive(player);
 }
 
 function enterLair({ player, object }) {
   if (object.getId() !== ROPE_TUNNEL) return false;
   player.moveTo(new core.Location(...LAIR_ENTRANCE));
+  enterHive(player);
+}
+
+/** The easy Desert Diary's "Enter the Kalphite Hive." */
+function enterHive(player) {
+  api.emitCustomEvent("diary:task", { player, diary: "desert", task: "enter-the-kalphite-hive" });
 }
 function climbRope({ player, object }) {
   const id = object.getId();
@@ -271,7 +308,15 @@ function climbRope({ player, object }) {
   else if (id === CHAMBER_EXIT_ROPE) player.moveTo(new core.Location(...CHAMBER_EXIT));
   else return false;
 }
-function enterChamber({ player }) { player.moveTo(new core.Location(...CHAMBER_ENTRANCE)); }
+/** Down the Queen's roped tunnel; a league character carrying the echo orb is asked first ("echo-boss:entry"). */
+function enterChamber({ player, object }) {
+  const at = object?.getLocation?.();
+  // The menu's No comes later: the rope may have gone by then.
+  const roped = () => !at || core.ObjectManager.objectsAt(at).some((loc) => loc.getId() === CHAMBER_ROPE_TUNNEL);
+  const entry = { player, boss: "kalphite-queen", enter: () => roped() && player.moveTo(new core.Location(...CHAMBER_ENTRANCE)), handled: false };
+  api.emitCustomEvent("echo-boss:entry", entry);
+  if (!entry.handled) entry.enter();
+}
 
 function awardConditionalDrops({ killer, npc }) {
   if (!killer?.isPlayer?.() || !isAirborne(npc)) {
@@ -301,7 +346,8 @@ function combatAchievementsKillCount({ player, counts }) {
   if (kills > 0) counts["Kalphite Queen"] = kills;
 }
 
-function attach(api) {
+function attach(pluginApi) {
+  api = pluginApi;
   core = api.core;
   CRAWLING = core.NpcIdentifiers.KALPHITE_QUEEN_2;
   AIRBORNE = core.NpcIdentifiers.KALPHITE_QUEEN_3;
@@ -314,6 +360,7 @@ function attach(api) {
   api.onCustomEvent("combat-achievements:kill-count", combatAchievementsKillCount);
   api.persistAttribute(KILL_COUNT_ATTRIBUTE, 0);
   api.onNpcBeforeDeath(transformFirstForm);
+  api.onCustomEvent("combat:damage-apply", holdMoltDamage);
   api.onNpcDeath(awardConditionalDrops);
   api.onCombatHitRoll(forceKqAccuracy);
   api.onCombatHitRoll(hatchWorker);

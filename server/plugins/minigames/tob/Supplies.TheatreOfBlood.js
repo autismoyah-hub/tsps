@@ -15,8 +15,10 @@
  * bandages for the player, not carried over; each wipe also hands the team three. A bandage heals 20
  * and 20% run energy, restores prayer (the Wiki's "variable amount": our amount is a super restore's
  * less a little), cures poison, gives a stamina potion's effect and boosts Attack, Strength and
- * Defence by 15% + 4, Ranged by 10% + 4 and Magic by 4. Hard Mode's points are fewer: Wiki gives "an
- * average of 15", "the highest is 18", by Sotetseg, so a band lower here (fitted to those two).
+ * Defence by 15% + 4, Ranged by 10% + 4 and Magic by 4. Hard Mode's points are fewer (Wiki,
+ * "Theatre of Blood/Hard Mode": "they give less points than normal mode - assuming no deaths
+ * before or during Sotetseg, the player will usually have an average of 15 points, though the
+ * highest is 18"), so the code takes a band lower; the Wiki gives no rule, so that is our fit.
  */
 
 const Shared = require("./Shared.TheatreOfBlood");
@@ -43,6 +45,8 @@ const FLAGS = (1 << 1) | (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 10);
 const BANDAGES_PER_CHEST = 10;
 const BANDAGES_PER_WIPE = 3;
 const BANDAGE = { HEAL: 20, RUN: 20, STAMINA_MS: 120_000 };
+/** Not captured: a bandage outside an Entry Mode raid (an older save, a Normal raid) does nothing. */
+const OUTSIDE_ENTRY = "You can only use these bandages in an Entry Mode raid.";
 
 function memberOf(player) {
   const raid = Raid.raidOf(player);
@@ -114,6 +118,10 @@ function useBandage(event) {
   const { player, itemId } = event;
   if (itemId !== Shared.ITEM.BANDAGES) return false;
   const { Skill } = Shared.core();
+  if (!Raid.raidOf(player)?.isEntry) {
+    player.sendMessage(OUTSIDE_ENTRY);
+    return true;
+  }
   const inventory = player.getInventory();
   if (!inventory.contains(Shared.ITEM.BANDAGES)) return true;
   inventory.delete(Shared.ITEM.BANDAGES, 1);
@@ -189,11 +197,17 @@ function buy(player, entry, amount) {
   sender.sendVarbit(VARBIT.SUPPLY_STAMINA_BOUGHT, member.staminaBought ? 1 : 0);
 }
 
+/** The supplies open at a chest (searchChest, which gives a death's onion instead); not a click from elsewhere. */
+function suppliesOpen(player) {
+  return player.getInterfaceId?.() === INTERFACE.SUPPLIES;
+}
+
 function clickSupply(event) {
   const { player } = event;
   const member = memberOf(player);
   const entry = STOCK[Number.isInteger(event.slot) ? event.slot : -1];
-  if (!member || !entry) return;
+  // A click on the supplies with them closed bought from anywhere in the raid, past the onion too.
+  if (!member || !entry || !suppliesOpen(player)) return;
   const op = event.opId ?? event.action;
   const sender = player.getPacketSender();
   if (op === OPS.VALUE) {
@@ -208,6 +222,7 @@ function clickSupply(event) {
   } else if (op === OPS.BUY_X) {
     player.setEnteredAmountAction({
       execute: (value) => {
+        if (!suppliesOpen(player)) return;
         const amount = Math.max(0, value | 0);
         sender.sendVarbit(VARBIT.SUPPLY_LAST_AMOUNT, amount);
         buy(player, entry, amount);

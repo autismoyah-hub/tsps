@@ -228,6 +228,18 @@ fn getHeightInterp(pos: vec2<f32>, plane: u32) -> f32 {
     return f32(max(h0, h1));
 }
 
+// Actors follow native bilinear grounding; terrain-depth correction keeps its rendered floor.
+fn getActorHeightInterp(pos: vec2<f32>, plane: u32) -> f32 {
+    let tilePos = pos / f32(tileSize);
+    let tile = vec2<i32>(floor(tilePos));
+    let offset = fract(tilePos);
+    let row0 = mix(f32(getTileHeight(tile.x, tile.y, plane)),
+        f32(getTileHeight(tile.x + 1, tile.y, plane)), offset.x);
+    let row1 = mix(f32(getTileHeight(tile.x, tile.y + 1, plane)),
+        f32(getTileHeight(tile.x + 1, tile.y + 1, plane)), offset.x);
+    return mix(row0, row1, offset.y);
+}
+
 // fog.glsl
 fn sdRoundedBox(p: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
     let q = abs(p) - b + r;
@@ -411,6 +423,58 @@ fn applyPriorityDepthBias(viewPos: vec4<f32>, priority: u32) -> vec4<f32> {
     return out;
 }
 
+/** height-map.glsl actorFloorY: the floor's y under a local x/z, with the actor's ground offset. */
+fn actorFloorY(xz: vec2<f32>, plane: u32, groundOffset: f32) -> f32 {
+    return -getHeightInterp(xz, plane) + groundOffset;
+}
+
+const ACTOR_FLOOR_MARCH_STEP: f32 = 8.0;
+const ACTOR_FLOOR_MARCH_STEPS: i32 = 128;
+const ACTOR_FLOOR_BISECTIONS: i32 = 6;
+
+/**
+ * height-map.glsl actorFloorViewPos: for an actor vertex below the floor, the view-space point
+ * where its line of sight first comes up through the floor (marched to a bracket, then bisected).
+ */
+fn actorFloorViewPos(viewPos: vec4<f32>, localPos: vec4<f32>, plane: u32, groundOffset: f32,
+        worldToView: mat4x4<f32>, projection: mat4x4<f32>) -> vec4<f32> {
+    if (localPos.y <= actorFloorY(localPos.xz, plane, groundOffset)) {
+        return viewPos;
+    }
+    let ortho = projection[3][3] > 0.5;
+    let towardEye = select(-viewPos.xyz, vec3<f32>(0.0, 0.0, 1.0), ortho);
+    let ray = transpose(mat3x3<f32>(worldToView[0].xyz, worldToView[1].xyz, worldToView[2].xyz)) * towardEye * 128.0;
+    let stepT = ACTOR_FLOOR_MARCH_STEP / max(length(ray), 0.001);
+    let maxT = select(0.999, 1.0e6, ortho);
+    var under = 0.0;
+    var over = -1.0;
+    for (var i = 1; i <= ACTOR_FLOOR_MARCH_STEPS; i++) {
+        let t = min(f32(i) * stepT, maxT);
+        let p = localPos.xyz + ray * t;
+        if (p.y <= actorFloorY(p.xz, plane, groundOffset)) {
+            over = t;
+            break;
+        }
+        under = t;
+        if (t >= maxT) {
+            break;
+        }
+    }
+    if (over < 0.0) {
+        return viewPos;
+    }
+    for (var i = 0; i < ACTOR_FLOOR_BISECTIONS; i++) {
+        let mid = 0.5 * (under + over);
+        let p = localPos.xyz + ray * mid;
+        if (p.y <= actorFloorY(p.xz, plane, groundOffset)) {
+            over = mid;
+        } else {
+            under = mid;
+        }
+    }
+    return vec4<f32>(viewPos.xyz + towardEye * over, viewPos.w);
+}
+
 fn actorTextureAnimation(vertex: Vertex) -> vec2<f32> {
     let material = getMaterial(vertex.textureId);
     let textureAnimation = vec2<f32>(f32(material.animU), f32(material.animV));
@@ -484,15 +548,27 @@ function placement(kind: ActorKind): string {
     var vertex = decodeVertex(a_vertex.x, a_vertex.y, a_vertex.z, scene.u_brightness, actorHslOverride);
     ${fraction}
     let poseLinear = IDENTITY3;`;
-    // player.vert.glsl: the equipment face layer biases projected depth only, keeping the
-    // original screen position and perspective.
+    // npc/player.vert.glsl: parts sunk below the floor take the floor's depth where they show
+    // (actorFloorViewPos), and the player's equipment face layer biases projected depth only;
+    // both keep the original screen position and perspective.
+    const sinks = player || kind === "npc";
+    const floorView = (pos: string) =>
+        `actorFloorViewPos(${pos}, groundedPos, info.plane, ${player ? "" : "-"}actorU.u_modelYOffset,
+        actorU.u_worldEntityTransform * scene.u_viewMatrix, scene.u_projectionMatrix)`;
     const clip = player
         ? `
-    let depthViewPos = applyPriorityDepthBias(viewPos, vertex.priority);
+    let depthViewPos = applyPriorityDepthBias(${floorView("viewPos")}, vertex.priority);
     let clip = scene.u_projectionMatrix * viewPos;
     let depthClip = scene.u_projectionMatrix * depthViewPos;
     let playerZ = depthClip.z * clip.w / depthClip.w;
     let clipPosition = vec4<f32>(clip.x, clip.y, (playerZ + clip.w) * 0.5, clip.w);`
+        : sinks
+        ? `
+    viewPos = applyPriorityDepthBias(viewPos, vertex.priority);
+    let clip = scene.u_projectionMatrix * viewPos;
+    let floorClip = scene.u_projectionMatrix * ${floorView("viewPos")};
+    let floorZ = floorClip.z * clip.w / floorClip.w;
+    let clipPosition = vec4<f32>(clip.x, clip.y, (floorZ + clip.w) * 0.5, clip.w);`
         : `
     viewPos = applyPriorityDepthBias(viewPos, vertex.priority);
     let clip = scene.u_projectionMatrix * viewPos;
@@ -506,8 +582,9 @@ ${info}${pose}
         rotationY(f32(actorRotation) * RS_TO_RADIANS),
     ) + vec4<f32>(info.tilePos.x, 0.0, info.tilePos.y, 0.0);
 
-    localPos.y -= getHeightInterp(info.tilePos, info.plane);
-    localPos.y ${player ? "+=" : "-="} actorU.u_modelYOffset;
+    localPos.y -= getActorHeightInterp(info.tilePos, info.plane);
+    localPos.y ${player ? "+=" : "-="} actorU.u_modelYOffset;${sinks ? `
+    let groundedPos = localPos;` : ""}
 
     localPos /= vec4<f32>(128.0, 128.0, 128.0, 1.0);
     localPos += vec4<f32>(actorU.u_mapPos.x * 64.0, 0.0, actorU.u_mapPos.y * 64.0, 0.0);
@@ -566,14 +643,10 @@ function fragmentWgsl(alpha: boolean, ext?: WebGPUSceneShaders): string {
         : "";
 
     return `
-// brightness.glsl: the Settings "Screen brightness" on a lit surface (texel x vertex colour).
-// u_brightness is OSRS's gamma exponent (lower is brighter); flat colours already carry it
-// (hslToRgb), textures get the same change relative to the gamma the scene was tuned at.
-const TUNED_BRIGHTNESS: f32 = 0.8;
-
+// brightness.glsl: textures are uploaded at gamma 1.0; apply native gamma once,
+// then ordinary vertex lighting. White untextured samples preserve the HSL palette.
 fn applyBrightness(texel: vec3<f32>, lit: vec3<f32>) -> vec3<f32> {
-    let regamma = pow(max(texel, vec3<f32>(1.0 / 255.0)), vec3<f32>(scene.u_brightness - TUNED_BRIGHTNESS));
-    return texel * regamma * lit * TUNED_BRIGHTNESS;
+    return pow(max(texel, vec3<f32>(0.0)), vec3<f32>(scene.u_brightness)) * lit;
 }
 
 fn sampleModelTexture(textureId: u32, texCoord: vec2<f32>) -> vec4<f32> {
@@ -636,6 +709,21 @@ ${slots?.shade ?? ""}
 const ACTOR_KINDS: ActorKind[] = ["npc", "gfx", "player", "projectile"];
 
 export const ACTOR_FRAGMENT_ENTRY = "fs_actor";
+/** Writes 1 wherever a model covers the pixel: the Shader Effects prayer aura's player silhouette. */
+export const ACTOR_MASK_FRAGMENT_ENTRY = "fs_mask";
+const ACTOR_MASK_WGSL = `
+@fragment
+fn fs_mask(input: ActorVertexOutput) -> @location(0) vec4<f32> {
+    var coverage = input.v_color.a;
+    if (input.v_texId != 0u) {
+        coverage = coverage * sampleModelTexture(input.v_texId, input.v_texCoord).a;
+    }
+    if (coverage < 0.3) {
+        discard;
+    }
+    return vec4<f32>(1.0);
+}
+`;
 export const ACTOR_DEPTH_FRAGMENT_ENTRY = "fs_depth";
 
 /** Vertex entry for an actor kind; `depth` picks the depth-pass entry. */
@@ -687,6 +775,7 @@ struct DepthVertexOutput {
         ACTOR_COMMON_WGSL +
         outputs +
         fragmentWgsl(options.alpha, ext) +
+        (depth || ext ? "" : ACTOR_MASK_WGSL) +
         entries;
     return device.createShaderModule({
         code,

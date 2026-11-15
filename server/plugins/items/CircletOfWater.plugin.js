@@ -8,6 +8,8 @@
  * like to add? (0 - N)", then show an objectbox with the charged circlet. Uncharge asks to
  * confirm first. Worn, its charges show in varbit buff_water_circlet_charges.
  */
+const { restricted, plainAmount, takePlain, PRESET_TEXT } = require("./PoweredStaff");
+
 const MAX_CHARGES = 500000;
 const RUNES_PER_CHARGE = 5;
 const CHARGE_META_KEY = "circlet-of-water:charges";
@@ -62,7 +64,12 @@ function statement(player, text) {
 /** Captures (rsprox): the count prompt, then an objectbox with the charged circlet. */
 function promptCharge(player, circlet) {
   const inventory = player.getInventory();
-  const most = Math.min(MAX_CHARGES - charges(circlet), Math.floor(inventory.getAmount(waterRuneId) / RUNES_PER_CHARGE));
+  // Only plain water runes pay: Uncharge refunds plain runes, so a preset copy would come back tradeable.
+  const most = Math.min(MAX_CHARGES - charges(circlet), Math.floor(plainAmount(inventory, waterRuneId) / RUNES_PER_CHARGE));
+  if (most <= 0 && inventory.getAmount(waterRuneId) >= RUNES_PER_CHARGE) {
+    player.sendMessage(PRESET_TEXT);
+    return;
+  }
   if (most <= 0) {
     statement(player, "You need some water runes to charge your circlet.");
     return;
@@ -72,9 +79,9 @@ function promptCharge(player, circlet) {
       if (!inventory.getItems().includes(circlet)) return;
       const before = charges(circlet);
       const added = Math.min(Math.floor(Number(amount)), MAX_CHARGES - before,
-        Math.floor(inventory.getAmount(waterRuneId) / RUNES_PER_CHARGE));
+        Math.floor(plainAmount(inventory, waterRuneId) / RUNES_PER_CHARGE));
       if (!(added > 0)) return;
-      inventory.deleteNumber(waterRuneId, added * RUNES_PER_CHARGE);
+      takePlain(inventory, waterRuneId, added * RUNES_PER_CHARGE);
       setCharges(circlet, before + added);
       inventory.refreshItems();
       itemStatement(player, circletId, before > 0
@@ -91,6 +98,10 @@ function charge({ player, item }) {
 }
 
 function chargeWithRunes(event) {
+  if (restricted(isCirclet(event.usedItemId) ? event.usedWithItem : event.usedItem)) {
+    event.player.sendMessage(PRESET_TEXT);
+    return true;
+  }
   promptCharge(event.player, isCirclet(event.usedItemId) ? event.usedItem : event.usedWithItem);
   return true;
 }
@@ -100,10 +111,20 @@ function check({ player, item }) {
   return true;
 }
 
+/** The inventory can fill while the prompt is open, so Yes asks again. */
+function refundFits(inventory, circlet) {
+  const refund = new core.Item(waterRuneId, charges(circlet) * RUNES_PER_CHARGE);
+  return inventory.getAddableAmount(refund) >= refund.getAmount();
+}
+
 function uncharge(player, circlet) {
   const inventory = player.getInventory();
   const amount = charges(circlet);
   if (!inventory.getItems().includes(circlet) || amount <= 0) return;
+  if (!refundFits(inventory, circlet)) {
+    statement(player, "You don't have enough room to uncharge your circlet.");
+    return;
+  }
   setCharges(circlet, 0);
   inventory.add(new core.Item(waterRuneId, amount * RUNES_PER_CHARGE));
   inventory.refreshItems();
@@ -114,7 +135,7 @@ function uncharge(player, circlet) {
 /** Captures (rsprox): a full inventory is refused at once; otherwise "Yes." / "No." first. */
 function confirmUncharge({ player, item }) {
   const inventory = player.getInventory();
-  if (!inventory.contains(waterRuneId) && inventory.getFreeSlots() <= 0) {
+  if (!refundFits(inventory, item)) {
     statement(player, "You don't have enough room to uncharge your circlet.");
     return true;
   }
@@ -144,6 +165,7 @@ function protect(request) {
 
 module.exports = {
   name: "CircletOfWater",
+  description: "Circlet of water: charged with water runes up to 500,000 charges, uncharge, and stands in for drinks against desert heat.",
   members: true,
   _test: { MAX_CHARGES, CHARGE_META_KEY, charges },
   register(api) {

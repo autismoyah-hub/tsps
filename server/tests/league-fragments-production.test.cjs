@@ -79,8 +79,8 @@ before(async () => {
     onCustomEvent: (name, handler) => (custom[name] = (custom[name] ?? []).concat(handler)),
     emitCustomEvent: (name, payload) => emit(name, payload),
   }, { get: (target, key) => (key in target ? target[key] : on(String(key))) });
-  require("../plugins/modes/LeagueMode.plugin").register(api);
-  require("../plugins/modes/LeaguePoints.plugin").register(api);
+  require("../plugins/modes/Base.LeagueMode").register(api);
+  require("../plugins/modes/Points.LeagueMode").register(api);
   require("../plugins/skills/herblore/Events.Herblore")(api);
 });
 
@@ -195,12 +195,19 @@ test("The Alchemist: cooking, cleaning and mixing all at once with three pieces;
   assert.equal(actions(character("alchemistmain", { profile: "main" }), "COOKING", "cook"), 1);
 });
 
+/** A fletching recipe's own group in plugins/skills/data/fletching.json (gem bolt tips are "boltTips" since d0710deec). */
+function fletchingGroup(output) {
+  const recipe = require("../plugins/skills/data/fletching.json").recipes.find((entry) => entry.output === output);
+  assert.ok(recipe, `a fletching recipe makes ${output}`);
+  return recipe.group;
+}
+
 test("The Craftsman: the Wiki's activities all at once, through Smithing's own session loop", () => {
   const player = shattered("craftsman");
   equip(player, F.rumpleBowString, F.dragonOnABit, F.imcandosApprentice);
   for (const [skill, kind] of [["SMITHING", "smelt"], ["SMITHING", "smith"], ["SMITHING", "cannonballs"], ["CRAFTING", "leather"],
     ["CRAFTING", "glassblowing"], ["CRAFTING", "gems"], ["CRAFTING", "pottery"], ["CRAFTING", "battlestaves"], ["CRAFTING", "spinning"],
-    ["FLETCHING", "logs"], ["FLETCHING", "chisel"]]) {
+    ["FLETCHING", "logs"], ["FLETCHING", "chisel"], ["FLETCHING", fletchingGroup("SAPPHIRE_BOLT_TIPS")]]) {
     assert.equal(actions(player, skill, kind), 28, `${skill} ${kind}`);
   }
   for (const [skill, kind] of [["CRAFTING", "jewellery"], ["CRAFTING", "weaving"], ["FLETCHING", "arrows"], ["COOKING", "cook"]]) {
@@ -329,10 +336,11 @@ test("Profletchional and Pro Tips: more XP for logs and stringing; more bolt tip
   }
 
   const tips = cases(F.proTips);
-  produce(tips.owner, "FLETCHING", "chisel", I.SAPPHIRE_BOLT_TIPS, 12, 4);
+  const boltTips = fletchingGroup("SAPPHIRE_BOLT_TIPS");
+  produce(tips.owner, "FLETCHING", boltTips, I.SAPPHIRE_BOLT_TIPS, 12, 4);
   assert.equal(tips.owner.getInventory().getAmount(I.SAPPHIRE_BOLT_TIPS), 3, "30% of 12, rounded down");
   for (const player of tips.others) {
-    produce(player, "FLETCHING", "chisel", I.SAPPHIRE_BOLT_TIPS, 12, 4);
+    produce(player, "FLETCHING", boltTips, I.SAPPHIRE_BOLT_TIPS, 12, 4);
     assert.equal(player.getInventory().getAmount(I.SAPPHIRE_BOLT_TIPS), 0, player.getUsername());
   }
 });
@@ -453,7 +461,8 @@ test("Plank Stretcher, Enchanted Jeweler, Rumple-Bow-String and Alchemaniac", ()
     crafter.performAnimation = () => {};
     crafter.getInventory().adds(I.OAK_PLANK, 27); // with the class's scimitar, a full inventory
     Math.random = () => 0.05;
-    Workbench.makeFlatpack(crafter, bench, { key, level: 1, experience: 60 });
+    Workbench.makeFlatpack(crafter, bench, { key, level: 1, experience: 60, materials: [] });
+    for (let tick = 0; tick < Workbench.FLATPACK_TICKS; tick++) core.TaskManager.process();
     assert.equal(crafter.getInventory().getAmount(I.OAK_PLANK), 27, "the planks kept");
     assert.deepEqual(fell, [flatpack], "the flatpack on the floor, not lost");
   } finally {
@@ -475,4 +484,40 @@ test("Plank Stretcher, Enchanted Jeweler, Rumple-Bow-String and Alchemaniac", ()
   assert.equal(emit("magic:alchemy-policy", { player: alcher.owner, high: true, coins: 1000 }).coins, 1150);
   assert.equal(emit("magic:alchemy-policy", { player: alcher.owner, high: false, coins: 1000 }).coins, 1000, "High Alchemy only");
   assert.equal(emit("magic:alchemy-policy", { player: alcher.others[0], high: true, coins: 1000 }).coins, 1000);
+});
+
+// Plugins load by path, so the amulet of chemistry (plugins/items) answers "herblore:mix" before the league
+// fragments (plugins/modes). Wiki (Amulet of chemistry): it "provides no benefit when making potions that always
+// output 4 doses"; a dose Mixologist gives costs no charge.
+test("Mixologist with an amulet of chemistry answering first: the fragment's fourth dose spends no charge", (t) => {
+  const Amulet = require("../plugins/items/AmuletOfChemistry.plugin");
+  const attack = ["1dose1attack", "2dose1attack", "3dose1attack", "4dose1attack"].map(obj);
+  Amulet._test.initialize({ core, emitCustomEvent(name, request) {
+    const doses = attack.indexOf(request.itemId) + 1;
+    if (name === "potions:dose-family" && doses > 0) request.family = { doses, byDose: [0, ...attack] };
+  } });
+  const mixListeners = custom["herblore:mix"];
+  const madeListeners = custom["herblore:made"];
+  custom["herblore:mix"] = [Amulet._test.onMix, ...(mixListeners ?? [])];
+  custom["herblore:made"] = [Amulet._test.onMade, ...(madeListeners ?? [])];
+  t.after(() => { custom["herblore:mix"] = mixListeners; custom["herblore:made"] = madeListeners; });
+  let mix;
+  require("../plugins/skills/herblore/Mixing.Herblore")(new Proxy({ core }, {
+    get: (target, key) => (key in target ? target[key] : (handler) => { if (key === "onItemOnItem") mix = handler; }),
+  }));
+  const brew = (player) => {
+    player.getEquipment().setItem(core.Equipment.AMULET_SLOT, new core.Item(core.ItemIdentifiers.AMULET_OF_CHEMISTRY, 1));
+    const skills = player.getSkillManager();
+    skills.setMaxLevels(core.Skill.HERBLORE, 10, false);
+    skills.setCurrentLevels(core.Skill.HERBLORE, 10, false);
+    const inventory = player.getInventory();
+    inventory.resetItems();
+    inventory.adds(obj("guamvial"), 1).adds(obj("eye_of_newt"), 1);
+    mix({ player, usedItemId: obj("eye_of_newt"), usedWithItemId: obj("guamvial"), handled: false });
+    return [inventory.getAmount(attack[3]), player.getAttribute(Amulet._test.CHARGES_ATTRIBUTE) ?? Amulet._test.MAX_CHARGES];
+  };
+  const { owner, others } = cases(F.mixologist, 3);
+  Math.random = () => 0.01; // the amulet's 5% wins
+  assert.deepEqual(brew(owner), [1, 5], "level 3: the fragment's 4 doses; the amulet keeps all five charges");
+  for (const player of others) assert.deepEqual(brew(player), [1, 4], `${player.getUsername()}: the amulet's dose costs a charge`);
 });

@@ -21,6 +21,8 @@ const Shield = require("./Shield.PhantomMuspah");
 const { SpikeField } = require("./Spikes.PhantomMuspah");
 
 const OTHER_FORM = { ranged: "melee", melee: "ranged" };
+/** Wiki: Defence reductions cannot take this encounter below 125. */
+const DEFENCE_FLOOR = 125;
 /** A special or a switch waits this long after an attack, so they don't cut it short. */
 const ACTION_GAP_TICKS = 2;
 /** Form switches are at least this far apart (captured: never closer, even under Leagues damage). */
@@ -88,6 +90,7 @@ class Fight {
     const muspah = Common.api.spawnNpc({ id: npcs[this.form], x: at.getX(), y: at.getY(), z: at.getZ(), owner: this.player, wanderRadius: 0 });
     if (!muspah) return;
     this.muspah = muspah;
+    muspah.setStatMinimumLevel(Common.core.Skill.DEFENCE, DEFENCE_FLOOR);
     muspah.__skipDefaultRespawn = true;
     muspah.__muspahFight = this;
     muspah.setFlag("combat:freezable", true);
@@ -177,7 +180,7 @@ class Fight {
     const { homing, specials, overlay } = Common.data;
     Common.animate(this.muspah, homing.anim);
     this.muspah.performGraphic(Common.graphic(homing.spot));
-    this.player.sendMessage(specials.message);
+    Common.fightMessage(this.player, specials.message);
     Common.overlayFade(this.player, overlay.dark);
     this.at(HOMING_DARK_TICKS, () => Common.overlayFade(this.player, overlay.clear));
     this.spikes.startHoming();
@@ -424,6 +427,7 @@ function freezeDuration(event) {
   const { npcs } = Common.data;
   if (![npcs.ranged, npcs.melee, npcs.shielded, npcs.final].includes(event.target?.getId?.())) return;
   event.ticks *= 0.66;
+  event.resisted = true; // its 33% resistance is applied here, not again by the generic rule
 }
 
 /** A hit on the Muspah: the shield, the shield skip, and the form switch's count. */

@@ -38,12 +38,14 @@ function createContainer(capacity, initial = []) {
     getAmount: (id) => items.filter((item) => item.getId() === id).reduce((total, item) => total + item.getAmount(), 0),
     contains: (id) => items.some((item) => item.getId() === id && item.getAmount() > 0),
     getFreeSlots: () => capacity - container.getValidItems().length,
+    getAddableAmount: (item) => (container.contains(item.getId()) || container.getFreeSlots() > 0 ? item.getAmount() : 0),
     add(item) {
       const stack = items.find((entry) => entry.getId() === item.getId());
       if (stack && item.getDefinition().isStackable()) stack.setAmount(stack.getAmount() + item.getAmount());
       else if (container.getFreeSlots() > 0) items.push(item.clone());
       return container;
     },
+    adds: (id, amount) => container.add(new Item(id, amount)),
     deleteNumber(id, amount) {
       let left = amount;
       for (const item of [...items]) {
@@ -67,6 +69,7 @@ function createContainer(capacity, initial = []) {
     deletes(item) {
       return container.deleteNumber(item.getId(), item.getAmount());
     },
+    deleteItemContainer(item, slot) { return container.deleteAtSlot(slot, item.getAmount()); },
     refreshItems: () => container,
     sortItems: () => container,
   };
@@ -128,6 +131,7 @@ function createPlayer(inventoryItems = [], bankItems = []) {
     sendMessage: (message) => player.messages.push(message),
     getInventory: () => inventory,
     getBank: (tab) => banks[tab],
+    getBanks: () => banks,
     getCurrentBankTab: () => 0,
     isSearchingBank: () => false,
     getBankCustomQuantity: () => player.bankCustomQuantity,
@@ -345,7 +349,8 @@ test("op1 on the pouch in the bank shows it, and op9 empties it into the bank", 
   assert.equal(sender.getVarbit(Bank.VIEW_CONTAINER_VARBIT), 3);
   assert.equal(sender.getVarp(Bank.VIEW_CONTAINER_OBJ_VARP), Items.RUNE_POUCH);
   assert.ok(player.log.some((line) => line.startsWith("flags 15:26 1-3")));
-  assert.ok(player.log.some((line) => line.startsWith("flags 15:95 112-223")));
+  // Rev 242: the loadout-name list (enum 5864) has 113 rows (112 before).
+  assert.ok(player.log.some((line) => line.startsWith("flags 15:95 113-225")));
 
   const deposit = { player, item: pouch, slot: 0, op: 2, handled: false };
   PluginManager.emitCustomEvent(Bank.INVENTORY_OP_EVENT, deposit);
@@ -486,14 +491,15 @@ test("a loadout name is picked from the cache's list", () => {
 
   clickComponent(player, "bankside:runepouch_name_a", 1);
   assert.equal(sender.getVarbit(varbit("rune_pouch_loadout_name_selected")), 1);
-  // Captured: list rows 132, 130 and 135 named The Fight Caves (18), Duke Sucellus (17) and Giant Mole (21).
-  clickComponent(player, "bankside:runepouch_name_select_list", 1, { slot: 132 });
+  // Captured (rev 241): list rows 132, 130 and 135 named The Fight Caves (18), Duke Sucellus (17) and Giant
+  // Mole (21). Rev 242's list has 113 rows, so the same names sit at 133, 131 and 136.
+  clickComponent(player, "bankside:runepouch_name_select_list", 1, { slot: 133 });
   assert.equal(sender.getVarbit(varbit("rune_pouch_loadout_name_a")), 18);
   clickComponent(player, "bankside:runepouch_name_b", 1);
-  clickComponent(player, "bankside:runepouch_name_select_list", 1, { slot: 130 });
+  clickComponent(player, "bankside:runepouch_name_select_list", 1, { slot: 131 });
   assert.equal(sender.getVarbit(varbit("rune_pouch_loadout_name_b")), 17);
   clickComponent(player, "bankside:runepouch_name_a", 1);
-  clickComponent(player, "bankside:runepouch_name_select_list", 1, { slot: 135 });
+  clickComponent(player, "bankside:runepouch_name_select_list", 1, { slot: 136 });
   assert.equal(sender.getVarbit(varbit("rune_pouch_loadout_name_a")), 21);
 });
 
@@ -513,6 +519,25 @@ test("spells take only the shortfall from the pouch", () => {
   const noPouch = createPlayer([]);
   pouchWith(noPouch, [[Items.AIR_RUNE, 10], [Items.MIND_RUNE, 10]]);
   assert.equal(CombatSpells.WIND_STRIKE.canCast(noPouch, false), false, "the runes need the pouch carried");
+});
+
+test("runes a spell gives back go to the pouch slot holding that rune while it has room, never an empty one", () => {
+  const refund = (player, runeId, amount) => {
+    const event = { player, runeId, amount, stored: 0 };
+    PluginManager.emitCustomEvent("magic:rune-refund", event);
+    return event.stored;
+  };
+  const player = createPlayer([new Item(Items.RUNE_POUCH, 1)]);
+  pouchWith(player, [[Items.EARTH_RUNE, 14928], [Items.DEATH_RUNE, 16000]]);
+  assert.equal(refund(player, Items.EARTH_RUNE, 10), 10, "the pouch's earth slot takes it");
+  assert.equal(refund(player, Items.EARTH_RUNE, 2000), 16000 - 14938, "up to 16,000; the rest is the caller's");
+  assert.equal(refund(player, Items.DEATH_RUNE, 2), 0, "a full slot takes none");
+  assert.equal(refund(player, Items.ASTRAL_RUNE, 4), 0, "an empty slot is never filled");
+  assert.deepEqual(varbitSlots(player), [[Items.EARTH_RUNE, 16000], [Items.DEATH_RUNE, 16000]]);
+
+  const noPouch = createPlayer([]);
+  pouchWith(noPouch, [[Items.EARTH_RUNE, 10]]);
+  assert.equal(refund(noPouch, Items.EARTH_RUNE, 10), 0, "only a carried pouch");
 });
 
 test("login sends saved player pouch slots without opening bank tabs", () => {
@@ -579,4 +604,220 @@ test("Vengeance on yourself pays its runes from the carried pouch", () => {
   assert.equal(vengeance, true);
   assert.deepEqual(experience, [112]);
   assert.deepEqual(varbitSlots(player), [[Items.ASTRAL_RUNE, 96], [Items.EARTH_RUNE, 90], [Items.DEATH_RUNE, 98]]);
+});
+
+
+test("Bones to Bananas pays its runes from the carried pouch, not for free", () => {
+  const { EffectSpells } = require("../dist/game/content/combat/magic/EffectSpells");
+  const bones = Array.from({ length: 5 }, () => new Item(526, 1));
+  const player = createPlayer([new Item(Items.RUNE_POUCH, 1), ...bones]);
+  const experience = [];
+  player.getSpellbook = () => MagicSpellbook.NORMAL;
+  player.getSkillManager = () => ({
+    getCurrentLevel: () => 99,
+    getMaxLevel: () => 99,
+    addExperiences: (skill, amount) => experience.push(amount),
+  });
+  player.getClickDelay = () => ({ elapsedTime: () => true, reset() {} });
+  player.performAnimation = () => {};
+  player.performGraphic = () => {};
+  player.getPacketSender().sendSoundEffect = () => player.getPacketSender();
+  pouchWith(player, [[Items.NATURE_RUNE, 100], [Items.EARTH_RUNE, 100], [Items.WATER_RUNE, 100]]);
+  const spell = EffectSpells.BONES_TO_BANANAS;
+  assert.equal(EffectSpells.handleSpell(player, spell.spellId()), true);
+  assert.equal(player.getInventory().getAmount(1963), 5, "five bananas");
+  const paid = spell.itemsRequired(player).map((rune) => [rune.getId(), 100 - rune.getAmount()]);
+  const left = new Map(varbitSlots(player));
+  for (const [id, expected] of paid) assert.equal(left.get(id), expected, "the pouch paid the spell's runes");
+});
+
+// These use real lazy banks, item identities, placeholders and native packet dispatch.
+function nativePouchActor(t, pouchId = Items.RUNE_POUCH) {
+  const {Player} = require('../dist/game/entity/impl/player/Player');
+  const {PlayerSession} = require('../dist/net/PlayerSession');
+  const {ClientConnection} = require('../dist/net/NetworkBuilder');
+  const channel = {kind:'test',remoteAddress:'127.0.0.1',isOpen:()=>true,send:()=>true,close(){},onData(){},onError(){},onClose(){}};
+  const player = new Player(new PlayerSession(channel));
+  player.setUsername('pouch2407'); player.setIndex(777); player.setRegistered(true);
+  player.getInventory().add(new Item(pouchId), false);
+  const connection = new ClientConnection(channel); connection.player = player;
+  t.after(() => player.setRegistered(false));
+  const click = async (uid, slot, itemId, op = 1) => {
+    await connection.dispatch([{type:'widget_action',widgetId:uid,groupId:uid>>>16,childId:uid&65535,buttonNum:op,slot,itemId}]);
+    connection.processTurnPackets();
+  };
+  const open = async () => { player.getBank(0).open(); await click((15<<16)|3,0,pouchId); };
+  return {player,connection,click,open};
+}
+
+test('native bank withdrawals fill the viewed pouch directly and preserve the clicked stack', async t => {
+  const f = nativePouchActor(t), p=f.player, bank=p.getBank(0);
+  p.setPlaceholders(false); bank.add(new Item(Items.AIR_RUNE, 100), false); await f.open();
+  assert.equal(p.getPacketSender().getVarbit(Bank.VIEW_CONTAINER_VARBIT),3);
+  await f.click(component('bankmain:items'),0,Items.AIR_RUNE,7);
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),100);
+  assert.equal(bank.getAmount(Items.AIR_RUNE),0);
+  assert.ok(bank.getItems().every(item=>item.getId()!==Bank.placeholderBankId(Items.AIR_RUNE)), 'disabled placeholder mode leaves none');
+  assert.equal(p.getInventory().getAmount(Items.AIR_RUNE),0,'does not route through inventory');
+});
+
+test('native bank fill respects pouch room, metadata, placeholders and quantity prompts', async t => {
+  const f=nativePouchActor(t),p=f.player,bank=p.getBank(0);
+  const protectedRune=new Item(Items.AIR_RUNE,90).setMetaValue(Item.UNTRADEABLE_META,true).setMetaValue('test:state','keep');
+  bank.add(protectedRune,false);bank.add(new Item(Items.AIR_RUNE,100),false);await f.open();
+  Pouch.store(p,Items.AIR_RUNE,15998);
+  await f.click(component('bankmain:items'),1,Items.AIR_RUNE,7);
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),16000);assert.equal(bank.forSlot(1).getAmount(),98);
+  assert.equal(bank.forSlot(0).getMetaValue('test:state'),'keep');assert.equal(bank.forSlot(0).getAmount(),90);
+  Pouch.setSlots(p,Array(4).fill(null));
+  await f.click(component('bankmain:items'),0,Items.AIR_RUNE,7);
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),0,'metadata cannot be erased by pouch storage');
+  // A delayed X remains attached to the clicked stack rather than another copy of its id.
+  await f.click(component('bankmain:items'),1,Items.AIR_RUNE,6);
+  const pending=p.getEnteredAmountAction();assert.ok(pending);
+  bank.setItem(1,new Item(Items.AIR_RUNE,20));pending.execute(10);
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),0);assert.equal(bank.forSlot(1).getAmount(),20);
+  p.setPlaceholders(true);
+  await f.click(component('bankmain:items'),1,Items.AIR_RUNE,7);
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),20);
+  assert.equal(bank.forSlot(1).getId(),Bank.placeholderBankId(Items.AIR_RUNE));
+  assert.equal(bank.forSlot(1).getAmount(),0);
+});
+
+
+test('native bank fill resolves search display slots to the real bank tab and keeps search counts current', async t => {
+  const f=nativePouchActor(t),p=f.player;
+  p.setPlaceholders(false);p.getBank(0).add(new Item(Items.FIRE_RUNE,20),false);
+  p.getBank(2).add(new Item(Items.AIR_RUNE,100),false);await f.open();
+  Bank.search(p,'air rune');assert.equal(p.isSearchingBank(),true);
+  const tab=Bank.getTabForItem(p,Items.AIR_RUNE);assert.ok(tab>0,'runes are in a non-main tab after bank tab compaction');
+  const entry=Bank.resolveDisplaySlot(p,0);assert.equal(entry.tab,tab);
+  await f.click(component('bankmain:items'),0,Items.AIR_RUNE,4);
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),10);
+  assert.equal(p.getBank(tab).getAmount(Items.AIR_RUNE),90);
+  assert.equal(p.getBank(Bank.BANK_SEARCH_TAB_INDEX).getAmount(Items.AIR_RUNE),90);
+  assert.equal(p.getBank(0).getAmount(Items.FIRE_RUNE),20);
+  await f.click(component('bankmain:items'),0,Items.AIR_RUNE,7);
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),100);
+  assert.equal(p.getBank(tab).getAmount(Items.AIR_RUNE),0);
+  assert.equal(p.getBank(Bank.BANK_SEARCH_TAB_INDEX).getAmount(Items.AIR_RUNE),0);
+});
+
+test('native bank fill supports divine fourth slots with a full inventory and rejects a missing pouch', async t => {
+  const f=nativePouchActor(t,Items.DIVINE_RUNE_POUCH),p=f.player;
+  p.getInventory().add(new Item(Items.BRONZE_DAGGER,27),false);
+  assert.equal(p.getInventory().getFreeSlots(),0);
+  for(const id of [Items.AIR_RUNE,Items.WATER_RUNE,Items.EARTH_RUNE])Pouch.store(p,id,1,4);
+  p.getBank(0).add(new Item(Items.FIRE_RUNE,20),false);await f.open();
+  await f.click(component('bankmain:items'),0,Items.FIRE_RUNE,4);
+  assert.equal(Pouch.amountOf(p,Items.FIRE_RUNE),10,'direct fill does not require an inventory slot');
+  assert.equal(Pouch.slots(p)[3].id,Items.FIRE_RUNE);
+  p.getInventory().deleteAtSlot(0,1);
+  await f.click(component('bankmain:items'),0,Items.FIRE_RUNE,7);
+  assert.equal(Pouch.amountOf(p,Items.FIRE_RUNE),10,'stale bank view cannot fill an absent pouch');
+  assert.equal(p.getBank(0).getAmount(Items.FIRE_RUNE),10);
+});
+
+
+test('loadout transfer boundaries retain pouch contents when the bank cannot accept them', async t => {
+  const f=nativePouchActor(t),p=f.player,bank=p.getBank(0);await f.open();
+  Pouch.store(p,Items.AIR_RUNE,100);
+  for(let slot=0;slot<Bank.getCapacity(p);slot++)bank.add(new Item(Items.BRONZE_DAGGER,1).setMetaValue('test:slot',slot),false);
+  assert.equal(bank.getFreeSlots(),0);
+  Loadouts._test.load(p,0);
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),100,'failed bank return must not destroy stored runes');
+  assert.equal(bank.getAmount(Items.AIR_RUNE),0);
+  await f.click(component('bankside:runepouch_bankall'),-1,65535);
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),100,'Bank all also retains a refused return');
+  assert.equal(bank.getAmount(Items.AIR_RUNE),0);
+  bank.setItem(0,new Item(Items.AIR_RUNE,5));
+  Pouch.store(p,Items.FIRE_RUNE,100);
+  Loadouts._test.load(p,0);
+  assert.equal(bank.getAmount(Items.AIR_RUNE),105,'an existing bank stack can accept its return');
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),0);
+  assert.equal(Pouch.amountOf(p,Items.FIRE_RUNE),100,'another unbankable type remains owned in the pouch');
+});
+
+test('loadout transfer boundaries never consume metadata-bearing copies to fill ID-only pouch slots', async t => {
+  const f=nativePouchActor(t),p=f.player,bank=p.getBank(0);
+  const protectedRune=new Item(Items.AIR_RUNE,90).setMetaValue(Item.UNTRADEABLE_META,true);
+  bank.add(protectedRune,false);bank.add(new Item(Items.AIR_RUNE,100),false);await f.open();
+  p.getInventory().add(new Item(Items.AIR_RUNE,30).setMetaValue(Item.UNTRADEABLE_META,true),false);
+  p.setAttribute('rune-pouch:loadouts',[{runes:[[Items.AIR_RUNE,50]],name:0}]);
+  Loadouts._test.load(p,0);
+  assert.equal(bank.forSlot(0).getAmount(),90,'earlier protected state stays intact');
+  assert.equal(bank.forSlot(0).getMetaValue(Item.UNTRADEABLE_META),true);
+  assert.equal(p.getInventory().getAmount(Items.AIR_RUNE),30,'protected inventory copies also retain their state');
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),50);
+  assert.equal(bank.getAmount(Items.AIR_RUNE),140);
+  p.setAttribute('rune-pouch:loadouts',[{runes:[[Items.AIR_RUNE,500]],name:0}]);
+  Loadouts._test.load(p,0);
+  assert.equal(Pouch.amountOf(p,Items.AIR_RUNE),100,'short loadouts still take all legitimate availability');
+  assert.equal(bank.getAmount(Items.AIR_RUNE),90,'protected bank runes remain when ordinary availability runs out');
+  assert.equal(p.getInventory().getAmount(Items.AIR_RUNE),30);
+});
+
+test("in the interface, a non-rune gets the recorded refusal and the pouch itself \"Don't be silly.\"", () => {
+  const { MESSAGE } = require("../plugins/items/runepouch/Interface.RunePouch")._test;
+  for (const pouchId of [Items.RUNE_POUCH, Items.DIVINE_RUNE_POUCH]) {
+    const pouch = new Item(pouchId, 1);
+    const spade = new Item(Items.SPADE, 1);
+    const player = createPlayer([pouch, spade]);
+    itemOption(player, pouch, "Open");
+    for (const op of [1, 2, 6]) clickComponent(player, "rune_pouch:inventory", op, { slot: 1, itemId: Items.SPADE });
+    clickComponent(player, "rune_pouch:inventory", 1, { slot: 0, itemId: pouchId });
+    assert.deepEqual(player.messages, [MESSAGE.NOT_A_RUNE, MESSAGE.NOT_A_RUNE, MESSAGE.NOT_A_RUNE, MESSAGE.POUCH]);
+    assert.equal(MESSAGE.NOT_A_RUNE, "You can't store that in the rune pouch.");
+    assert.equal(MESSAGE.POUCH, "Don't be silly.");
+    assert.equal(player.getInventory().getAmount(Items.SPADE), 1, "nothing moves");
+    assert.equal(player.enteredAmountAction, null, "and nothing asks for an amount");
+  }
+});
+
+test("0 at Set custom quantity clears the X amount and selects 1, as captured", () => {
+  const pouch = new Item(Items.RUNE_POUCH, 1);
+  const water = new Item(Items.WATER_RUNE, 100);
+  const player = createPlayer([pouch, water]);
+  itemOption(player, pouch, "Open");
+  const sender = player.getPacketSender();
+  clickComponent(player, "rune_pouch:x", 2);
+  player.enteredAmountAction.execute(18);
+  assert.equal(sender.getVarbit(varbit("rune_pouch_selectedquantity")), 3);
+
+  clickComponent(player, "rune_pouch:x", 2);
+  assert.equal(player.enteredAmountAction.acceptsZero, true, "the count prompt passes 0 through");
+  player.enteredAmountAction.execute(0);
+  assert.equal(sender.getVarbit(varbit("rune_pouch_customquantity")), 0);
+  assert.equal(sender.getVarbit(varbit("rune_pouch_selectedquantity")), 0);
+  clickComponent(player, "rune_pouch:inventory", 1, { slot: 1, itemId: Items.WATER_RUNE });
+  assert.deepEqual(varbitSlots(player), [[Items.WATER_RUNE, 1]], "deposits 1 again");
+
+  clickComponent(player, "rune_pouch:x", 1);
+  assert.equal(player.log.at(-1), "prompt Enter amount: (1 - 16,000)", "X asks again with no amount set");
+  player.enteredAmountAction.execute(17);
+  assert.equal(sender.getVarbit(varbit("rune_pouch_customquantity")), 17);
+  assert.equal(sender.getVarbit(varbit("rune_pouch_selectedquantity")), 3);
+});
+
+test("rune-pouch:gather puts runes the pouch already holds into it when all of them fit", () => {
+  const { GATHER_EVENT, TOGGLE_VARBIT } = require("../plugins/items/runepouch/Pickup.RunePouch");
+  const gather = (player, itemId, amount, extra = {}) => {
+    const request = { player, itemId, amount, stored: 0, ...extra };
+    PluginManager.emitCustomEvent(GATHER_EVENT, request);
+    return request.stored;
+  };
+  const player = createPlayer([new Item(Items.RUNE_POUCH, 1)]);
+  pouchWith(player, [[Items.CHAOS_RUNE, 100], [Items.DEATH_RUNE, 15995]]);
+  assert.equal(gather(player, Items.CHAOS_RUNE, 12), 12, "setting off: still goes in");
+  assert.equal(gather(player, Items.DEATH_RUNE, 6), 0, "no room for all of them");
+  assert.equal(gather(player, Items.LAW_RUNE, 4), 0, "never an empty slot");
+  assert.equal(gather(player, Items.SPADE, 1), 0);
+  assert.deepEqual(varbitSlots(player), [[Items.CHAOS_RUNE, 112], [Items.DEATH_RUNE, 15995]]);
+
+  assert.equal(gather(player, Items.CHAOS_RUNE, 5, { runePicking: true }), 0, "runePicking: only with the setting on");
+  player.getPacketSender().sendVarbit(Pouch.varbit(TOGGLE_VARBIT), 1);
+  assert.equal(gather(player, Items.CHAOS_RUNE, 5, { runePicking: true }), 5);
+
+  const none = createPlayer([]);
+  assert.equal(gather(none, Items.CHAOS_RUNE, 5), 0, "no pouch carried");
 });

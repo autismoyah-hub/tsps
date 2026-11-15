@@ -5,6 +5,7 @@ const path = require('node:path');
 const { Server } = require('../dist/Server');
 Server.installProductionPathResolver();
 const { PluginManager } = require('../dist/plugins/PluginManager');
+const nativeDialogueCondition = PluginManager.emitNpcDialogueCondition;
 const { DialogueManager } = require('../dist/game/model/dialogues/DialogueManager');
 const { CachePipeline } = require('../dist/game/cache/CachePipeline');
 const { NpcDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
@@ -20,7 +21,8 @@ function harness(name) {
   const api = new Proxy({ core: { ...core, World: { ...core.World, getNpcsNear: () => npcs }, TaskManager: {
     submit(task) { task.setRunning(true); tasks.push(task); },
     cancelTasks(key) { tasks.filter(task => task.key === key).forEach(task => task.stop()); },
-  }, ObjectManager: { register: noop, deregister: noop } },
+  }, ObjectManager: { register: noop, deregister: noop },
+    PathFinder: { calculateWalkRoute(npc, x, y) { npc.walkingTo = new core.Location(x, y, npc.getLocation().getZ()); } } },
     persistAttribute: noop,
     onCustomEvent: (key, fn) => (events[key] ??= []).push(fn),
     emitCustomEvent: (key, event) => (events[key] ?? []).forEach(fn => fn(event)),
@@ -30,9 +32,11 @@ function harness(name) {
       const npc = { ...definition, animations: [], graphics: [], getId: () => definition.id, getIndex: () => npc.index,
         index: nextIndex++, getLocation: () => location, moveTo: to => { location = to; },
         getArea: () => area, setArea: value => { area = value; }, isNpc: () => true, isPlayer: () => false, getAsNpc: () => npc,
-        isRegistered: () => !npc.removed, setPositionToFace: noop, forceChat: text => { npc.said = text; },
+        isRegistered: () => !npc.removed, setPositionToFace: noop,
+        setMobileInteraction: target => { npc.interaction = target; }, faceTile: tile => { npc.faceTileTarget = tile; }, forceChat: text => { npc.said = text; },
         performAnimation: animation => npc.animations.push(animation.getId()), performGraphic: graphic => npc.graphics.push(graphic.id),
-        getMovementQueue: () => ({ addSteps: to => { npc.walkingTo = to; } }),
+        getMovementQueue: () => ({ addSteps: to => { npc.walkingTo = to; },
+          isMovementBlocked: () => Boolean(npc.blocked), setBlockMovement(value) { npc.blocked=value; return this; }, reset() { npc.walkingTo=null; return this; } }),
         setCombatXpMultiplier: value => { npc.multiplier = value; },
         getCombat: () => ({ attack: player => { npc.target = player; } }),
       }; npcs.push(npc); return npc;
@@ -169,8 +173,12 @@ test('Romeo berries handed over in a closed conversation still make one potion a
 test('Juliet and crypt scenes use separate copied maps, retain potion until the last line, and clean up', () => {
   const h=harness('RomeoAndJuliet'),p=player();h.quest.setStage(p,50);p.items.set(I.CADAVA_POTION,1);p.moveTo(new core.Location(3158,3426,1));
   h.action(p,N.JULIET,'LEub3y');h.tick(3);const room=p.getArea();assert.ok(room instanceof core.TemplatedInstanceArea);assert.equal(room.getChunk(1,0,0).sourceChunkX,393);
+  for(let x=0;x<4;x++)for(let y=0;y<4;y++)assert.deepEqual(room.getChunk(0,x,y),{...room.getChunk(1,x,y),sourcePlane:0},'the balcony retains the ground floor beneath every copied upper-floor chunk');
+  const chunkCounts=scene=>scene.buildScenePalette(scene.baseChunkX,scene.baseChunkY).palette.map(plane=>plane.flat().filter(chunk=>chunk!==-1).length);
+  assert.deepEqual(chunkCounts(room),[16,16,0,0]);
   h.line(p,N.JULIET,'Poor Juliet...make preparations for her body to be placed in the Crypt...').after();assert.equal(h.quest.getStage(p),60);assert.equal(p.items.get(I.CADAVA_POTION),0);h.tick(3);assert.equal(p.getArea(),null);
   p.moveTo(new core.Location(3215,3418,0));h.action(p,N.ROMEO,'UCaOJi');h.tick(3);assert.equal(p.getArea().getChunk(0,0,0).sourceChunkX,290);
+  assert.deepEqual(chunkCounts(p.getArea()),[16,0,0,0],'the crypt still copies only its original ground-floor map');
   h.action(p,N.ROMEO,'PO2Wli');assert.equal(h.quest.getStage(p),60);h.tick(5);assert.equal(h.quest.getStage(p),100);assert.equal(p.attrs.get('quest.points'),5);assert.equal(p.varbits.get(1838),2);assert.equal(p.items.get(I.CADAVA_POTION),0);
   assert.deepEqual([p.getLocation().getX(),p.getLocation().getY()],[3215,3418]);
 });
@@ -213,6 +221,42 @@ test('Imp Catcher fast-start plays the check, timed ritual, separate stage/rewar
   h.tick(10);assert.equal(p.items.get(I.AMULET_OF_ACCURACY),1);assert.deepEqual(p.xp,[[core.Skill.MAGIC.getIndex(),875]]);assert.equal(p.attrs.get('quest.points'),undefined);
   h.tick(2);assert.equal(p.attrs.get('quest.points'),1);assert.equal(h.quest.getStage(p),2);
   h.action(p,5005,'jxPdQz');assert.equal(p.items.get(I.AMULET_OF_ACCURACY),2);assert.equal(p.xp.length,1);
+});
+
+test('Imp Catcher stages a private wizard at the table and faces it before animating for successive players', () => {
+  const h=harness('ImpCatcher');
+  const publicWizard=h.api.spawnNpc({id:5005,x:3107,y:3158,z:2});
+  publicWizard.blocked=true;
+  for(let attempt=0;attempt<3;attempt++) {
+    const p=player();p.moveTo(new core.Location(3107,3158,2));h.quest.setStage(p,1);
+    for(const id of [I.RED_BEAD,I.BLACK_BEAD,I.WHITE_BEAD,I.YELLOW_BEAD])p.items.set(id,1);
+    h.action(p,5005,'XpTtp9');
+    h.tick(1);const wizard=h.npcs.at(-1);assert.notEqual(wizard,publicWizard);
+    assert.deepEqual([wizard.getLocation().getX(),wizard.getLocation().getY(),wizard.getLocation().getZ()],[3103,3163,2]);
+    assert.equal(wizard.owner,p);assert.equal(wizard.ownerOnly,true);assert.equal(wizard.wanderRadius,0);assert.equal(wizard.blocked,true);
+    assert.equal(wizard.getArea(),p.getArea());
+    h.tick(2);assert.equal(wizard.faceTileTarget,undefined);
+    h.tick(1);assert.equal(wizard.interaction,null);
+    assert.deepEqual([wizard.faceTileTarget.getX(),wizard.faceTileTarget.getY(),wizard.faceTileTarget.getZ()],[3102,3163,2]);
+    assert.equal(wizard.animations.length,0);
+    h.tick(1);assert.equal(wizard.animations.at(-1),4285);
+    h.tick(14);assert.equal(h.quest.getStage(p),2);assert.equal(wizard.isRegistered(),false);assert.equal(p.getPrivateArea(),null);
+    assert.deepEqual([publicWizard.getLocation().getX(),publicWizard.getLocation().getY()],[3107,3158]);
+    assert.equal(publicWizard.blocked,true);assert.deepEqual(publicWizard.animations,[]);
+  }
+});
+
+test('Imp Catcher overlapping rituals own separate actors and cancel staging on logout', () => {
+  const h=harness('ImpCatcher');
+  const prepare=()=>{const p=player();p.moveTo(new core.Location(3104,3163,2));h.quest.setStage(p,1);for(const id of [I.RED_BEAD,I.BLACK_BEAD,I.WHITE_BEAD,I.YELLOW_BEAD])p.items.set(id,1);return p;};
+  const a=prepare(),b=prepare();
+  h.action(a,5005,'XpTtp9');h.action(b,5005,'XpTtp9');h.tick(1);
+  const [one,two]=h.npcs;assert.notEqual(one.getArea(),two.getArea());
+  h.hooks.onPlayerLogout.at(-1)({player:a});assert.equal(one.removed,true);assert.equal(two.removed,undefined);
+  h.tick(18);assert.equal(two.removed,true);assert.equal(h.quest.getStage(a),1);assert.equal(h.quest.getStage(b),2);
+  const c=prepare(),count=h.npcs.length;h.action(c,5005,'XpTtp9');
+  h.hooks.onPlayerLogout.at(-1)({player:c});h.hooks.onPlayerLogout.at(-1)({player:c});h.tick(19);
+  assert.equal(h.npcs.length,count);assert.equal(c.blocked,false);
 });
 
 test('Imp Catcher journal follows the wiki journal transcript at every stage', () => {
@@ -265,4 +309,90 @@ test('the ghost amulet dialogue reaches the complete skull explanation before ad
   const h=harness('RestlessGhost'),p=player();h.quest.setStage(p,2);p.amulet=I.GHOSTSPEAK_AMULET;
   h.talk(p,N.RESTLESS_GHOST);continueToMenu(h,p);h.choose(p,'Wow, this amulet works!');continueToMenu(h,p);h.choose(p,"Yes, ok. Do you know why you're a ghost?");
   h.continueUntil(p,()=>h.quest.getStage(p)===3);assert.ok(p.log.some(row=>row[0]==='text'&&String(row[2]).includes('stolen my skull')));assert.equal(p.text,'It is so dull being a ghost...');
+});
+
+
+test('the native crypt actors route around cache collision and finish walking before the unchanged scene continues', async (t) => {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const { ClientConnection } = require('../dist/net/NetworkBuilder');
+  t.mock.method(PluginManager, 'emitNpcDialogueCondition', nativeDialogueCondition);
+  core.ObjectDefinition.init(); core.RegionManager.init(); core.RegionManager.loadMapFiles(3210, 3420);
+  const api = PluginManager.createApi('CryptNativeRegression');
+  require('../plugins/npcs/NpcDialogues.plugin').register(api);
+  require('../plugins/quests/quests/RomeoAndJuliet.Quest')(api);
+  const quest = runtime.getRegisteredQuests().find(entry => entry.key === 'romeo_and_juliet');
+  const frames = [], views = [], actors = new Map(), arrivals = new Map(), removals = new Map();
+  const channel = { kind: 'test', binaryTransport: true, isOpen: () => true,
+    send: frame => { frames.push(Buffer.from(frame)); return true; }, close() {}, onData() {}, onClose() {}, onError() {} };
+  const session = new PlayerSession(channel), p = new Player(session); session.setPlayer(p);
+  p.setUsername('crypt-native-regression'); p.setLocation(new core.Location(3210, 3422, 0));
+  assert.equal(core.World.getPlayers().add(p), true); p.setRegistered(true); p.setNeedsPlacement(false);
+  p.getSkillManager().setMaxLevels(core.Skill.HITPOINTS, 99).setCurrentLevels(core.Skill.HITPOINTS, 99);
+  quest.setStage(p, 60);
+  const spawnNpc = api.spawnNpc, removeNpc = api.removeNpc;
+  t.mock.method(api, 'spawnNpc', function(definition) {
+    const npc = spawnNpc.call(this, definition);
+    if (npc && definition.owner === p) actors.set(npc.getId(), npc);
+    return npc;
+  });
+  t.mock.method(api, 'removeNpc', function(npc) {
+    if (actors.get(npc.getId()) === npc) removals.set(npc.getId(), core.World.getProcessCycle());
+    return removeNpc.call(this, npc);
+  });
+  let continuationTick;
+  api.onCustomEvent('npc-dialogue:line', event => {
+    if (event.player !== p || event.text !== 'Hey...Juliet...') return;
+    const before = event.before;
+    event.before = () => { continuationTick = core.World.getProcessCycle(); before?.(); };
+  });
+  api.onCustomEvent('network:sync-views', event => {
+    if (event.player === p) views.push(...event.npcs);
+  });
+  const romeo = api.spawnNpc({ id: N.ROMEO, x: 3210, y: 3421, z: 0, wanderRadius: 0 });
+  assert.ok(romeo);
+  t.mock.method(p, 'onRemove', () => {});
+  t.after(() => {
+    PluginManager.emitPlayerLogout({ player: p, username: p.getUsername() });
+    core.TaskManager.cancelTasks(p); core.TaskManager.cancelTasks(p.getIndex());
+    for (const npc of [romeo, ...actors.values()]) if (npc.isRegistered()) api.removeNpc(npc);
+    core.World.getPlayers().remove(p);
+    assert.equal(p.isRegistered(), false);
+    assert.equal(core.World.getPlayers().contains(p), false);
+  });
+  const connection = new ClientConnection(channel); connection.player = p;
+  session.setTurnPacketProcessor(() => connection.processTurnPackets());
+  const tick = async () => {
+    core.World.process(); session.flushPackets();
+    for (const [id, npc] of actors) {
+      const area = npc.getPrivateArea();
+      if (!area || !npc.isRegistered()) continue;
+      const goal = area.sourceTile(id === N.ROMEO ? 2323 : 2325, id === N.ROMEO ? 4643 : 4644);
+      if (npc.getLocation().equals(goal) && !arrivals.has(id)) arrivals.set(id, core.World.getProcessCycle());
+    }
+    await Promise.resolve();
+  };
+  for (let step = 0; step < 4; step++) await tick();
+  connection.inject([{ type: 'npc_option', index: romeo.getIndex(), clickType: 1 }]); await connection.idle();
+  for (let step = 0; step < 220 && quest.getStage(p) !== 100; step++) {
+    const current = p.getDialogueManager().getCurrent();
+    if (current && !current.isSelfAdvancing?.()) {
+      const group = current instanceof core.PlayerDialogue ? 217 : current instanceof core.StatementDialogue ? 229 : 231;
+      connection.inject([{ type: 'dialogue_continue', widgetId: (group << 16) | 5, childIndex: -1 }]);
+      await connection.idle();
+    }
+    await tick();
+  }
+  assert.equal(quest.getStage(p), 100, 'native dialogue, timed cameras and return still complete the quest');
+  for (const id of [N.ROMEO, N.PHILLIPA]) {
+    assert.ok(arrivals.has(id), `${id} reaches its unchanged scripted destination`);
+    assert.ok(arrivals.get(id) < removals.get(id), `${id} arrives before scene cleanup`);
+    const npc = actors.get(id);
+    assert.ok(views.filter(view => view.index === npc.getIndex() && view.walkDirection >= 0).length > 2,
+      `${id} publishes the full walk through native NPC sync`);
+  }
+  assert.ok(arrivals.get(N.ROMEO) < continuationTick, 'Romeo arrives before the existing timed continuation');
+  assert.equal(p.getPrivateArea(), null);
+  assert.ok(p.getLocation().equals(new core.Location(3210, 3422, 0)));
+  assert.ok(frames.length > 0, 'the native PlayerSession flushed binary packets');
 });

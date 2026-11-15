@@ -54,6 +54,7 @@ function createPlayer({ items = {}, levels = {}, weapon = -1 } = {}) {
       deleteNumber: (id, amount) => inventory.set(id, (inventory.get(id) ?? 0) - amount),
       addItem: (item) => { added.push(item); inventory.set(item.getId(), (inventory.get(item.getId()) ?? 0) + item.getAmount()); },
       getFreeSlots: () => 5,
+      getAddableAmount: (item) => item.getAmount(),
       refreshItems: () => {},
     }),
     getDialogueManager: () => ({ startDialogues: () => log.push("dialogue") }),
@@ -133,6 +134,17 @@ test("making them needs the tool, level 35 and the materials", () => {
   assert.deepEqual(handed.log, ["message I should probably smith this at an anvil..."]);
 });
 
+test("the spine on an anvil without a rune mace falls through to the default line", () => {
+  const { spineOnAnvil } = Creation._test;
+  const noMace = createPlayer({ items: { [I.SCURRIUS_SPINE]: 1, [I.HAMMER]: 1 } });
+  assert.equal(spineOnAnvil({ player: noMace }), false);
+  assert.deepEqual(noMace.log, []);
+  assert.equal(noMace.inventory.get(I.SCURRIUS_SPINE), 1);
+  const smith = createPlayer({ items: { [I.SCURRIUS_SPINE]: 1, [I.RUNE_MACE]: 1, [I.HAMMER]: 1 } });
+  assert.equal(spineOnAnvil({ player: smith }), true);
+  assert.equal(smith.inventory.get(I.BONE_MACE), 1);
+});
+
 test("Historian Aldo makes one for 50,000 coins", () => {
   const { dialogueCondition, dialogueAction, ALDO_FEE } = Creation._test;
   const definition = { getName: () => "Historian Aldo" };
@@ -173,4 +185,19 @@ test("the bone staff reaches 8 tiles, 10 on Longrange (Wiki: Attack range)", () 
   const style = (fightType) => { player.getFightType = () => fightType; return method.attackDistance(player); };
   assert.equal(style(accurate), 8);
   assert.equal(style(longrange), 10);
+});
+
+test("the bone shortbow is a ranged weapon: shortbow speed and range, arrows up to amethyst (issue #4060)", () => {
+  const { Ammunition, RangedWeapon } = require("../dist/game/content/combat/ranged/RangedData");
+  const bow = RangedWeapon.BONE_SHORTBOW;
+  assert.deepEqual(bow.getWeaponIds(), [I.BONE_SHORTBOW]);
+  // Wiki: identical offensive stats to the magic shortbow, so the same speed, range and fight styles.
+  assert.equal(bow.getType().getDefaultDistance(), 7, "Wiki: 7 tiles");
+  assert.equal(bow.getType().getLongRangeDistance(), 9, "Wiki: 9 tiles on Longrange");
+  assert.equal(bow.getType().getLongRangeFightType(), RangedWeapon.MAGIC_SHORTBOW.getType().getLongRangeFightType());
+  const ammo = bow.getAmmunitionData();
+  assert.ok(ammo.includes(Ammunition.AMETHYST_ARROW), "fires up to amethyst arrows");
+  assert.ok(!ammo.includes(Ammunition.DRAGON_ARROW), "no dragon arrows");
+  const player = { getEquipment: () => ({ getItems: () => ({ 3: { getId: () => I.BONE_SHORTBOW } }) }) };
+  assert.equal(RangedWeapon.getFor(player), bow, "wielding it picks ranged combat, not melee");
 });

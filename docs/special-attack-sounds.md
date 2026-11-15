@@ -72,3 +72,147 @@ they were not changed:
 - Tonalztics of Ralos: 7942 (throw) and 7943 (spin).
 
 A capture of one activation would settle each: the sound packets carry the delays directly.
+
+## Audio follow-up (#2417)
+
+The follow-up keeps private synths and positioned area sounds distinct. Five public Pest Control
+recordings (4014, 4025, 4028, 4029 and 4031) contain 454 own whip animations with 454 same-tick
+private 2720 sounds and no area 2720. They also contain 290 nearby remote whip animations without
+that sound. Ordinary attacks are therefore not blanket-broadcast to spectators. Recording 4014
+also provides the positive contrast: a nearby player's claw special emits its four area sounds.
+
+The recorded additions and corrections are:
+
+| Action | Contract | Primary recording |
+| --- | --- | --- |
+| Vengeance |2907 at the caster, immediate, one play, area radius 10 | [1685](https://rsprox.net/download/1685) |
+| Vengeance Other |2908 at the caster, not its recipient, immediate, area radius 10 | [2796](https://rsprox.net/download/2796) |
+| Dark Bow normal and special observer release |3731 at the target, radius 10; exclude the archer, who retains the private launch | [2510](https://rsprox.net/download/2510), [273](https://rsprox.net/download/273) |
+| Dark Bow dragon-special impacts | Two 3737 sounds at the launch target, queued at their respective projectile end cycles, radius 10 | [273](https://rsprox.net/download/273) |
+| Scimitar-family Lunge | Private 2501 with sequence 386; the captured weapon is Arkanblade | [3151](https://rsprox.net/download/3151) |
+| Dharok Smash | Private 1316 with sequence 2066; Chop remains 1321 | [1885](https://rsprox.net/download/1885) |
+| Prayer activation | Existing supported prayers use their recorded private activation sounds, including the 15 previously missing mappings | [2990](https://rsprox.net/download/2990), [1091](https://rsprox.net/download/1091) |
+| Prayer replacement and depletion | Replacing a conflicting prayer is quiet; natural shutdown one tick after zero sends one 2672, not one off sound per prayer | [2990](https://rsprox.net/download/2990), [3167](https://rsprox.net/download/3167) |
+| Quick-prayer group | One 2663 on manual group-off; group-on plays each activated prayer's sound, with quiet preclear | [3277](https://rsprox.net/download/3277) |
+
+The two combat-style sound fields are canonical server-owned metadata in
+`server/data/definitions/item-combat-styles.json`. The cache dumper explicitly preserves these
+fields while refreshing cache-owned style/slot/type data; they are not osrsreboxed-db output.
+Two regeneration runs give identical content, and `yarn dump:item-combat-styles --check`
+checks the full serialization without writing it.
+
+### Positioned playback and listeners
+
+The browser preserves positioned radius 0 as an area sound rather than turning it into a
+full-volume private synth. Each queued source position is copied before onset delays or cache
+retries, so later animation emitters cannot move an earlier sound. Server area sounds use the
+native inclusive tile radius+1 admission check at receipt, after refreshing the current listener.
+Admitted sounds still use the listener's playback-time position for Manhattan attenuation.
+Sequence-frame admission is unchanged; no generic sound deduplication was added.
+
+Entity-origin area sounds retain the entity's private-area identity. Other overlapping rooms,
+public/private mismatches, other planes and distant recipients receive no packet. An explicit
+bot area emitter still reaches human listeners, while bot recipients and an explicitly excluded
+private-launch recipient are skipped. Absolute world-coordinate callers retain their existing
+contract.
+
+### Ordinary player hurt voices
+
+The same five Pest Control recordings contain 68 ordinary positive local damage entries and 68
+private hurt sounds from 518–521, with one play and 20 client cycles of delay. Their physical body
+flag is 0; the later text-pronoun byte is a separate field. Two silent positive entries are poison,
+not ordinary damage.
+
+`PlayerHitSounds` uses the existing resolved-hit hook and each actual applied damage part.
+For NPC attacks on an unmorphed body-type-0 player, ordinary positive health loss emits one
+recorded variant per landed splat, including delayed and stalled parts. HP clamping, zero actual
+loss, poison and reflected/direct status damage do not fabricate a hurt voice. Current body and
+morph are checked again when the damage lands. The private recipient and bot suppression remain
+unchanged.
+
+Uniform choice among the four observed variants is an implementation inference: the recordings
+prove variation, not its exact weights. Body-type-1, PvP and morphed-player mappings remain
+unverified and keep the legacy fallback. No separate death sound is invented from an absent
+producer: the checked normal-death recordings do not establish one. Zeal activation, non-dragon
+Dark Bow impact audio and a replacement for the archer's ordinary private Dark Bow launch also
+remain unverified.
+
+### Nearby hurt-voice follow-up (#3241)
+
+PR #2562 subsequently added body-type-1 variants 509/510, independently selected private
+variants for PvP listeners, Dark Bow non-dragon impacts and death jingle 90. Its shared
+listener sweep also broadcast NPC-inflicted player hurt voices to unrelated nearby players.
+Those private synths have no position or distance fade and could dominate neighbouring fights.
+
+The NPC-inflicted case now sends the voice only to the damaged player. In public Pest Control
+recordings 237/04014, 04025, 04028, 04029 and 04031, all 68 checked hurt packets accompany
+positive local damage, despite many nearby fights. The existing actual-HP-loss callback,
+current physical body, 20-client-cycle delay and bot-recipient suppression are retained.
+
+PvP ordinary hurt voices go to the damaged player and their player attacker, with independent
+variants as demonstrated by paired Legacy Duels recordings 225/01591 and 01592. The hit retains
+its original attacker through delayed application; changing the current combat target does not
+change its listeners. Bot recipients, other rooms/planes and an attacker outside the existing
+15-tile boundary remain excluded. Unrelated spectators no longer receive full-volume private
+hurt synths from every nearby fight.
+
+This audience limit is an explicitly bounded inference from the positively recorded participants,
+not a claim of universal OSRS spectator parity. Full numeric player-update replay of Soul Wars
+234/03277 finds no positive player hits at the checked respawn-voice ticks, so those voices cannot
+establish generic nearby player-damage broadcasting. The producer of those respawn voices remains
+unresolved; they do not establish this ordinary hit handler's audience. Spectator-camera forwarding
+is not established here.
+
+DDS special 2537 (237/03991), whip special 2713 (230/02878) and ordinary whip attacks use private
+synths in the checked recordings. They are not blanket-broadcast. Godsword special 3869 is an
+area sound with range 5 in recordings including 224/01545 and 237/04025; the ZGS activation
+already follows that contract. No additional barrage sound is inferred from its freeze graphic.
+
+The reported zero-damage/splash voice was not reproduced as a voice from that hit. Regression
+checks instead reproduce a nearby positive NPC hit adding a voice to an unrelated player who
+takes zero damage; that leakage is removed. Final-mitigation zero, poison, reflected damage and
+delayed multipart-hit checks retain their existing assertions. Broader PvP balance, ZGS freeze
+impact audio and animation/projectile synchronization need a reproducible case with the attack,
+listener position and both sound-volume settings identified; this follow-up does not claim
+complete combat-audio parity.
+
+### Recorded browser playback checks
+
+The follow-up records actual mono PCM after the effects and area gain buses in running Chrome
+WebAudio contexts at 48 kHz. The normal output connections remain intact; no microphone is used.
+Three disposable identities take attacker, target and unrelated-observer roles. Real inventory
+Wield and player/spell action packets reach the production combat methods; skill/quest requirements,
+positions, special activation and positive/zero damage are controlled fixtures. Natural misses are
+distinguished from controlled accurate-zero cases by the resolved accuracy flag. These checks verify rendered digital output,
+not the physical speaker, every bot AI or complete OSRS audience parity.
+
+- DDS normal 2501 and special 2537, whip normal 2720 and special 2713 are present in attacker
+  playback. The target retains its own hurt voices. Unrelated observers get neither those private
+  weapon synths nor ordinary hurt voices from these fights.
+- ZGS activation 3869 is recorded for combatants and observers. Observer gains are 0.8 at two
+  tiles and 0.4 at four tiles; at six tiles the packet is admitted but no source is scheduled,
+  and at fifteen/sixteen tiles it is not admitted by the client. Quiet environmental audio can
+  remain outside the combat sound's range.
+- Positive Fire Strike has impact 161 and the participants' hurt voice. Accurate zero damage
+  retains impact 161 without a hurt voice; a genuine failed accuracy roll has splash 227 without
+  a hurt voice. The target's existing block 511 is distinct from the hurt variants.
+- Native settings-panel mouse clicks independently mute effects and area sounds. Both muted
+  produces exact zero PCM even while the sound packets and source starts are observed. With
+  effects on and area muted, the unrelated observer remains silent during the ZGS special.
+- Native slider drags to 50 set the gain to 64/127: the same private DDS sample's peak falls
+  from 0.49609375 to 0.25; the observer's ZGS peak falls from about 0.395 to about 0.198.
+  Both sliders are restored to 100. Slider save/relogin is not asserted by this recording run.
+- Source scheduling retains the packet's 20-cycle hurt delay (400 ms) and cache sound onset,
+  including about 350 ms for the DDS stab and 150 ms for the godsword activation. No sample gain
+  or attack/projectile timing has been retuned to conceal audience noise.
+
+### Earlier validation scope
+
+Actual Player/HitQueue and encoded-recipient tests cover damage timing, per-part callbacks,
+room/exclusion boundaries, private synth preservation and refusal paths. Browser subscription
+and mixer tests cover radius 0, loops, source identity through delay/retry, receipt edges and
+moving listeners. Native/browser checks on owned worktree servers exercise both Vengeance
+casts, normal/special Dark Bow, Lunge/Smash, prayer/quick-prayer/depletion, four claw area sounds
+and a real NPC hit producing a private hurt voice. Observed playback buffers are nonempty and
+nonzero with running AudioContexts. These are bounded interaction checks, not a full-game or
+packet-for-packet audio parity claim; raw account-bearing models and media remain outside git.

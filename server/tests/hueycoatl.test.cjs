@@ -181,3 +181,352 @@ test("the arena, the summit and the mountainside hold the captured spawn tiles",
   assert.ok(!inArena(Shared.PRIVATE_LANDING));
   for (const segment of Shared.SEGMENTS) assert.ok(Shared.within(Shared.MOUNTAINSIDE_BOUNDS, ...segment.tile));
 });
+
+test("public and private fights leave aggression to the scripted attacks", (t) => {
+  new (require("../dist/game/definition/loader/impl/NpcDefinitionLoader").NpcDefinitionLoader)().load();
+  const { NpcAggression } = require("../dist/game/entity/impl/npc/NpcAggression");
+  const { Player } = require("../dist/game/entity/impl/player/Player");
+  let arena;
+  Area.attach(new Proxy({ core, registerArea: (area) => { arena = area; } }, {
+    get: (target, key) => target[key] ?? (() => {}),
+  }));
+  const player = new Player(null);
+  player.setRegistered(true);
+  player.setNeedsPlacement(false);
+  player.setLocation(new core.Location(Shared.HEAD_TILE[0] - 1, Shared.HEAD_TILE[1], 0));
+  const sender = new Proxy({}, { get: () => () => sender });
+  player.getPacketSender = () => sender;
+  // Use the real instance policy without allocating a map instance.
+  for (const area of [arena, Object.create(Area._test.InstanceArea.prototype)]) {
+    t.mock.method(player, "getArea", () => area);
+    for (const id of [Shared.NPC.HEAD, Shared.NPC.HEAD_SHIELDED, Shared.NPC.HEAD_DEFEATED, Shared.NPC.TAIL, Shared.NPC.BODY]) {
+      const npc = core.NPC.create(id, new core.Location(...Shared.HEAD_TILE, 0));
+      npc.setRegistered(true);
+      npc.setNeedsPlacement(false);
+      npc.setFlag("combat:no-retaliate");
+      npc.setMultiCombat(true);
+      npc.getMovementQueue().setBlockMovement(true);
+      t.mock.method(npc, "getArea", () => area);
+      assert.equal(npc.getCurrentDefinition().isAggressive(), true, `source aggression: ${id}`);
+      NpcAggression.runAggression(player, [npc]);
+      assert.equal(npc.getCombat().getTarget(), null, `${area.getName()}: ${id}`);
+    }
+  }
+});
+
+// Native fee transaction through the registered meeting flag, menu and CA producer.
+test("private Hueycoatl fees follow the current Hard Combat Achievement threshold", async (t) => {
+  const { Player } = require("../dist/game/entity/impl/player/Player");
+  const { PlayerSession } = require("../dist/net/PlayerSession");
+  const { ClientConnection } = require("../dist/net/NetworkBuilder");
+  const { MultiChatboxPrompt } = require("../dist/game/model/menu/MultiChatboxPrompt");
+  const Data = require("../plugins/achievements/combatachievements/Data.CombatAchievements");
+  const Progress = require("../plugins/achievements/combatachievements/Progress.CombatAchievements");
+  const priorBots = process.env.DISABLE_PLAYER_BOTS;
+  const oldSessions = new Set(Shared.sessions), tasks = new Set(), actors = [];
+  const originalSubmit = core.TaskManager.submit, originalDeregister = core.ObjectManager.deregister;
+  const oldError = console.error, errors = [], publicScene = new Map();
+  let started = false, oldThreshold = null, hard = null;
+  process.env.DISABLE_PLAYER_BOTS = "1";
+  t.after(() => {
+    try {
+      if (hard && oldThreshold !== null) hard.threshold = oldThreshold;
+      for (const task of tasks) task.stop();
+      const owned = [...Shared.sessions].filter((session) => !oldSessions.has(session));
+      const ownedNpcs = new Set(owned.flatMap((session) => [...session.npcs, ...session.lobby, ...(session.area?.getNpcs() ?? [])]));
+      const privateAreas = owned.flatMap((session) => session.area ? [session.area] : []);
+      for (const actor of actors) {
+        const area = actor.player.getPrivateArea();
+        if (area && owned.some((session) => session.area === area) && area.hasMember(actor.player)) area.leave(actor.player, false);
+      }
+      for (const session of owned) {
+        if (session.area) session.area.destroy();
+        else { session.dispose(); Shared.sessions.delete(session); }
+      }
+      for (const object of publicScene.values()) core.ObjectManager.register(object, true);
+      for (const actor of actors) {
+        PluginManager.emitPlayerLogout({ player: actor.player, username: actor.player.getUsername() });
+        if (actor.player.isRegistered()) core.World.getPlayers().removes(actor.player);
+      }
+      if (started) PluginManager.emitServerShutdown({});
+      for (const task of tasks) task.stop();
+      core.World.process(); // drains the fixture sessions' queued NPC removals
+      assert.equal([...Shared.sessions].some((session) => !oldSessions.has(session)), false, "fixture sessions removed");
+      assert.ok([...tasks].every((task) => !task.isRunning()), "fixture tasks stopped");
+      assert.ok(privateAreas.every((area) => area.isDestroyed()), "fixture private areas destroyed");
+      assert.ok([...ownedNpcs].every((npc) => !npc.isRegistered() && !core.World.getAddNPCQueue().includes(npc)), "fixture NPCs removed or dequeued");
+      for (const object of publicScene.values()) {
+        const current = core.MapObjects.get(object.getId(), object.getLocation(), null);
+        assert.ok(current && current.getType() === object.getType(), "displaced public scene object restored");
+      }
+      assert.deepEqual(errors, [], "native execution and cleanup report no errors");
+    } finally {
+      core.TaskManager.submit = originalSubmit;
+      core.ObjectManager.deregister = originalDeregister;
+      console.error = oldError;
+      if (priorBots === undefined) delete process.env.DISABLE_PLAYER_BOTS;
+      else process.env.DISABLE_PLAYER_BOTS = priorBots;
+    }
+  });
+  core.TaskManager.submit = function (...args) {
+    if (args[0]) tasks.add(args[0]);
+    return originalSubmit.apply(this, args);
+  };
+  core.ObjectManager.deregister = function (object, ...args) {
+    const caller = new Error().stack.split("\n")[2] ?? "";
+    if (object && !object.getPrivateArea() && caller.includes("setLoc") && caller.includes("Session.Hueycoatl")) {
+      const at = object.getLocation(), key = `${at.getX()},${at.getY()},${at.getZ()},${object.getType()}`;
+      if (!publicScene.has(key)) publicScene.set(key, object);
+    }
+    return originalDeregister.call(this, object, ...args);
+  };
+  console.error = (...args) => { errors.push(args.map(String).join(" ")); return oldError.apply(console, args); };
+  PluginManager.loadFromDirectory(path.resolve(__dirname, "../plugins"));
+  core.RegionManager.init();
+  core.RegionManager.loadMapFiles(1525, 3295);
+  PluginManager.emitServerStartup({});
+  started = true;
+
+  const { World, Location, Item, ItemIdentifiers: I } = core;
+  const flagAt = new Location(1525, 3295, 0), chainAt = new Location(1527, 3285, 0);
+  const flag = core.MapObjects.get(Shared.LOC.FLAG, flagAt, null);
+  const chain = core.MapObjects.get(Shared.LOC.CHAIN, chainAt, null);
+  assert.ok(flag, "control: the real cache map contains the meeting flag");
+  assert.ok(chain, "control: the real cache map contains the entrance chain");
+  assert.ok(CacheDefinitions.getObject(Shared.LOC.FLAG).actions.includes("Fight-privately"));
+  const channel = () => ({ kind: "test", remoteAddress: "127.0.0.1", isOpen: () => true,
+    send: () => true, close() {}, onData() {}, onError() {}, onClose() {} });
+  function actor(name, coins) {
+    const wire = channel(), player = new Player(new PlayerSession(wire));
+    const result = { player, client: null }; actors.push(result);
+    player.setUsername(name);
+    // Mirror the real login path: setUsername alone does not initialize the
+    // base-37 identity used by the native friends list.
+    player.setLongUsername(core.Misc.stringToLongBigInt(name));
+    assert.notEqual(player.getLongUsername(), 0n, "native actor has a login-format identity");
+    player.setAttribute("bot-skip-persistence", true);
+    player.setLocation(new Location(1524, 3295, 0));
+    assert.equal(World.getPlayers().add(player), true, "native player joins World");
+    player.needsPlacement = false;
+    if (coins) player.getInventory().add(new Item(I.COINS, coins), true);
+    const client = new ClientConnection(wire); client.player = player;
+    result.client = client; return result;
+  }
+  async function packet(actor, input) {
+    await actor.client.dispatch([input]); actor.client.processTurnPackets(); World.process();
+  }
+  async function choose(actor, text) {
+    const prompt = MultiChatboxPrompt.getPending(actor.player);
+    assert.equal(prompt?.title, "Select an option", "the actor owns the native meeting-flag prompt");
+    assert.equal(actor.player.getPacketSender().isChatboxInterface(219), true, "the options interface is mounted");
+    assert.deepEqual(prompt.options, [FRIENDS, SOLO, JOIN, "Cancel."], "complete native option text");
+    const choice = prompt?.options.indexOf(text) ?? -1;
+    assert.ok(choice >= 0, `real meeting-flag menu contains ${text}`);
+    await packet(actor, { type: "dialogue_continue", widgetId: (219 << 16) | 1, childIndex: choice + 1 });
+  }
+  async function openFlag(actor) {
+    await packet(actor, { type: "object_option", id: Shared.LOC.FLAG, x: 1525, y: 3295, action: "Fight-privately" });
+  }
+  const FRIENDS = "Start a public/friends fight (based on privacy setting).";
+  const SOLO = "Start a solo fight.";
+  const JOIN = "Join a public/friends fight.";
+  function ca(actor) {
+    const request = { player: actor.player, tier: "Hard" };
+    PluginManager.emitCustomEvent("combat-achievements:tier", request); return request;
+  }
+  function earnHard(actor, omitEasyTask = false) {
+    const tiers = Data.tiers();
+    for (const tier of tiers.slice(0, 3)) for (const task of tier.tasks) {
+      if (omitEasyTask && tier.index === 0 && task === tier.tasks[0]) continue;
+      assert.equal(Progress.complete(actor.player, task, { silent: true }), true);
+    }
+  }
+  hard = Data.tiers().find((tier) => tier.name === "Hard");
+  assert.equal(hard.threshold, 436, "rev-241 cache Hard threshold");
+  const poor = actor("hueypoor", 25000);
+  earnHard(poor, true);
+  assert.equal(Progress.points(poor.player), hard.threshold - 1);
+  assert.equal(ca(poor).currentThresholdMet, false);
+  await openFlag(poor); await choose(poor, SOLO);
+  assert.equal(poor.player.getInventory().getAmount(I.COINS), 25000, "below threshold cannot pay 25k");
+  assert.equal([...Shared.sessions].some((session) => session.owner === poor.player), false);
+
+  const host = actor("hueyhost", 50000);
+  assert.equal(ca(host).currentThresholdMet, false);
+  await openFlag(host); await choose(host, FRIENDS);
+  const hostSession = [...Shared.sessions].find((session) => session.owner === host.player);
+  assert.ok(hostSession && hostSession.kind === "friends", "control: normal 50k creates a real friends instance");
+  assert.equal(host.player.getInventory().getAmount(I.COINS), 0, "control: normal fee is debited");
+  for (let i = 0; i < 5; i++) World.process();
+  assert.equal(host.player.getPrivateArea(), hostSession.area, "control: scheduled travel enters the instance");
+
+  const eligible = actor("hueyhard", 25000);
+  earnHard(eligible);
+  assert.equal(Progress.points(eligible.player), hard.threshold);
+  const status = ca(eligible);
+  assert.deepEqual([status.currentThresholdMet, status.claimed], [true, false], "eligible without claiming rewards");
+  await openFlag(eligible); await choose(eligible, SOLO);
+  assert.deepEqual(errors, [], "control: registered plugin and World paths report no errors before the fee target");
+  assert.equal(eligible.player.getInventory().getAmount(I.COINS), 0, "eligible private fight debits exactly 25k");
+  const solo = [...Shared.sessions].find((session) => session.owner === eligible.player);
+  assert.ok(solo && solo.kind === "solo", "eligible player creates a real solo instance");
+  for (let i = 0; i < 5; i++) World.process();
+  assert.equal(eligible.player.getPrivateArea(), solo.area);
+
+  const leaver = actor("hueyleaver", 50000);
+  await openFlag(leaver); await choose(leaver, FRIENDS);
+  const left = [...Shared.sessions].find((session) => session.owner === leaver.player);
+  assert.ok(left, "the fight is made when the fee is paid");
+  leaver.player.setRegistered(false); // logged out during the fade in
+  for (let i = 0; i < 5; i++) World.process();
+  assert.equal(Shared.sessions.has(left), false, "a fight its owner never reached is torn down");
+  assert.equal(left.area.isDestroyed(), true);
+  leaver.player.setRegistered(true);
+
+  // The existing fee message is estimated wording; check that it uses the same
+  // discounted amount as the actual funds check, without claiming a live line.
+  assert.equal(Progress.complete(poor.player, Data.tiers()[0].tasks[0], { silent: true }), true);
+  assert.equal(ca(poor).currentThresholdMet, true);
+  poor.player.getInventory().deleteNumber(I.COINS, 1);
+  const messages = [], sendMessage = poor.player.sendMessage.bind(poor.player);
+  t.mock.method(poor.player, "sendMessage", (message, ...args) => { messages.push(message); return sendMessage(message, ...args); });
+  await openFlag(poor); await choose(poor, SOLO);
+  assert.equal(poor.player.getInventory().getAmount(I.COINS), 24999);
+  assert.ok(messages.includes("You need 25,000 coins to start a private fight."));
+  assert.equal([...Shared.sessions].some((session) => session.owner === poor.player), false);
+
+  const guest = actor("hueyguest", 12345);
+  assert.notEqual(guest.player.getLongUsername(), host.player.getLongUsername(), "friends have distinct identities");
+  host.player.getRelations().addFriend(guest.player.getLongUsername());
+  assert.equal(host.player.getRelations().isFriendWith(guest.player.getUsername()), true);
+  await openFlag(guest); await choose(guest, JOIN);
+  assert.ok(guest.player.getEnteredSyntaxAction(), "real join menu requests a name");
+  await packet(guest, { type: "dialogue_input", value: host.player.getUsername() });
+  for (let i = 0; i < 5; i++) World.process();
+  assert.equal(guest.player.getPrivateArea(), hostSession.area, "friend joins the existing instance");
+  assert.equal(guest.player.getInventory().getAmount(I.COINS), 12345, "joining does not charge a fee");
+
+  const publicPlayer = actor("hueypublic", 0);
+  publicPlayer.player.setAttribute(Area.TAALA_INTRO_ATTRIBUTE, true);
+  publicPlayer.player.setLocation(new Location(1528, 3285, 0));
+  await packet(publicPlayer, { type: "object_option", id: Shared.LOC.CHAIN, x: 1527, y: 3285, action: "Quick-climb" });
+  for (let i = 0; i < 3; i++) World.process();
+  assert.deepEqual([publicPlayer.player.getLocation().getX(), publicPlayer.player.getLocation().getY()], Shared.ARENA_ENTRY);
+  assert.equal(publicPlayer.player.getInventory().getAmount(I.COINS), 0, "public entrance does not charge a fee");
+
+  // Simulate a previously claimed tier after a later threshold increase. This uses
+  // the real saved-status producer, not a claim through Ghommal's dialogue.
+  const stale = actor("hueystale", 25000);
+  earnHard(stale); Progress.setClaimed(stale.player, hard);
+  oldThreshold = hard.threshold;
+  try {
+    hard.threshold = oldThreshold + 1;
+    const raised = ca(stale);
+    assert.deepEqual([raised.unlocked, raised.claimed, raised.currentThresholdMet], [true, true, false]);
+    await openFlag(stale); await choose(stale, SOLO);
+    assert.equal(stale.player.getInventory().getAmount(I.COINS), 25000, "old claim does not bypass current threshold");
+    assert.equal([...Shared.sessions].some((session) => session.owner === stale.player), false);
+  } finally { hard.threshold = oldThreshold; oldThreshold = null; }
+  assert.deepEqual(errors, [], "native plugin, task and World paths report no errors");
+});
+
+test("the registered chain Peek sends Wiki phase text and distinguishes an unstarted body set", t => {
+  let peek;
+  const api = new Proxy({ core, onObjectInteraction: (name, handlers) => { if (name === "Chain") peek = handlers.Peek; } },
+    { get: (target, key) => target[key] ?? (() => {}) });
+  Area.attach(api);
+  assert.equal(typeof peek, "function");
+  const player = new (require("../dist/game/entity/impl/player/Player").Player)(null);
+  player.setUsername("hueypeek3558");
+  const session = { fight: null, arenaPlayers: () => [] };
+  const space = Object.create(Area._test.InstanceArea.prototype);
+  space.session = session;
+  t.mock.method(player, "getPrivateArea", () => space);
+  const sent = [];
+  const sender = new Proxy({}, { get: (_, key) => (...args) => { if (key === "sendString") sent.push(args); return sender; } });
+  t.mock.method(player, "getPacketSender", () => sender);
+  const cases = [
+    [null, 0, "The Hueycoatl is preparing itself."],
+    [{ phase: "body", started: false }, 0, "The Hueycoatl is preparing itself."],
+    [{ phase: "body", started: true }, 2, "The Hueycoatl's body can be seen on the mountainside."],
+    [{ phase: "head", started: true }, 2, "They have reached the summit."],
+    [{ phase: "tail", started: true }, 2, "The Hueycoatl is defending itself with its tail."],
+    [{ phase: "final-pending", started: true }, 2, "The Hueycoatl is defending itself with its tail."],
+    [{ phase: "final", started: true }, 2, "The Hueycoatl is making its final stand."],
+    [{ phase: "defeated", started: true }, 2, "The Hueycoatl has been subdued!"],
+  ];
+  for (const [fight, count, words] of cases) {
+    session.fight = fight;
+    session.arenaPlayers = () => Array(count).fill(player);
+    const before = fight && { ...fight };
+    assert.equal(peek({ player, objectId: Shared.LOC.CHAIN }), true);
+    const text = sent.filter(([, uid]) => uid === ((229 << 16) | 3)).at(-1)?.[0];
+    assert.equal(text, "There are " + count + " adventurers ascending the mountain.<br>" + words);
+    assert.deepEqual(session.fight, before, "Peek never mutates encounter progression");
+    player.getDialogueManager().reset();
+  }
+  const calls = sent.length;
+  assert.equal(peek({ player, objectId: Shared.LOC.CHAIN + 1 }), false);
+  assert.equal(sent.length, calls);
+});
+
+test("under-25 body damage reduces only the pet contribution chance by 95 percent, with an exact 25 boundary", t => {
+  const PET = 30152, unique = { itemId: 30085, amount: 1 }, main = { itemId: 557, amount: 2000 }, other = { itemId: 12073, amount: 1 };
+  const api = new Proxy({ core, emitCustomEvent: (name, request) => {
+    assert.equal(name, "npc-drops:roll-table");
+    if (request.entryFilter({ section: "Unique" })) request.drops.push({ ...unique });
+    else if (request.entryFilter({ section: "Tertiary" })) request.drops.push({ itemId: PET, amount: 1 }, { ...other });
+    else request.drops.push({ ...main });
+  } }, { get: (target, key) => target[key] ?? (() => {}) });
+  Kills.attach(api);
+  let random = 0.1;
+  t.mock.method(Math, "random", () => random);
+  const low = { body: 24, head: 2001, tail: 0 }, full = { body: 25, head: 2000, tail: 0 };
+  assert.equal(Kills._test.qualifies(low, 6), true);
+  const under = Kills._test.lootFor({}, {}, low, 6, false);
+  assert.equal(under.drops.some(drop => drop.itemId === PET), false);
+  assert.deepEqual(under.main, [{ itemId: 557, amount: 50 }]);
+  assert.deepEqual(under.uniques, [unique], "ordinary unique share is unchanged");
+  assert.ok(under.drops.some(drop => drop.itemId === other.itemId), "nonpet tertiary is unchanged");
+  const normal = Kills._test.lootFor({}, {}, full, 6, false);
+  assert.ok(normal.drops.some(drop => drop.itemId === PET));
+  assert.deepEqual(normal.main, [{ itemId: 557, amount: 1000 }]);
+  random = 0.024;
+  assert.ok(Kills._test.lootFor({}, {}, low, 6, false).drops.some(drop => drop.itemId === PET));
+  random = 0.025;
+  assert.equal(Kills._test.lootFor({}, {}, low, 6, false).drops.some(drop => drop.itemId === PET), false,
+    "half contribution times 0.05 is exactly 0.025, with the existing exclusive roll boundary");
+});
+
+test("an Ironman in a team keeps their own Hueycoatl share (Wiki: group-boss rewards), the real Ironman rule applied", t => {
+  const IronCommon = require("../plugins/modes/ironman/Common.Ironman");
+  const events = new Map();
+  const placed = [];
+  const api = new Proxy({ core,
+    getItemOnGroundManager: () => ({ registerLocation(player, item) { placed.push([player, item.getId()]); } }),
+    onCustomEvent(name, fn) { if (!events.has(name)) events.set(name, []); events.get(name).push(fn); },
+    emitCustomEvent(name, request) {
+      if (name === "npc-drops:roll-table") { if (request.entryFilter({ section: "Main" })) request.drops.push({ itemId: 557, amount: 2000 }); return; }
+      for (const fn of events.get(name) ?? []) fn(request);
+    } }, { get: (target, key) => target[key] ?? (() => {}) });
+  IronCommon.init(api);
+  require("../plugins/modes/ironman/Loot.Ironman")(api);
+  Kills.attach(api);
+  t.mock.method(Math, "random", () => 0.5);
+  const fighter = (name) => {
+    const attributes = new Map();
+    return { name, getAttribute: key => attributes.get(key), setAttribute: (key, value) => attributes.set(key, value),
+      sendMessage() {}, getDisplayName: () => name, getUsername: () => name, getEquipment: () => ({ getItems: () => [] }) };
+  };
+  const [iron, other] = [fighter("Iron"), fighter("Main")];
+  iron.setAttribute(IronCommon.MODE_ATTRIBUTE, "ironman");
+  const head = {};
+  const fight = { head, spawnedAt: 0, joinedAt: new Map(), damage: new Map([[iron, { body: 200, head: 400, tail: 0 }], [other, { body: 200, head: 400, tail: 0 }]]) };
+  const session = { fight, arenaPlayers: () => [iron, other], tile: () => ({}), graphic() {} };
+  Kills.killed(session);
+  assert.ok(placed.some(([who]) => who === iron), "the Ironman's share is placed");
+  assert.ok(placed.some(([who]) => who === other));
+  const shared = { player: iron, npc: {}, npcId: 1, drops: [{ itemId: 995, amount: 1 }], damagers: [iron, other] };
+  api.emitCustomEvent("npc-drops:roll", shared);
+  assert.deepEqual(shared.drops, [], "another monster's shared kill is still lost");
+});

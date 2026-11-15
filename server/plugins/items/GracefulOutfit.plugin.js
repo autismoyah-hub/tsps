@@ -1,8 +1,8 @@
 /**
  * Graceful outfit (Wiki): each piece gives its own run-energy restoration bonus
  * (hood 3%, top/legs 4%, gloves/boots/cape 3% - 20% total) and wearing all six
- * pieces adds another 10%, for 30%. The Agility cape (or a max cape) substitutes
- * for the graceful cape for the set effect.
+ * pieces adds another 10%, for 30%. The Agility cape (or a max cape) is a graceful
+ * cape: its 3% worn alone, and the sixth piece of the set.
  */
 // The Wiki's weight for every colour variant (the cache's base ids carry the
 // physical weight instead), so the stats panel shows the same -25 kg for all.
@@ -45,11 +45,18 @@ function gracefulRestoreBonusFromSlots(nameBySlot, capeIsSubstitute) {
       pieces++;
     }
   }
+  // An Agility (or max) cape is a graceful cape (Wiki: Agility cape): its own 3%, alone too, and the
+  // sixth piece of the set.
+  const cape = PIECES.find((piece) => piece.prefix === "Graceful cape");
+  const capeName = nameBySlot[cape.slot];
+  if (capeIsSubstitute && !(capeName && String(capeName).startsWith(cape.prefix))) {
+    bonus += cape.percent;
+    pieces++;
+  }
   if (pieces === 0) {
     return 0;
   }
-  // Six graceful pieces, or five plus an Agility/max cape at the cape slot.
-  if (pieces === PIECES.length || (pieces === PIECES.length - 1 && capeIsSubstitute)) {
+  if (pieces === PIECES.length) {
     bonus += SET_BONUS;
   }
   return bonus;
@@ -64,16 +71,31 @@ function energyRestoreBonus(player) {
   return gracefulRestoreBonusFromSlots(nameBySlot, capeIsSubstitute(player));
 }
 
-/** The core delay is milliseconds per energy point; a bigger rate means a shorter delay. */
-function applyGracefulRunEnergy(player, delayMs) {
-  const bonus = energyRestoreBonus(player);
-  return bonus > 0 ? delayMs / (1 + bonus) : delayMs;
+/**
+ * Restore runs every tick, so the bonus is cached until the six worn ids change; the skillcape
+ * query only runs when the equipment actually moves.
+ */
+const restoreBonusCache = new WeakMap();
+
+function applyGracefulRunEnergy(player, units) {
+  const equipment = player.getEquipment().getItems();
+  const signature = PIECES.map((piece) => equipment[piece.slot]?.getId?.() ?? -1).join(",");
+  let cached = restoreBonusCache.get(player);
+  if (!cached || cached.signature !== signature) {
+    cached = { signature, bonus: energyRestoreBonus(player) };
+    restoreBonusCache.set(player, cached);
+  }
+  return cached.bonus > 0 ? units * (1 + cached.bonus) : units;
 }
 
-/** Every colour variant keeps its piece's Wiki weight; nothing is stored per player. */
-function addGracefulEffects(request) {
+/**
+ * Every colour variant keeps its piece's Wiki weight; nothing is stored per player. Player's
+ * carried weight asks for these through "equipment:weights", so the stats panel, the
+ * run-energy packet and the drain all see the same reduction. Returns the worn piece count.
+ */
+function addGracefulWeights(request) {
   const player = request?.player;
-  if (!player) return;
+  if (!player || !request.slotWeights) return 0;
   const equipment = player.getEquipment().getItems();
   let worn = 0;
   for (const piece of PIECES) {
@@ -83,20 +105,33 @@ function addGracefulEffects(request) {
       worn++;
     }
   }
+  return worn;
+}
+
+/** The full outfit in the equipment effects panel (enum 3047). */
+const SET_TEXT = 8;
+
+function addGracefulEffects(request) {
+  const player = request?.player;
+  if (!player) return;
+  const worn = addGracefulWeights(request);
   if (worn === PIECES.length || (worn === PIECES.length - 1 && capeIsSubstitute(player))) {
     const bonus = energyRestoreBonus(player);
     request.lines.push(`Graceful set: +${Math.round(bonus * 100)}% run energy restore`);
+    request.setTexts?.push(SET_TEXT);
   }
 }
 
 module.exports = {
   name: "GracefulOutfit",
+  description: "Gives each graceful piece its run-energy restoration bonus, plus the full-set bonus, and counts an Agility or max cape as the graceful cape.",
   members: true,
-  _test: { gracefulRestoreBonusFromSlots, energyRestoreBonus, addGracefulEffects },
+  _test: { gracefulRestoreBonusFromSlots, energyRestoreBonus, addGracefulEffects, addGracefulWeights },
   register(api) {
     coreApi = api.core;
     pluginApi = api;
     api.registerRunEnergyRestoreModifier(applyGracefulRunEnergy);
     api.onCustomEvent?.("equipment:effects", addGracefulEffects);
+    api.onCustomEvent?.("equipment:weights", addGracefulWeights);
   },
 };

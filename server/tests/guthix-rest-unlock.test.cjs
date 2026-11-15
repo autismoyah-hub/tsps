@@ -7,6 +7,7 @@ const { PluginManager } = require('../dist/plugins/PluginManager');
 const { Player } = require('../dist/game/entity/impl/player/Player');
 const Potions = require('../plugins/items/Potions.plugin');
 const custom = new Map(), persisted = new Map();
+const questLogins = [], worldSpawns = [];
 let core, drink, brew, variant;
 const STAGE = 'quest.one_small_favour.stage';
 const LEARNED = 'one-small-favour:guthix-rest-learned';
@@ -15,6 +16,8 @@ function emit(name, event) { for (const handler of custom.get(name) ?? []) handl
 function api(kind) {
   return new Proxy({ core,
     persistAttribute(key, value) { persisted.set(key, value); },
+    onPlayerLogin(handler) { if (kind === 'quest') questLogins.push(handler); },
+    spawnNpc(definition) { worldSpawns.push(definition); },
     onCustomEvent(name, handler) { custom.set(name, [...custom.get(name) ?? [], handler]); },
     emitCustomEvent: emit,
     onItemFirstAction(handler) { if (kind === 'potions') drink = handler; },
@@ -121,6 +124,14 @@ test('brewing before the recipe preserves all ingredients', t => {
   assert.deepEqual(f.p.getInventory().getItems().map(item => [item.getId(), item.getAmount()]), ids);
   assert.match(f.messages.join(' '), /Sanfew/);
 });
+// Wiki (Guthix rest): before starting One Small Favour, "You have no idea what effect this would have."
+test('brewing before starting One Small Favour gives the Wiki line and keeps the ingredients', t => {
+  const f = player(t, 0); ingredients(f);
+  const ids = f.p.getInventory().getItems().map(item => [item.getId(), item.getAmount()]);
+  make(f.p);
+  assert.deepEqual(f.p.getInventory().getItems().map(item => [item.getId(), item.getAmount()]), ids);
+  assert.ok(f.messages.includes('You have no idea what effect this would have.'), f.messages.join(' | '));
+});
 test('brewing requires level eighteen after learning; drinking does not', t => {
   const low = player(t, 12, 17); ingredients(low); make(low.p);
   assert.equal(low.p.getInventory().getAmount(core.ItemIdentifiers.HARRALANDER), 1);
@@ -137,4 +148,34 @@ test('unrelated drinks stay usable and an existing drink restriction still wins'
   denied.p.getTimers().extendOrRegister(core.TimerKey.POTION, 3);
   drink({ player: denied.p, itemId: core.ItemIdentifiers.GUTHIX_REST_4_, slot: 0 });
   assert.equal(denied.p.getInventory().getItems()[0].getId(), core.ItemIdentifiers.GUTHIX_REST_4_);
+});
+
+test('One Small Favour logins reuse the canonical Cromperty spawn instead of adding a second wizard (#2892)', t => {
+  const root = core.CacheDefinitions.getNpcId('ardounge_wizard');
+  const records = require('../data/definitions/npc-spawns.json').filter(row =>
+    row.id === root || [core.NpcIdentifiers.WIZARD_CROMPERTY, core.NpcIdentifiers.WIZARD_CROMPERTY_2].includes(row.id));
+  assert.equal(records.length, 1, 'the canonical spawn is already supplied by npc-spawns');
+  assert.equal(records[0].id, root, 'preserve the diary-dependent parent NPC');
+  const f = player(t, 0);
+  questLogins.forEach(handler => handler({ player: f.p }));
+  questLogins.forEach(handler => handler({ player: f.p }));
+  assert.equal(worldSpawns.some(row => [root, ...core.CacheDefinitions.getNpc(root).transforms].includes(row.id)), false);
+  assert.deepEqual(worldSpawns.map(row => row.id).sort((a,b) => a-b),
+    [core.NpcIdentifiers.GNORMADIUM_AVLAFRIM, core.NpcIdentifiers.CAPTAIN_BLEEMADGE].sort((a,b) => a-b),
+    'other missing quest NPCs still spawn once across relog');
+});
+test('the surviving parent resolves both diary forms into the existing Cromperty favour dialogue', t => {
+  const root = core.CacheDefinitions.getNpcId('ardounge_wizard');
+  const npc = core.NPC.create(root, new core.Location(2683, 3326));
+  for (const reward of [0, 1]) {
+    const f = player(t, 15);
+    t.mock.method(f.p, 'getPacketSender', () => ({ getVarp: () => reward, getVarbit: () => reward }));
+    const npcId = npc.getContentId(f.p);
+    assert.equal(npcId, core.CacheDefinitions.getNpc(root).transforms[reward]);
+    assert.equal(npc.getCurrentDefinition(f.p).getName(), 'Wizard Cromperty');
+    assert.match(variant({ player: f.p, npcId }), /asking-wizard-cromperty-for-a-spell$/);
+    f.p.setAttribute(STAGE, 22);
+    assert.match(variant({ player: f.p, npcId }), /wizard-cromperty-with-the-iron-oxide$/);
+    assert.equal(npc.getRealId(), root);
+  }
 });

@@ -19,6 +19,7 @@ const Perdu = require('../plugins/items/brokenitems/Perdu.BrokenItems');
 
 const core = PluginManager.getCoreApi();
 const { Item, ItemIdentifiers: I } = core;
+const { MAX_STACK_AMOUNT } = require('../dist/game/model/container/StackType');
 const COINS = I.COINS;
 
 const EDGEVILLE = new Location(3090, 3490, 0);
@@ -35,6 +36,7 @@ before(async () => {
   const Bank = { getTabForItem: () => (bankTab ? 0 : -1) };
   Common.init({
     core: { ...core, Bank },
+    emitCustomEvent() {},
     sendMultiChatboxPrompt(player, title, ...pairs) {
       const options = [];
       for (let i = 0; i < pairs.length; i += 2) options.push([pairs[i], pairs[i + 1]]);
@@ -54,6 +56,18 @@ function container(items) {
     getAmount: (id) => slots.reduce((sum, item) => sum + (item.getId() === id ? item.getAmount() : 0), 0),
     contains: (id) => slots.some((item) => item.getId() === id),
     getFreeSlots: () => slots.filter((item) => item.getId() === -1).length,
+    getAddableAmount(item) {
+      const requested = Math.max(0, Math.floor(item.getAmount()));
+      if (item.getId() < 0 || !Number.isFinite(requested) || requested <= 0) return 0;
+      if (item.getDefinition().isStackable()) {
+        const meta = JSON.stringify(item.getMeta() ?? null);
+        const stack = slots.find((held) => held.getId() === item.getId() &&
+          JSON.stringify(held.getMeta() ?? null) === meta);
+        if (stack) return Math.min(requested, Math.max(0, MAX_STACK_AMOUNT - stack.getAmount()));
+        return self.getFreeSlots() > 0 ? Math.min(requested, MAX_STACK_AMOUNT) : 0;
+      }
+      return Math.min(requested, self.getFreeSlots());
+    },
     deleteNumber(id, amount) {
       for (const item of slots) {
         if (amount <= 0 || item.getId() !== id) continue;

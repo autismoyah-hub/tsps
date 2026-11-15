@@ -15,8 +15,13 @@ const { WeaponInterfaceManager } = require("../../src/main/typescript/elvarg/gam
 const META_KEY = "barrows";
 const MAX_DURABILITY = 1000;
 const TICKS_PER_DEGRADE = 90;
+const WORN_OPTION_PARAM = 451;
+const FIRST_WORN_OPTION_CLICK = 2;
 const REPAIR_COSTS = [60, 100, 90, 80]; // helm, weapon, body, legs
 const BARROWS_WEAPONS = new Set([4710, 4718, 4726, 4734, 4747, 4755]);
+/** Each brother's full set in the equipment effects panel (enum 3047); with the amulet of the damned, 2000 higher. */
+const SET_TEXTS = { ahrims: 1, dharoks: 2, guthans: 3, karils: 4, torags: 5, veracs: 6 };
+const DAMNED_SET_TEXT_OFFSET = 2000;
 
 function durability(item) {
   const id = item?.getId?.();
@@ -27,6 +32,15 @@ function durability(item) {
   const stage = Barrows.stageOf(id);
   if (stage == null) return null;
   return [MAX_DURABILITY, 750, 500, 250, 0][stage] ?? MAX_DURABILITY;
+}
+
+function addSetTexts(request) {
+  const player = request?.player;
+  if (!player || !Array.isArray(request.setTexts)) return;
+  const offset = Barrows.hasDamnedAmulet(player) ? DAMNED_SET_TEXT_OFFSET : 0;
+  for (const [set, id] of Object.entries(SET_TEXTS)) {
+    if (Barrows.hasFullSet(player, set)) request.setTexts.push(id + offset);
+  }
 }
 
 function stageFor(remaining) {
@@ -47,12 +61,49 @@ function baseName(item) {
   return String(item?.getDefinition?.()?.getName?.() ?? "Barrows equipment").replace(/ \d+$/, "");
 }
 
-function sendDegradeMessage(player, item, stage) {
+// rsprox 2600, ticks 18/129: pristine and worn Check; percentages refer to the current quarter.
+function checkDurability(event) {
+  if (!Barrows.isBarrowsItem(event.itemId) || Barrows.isBroken(event.itemId)) return;
+  const definition = pluginApi.core.CacheDefinitions.getItem(event.itemId);
+  const worn = event.interfaceId === Equipment.INVENTORY_INTERFACE_ID;
+  const option = worn
+    ? event.option ?? definition.params?.get?.(WORN_OPTION_PARAM + event.clickType - FIRST_WORN_OPTION_CLICK)
+    : definition.inventoryActions?.[event.clickType - 1];
+  if (option !== "Check") return;
+  const slot = event.item.getDefinition().getEquipmentType().getSlot();
+  const part = { [Equipment.HEAD_SLOT]: "helm", [Equipment.WEAPON_SLOT]: "weapon",
+    [Equipment.BODY_SLOT]: "body", [Equipment.LEG_SLOT]: "legs" }[slot];
+  const name = `${baseName(event.item).split("'s")[0]}'s ${part}`;
+  const pristine = Barrows.isPristine(event.itemId);
+  const percent = Math.ceil(((durability(event.item) - 1) % 250 + 1) * 100 / 250);
+  event.player.sendMessage(pristine
+    ? `${name}: This item is pristine.`
+    : `${name}: ${percent}% remaining until the next degradation.`);
+  event.handled = true;
+}
+
+/**
+ * "<Brother>'s <part> has degraded slightly." in red, each time the item moves to its next stage, the first use's
+ * pristine -> 100 included (rsprox_transcripts/227/00086.txt:294617-294622, 227/00551.txt:48949-48952): helmet (Ahrim's
+ * hood, Karil's coif), body, legs ("have", platelegs) or skirt, weapon.
+ */
+function degradedLine(item) {
   const name = baseName(item);
+  const brother = name.split("'s")[0];
+  const slot = item.getDefinition?.()?.getEquipmentType?.()?.getSlot?.();
+  let part = "weapon";
+  if (slot === Equipment.HEAD_SLOT) part = /hood/i.test(name) ? "hood" : /coif/i.test(name) ? "coif" : "helmet";
+  else if (slot === Equipment.BODY_SLOT) part = "body";
+  else if (slot === Equipment.LEG_SLOT) part = /skirt/i.test(name) ? "skirt" : "legs";
+  return `<col=ef1020>${brother}'s ${part} ${part === "legs" ? "have" : "has"} degraded slightly.</col>`;
+}
+
+function sendDegradeMessage(player, item, stage) {
   if (stage === 4) {
-    player.sendMessage(`Your ${name} has fully degraded and can no longer be used.`);
+    // Ours: no recording shows the last stage break.
+    player.sendMessage(`Your ${baseName(item)} has fully degraded and can no longer be used.`);
   } else {
-    player.sendMessage(`Your ${name} has degraded to ${[100, 75, 50, 25][stage]}%.`);
+    player.sendMessage(degradedLine(item));
   }
 }
 
@@ -83,11 +134,10 @@ function degradeEquipment(player) {
     if (!Barrows.isBarrowsItem(item?.getId?.())) continue;
     weaponChanged ||= BARROWS_WEAPONS.has(Barrows.baseItemId(item.getId()));
     const remaining = durability(item);
-    const beforeStage = stageFor(remaining);
+    const beforeId = item.getId();
     const next = Math.max(0, remaining - 1);
     changed = setDurability(item, next) || changed;
-    const afterStage = stageFor(next);
-    if (afterStage > beforeStage) sendDegradeMessage(player, item, afterStage);
+    if (item.getId() !== beforeId) sendDegradeMessage(player, item, stageFor(next));
   }
 
   const amulet = player.getEquipment().get(Equipment.AMULET_SLOT);
@@ -238,8 +288,9 @@ function repairEquipment(event) {
 
 module.exports = {
   name: "BarrowsEquipment",
+  description: "Barrows armour and weapons: durability that degrades over time, repairs, and the Dharok, Guthan, Verac, Torag and Karil set-effect combat modifiers.",
   members: true,
-  _test: { durability, setDurability, stageFor, degradeEquipment, repairAll, refresh },
+  _test: { addSetTexts, durability, setDurability, stageFor, degradeEquipment, repairAll, refresh },
   register(api) {
     pluginApi = api;
     BonusManager = api.getBonusManager();
@@ -258,7 +309,7 @@ module.exports = {
 
     api.registerMeleeHitModifier((attacker, maxHit) => {
       if (!attacker.isNpc() || !CombatFactory.fullVeracs(attacker)) return maxHit;
-      const target = attacker.getCombat().getTarget();
+      const target = api.core.hitTargetOf(attacker);
       return target && PrayerHandler.isActivated(target, PrayerHandler.PROTECT_FROM_MELEE)
         ? Math.floor(maxHit * 2 / 3) : maxHit;
     });
@@ -321,16 +372,21 @@ module.exports = {
       }
     });
     api.onPlayerDeathItemDrop((event) => {
-      if (Barrows.isBarrowsItem(event.item?.getId?.())) setDurability(event.item, 0);
+      // Wiki (Items Kept on Death): an unprotected piece goes to the grave unbroken after a PvM death, and to the
+      // PKer as its broken version; a protected piece is kept as it is.
+      const pvp = event.killer?.isPlayer?.() === true && event.killer !== event.player;
+      if (Barrows.isBarrowsItem(event.item?.getId?.()) && !event.kept && pvp) setDurability(event.item, 0);
       if (event.item?.getId?.() === Barrows.AMULET_OF_THE_DAMNED) {
         event.item.setId(-1);
         event.handled = true;
       }
     });
+    api.onItemAction(checkDurability);
     api.onNpcInteraction("Bob", { Repair: repairEquipment });
     api.onNpcInteraction("Aneirin", { Repair: repairEquipment });
     api.onNpcInteraction("Dunstan", { "Talk-to": repairEquipment });
     api.onNpcInteraction("Tindel Marchant", { "Talk-to": repairEquipment });
     api.onCustomEvent("barrows:repair", repairElsewhere);
+    api.onCustomEvent("equipment:effects", addSetTexts);
   },
 };

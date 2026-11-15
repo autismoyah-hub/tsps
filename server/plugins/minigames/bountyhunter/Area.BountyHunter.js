@@ -11,10 +11,10 @@
  *   entering it is immune to rogues for 6 seconds, until they attack someone (1 June 2023).
  *   Bounty Hunter weapons work here.
  *
- * Rogues can attack within five combat levels; assigned targets use the matchmaking range.
+ * Rogues can attack within five combat levels by default; assigned targets use the matchmaking range.
  * https://secure.runescape.com/m=news/bounty-hunter-is-back?oldschool=1
- * Phoenix necklaces (29 January 2025) need nothing: the server has no
- * phoenix necklace effect. Messages are our wording.
+ * Phoenix necklaces (29 January 2025) do nothing in the arena: the PhoenixNecklace plugin
+ * asks "phoenix-necklace:eligible". Messages are our wording.
  */
 
 const Hud = require("./Hud.BountyHunter");
@@ -23,17 +23,44 @@ const Targets = require("./Targets.BountyHunter");
 const LOBBY_ALLOWANCE_TICKS = 200; // 2:00
 const LOBBY_REFUND_TICKS = 25; // 15 seconds
 const ROGUE_IMMUNITY_TICKS = 10; // 6 seconds
-const ROGUE_LEVEL_RANGE = 5;
+const DEFAULT_ROGUE_LEVEL_RANGE = 5;
 const ATTACK_OPTION_SLOT = 1; // the client's first player option, as Castle Wars and Ferox use it
 // Prayer head icons of Protect from Melee, Missiles and Magic.
 const PROTECTION_HEAD_ICONS = [0, 1, 2];
 const COMBAT_SKILLS = ["ATTACK", "STRENGTH", "DEFENCE", "RANGED", "MAGIC", "HITPOINTS"];
 // Combat asks canAttack several times per swing, so a refusal is said at most this often.
 const REFUSAL_MESSAGE_MS = 1200;
+// "Fake drops" in the XP drops setup (varbit 8120; 0 = On, 1 = Off).
+const FAKE_DROPS_OFF_VARBIT = 8120;
+// The client caches one fake drop per queue slot; script 2091 adds (skill, xp) and script
+// 1004 drains the queue when its first argument is 1 (its own stat-transmit path passes 0).
+const FAKE_DROP_SCRIPT = 2091;
+const FAKE_DROP_RENDER_SCRIPT = 1004;
+const XP_DROPS_INTERFACE = 122;
+// Script 993 (122:0's onLoad) installs 1004 on 122:2 with these ten fixed arguments: the
+// source widget, eight drop-panel components, and the number of drop layers (cache enum 1163).
+// 1004's fake path reads only this prefix; its real path is followed by each skill's XP baseline.
+const FAKE_DROP_RENDER_ARGS = [
+  (XP_DROPS_INTERFACE << 16) | 0, // 122:0, the interface the listener runs on
+  (XP_DROPS_INTERFACE << 16) | 2,
+  (XP_DROPS_INTERFACE << 16) | 4,
+  (XP_DROPS_INTERFACE << 16) | 9,
+  (XP_DROPS_INTERFACE << 16) | 10,
+  (XP_DROPS_INTERFACE << 16) | 11,
+  (XP_DROPS_INTERFACE << 16) | 16,
+  (XP_DROPS_INTERFACE << 16) | 17,
+  (XP_DROPS_INTERFACE << 16) | 25,
+  7, // the seven drop layers (cache enum 1163)
+];
+// The skills whose XP script 1004 compares, in the order the client stores their baselines.
+// The fake path only needs the Hitpoints slot to be non-zero, but the call mirrors the
+// listener's own arguments so it stays valid if the client script ever looks at the rest.
+const XP_DROPS_SKILL_ORDER = [0, 2, 4, 6, 1, 3, 5, 16, 15, 17, 12, 20, 14, 13, 10, 7, 11, 8, 9, 18, 19, 22, 21, 23];
 
 let api;
 let core;
 let bh;
+let rogueLevelRange;
 const refusalSaidAt = new WeakMap();
 
 function isPlayer(mobile) {
@@ -164,7 +191,7 @@ function canAttackInArena(attacker, target) {
   if (!bh.inArena(attacker) || !bh.inArena(target)) return false;
   const assignedTarget = bh.targetOf(attacker) === target;
   const levels = Math.abs(attacker.getSkillManager().getCombatLevel() - target.getSkillManager().getCombatLevel());
-  if (!assignedTarget && levels > ROGUE_LEVEL_RANGE) return refuse(attacker, "Your level difference is too great.");
+  if (!assignedTarget && levels > rogueLevelRange) return refuse(attacker, "Your level difference is too great.");
   if (bh.targetOf(target) !== attacker && cycle() < (bh.immuneUntil.get(target) ?? 0)) {
     return refuse(attacker, "That player has only just entered the arena.");
   }
@@ -176,8 +203,18 @@ function endImmunity({ attacker, target }) {
   if (isPlayer(target) && bh.inArena(attacker) && bh.immuneUntil.delete(attacker)) Hud.sendImmunity(attacker, 0);
 }
 
+/** Phoenix necklaces cannot be used in the arena (Wiki: Phoenix necklace). */
+function blockPhoenixNecklace(event) {
+  if (isPlayer(event.player) && bh.inArena(event.player)) event.blocked = true;
+}
+
 function createAreas() {
   class BountyHunterLobby extends core.Area {
+    canLoadPreset(player) {
+      // Membership can lag movement until the next area tick; never re-gear an arena tile.
+      return bh.isLobbyTile(player.getLocation()) ? true : null;
+    }
+
     postEnter(mobile) {
       if (isPlayer(mobile)) enterLobby(mobile);
     }
@@ -237,9 +274,55 @@ function disableProtectionPrayers(event) {
   event.message = "You can't use protection prayers in Bounty Hunter.";
 }
 
+/** Client skill id -> the server's Skill, built once (Construction and Hunter swap ids). */
+let skillsByClientId = null;
+/** Players whose queued fake drops are waiting for the end of the current XP batch. */
+const pendingFakeDrops = new Set();
+
+function skillForClientId(clientId) {
+  if (!skillsByClientId) {
+    skillsByClientId = new Map(core.Skill.values().map((skill) => [skill.getClientId(), skill]));
+  }
+  return skillsByClientId.get(clientId);
+}
+
+/**
+ * A blocked hit still shows what it would have paid. Each skill is queued with script 2091;
+ * the render (script 1004) waits for a microtask so every skill the same hit awards is in the
+ * queue together, letting the client's Group XP drops setting combine them into one counter.
+ * 1004 asks the interface's own listener for every skill's XP baseline, so the server sends the
+ * same table the cache would (https://oldschool.runescape.wiki/w/Bounty_Hunter#Fighting).
+ */
+function showFakeExperienceDrop(player, skill, experience) {
+  if (player.getAttribute(core.XPDROPS_ENABLED_ATTRIBUTE) !== true) return;
+  const sender = player.getPacketSender();
+  if (sender.getVarbit(FAKE_DROPS_OFF_VARBIT) !== 0) return;
+  const amount = Math.floor(experience * (core.GameConstants?.EXPERIENCE_MULTIPLIER ?? 1));
+  if (amount <= 0) return;
+  sender.sendClientScript(FAKE_DROP_SCRIPT, skill.getClientId(), amount);
+  // addExperience calls for one hit are synchronous, so the microtask runs after the last one.
+  if (pendingFakeDrops.has(player)) return;
+  pendingFakeDrops.add(player);
+  queueMicrotask(() => {
+    pendingFakeDrops.delete(player);
+    renderFakeDrops(player);
+  });
+}
+
+function renderFakeDrops(player) {
+  const xps = XP_DROPS_SKILL_ORDER.map((clientId) => {
+    const ordered = skillForClientId(clientId);
+    return ordered ? player.getSkillManager().getExperience(ordered) : 0;
+  });
+  player.getPacketSender()
+    .sendClientScript(FAKE_DROP_RENDER_SCRIPT, 1, ...FAKE_DROP_RENDER_ARGS, ...xps);
+}
+
 function noPvpCombatExperience(event) {
   if (!bh.inArena(event.player) || !COMBAT_SKILLS.some((name) => core.Skill[name] === event.skill)) return;
-  if (isPlayer(event.player.getCombat().getTarget())) event.allow = false;
+  if (!isPlayer(event.player.getCombat().getTarget())) return;
+  event.allow = false;
+  showFakeExperienceDrop(event.player, event.skill, event.experience);
 }
 
 /** Noted for the exit gates: a player can't leave right after a special attack (7 June 2023). */
@@ -274,14 +357,18 @@ module.exports = function attachArea(pluginApi, state) {
   api = pluginApi;
   core = pluginApi.core;
   bh = state;
+  const levelDifference = api.getPluginConfig("BountyHunter:levelDifference", DEFAULT_ROGUE_LEVEL_RANGE);
+  rogueLevelRange = Number.isInteger(levelDifference) && levelDifference >= 0 ? levelDifference : DEFAULT_ROGUE_LEVEL_RANGE;
   registerAreas();
   api.onPrayerDisabled(disableProtectionPrayers);
   api.onCanGainExperience(noPvpCombatExperience);
   api.onAttackTiming(noteSpecialAttack);
   api.onCombatHitResolved(endImmunity);
   api.onCustomEvent("bounty-hunter:weapon-area", allowWeapons);
+  api.onCustomEvent("phoenix-necklace:eligible", blockPhoenixNecklace);
   api.onCustomEvent("loot-keys:eligible-kill", allowLootKeys);
   api.onCustomEvent("player:respawn", respawnInLobby);
 };
 
-Object.assign(module.exports, { _test: { canAttackInArena, endImmunity, arenaBoundaries, lobbyTick, LOBBY_ALLOWANCE_TICKS } });
+Object.assign(module.exports, { _test: { canAttackInArena, endImmunity, arenaBoundaries, lobbyTick, LOBBY_ALLOWANCE_TICKS,
+  noPvpCombatExperience, showFakeExperienceDrop, FAKE_DROPS_OFF_VARBIT, FAKE_DROP_RENDER_ARGS } });

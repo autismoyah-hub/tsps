@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { Server } = require('../dist/Server');
+const { Dialogue } = require('../dist/game/model/dialogues/entries/Dialogue');
 Server.installProductionPathResolver();
 
 const { Sounds } = require('../dist/game/Sounds');
@@ -26,8 +27,9 @@ const WIKI_CHART = {
     man: [180, 240], farmer: [150, 240], ham: [135, 239], warrior: [100, 240], rogue: [75, 240],
     master_farmer: [90, 240], guard: [50, 240], wealthy_citizen: [35, 200], desert_bandit: [50, 240],
     knight: [50, 240], menaphite_thug: [50, 160], watchman: [15, 160],
-    // Both cite Mod Ash: "LOW: 35 HIGH: 160" (Paladin) and "LOW: 33 HIGH: 140" (Gnome).
-    paladin: [35, 160], gnome: [33, 140], hero: [39, 160], vyre: [8, 128],
+    // The charts both pages render (Normal: low1/high1). Each page also keeps a commented-out
+    // chart citing Mod Ash ("LOW: 35 HIGH: 160", "LOW: 33 HIGH: 140"), which the Wiki doesn't show.
+    paladin: [40, 170], gnome: [43, 175], hero: [39, 160], vyre: [8, 128],
     elf_lletya: [6, 100], elf_prifddinas: [6, 100], tzhaar_hur: [-200, 200],
 };
 /** The Wiki has no chart for these: each uses the one its `estimatedFrom` names. */
@@ -41,12 +43,17 @@ const log = [];
 const submitted = [];
 /** Whether content asks for another pickpocket ("thieving:done", a league relic's repeat). */
 let repeatAgain = false;
+/** What content (the Ardougne Diary's rewards) answers "thieving:pickpocket-target" with. */
+let pickpocketTargetAnswer = null;
 const interactions = [];
 const combat = {
     inCombat: () => false,
     stunTicks: (_player, ticks, _force, options) => log.push(`stun ${ticks} ticks, graphic ${options?.graphic?.id}/${options?.graphic?.height}, message ${options?.message}`),
 };
 const { PluginManager } = require("../dist/plugins/PluginManager");
+let runePouchAnswer = null;
+/** The client loot tracker entries content asked for ("loot-tracker:add-npc"). */
+const tracked = [];
 Thieving.register({
     core: { ...PluginManager.getCoreApi(), CombatFactory: combat, TaskManager: { submit: (task) => { task.setRunning(true); submitted.push(task); } } },
     onCustomEvent: () => {},
@@ -58,7 +65,10 @@ Thieving.register({
     onItemAction: () => {},
     emitCustomEvent: (name, request) => {
         if (name === 'thieving:success') log.push(name);
+        if (name === 'loot-tracker:add-npc') tracked.push({ npcId: request.npcId, items: request.items, at: log.length });
         if (name === 'thieving:done' && repeatAgain) request.again = true;
+        if (name === 'thieving:pickpocket-target') pickpocketTargetAnswer?.(request);
+        if (name === 'rune-pouch:gather') runePouchAnswer?.(request);
         // The Skillcapes plugin answers this; a worn Thieving cape is all these tests need.
         if (name === 'skillcape:has-perk' && request.skill === 'THIEVING') {
             request.result = request.player.getEquipment().get(Equipment.CAPE_SLOT)?.getId() === I.THIEVING_CAPE;
@@ -67,6 +77,27 @@ Thieving.register({
     log: () => {},
 });
 Sounds.sendSound = () => {};
+
+test('a failed H.A.M. trapdoor pick numbs the fingers: the recorded line and 1 Thieving off (Wiki: Trapdoor (H.A.M. Hideout))', () => {
+    const core = PluginManager.getCoreApi();
+    const typed = [];
+    let level = 16;
+    const player = {
+        getPacketSender: () => ({ sendTypedMessage: (type, text) => typed.push([type, text]) }),
+        getSkillManager: () => ({
+            getCurrentLevel: () => level,
+            setCurrentLevels: (skill, value) => { assert.equal(skill, core.Skill.THIEVING); level = value; },
+            updateSkill() {},
+        }),
+    };
+    HamTrapdoor._test.fumbled(player);
+    // rsprox 227/01723.txt:186365-186387: spam line, then Thieving 16 -> 15.
+    assert.deepEqual(typed, [[core.ChatType.SPAM, 'You fail to pick the lock - your fingers get numb from fumbling with the lock.']]);
+    assert.equal(level, 15);
+    level = 1;
+    HamTrapdoor._test.fumbled(player);
+    assert.equal(level, 1, 'never below 1, so picking can go on');
+});
 
 test('the H.A.M. entrance uses its own published curve without repeat-failure scaling', () => {
     const chance = HamTrapdoor._test.successChance;
@@ -102,6 +133,8 @@ function container(entries = {}, full = false) {
         forceAdd: (player, item) => { const id = item.getId(), n = item.getAmount(); amounts.set(id, (amounts.get(id) ?? 0) + n); log.push(`add ${NAMES.get(id) ?? id} x${n}`); },
         delete: (id, n) => amounts.set(id, (amounts.get(id) ?? 0) - n),
         getItems: () => [...amounts].filter(([, n]) => n > 0).map(([id, n]) => ({ getId: () => id, getAmount: () => n })),
+        // Room for anything, unless `full`: then only onto a stack already held.
+        getAddableAmount: (item) => (!full || (amounts.get(item.getId()) ?? 0) > 0 ? item.getAmount() : 0),
     };
 }
 
@@ -133,8 +166,10 @@ function player({ level = 99, farming = 99, stunLeft = 0, worn = {}, inventory =
         performAnimation: (animation) => log.push(`anim ${animation.getId()}`),
         getBlockAnim: () => 420,
         sendMessage: (message) => log.push(message),
+        // The box logs its own chat line as it opens, as the real one does.
+        getDialogueManager() { const self = this; return { startDialogues: (chain) => { Dialogue.sendBoxChatLine(self, chain.dialogues.get(0).getText()); log.push(`statement: ${chain.dialogues.get(0).getText()}`); } }; },
         getPacketSender: () => ({
-            sendTypedMessage: (_type, message) => log.push(`spam: ${message}`),
+            sendTypedMessage: (type, message) => log.push(`${type === PluginManager.getCoreApi().ChatType.MESBOX ? 'mesbox' : 'spam'}: ${message}`),
             sendSound: (id) => log.push(`sound ${id}`),
         }),
         getAttribute: (key) => attrs.get(key),
@@ -166,6 +201,7 @@ function attempt(t, { name = 'Man', npcId = 0, random = 0, who = player({ level:
     t.after(() => { Math.random = original; });
     log.length = 0;
     submitted.length = 0;
+    tracked.length = 0;
     const event = { player: who, npc: npc(), npcId, definition: { getName: () => name } };
     const result = Thieving._test.pickpocket(event);
     const click = [...log];
@@ -177,6 +213,14 @@ function attempt(t, { name = 'Man', npcId = 0, random = 0, who = player({ level:
     }
     return { click, next: ticks[0], ticks, handled: event.handled, result };
 }
+
+// Wiki (Rocky): "1 in B - (Lvl * 25), where B is the base chance and Lvl is the player's Thieving level"; every common
+// target 257,211, Watchman 134,625, Paladin 127,056, Gnome 108,718, Hero/Elf/Vyre 99,175, TzHaar-Hur 176,743. The
+// base is the table's own: the player's level comes off once, in Pets.
+test("Rocky: each target's petBase is the Wiki's base, with no NPC level taken off it", () => {
+    const special = { watchman: 134625, paladin: 127056, gnome: 108718, hero: 99175, vyre: 99175, elf_lletya: 99175, elf_prifddinas: 99175, tzhaar_hur: 176743 };
+    for (const t of DATA.targets) assert.equal(t.petBase, special[t.key] ?? 257211, t.key);
+});
 
 test('the data file: every target is complete, its rates add up, and no NPC is claimed twice', () => {
     const { rateOf } = Pickpocket._test;
@@ -240,18 +284,57 @@ test('the interpolation rounds as the Wiki module does, at a level where the sum
     // Flooring without the module's +0.5 would give 156/256 (61.0% instead of 61.3%).
     const warrior = DATA.targets.find((t) => t.key === 'warrior');
     assert.equal(successChance(player({ level: 40 }), warrior), 157 / 256);
-    // The two charts that had been transcribed stale (see WIKI_CHART above).
+    // Paladin and Gnome: the charts the Wiki pages render (see WIKI_CHART above).
     const at = (key, level) => successChance(player({ level }), DATA.targets.find((t) => t.key === key));
-    assert.equal(at('paladin', 70), 124 / 256, '48.4%, not the 51.9% of a 40/170 chart');
-    assert.equal(at('paladin', 99), 161 / 256);
-    assert.equal(at('gnome', 75), 115 / 256, '44.9%, not the 56.3% of a 43/175 chart');
-    assert.equal(at('gnome', 99), 141 / 256);
+    assert.equal(at('paladin', 70), 133 / 256, '51.9%, the rendered 40/170 chart');
+    assert.equal(at('paladin', 99), 171 / 256);
+    assert.equal(at('gnome', 75), 144 / 256, '56.3%, the rendered 43/175 chart');
+    assert.equal(at('gnome', 99), 176 / 256);
 });
 
-test('a success: the attempt message, then the animation, a coin pouch and the experience a tick later', (t) => {
+test('a success announces the pickpocket before adding loot so RuneLite can snapshot the old inventory', (t) => {
     const { click, ticks } = attempt(t);
     assert.deepEqual(click, ["spam: You attempt to pick the man's pocket."]);
-    assert.deepEqual(ticks, [['anim 881', 'add Coin pouch x1', "spam: You pick the man's pocket.", 'xp 8', 'thieving:success'], [], []]);
+    assert.deepEqual(ticks, [['anim 881', "spam: You pick the man's pocket.", 'add Coin pouch x1', 'xp 8', 'thieving:success'], [], []]);
+});
+
+test('a success reports its loot to the client loot tracker after the loot lands, before the xp', (t) => {
+    const { ticks } = attempt(t, { npcId: N.MAN });
+    assert.deepEqual(ticks[0], ['anim 881', "spam: You pick the man's pocket.", 'add Coin pouch x1', 'xp 8', 'thieving:success']);
+    const pouch = DATA.targets.find((target) => target.key === 'man').coinPouch.id;
+    assert.deepEqual(tracked, [{ npcId: N.MAN, items: [[pouch, 1]], at: 3 }], 'the coin pouch, as it landed');
+});
+
+test('a Master Farmer success reports each seed it gave; a failure reports nothing', (t) => {
+    attempt(t, { name: 'Master Farmer', npcId: N.MASTER_FARMER, who: player() });
+    assert.equal(tracked.length, 1);
+    assert.equal(tracked[0].npcId, N.MASTER_FARMER);
+    assert.ok(tracked[0].items.length >= 1 && tracked[0].items.every(([id, amount]) => NAMES.get(id)?.endsWith('seed') && amount >= 1), JSON.stringify(tracked[0].items));
+    attempt(t, { random: 0.99 });
+    assert.deepEqual(tracked, []);
+});
+
+test('too low a Thieving level opens a message box naming the target, with its mesbox chat line', (t) => {
+    const { click, ticks } = attempt(t, { name: 'Guard', who: player({ level: 39 }) });
+    const line = "You need level 40 thieving to pick the guard's pocket.";
+    assert.deepEqual(click, [`mesbox: ${line}`, `statement: ${line}`]);
+    assert.deepEqual(ticks, [[], [], []], 'no attempt');
+});
+
+test("the Varlamore and Kastori Master Farmers shout the default catch line; the others keep theirs", (t) => {
+    const farmer = DATA.targets.find((target) => target.key === 'master_farmer');
+    for (const npcId of [N.MASTER_FARMER_11, N.MASTER_FARMER_15]) {
+        const { next } = attempt(t, { name: 'Master Farmer', npcId, random: 0.99, who: player() });
+        assert.equal(next[1], "npc: What do you think you're doing?", `npc ${npcId}`);
+    }
+    const { next } = attempt(t, { name: 'Master Farmer', npcId: N.MASTER_FARMER, random: 0.99, who: player() });
+    assert.equal(next[1], `npc: ${farmer.catchLine}`);
+});
+
+test('Master Farmer loot also follows the success message', (t) => {
+    const { next } = attempt(t, { name: 'Master Farmer', who: player() });
+    assert.equal(next[1], "spam: You pick the Master Farmer's pocket.");
+    assert.match(next[2], /^add .* seed x[0-9]+$/);
 });
 
 test('a failure, as captured on a hero: the message and line, then the strike and stun, then the stun message and damage', (t) => {
@@ -336,13 +419,60 @@ test('coin pouches: 28 of a kind block pickpocketing; a full inventory only allo
     assert.deepEqual(farmer.click, ['inventory full'], 'a farmer can also give seeds');
 });
 
+test("content's pouch limit lifts the 28-pouch block, and its chance bonus scales the chart like the gloves (Ardougne Diary)", (t) => {
+    pickpocketTargetAnswer = (request) => { request.pouchLimit = 56; request.chanceBonus = 10; };
+    t.after(() => { pickpocketTargetAnswer = null; });
+    const lifted = attempt(t, { who: player({ inventory: { [I.COIN_POUCH]: 28 } }) });
+    assert.deepEqual(lifted.click, ["spam: You attempt to pick the man's pocket."], '28 pouches no longer block at a limit of 56');
+    const full = attempt(t, { who: player({ inventory: { [I.COIN_POUCH]: 56 } }) });
+    assert.deepEqual(full.click, ['You need to empty your coin pouches before you can continue pickpocketing.']);
+    const man = DATA.targets.find((target) => target.key === 'man');
+    const { successChance } = Pickpocket._test;
+    assert.equal(successChance(player({ level: 1 }), { ...man, chanceBonus: 10 }), 199 / 256, 'Man at 1: 180 * 1.1 = 198, +1');
+});
+
 test('opening coin pouches pays their coins', () => {
     const who = player({ inventory: { [I.COIN_POUCH]: 3 } });
     log.length = 0;
-    CoinPouch._test.open(who, I.COIN_POUCH, 3, true);
+    const opened = CoinPouch._test.open(who, I.COIN_POUCH, 3, true);
+    assert.equal(opened, true, "a completed open says so");
     assert.equal(who.inv.getAmount(I.COIN_POUCH), 0);
     assert.equal(who.inv.getAmount(I.COINS), 9);
     assert.deepEqual(log.slice(-2), ['spam: You open all of the pouches and receive a total of 9 coins.', 'sound 2115']);
+});
+
+test('one pouch opened on its own says it opened, so the item action is handled', () => {
+    // The right-click Open answers the click only when the pouch really opened: a successful single
+    // open must say so, or the item action is left unhandled and the client plays nothing.
+    const who = player({ inventory: { [I.COIN_POUCH]: 3 } });
+    log.length = 0;
+    const opened = CoinPouch._test.open(who, I.COIN_POUCH, 1);
+    assert.equal(opened, true, "a completed single open says so");
+    assert.equal(who.inv.getAmount(I.COIN_POUCH), 2);
+    assert.equal(who.inv.getAmount(I.COINS), 3);
+    assert.deepEqual(log, ['add Coins x3', 'You open the pouch and find 3 coins.']);
+});
+
+test('a refused open (no room for the coins) opens nothing and says so', () => {
+    // A full pack, twenty-eight pouches still in the stack, and no coin stack: opening one cannot free
+    // the slot, so the coins would vanish and the open is refused (it emits nothing).
+    const who = player({ inventory: { [I.COIN_POUCH]: 28 }, full: true });
+    log.length = 0;
+    const opened = CoinPouch._test.open(who, I.COIN_POUCH, 1);
+    assert.equal(opened, false, "a refusal is no open");
+    assert.equal(who.inv.getAmount(I.COIN_POUCH), 28, "the stack stays");
+    assert.equal(who.inv.getAmount(I.COINS), 0);
+    assert.ok(log.includes("You don't have enough inventory space."), log.join(' | '));
+    assert.ok(!log.some((line) => line.startsWith('spam:')), "nothing is said to have opened");
+});
+
+test('an Open-all on a full pack opens (its own slot is the one the coins go in)', () => {
+    const who = player({ inventory: { [I.COIN_POUCH]: 28 }, full: true });
+    log.length = 0;
+    const opened = CoinPouch._test.open(who, I.COIN_POUCH, 28, true);
+    assert.equal(opened, true);
+    assert.equal(who.inv.getAmount(I.COIN_POUCH), 0);
+    assert.equal(who.inv.getAmount(I.COINS), 84);
 });
 
 test('the rogue outfit: the full set doubles loot; a doubled coin pouch adds its coins', () => {
@@ -355,7 +485,11 @@ test('the rogue outfit: the full set doubles loot; a doubled coin pouch adds its
     assert.equal(who.inv.getAmount(I.AIR_RUNE), 16);
     giveLoot(who, rogue, [{ id: I.COINS, amount: 30 }], () => 0.999);
     assert.equal(who.inv.getAmount(rogue.coinPouch.id), 1);
-    assert.equal(who.inv.getAmount(I.COINS), 25, "one pouch, plus the pouch's coins");
+    // Wiki (Coin pouch): the other half is the pouch's normal amount, rolled over its 25-40 range like an opened pouch.
+    assert.equal(who.inv.getAmount(I.COINS), 40, "one pouch, plus a pouch's coins (the top of the range at roll 0.999)");
+    const low = player({ worn: rogueSet });
+    giveLoot(low, rogue, [{ id: I.COINS, amount: 30 }], () => 0);
+    assert.equal(low.inv.getAmount(I.COINS), 25, "the bottom of the range at roll 0");
     const noSet = player();
     giveLoot(noSet, rogue, [{ id: I.AIR_RUNE, amount: 8 }], () => 0);
     assert.equal(noSet.inv.getAmount(I.AIR_RUNE), 8);
@@ -390,7 +524,7 @@ test('NPC ids pick between targets that share a name; anything else falls throug
     assert.equal(targetFor('Bandit', N.BANDIT_10).key, 'pollnivnian_bearded_bandit');
     const result = attempt(t, { name: 'Bandit', npcId: N.BANDIT_10 });
     assert.equal(result.handled, true);
-    assert.ok(result.click.some((line) => line.includes('level of at least 45')));
+    assert.ok(result.click.some((line) => line.startsWith('mesbox: You need level 45 thieving to pick ')), result.click.join(' | '));
 });
 
 test('loot: Master Farmer herb seeds follow Farming level; the workman pays coins after The Dig Site', () => {
@@ -445,29 +579,57 @@ test('stunTicks lasts exactly its ticks; stun in seconds is unchanged', () => {
     assert.deepEqual(shown, ['graphic 348/100', "You've been stunned!", 'graphic 245/124'], 'defaults unchanged; options replace them');
 });
 
-test("a repeat asked for after the outcome is the player's action: walking cancels it, and it checks the place again", (t) => {
+test("a relic's repeat follows the NPC as it wanders: the player walks up to it and tries again, every 2 ticks", (t) => {
     const original = Math.random;
     Math.random = () => 0;
     repeatAgain = true;
     t.after(() => { Math.random = original; repeatAgain = false; });
-    let at = { x: 3200, y: 3200, z: 0 };
-    const place = () => ({ getX: () => at.x, getY: () => at.y, getZ: () => at.z, getDistance: () => 1 });
     const who = player({ level: 1 });
-    who.getLocation = place;
-    const target = { ...npc(), getLocation: () => ({ ...place(), getDistance: () => 1 }) };
+    const walks = [];
+    who.getMovementQueue = () => ({ reset: () => {}, walkToEntity: (entity, runnable) => walks.push({ entity, runnable }) });
+    const target = npc();
+    who.setMobileInteraction(target);
     submitted.length = 0;
+    log.length = 0;
     Thieving._test.pickpocket({ player: who, npc: target, npcId: 0, definition: { getName: () => 'Man' } });
     submitted[0].execute();
+    assert.equal(who.getInteractingMobile(), target, 'it keeps facing the NPC for the next attempt (recs 1104-1106)');
     const repeat = submitted[1];
     assert.ok(repeat, 'the repeat waits a tick');
-    assert.equal(repeat.key, who.getIndex(), "keyed by the player's index, which MovementQueue.walkToReset cancels");
-    // The player walked off before it fired: it checks again and does nothing.
-    at = { x: 3201, y: 3200, z: 0 };
+    assert.equal(repeat.key, who.getIndex(), "keyed by the player's index, which any click (MovementQueue.walkToReset) cancels");
+    // The NPC stepped away meanwhile: no same-tile check, the player walks to it.
+    repeat.execute();
+    assert.equal(walks.length, 1);
+    assert.equal(walks[0].entity, target, 'walks to the NPC wherever it is now');
     log.length = 0;
     submitted.length = 0;
-    repeat.execute();
-    assert.deepEqual(log, [], 'no new pickpocket from the old place');
+    walks[0].runnable();
+    assert.deepEqual(log, ["spam: You attempt to pick the man's pocket."], 'tries again on arrival');
+    assert.equal(submitted.length, 1, 'and its outcome follows a tick later');
+    // The pouch limit ends the chain with its message.
+    submitted[0].execute();
+    const limit = player({ level: 1, inventory: { [DATA.targets.find((x) => x.key === 'man').coinPouch.id]: 28 } });
+    log.length = 0;
+    submitted.length = 0;
+    Thieving._test.pickpocket({ player: limit, npc: target, npcId: 0, definition: { getName: () => 'Man' }, repeat: true });
+    assert.deepEqual(log, ['You need to empty your coin pouches before you can continue pickpocketing.']);
     assert.equal(submitted.length, 0);
+});
+
+test("a click between a relic's attempt and its outcome ends the chain: no repeat pulls the player back", (t) => {
+    const original = Math.random;
+    Math.random = () => 0;
+    repeatAgain = true;
+    t.after(() => { Math.random = original; repeatAgain = false; });
+    const who = player({ level: 1 });
+    const target = npc();
+    who.setMobileInteraction(target);
+    submitted.length = 0;
+    Thieving._test.pickpocket({ player: who, npc: target, npcId: 0, definition: { getName: () => 'Man' } });
+    // Walk clicked meanwhile: walkToReset cancels the player's keyed tasks and clears the interaction.
+    who.setMobileInteraction(null);
+    submitted[0].execute();
+    assert.equal(submitted.length, 1, 'the pending attempt resolves, but no repeat is scheduled');
 });
 
 test('names as the rsprox captures show them: the Master Farmer, Martin, the H.A.M. man and woman, the Menaphite, the Bandit', (t) => {
@@ -504,8 +666,104 @@ test('a workman, as captured: game-channel lines that trail off, and the brush f
     const workman = DATA.targets.find((t) => t.key === 'digsite_workman');
     const brush = workman.table.findIndex((e) => e.id === I.SPECIMEN_BRUSH);
     const before = workman.table.slice(0, brush).reduce((sum, e) => sum + Pickpocket._test.rateOf(e.rate), 0);
-    const { click, next } = attempt(t, { name: 'Digsite workman', random: before + 0.01, who: player() });
+    const { click, ticks } = attempt(t, { name: 'Digsite workman', random: before + 0.01, who: player() });
     assert.deepEqual(click, ["You attempt to pick the workman's pocket..."]);
-    assert.ok(next.includes("You pick the workman's pocket..."), next.join(' | '));
-    assert.ok(next.includes('You find a specimen brush.'), next.join(' | '));
+    assert.deepEqual(ticks.slice(0, 2), [[], []]);
+    assert.ok(ticks[2].includes("You pick the workman's pocket..."), ticks[2].join(' | '));
+    assert.ok(ticks[2].includes('You find a specimen brush.'), ticks[2].join(' | '));
+});
+
+test('a delayed workman success retains its roll and stops if either actor becomes unavailable', (t) => {
+    const original = Math.random;
+    t.after(() => { Math.random = original; });
+    for (const unavailable of ['player', 'dead', 'npc', 'none']) {
+        submitted.length = 0;
+        log.length = 0;
+        const who = player();
+        const target = npc();
+        Math.random = () => 0.5;
+        Thieving._test.pickpocket({ player: who, npc: target, npcId: 0, definition: { getName: () => 'Digsite workman' } });
+        const task = submitted[0];
+        task.execute();
+        if (unavailable === 'player') who.isRegistered = () => false;
+        if (unavailable === 'dead') who.getHitpoints = () => 0;
+        if (unavailable === 'npc') target.isRegistered = () => false;
+        // A later failure roll must not replace the successful first roll.
+        Math.random = () => 0.999999;
+        const skillManager = who.getSkillManager();
+        who.getSkillManager = () => ({ ...skillManager, getCurrentLevel: () => 1 });
+        task.execute();
+        if (task.isRunning()) task.execute();
+        assert.equal(task.isRunning(), false, unavailable);
+        assert.equal(log.includes('xp 10.4'), unavailable === 'none', unavailable);
+    }
+});
+
+test('an older workman completion cannot clear or repeat a newer accepted interaction', (t) => {
+    const original = Math.random;
+    t.after(() => { Math.random = original; repeatAgain = false; });
+    Math.random = () => 0.5;
+    repeatAgain = true;
+    for (const sameTarget of [true, false]) {
+        submitted.length = 0;
+        const who = player();
+        const olderNpc = npc();
+        const newerNpc = sameTarget ? olderNpc : npc();
+        const event = (target) => ({ player: who, npc: target, npcId: 0, definition: { getName: () => 'Digsite workman' } });
+        Thieving._test.pickpocket(event(olderNpc));
+        const older = submitted[0];
+        older.execute();
+        who.interacting = newerNpc;
+        Thieving._test.pickpocket(event(newerNpc));
+        older.execute();
+        older.execute();
+        assert.equal(who.interacting, newerNpc);
+        assert.equal(submitted.length, 2, 'old outcome does not schedule a repeat');
+        repeatAgain = false;
+        const newer = submitted[1];
+        newer.execute(); newer.execute(); newer.execute();
+        assert.equal(who.interacting, null);
+        repeatAgain = true;
+    }
+});
+
+test('a delayed workman repeat respects a changed interaction', (t) => {
+    const original = Math.random;
+    t.after(() => { Math.random = original; repeatAgain = false; });
+    Math.random = () => 0.5;
+    repeatAgain = true;
+    submitted.length = 0;
+    const who = player();
+    const target = npc();
+    who.interacting = target;
+    Thieving._test.pickpocket({ player: who, npc: target, npcId: 0, definition: { getName: () => 'Digsite workman' } });
+    who.interacting = null;
+    const task = submitted[0];
+    task.execute(); task.execute(); task.execute();
+    assert.equal(submitted.length, 1, 'cancelled interaction does not schedule a repeat');
+    submitted.length = 0;
+    who.interacting = target;
+    Thieving._test.pickpocket({ player: who, npc: target, npcId: 0, definition: { getName: () => 'Digsite workman' } });
+    const repeated = submitted[0];
+    repeated.execute(); repeated.execute(); repeated.execute();
+    assert.equal(submitted.length, 2, 'unchanged interaction schedules the requested repeat');
+});
+
+test('stolen runes go to the rune pouch first; what it does not take goes to the inventory (Wiki: Rune pouch)', () => {
+    const { giveLoot } = Pickpocket._test;
+    const rogue = DATA.targets.find((t) => t.key === 'rogue');
+    const asked = [];
+    runePouchAnswer = (request) => { asked.push({ ...request }); if (request.itemId === I.AIR_RUNE) request.stored = request.amount; };
+    try {
+        const who = player();
+        giveLoot(who, rogue, [{ id: I.AIR_RUNE, amount: 8 }], () => 0);
+        assert.equal(who.inv.getAmount(I.AIR_RUNE), 0, 'all eight in the pouch');
+        assert.deepEqual(asked.map(({ itemId, amount, runePicking }) => [itemId, amount, runePicking]), [[I.AIR_RUNE, 8, undefined]],
+            'asked for the whole stack, whatever the Rune-picking setting');
+        runePouchAnswer = () => {};
+        giveLoot(who, rogue, [{ id: I.AIR_RUNE, amount: 8 }], () => 0);
+        assert.equal(who.inv.getAmount(I.AIR_RUNE), 8, 'no pouch room: the inventory');
+    } finally {
+        runePouchAnswer = null;
+    }
 });

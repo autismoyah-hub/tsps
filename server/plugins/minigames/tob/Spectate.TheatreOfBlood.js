@@ -8,8 +8,8 @@
  * viewer on their friends list; nothing carried (the oculus orb excepted), not poisoned or diseased.
  * Captured (227/01764): the entrance's "You are not in a party..." with both Observe options (struck
  * through there, on a Leagues world). Estimates (no capture spectates): where they stand (the room's
- * `spectate` tile, its entrance where there is none), teleporting away being how they leave, and the
- * message when no party is found. Not built: right-clicking the ledges for a better view, the
+ * `spectate` tile, its entrance where there is none), the HUD's Exit or teleporting away being how
+ * they leave (Exit puts them outside, as the party ending does), and the message when no party is found. Not built: right-clicking the ledges for a better view, the
  * camera's chatbox buttons and the war table.
  */
 
@@ -17,6 +17,8 @@ const Shared = require("./Shared.TheatreOfBlood");
 const Raid = require("./RaidState.TheatreOfBlood");
 
 const ABIGAILA = 8368;
+/** The party HUD's spectator Exit (28:15, op1 "Exit", a transmit op the client doesn't act on). */
+const SPECTATOR_EXIT_COMPONENT = "tob_hud:spectator_exit";
 const ORB = "Oculus orb";
 const NOT_READY = "I'm afraid I can't let you use my scrying ball now, dear. Clear out everything you're carrying, and make sure you're not sick or poisoned.";
 
@@ -43,22 +45,37 @@ function recentRaid() {
   return latest;
 }
 
-function raidOfName(name) {
+function selectionOfName(name) {
   const wanted = String(name ?? "").trim().toLowerCase();
   for (const raid of Raid.raids.values()) {
     if (raid.over) continue;
-    if ([...raid.players, ...raid.spectators].some((player) => Shared.displayName(player).toLowerCase() === wanted || player.getUsername().toLowerCase() === wanted)) return raid;
+    const player = [...raid.players, ...raid.spectators].find((candidate) =>
+      Shared.displayName(candidate).toLowerCase() === wanted || candidate.getUsername().toLowerCase() === wanted);
+    if (player) return { raid, player };
   }
   return null;
 }
 
-/** Wiki: someone whose private chat is friends only must have the viewer on their list. */
-function mayWatchRaid(viewer, raid) {
-  return raid.players.every((member) => {
-    const request = { player: member, viewer, allowed: true };
+function raidOfName(name) {
+  return selectionOfName(name)?.raid ?? null;
+}
+
+/** A named subject owns the list; Recent Party retains its existing admission events. */
+function mayWatchRaid(viewer, raid, subject) {
+  return (subject ? [subject] : raid.players).every((member) => {
+    const request = { player: member, viewer, allowed: true, namedSubject: !!subject };
     Shared.api().emitCustomEvent("tob:may-spectate", request);
     return request.allowed;
   });
+}
+
+function friendsOnlyAdmission(request) {
+  if (!request.namedSubject) return;
+  const { PrivateChatStatus } = Shared.core();
+  const relations = request.player.getRelations();
+  if (relations.getStatus() === PrivateChatStatus.FRIENDS_ONLY && !relations.hasFriend(request.viewer.getLongUsername())) {
+    request.allowed = false;
+  }
 }
 
 function placeIn(viewer, raid, room) {
@@ -71,12 +88,12 @@ function placeIn(viewer, raid, room) {
   raid.openHud(viewer);
 }
 
-function watch(viewer, raid) {
+function watch(viewer, raid, subject) {
   if (!raid || raid.over) {
     viewer.sendMessage("There's no such party in the Theatre right now.");
     return;
   }
-  if (!mayWatchRaid(viewer, raid)) {
+  if (!mayWatchRaid(viewer, raid, subject)) {
     viewer.sendMessage("That party's members aren't accepting spectators.");
     return;
   }
@@ -98,13 +115,26 @@ function roomBuilt({ raid, room }) {
   for (const viewer of raid.spectators) placeIn(viewer, raid, room);
 }
 
+/** A spectator leaves the Theatre for the entrance outside. */
+function leave(viewer, raid) {
+  stopWatching(viewer, raid);
+  if (viewer.getArea?.() === raid.area) raid.area.leave(viewer, false);
+  viewer.moveTo(Shared.loc(Shared.OUTSIDE));
+}
+
 /** Spectators leave when the party is gone. */
 function raidOver({ raid }) {
-  for (const viewer of [...raid.spectators]) {
-    stopWatching(viewer, raid);
-    if (viewer.getArea?.() === raid.area) raid.area.leave(viewer, false);
-    viewer.moveTo(Shared.loc(Shared.OUTSIDE));
+  for (const viewer of [...raid.spectators]) leave(viewer, raid);
+}
+
+/** The HUD's Exit: a spectator stops watching and leaves, as when the party is gone. */
+function exitSpectating({ player }) {
+  for (const raid of Raid.raids.values()) {
+    if (!raid.spectators.has(player)) continue;
+    leave(player, raid);
+    return true;
   }
+  return false;
 }
 
 function observe({ player, recent }) {
@@ -117,7 +147,10 @@ function observe({ player, recent }) {
     return;
   }
   player.getPacketSender().sendInterfaceRemoval();
-  player.setEnteredSyntaxAction?.({ execute: (name) => watch(player, raidOfName(name)) });
+  player.setEnteredSyntaxAction?.({ execute: (name) => {
+    const selection = selectionOfName(name);
+    watch(player, selection?.raid, selection?.player);
+  } });
   player.getPacketSender().sendEnterInputPrompt?.("Enter a player's name:");
 }
 
@@ -153,9 +186,11 @@ function talkTo({ player }) {
 module.exports = function registerTheatreSpectate(api) {
   Shared.bind(api);
   api.onCustomEvent("tob:observe", observe);
+  api.onCustomEvent("tob:may-spectate", friendsOnlyAdmission);
   api.onCustomEvent("tob:room-built", roomBuilt);
   api.onCustomEvent("tob:raid-over", raidOver);
   api.onNpcInteraction("Abigaila", { "Talk-to": talkTo, Scry: clickScry });
+  api.onInterfaceActionButton(api.core.CacheDefinitions.getComponentId(SPECTATOR_EXIT_COMPONENT), exitSpectating);
 };
 
-Object.assign(module.exports, { mayWatch, watch, stopWatching, observe, recentRaid, raidOfName, roomBuilt, raidOver, carriesAnything });
+Object.assign(module.exports, { mayWatch, watch, stopWatching, observe, recentRaid, raidOfName, roomBuilt, raidOver, exitSpectating, carriesAnything });

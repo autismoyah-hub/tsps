@@ -120,7 +120,8 @@ function setup({ tasteOfHope = false } = {}) {
     deleteNumber(id, amount) { items.set(id, Math.max(0, (items.get(id) ?? 0) - amount)); },
     isFull: () => freeSlots <= 0,
     getFreeSlots: () => freeSlots,
-    forceAdd(id, amount) { items.set(id, (items.get(id) ?? 0) + amount); },
+    // The real signature: forceAdd(player, item).
+    forceAdd(player, item) { const id = item.getId?.() ?? item.id, amount = item.getAmount?.() ?? item.amount ?? 1; items.set(id, (items.get(id) ?? 0) + amount); },
   };
   const sender = new Proxy({
     sendVarbit(id, value) { varbits.set(id, value); return sender; },
@@ -816,6 +817,16 @@ test('start skill gates use the cache DB thresholds at Veliaf and the start hook
   h.setSkill(h.core.Skill.MINING, 20);
   h.emit('npc-dialogue:hook', { npcId: VELIAF_ID, hook: START_HOOK });
   assert.equal(h.stage(), 10);
+});
+
+// Wiki (Darkness of Hallowvale): "The level 22 Thieving requirement to begin the quest is boostable".
+test('a boosted Thieving 22 starts the quest', () => {
+  const h = setup();
+  const START_HOOK = 'quest:darkness-of-hallowvale:start';
+  h.setSkill(h.core.Skill.THIEVING, 21); // base 21; this fixture's current levels are all 99 (boosted)
+  h.emit('npc-dialogue:hook', { npcId: VELIAF_ID, hook: START_HOOK });
+  assert.equal(h.stage(), 10);
+  assert.ok(!h.messages.some((message) => /22 Thieving/.test(message)));
 });
 
 test('stage-0 Veliaf transcript selects only the canonical In Aid continuation', () => {

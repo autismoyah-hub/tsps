@@ -3,13 +3,14 @@
  * relic:
  * - The enchanted gem, slayer ring or slayer helmet takes a new task from the last master, or
  *   cancels the current one, from anywhere.
- * - The bracelet of slaughter works 35% of the time and uses no charge.
+ * - The bracelet of slaughter and the expeditious bracelet work 35% of the time and uses no charge.
  * - Superiors come 1 time in 25. Each gives Slayer points (ours: 5 plus a fifth of its Slayer
- *   requirement; the Wiki says only "based on" it) and six more rolls on its normal monster's table.
+ *   requirement; the Wiki says only "based on" it) and six rolls in all on its normal monster's table (what its own
+ *   table already rolls counts: three for a superior whose page says so).
  * - A quarter of them are bloodthirsty: nine rolls instead of six, a clue scroll for sure when the
  *   monster drops clues, three times the superior unique chance, and a roll on the bloodthirsty
  *   table (Wiki, Bloodthirsty Nechryarch).
- * Not here: the expeditious bracelet (not in this server); the bloodthirsty variants' stronger
+ * Not here: the bloodthirsty variants' stronger
  * stats, own names and icon (no NPCs of their own in this cache): their rewards are the relic's.
  */
 const Common = require("./Common.LeagueRelics");
@@ -69,7 +70,13 @@ function superiorRewards(rewards) {
   const { player, npc } = rewards;
   if (!active(player)) return;
   const variant = bloodthirsty.has(npc);
-  rewards.extraRolls = Math.max(rewards.extraRolls, variant ? effect.variantRolls : effect.superiorRolls);
+  // The relic gives "six rolls" (nine for a bloodthirsty variant) on the normal counterpart's table, excluding the
+  // unique table (Wiki, Trailblazer Reloaded League/Relics): that is the kill's total. The superior's own table is
+  // already rolled `rolls` times (3 for a superior whose page says so, else 1), so only the rest is added.
+  const own = { player, npc, npcId: npc.getId?.(), rolls: 1 };
+  api.emitCustomEvent("npc-drops:table-rolls", own);
+  const total = variant ? effect.variantRolls : effect.superiorRolls;
+  rewards.extraRolls = Math.max(rewards.extraRolls, Math.max(0, total - (Number.isInteger(own.rolls) ? Math.max(1, own.rolls) : 1)));
   if (variant) {
     rewards.uniqueBoost *= effect.variantUniqueBoost;
     const drop = rollTable();
@@ -82,7 +89,7 @@ function superiorRewards(rewards) {
 }
 
 function bracelet(request) {
-  if (request.bracelet !== "slaughter" || !active(request.player)) return;
+  if (request.bracelet !== "slaughter" && request.bracelet !== "expeditious" || !active(request.player)) return;
   request.chance = Math.max(request.chance, effect.braceletChance);
   request.consumeCharge = false;
 }

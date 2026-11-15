@@ -6,9 +6,10 @@
  * Minas and the six museum archaeologists):
  *   - The Dig Site cleaning activity: tools rack, specimen rocks, specimen
  *     table, the five 10-Kudos display artefacts and their case transforms.
- *   - Historian Minas timeline reports: 5 Kudos per completed quest, credited
- *     only after the player continues past the chosen branch's final speech
- *     line. The What Lies Below report still needs the Dagon'hai history book.
+ *   - Historian Minas timeline reports: 5 Kudos per completed quest and the
+ *     timeline display varbit, credited at the branch's final speech line
+ *     (rsprox captures 3278, 1757, 1843; docs/varrock-museum.md). The What
+ *     Lies Below report still needs the Dagon'hai history book.
  *
  * Ids are from the cache: loc 24535/24556-24559, display transforms
  * 12137/12138/12139/12234/15484 (varbits 3646/3645/3649/3647/3648), items
@@ -22,8 +23,11 @@
  *   - The natural history quiz (museum/NaturalHistoryQuiz.Museum.js): 2 Kudos per
  *     display case, through AWARD_KUDOS_EVENT.
  *
- * Not implemented: fossil displays, ancient relics and salvaging. They are
- * separate Kudos routes and are not needed for 100.
+ *   - The Sailing salvaging relics (museum/SalvagingRelics.Museum.js): Inspect, and handing each
+ *     to Curator Haig Halen for 1 Kudos and an antique lamp, or 5,000 coins once claimed.
+ *
+ * Not implemented: fossil displays and ancient relics. They are separate Kudos routes and are
+ * not needed for 100.
  */
 "use strict";
 
@@ -36,10 +40,43 @@ const KUDOS_EVENT = "museum:get-kudos";
 const AWARD_KUDOS_EVENT = "museum:award-kudos";
 const HAS_KIT_EVENT = "archaeology:has-kit";
 const KUDOS_CHANGED_EVENT = "museum:kudos-changed";
+// rsprox 3278, 1757, 1843, 1723, 960: every vm_kudos rise (reports, display cases, the quiz,
+// salvaging finds) comes with this spam message and synth sound 3653 on the same tick.
+const KUDOS_MESSAGE = "You have earned Kudos with the Museum!";
+const SOUND_KUDOS = 3653;
 
 const DIG_SITE_KEY = "the_dig_site";
 const WHAT_LIES_BELOW_KEY = "what_lies_below";
 const TEMPLE_OF_IKOV_KEY = "temple_of_ikov";
+const EMPTY_LORD_KEY = "curse_of_the_empty_lord";
+
+const KUDOS_INFO_INTERFACE = 600; // cache gameval vm_kudos_info
+const KUDOS_HUD_INTERFACE = 532; // cache gameval vm_kudos
+const OVERLAY_HUD_UID = (161 << 16) | 8; // toplevel:overlay_hud
+const DISPLAYS = require("./data/museum-displays.json");
+const DIGSITE_INTERFACE = 528; // cache gameval vm_digsite
+const TIMELINE_INTERFACE = 534; // cache gameval vm_timeline
+const DISPLAY_NUMBER_COMPONENT = Object.freeze({ [DIGSITE_INTERFACE]: 16, [TIMELINE_INTERFACE]: 84 });
+const DISPLAY_TEXT_COMPONENT = 2;
+const DISPLAY_STUDY_SEQUENCE = 6383;
+const DISPLAY_BUSY_VARBIT = 12393;
+const DISPLAY_SPINNER_SCRIPT = 65;
+const DISPLAY_SCREEN_SCRIPT = 2524;
+/**
+ * The museum's ground floor (Digsite), first and second floors (timeline) and the natural
+ * history basement instance. Only players inside see the Kudos HUD (vm_kudos).
+ */
+// Cache241 walls23818/23826/23829 enclose the hall and north-east stair wing.
+// Normal-world rsprox960 ticks1438–1442/1606–1608 keep532 off the exterior approach.
+const MUSEUM_BOUNDS = [
+  { minX: 3253, maxX: 3267, minY: 3442, maxY: 3455, z: 0 },
+  { minX: 3265, maxX: 3267, minY: 3456, maxY: 3459, z: 0 },
+  { minX: 3253, maxX: 3267, minY: 3442, maxY: 3455, z: 1 },
+  { minX: 3265, maxX: 3267, minY: 3456, maxY: 3459, z: 1 },
+  { minX: 3253, maxX: 3267, minY: 3442, maxY: 3455, z: 2 },
+  { minX: 3265, maxX: 3267, minY: 3456, maxY: 3459, z: 2 },
+  { minX: 1735, maxX: 1785, minY: 4935, maxY: 4980, z: 0 },
+];
 
 const NPC = Object.freeze({
   HISTORIAN_MINAS: 1902,
@@ -205,15 +242,55 @@ const MINAS_CURSE = "0sSqOl";
  * Historian Minas lamps (OSRS Wiki Antique lamp (Varrock Museum) switch:
  * 11185 Merlin's Crystal, 11186 Shield of Arrav, 11187 Making History,
  * 28820 Defender of Varrock; 11188 is Curse of the Empty Lord). XP/minimum
- * skill level from the same page and OSRS Wiki Antique lamp.
+ * skill level from the same page and OSRS Wiki Antique lamp. Curse of the Empty Lord's report
+ * is worth 10 kudos, the rest 5, and needs a complete set of ghostly robes (Wiki: Historian
+ * Minas, Kudos).
  */
 const LAMPS = new Map([
   [11185, { xp: 1000, minLevel: 20, quest: "merlins_crystal" }],
   [11186, { xp: 1000, minLevel: 20, quest: "shield_of_arrav" }],
   [11187, { xp: 1000, minLevel: 20, quest: "making_history" }],
   [28820, { xp: 5000, minLevel: 30, quest: "defender_of_varrock" }],
+  [11188, { xp: 10000, minLevel: 50, quest: EMPTY_LORD_KEY }],
 ]);
+const REPORT_KUDOS = new Map([[EMPTY_LORD_KEY, 10]]);
+/**
+ * The timeline display each report puts up, as [varbit, value] (varp 1011). From rsprox
+ * captures 3278, 1757 and 1843, sent just before the report's Kudos. vm_observatory (3652) and
+ * vm_surok (3660) are not captured; their cache display cases (24642, 24662) show the display
+ * at 1. Priest in Peril and In Aid of the Myreque share vm_salveknights, Temple of Ikov and
+ * Curse of the Empty Lord share vm_staff_of_armadyl: the later report raises it (1 -> 2).
+ */
+const REPORT_DISPLAY_VARBITS = new Map([
+  ["demon_slayer", [[3653, 1]]], // vm_silverlight
+  ["shield_of_arrav", [[3656, 1], [9679, 1]]], // vm_soa, vm_soa_vis
+  ["rune_mysteries", [[3661, 1]]], // vm_runes
+  ["observatory_quest", [[3652, 1]]], // vm_observatory
+  ["merlins_crystal", [[3655, 1]]], // vm_excalibur
+  ["grand_tree", [[3658, 1]]], // vm_glider
+  ["priest_in_peril", [[3651, 1]]], // vm_salveknights
+  ["in_aid_of_the_myreque", [[3651, 2]]],
+  ["a_tail_of_two_cats", [[3657, 1]]], // vm_robert
+  ["making_history", [[3654, 1]]], // vm_lathas
+  [TEMPLE_OF_IKOV_KEY, [[3650, 1]]], // vm_staff_of_armadyl
+  [EMPTY_LORD_KEY, [[3650, 2]]],
+  ["hazeel_cult", [[3659, 1]]], // vm_ardy
+  [WHAT_LIES_BELOW_KEY, [[3660, 1]]], // vm_surok
+  ["defender_of_varrock", [[9678, 1]]], // vm_dov
+]);
+/** Minas's lamp hand-out line (a message box, with the same game message, in rsprox 3278/1757). */
+const LAMP_MESSAGE = "You receive an old lamp.";
+const GHOSTLY_ROBES = ["GHOSTLY_ROBE", "GHOSTLY_ROBE_2", "GHOSTLY_BOOTS", "GHOSTLY_HOOD", "GHOSTLY_GLOVES", "GHOSTLY_CLOAK"]; // top, bottom, boots, hood, gloves, cloak
 const LAMP_BY_QUEST = new Map([...LAMPS].map(([itemId, lamp]) => [lamp.quest, { itemId, ...lamp }]));
+/**
+ * Curator Haig Halen's lamps for salvaged relics (Wiki: Antique lamp (salvaging)): small, medium
+ * and large, for any skill at or above the lamp's level.
+ */
+const SALVAGE_LAMPS = new Map([
+  [32871, { xp: 5000, minLevel: 30 }], // salvaging_rare_lamp_small
+  [32872, { xp: 10000, minLevel: 40 }], // salvaging_rare_lamp_med
+  [32873, { xp: 15000, minLevel: 50 }], // salvaging_rare_lamp_large
+]);
 
 const TOOL_ITEMS = [
   [ITEM.TROWEL, "trowel"],
@@ -226,6 +303,19 @@ const TOOL_ITEMS = [
 let api = null;
 const pendingMinas = new WeakMap();
 const pendingLamp = new WeakMap();
+/** What the last finished Minas report did with its lamp, for the lamp line that follows it. */
+const lampOutcome = new WeakMap();
+const LAMP = Object.freeze({ NONE: "none", GIVEN: "given", KEPT: "kept", REFUSED: "refused" });
+/** Players who have reported at least one quest in the current Minas conversation. */
+const reportedInConversation = new WeakSet();
+/** Players whose Museum area mounted the Kudos HUD in toplevel:overlay_hud. */
+const kudosHudShown = new WeakSet();
+/** Players with a museum display case open (The Golem's case 30 clears its own busy varbit). */
+const studyingDisplay = new WeakSet();
+/** Players whose Kudos HUD Study hid, to show again when the case closes. */
+const hudHiddenForStudy = new WeakSet();
+/** Players reading Check Kudos (busy until it closes). */
+const readingKudosInfo = new WeakSet();
 
 const has = (player, itemId, amount = 1) => player.getInventory().getAmount(itemId) >= amount;
 
@@ -285,6 +375,9 @@ function awardKudos(player, amount, source) {
   const next = kudosOf(player) + amount;
   player.setAttribute(KUDOS_ATTRIBUTE, next);
   sendKudosVarbit(player);
+  // rsprox 227/01723.txt:300257: the line is spam (filtered chat), not a game message.
+  player.getPacketSender().sendTypedMessage(api.core.ChatType.SPAM, KUDOS_MESSAGE);
+  player.getPacketSender().sendSound(SOUND_KUDOS, 255, 0);
   api.emitCustomEvent(KUDOS_CHANGED_EVENT, { player, kudos: next, amount, source });
   return next;
 }
@@ -300,6 +393,32 @@ function syncDisplayVarbits(player) {
   for (const [itemId, entry] of ARTEFACTS) {
     if (isDisplayed(player, itemId)) sender.sendVarbit(entry.varbit, 1);
   }
+  const reported = new Set(reportedOf(player));
+  for (const varbit of reportVarbits(REPORT_DISPLAY_VARBITS.keys())) {
+    const value = reportVarbitValue(reported, varbit);
+    if (value > 0) sender.sendVarbit(varbit, value);
+  }
+}
+
+function reportVarbits(keys) {
+  return new Set([...keys].flatMap((key) => (REPORT_DISPLAY_VARBITS.get(key) ?? []).map(([varbit]) => varbit)));
+}
+
+/** A shared display varbit shows the highest value any reported quest gives it. */
+function reportVarbitValue(reported, varbit) {
+  let value = 0;
+  for (const key of reported) {
+    for (const [id, set] of REPORT_DISPLAY_VARBITS.get(key) ?? []) {
+      if (id === varbit) value = Math.max(value, set);
+    }
+  }
+  return value;
+}
+
+function sendReportVarbits(player, key) {
+  const reported = new Set(reportedOf(player));
+  const sender = player.getPacketSender();
+  for (const varbit of reportVarbits([key])) sender.sendVarbit(varbit, reportVarbitValue(reported, varbit));
 }
 
 function takeFind({ player, objectId }) {
@@ -490,16 +609,26 @@ function placeArtefact(event) {
   player.sendMessage(`You place the ${artefact.name} in display case ${artefact.caseNumber}.`);
 }
 
+/** Every ghostly robe piece, carried or worn (Wiki: "Requires a complete set of ghostly robes"). */
+function hasGhostlyRobes(player) {
+  const worn = player.getEquipment();
+  return GHOSTLY_ROBES.map((name) => api.core.ItemIdentifiers[name])
+    .every((itemId) => has(player, itemId) || worn.getAmount(itemId) > 0);
+}
+
 function hasUnreportedMinasReport(player) {
   for (const [, key] of MINAS_QUESTS) {
     if (!isReported(player, key) && isQuestComplete(player, key)) return true;
   }
+  if (!isReported(player, EMPTY_LORD_KEY) && isQuestComplete(player, EMPTY_LORD_KEY) && hasGhostlyRobes(player)) return true;
   return !isReported(player, WHAT_LIES_BELOW_KEY) && isQuestComplete(player, WHAT_LIES_BELOW_KEY);
 }
 
 function answerMinasCondition({ player, npcId, stepId }) {
   if (npcId !== NPC.HISTORIAN_MINAS) return null;
-  if (stepId === MINAS_FALLBACK) return !hasUnreportedMinasReport(player);
+  if (stepId === MINAS_FALLBACK) {
+    return !hasUnreportedMinasReport(player) && !reportedInConversation.has(player);
+  }
   if (stepId === MINAS_WLB_OUTER) {
     return isQuestComplete(player, WHAT_LIES_BELOW_KEY) && !isReported(player, WHAT_LIES_BELOW_KEY);
   }
@@ -511,7 +640,9 @@ function answerMinasCondition({ player, npcId, stepId }) {
     return isQuestComplete(player, WHAT_LIES_BELOW_KEY) && !isReported(player, WHAT_LIES_BELOW_KEY)
       && has(player, ITEM.DAGONHAI_HISTORY);
   }
-  if (stepId === MINAS_CURSE) return false;
+  if (stepId === MINAS_CURSE) {
+    return isQuestComplete(player, EMPTY_LORD_KEY) && !isReported(player, EMPTY_LORD_KEY) && hasGhostlyRobes(player);
+  }
   if (stepId === MINAS_TEMPLE_GUARDIANS) {
     return isQuestComplete(player, TEMPLE_OF_IKOV_KEY)
       && Number(player.getAttribute("quest.temple_of_ikov.side")) === 1;
@@ -556,7 +687,7 @@ function lastSpeech(steps) {
 
 function recordMinasCondition({ player, npcId, stepId }) {
   if (npcId !== NPC.HISTORIAN_MINAS) return;
-  const key = stepId === MINAS_WLB_BOOK ? WHAT_LIES_BELOW_KEY : MINAS_QUESTS.get(stepId);
+  const key = stepId === MINAS_WLB_BOOK ? WHAT_LIES_BELOW_KEY : stepId === MINAS_CURSE ? EMPTY_LORD_KEY : MINAS_QUESTS.get(stepId);
   if (!key || isReported(player, key) || !isQuestComplete(player, key)) return;
   const page = runtime.loadTranscripts(api)["Historian Minas"];
   const step = findStep(page?.steps, stepId);
@@ -565,39 +696,82 @@ function recordMinasCondition({ player, npcId, stepId }) {
 }
 
 function startMinasConversation({ player, npcId }) {
-  if (npcId === NPC.HISTORIAN_MINAS) pendingMinas.delete(player);
+  if (npcId !== NPC.HISTORIAN_MINAS) return;
+  pendingMinas.delete(player);
+  lampOutcome.delete(player);
+  reportedInConversation.delete(player);
 }
 
+/**
+ * A report pays on its branch's final speech line (rsprox 3278, 1757, 1843): a lamp report once
+ * the player continues past "You're welcome!", any other just before Minas's closing display
+ * line shows (after Hazeel Cult's and Temple of Ikov's narration boxes, after Demon Slayer's
+ * player line).
+ */
 function completeMinasLine(request) {
   const { player, npcId, text } = request;
   if (npcId !== NPC.HISTORIAN_MINAS) return;
   const pending = pendingMinas.get(player);
   if (!pending || String(text ?? "").trim() !== pending.finalLine.trim()) return;
-  request.after = () => {
-    if (pendingMinas.get(player) !== pending) return;
-    pendingMinas.delete(player);
-    if (isReported(player, pending.key) || !isQuestComplete(player, pending.key)) return;
-    if (pending.key === WHAT_LIES_BELOW_KEY && !has(player, ITEM.DAGONHAI_HISTORY)) return;
-    if (!grantReportLamp(player, pending.key)) return;
-    markReported(player, pending.key);
-    awardKudos(player, 5, `minas:${pending.key}`);
-  };
+  const finish = () => finishMinasReport(player, pending);
+  if (LAMP_BY_QUEST.has(pending.key)) request.after = finish;
+  else request.before = finish;
+}
+
+function finishMinasReport(player, pending) {
+  if (pendingMinas.get(player) !== pending) return;
+  pendingMinas.delete(player);
+  if (isReported(player, pending.key) || !isQuestComplete(player, pending.key)) return;
+  if (pending.key === WHAT_LIES_BELOW_KEY && !has(player, ITEM.DAGONHAI_HISTORY)) return;
+  if (pending.key === EMPTY_LORD_KEY && !hasGhostlyRobes(player)) return;
+  const lamp = grantReportLamp(player, pending.key);
+  if (lamp === LAMP.REFUSED) {
+    // Ours: a full bag ends the conversation here and the report stays open for a retry.
+    player.getDialogueManager().reset();
+    player.getPacketSender().sendInterfaceRemoval();
+    return;
+  }
+  lampOutcome.set(player, lamp);
+  markReported(player, pending.key);
+  reportedInConversation.add(player);
+  sendReportVarbits(player, pending.key);
+  awardKudos(player, REPORT_KUDOS.get(pending.key) ?? 5, `minas:${pending.key}`);
 }
 
 function grantReportLamp(player, questKey) {
   const lamp = LAMP_BY_QUEST.get(questKey);
-  if (!lamp) return true;
-  if (has(player, lamp.itemId)) return true;
+  if (!lamp) return LAMP.NONE;
+  if (has(player, lamp.itemId)) return LAMP.KEPT;
   if (player.getInventory().getFreeSlots() < 1) {
     player.sendMessage("You need at least 1 free inventory space to receive the lamp.");
-    return false;
+    return LAMP.REFUSED;
   }
   player.getInventory().adds(lamp.itemId, 1);
-  return true;
+  return LAMP.GIVEN;
+}
+
+/**
+ * Minas's transcript message steps are message boxes, as live sends them (rsprox 3278: the
+ * Ikov, Hazeel Cult and What Lies Below narration and the lamp line are all messagebox 229).
+ * The lamp line also goes to chat, and shows only when a lamp was handed over (ours: a player
+ * still holding that report's lamp gets no second one and no line).
+ */
+function showMinasMessage(message) {
+  const { player, npcId, kind, text } = message;
+  if (npcId !== NPC.HISTORIAN_MINAS || kind !== "message") return;
+  if (String(text ?? "").trim() === LAMP_MESSAGE) {
+    const outcome = lampOutcome.get(player);
+    lampOutcome.delete(player);
+    message.handled = true;
+    if (outcome !== LAMP.GIVEN) return;
+    player.sendMessage(LAMP_MESSAGE);
+  }
+  message.handled = true;
+  message.box = { statement: true };
 }
 
 function rubLamp(event) {
-  const lamp = LAMPS.get(event.itemId);
+  const lamp = LAMPS.get(event.itemId) ?? SALVAGE_LAMPS.get(event.itemId);
   if (!lamp) return false;
   const { player, item, slot } = event;
   if (player.getInventory().get(slot) !== item) return true;
@@ -623,13 +797,14 @@ function grantLampExperience(player, request, skill, name = skill.getName()) {
     return null;
   }
   const before = manager.getExperience(skill);
-  manager.addExperience(skill, request.lamp.xp, false);
+  // The world's and the account's rates apply, as they do to the genie lamp; the message keeps the base.
+  manager.addExperience(skill, request.lamp.xp, true);
   if (manager.getExperience(skill) === before) {
     player.sendMessage("You cannot gain experience in that skill right now.");
     return null;
   }
   inventory.deleteAtSlot(request.slot, 1);
-  return `<col=0000ff>Your wish has been granted!</col> You have been awarded ${request.lamp.xp.toLocaleString("en-GB")} ${name} experience!`;
+  return `<col=0000ff>Your wish has been granted!</col><br>You have been awarded ${request.lamp.xp.toLocaleString("en-GB")} ${name} experience!`;
 }
 
 function answerGetKudos(request) {
@@ -643,6 +818,108 @@ function answerAwardKudos(request) {
   request.kudos = awardKudos(request.player, request.amount, request.source);
 }
 
+/**
+ * Information booth "Check Kudos": the cache's own activity list (vm_kudos_info, 600). rsprox
+ * 227/01757.txt:292512-292519: busy (12393) set, script 2524 [-1, -1], then the modal.
+ */
+function checkKudos({ player }) {
+  const sender = player.getPacketSender();
+  sender.sendVarbit(DISPLAY_BUSY_VARBIT, 1);
+  readingKudosInfo.add(player);
+  sender.sendInterfaceScript(DISPLAY_SCREEN_SCRIPT, [-1, -1]);
+  sender.sendInterface(KUDOS_INFO_INTERFACE);
+  return true;
+}
+
+/**
+ * Study on a museum display case (Digsite floor 528, timeline floor 534). The world object's
+ * own model is what the interface shows, as The Golem's case 30 does (rsprox 1723 tick 14869
+ * for the sibling Digsite display). Text and display number are the OSRS Wiki's.
+ */
+function displayText(player, entry) {
+  for (const variant of entry.variants ?? []) {
+    if (!isReported(player, variant.report)) continue;
+    if (variant.sideAttribute !== undefined
+      && Number(player.getAttribute(variant.sideAttribute)) !== variant.side) continue;
+    return variant.text;
+  }
+  return entry.text;
+}
+
+function studyDisplay({ player, objectId, location }) {
+  const entry = DISPLAYS[String(objectId)];
+  if (!entry || !location || location.z !== entry.plane) return false;
+  const group = entry.interface;
+  const numberComponent = DISPLAY_NUMBER_COMPONENT[group];
+  if (!numberComponent) return false;
+  const modelUid = (group << 16) | entry.component;
+  const sender = player.getPacketSender();
+  sender.sendVarbit(DISPLAY_BUSY_VARBIT, 1);
+  studyingDisplay.add(player);
+  player.performAnimation(new api.core.Animation(DISPLAY_STUDY_SEQUENCE));
+  // rsprox 227/01723.txt tick 14869: the Kudos HUD closes as the case opens, and comes back with it closing.
+  if (kudosHudShown.has(player)) {
+    hideKudosHud(player);
+    hudHiddenForStudy.add(player);
+  }
+  sender.sendString(displayText(player, entry), (group << 16) | DISPLAY_TEXT_COMPONENT);
+  sender.sendString(String(entry.number), (group << 16) | numberComponent);
+  const modelId = api.core.CacheDefinitions.getObject(objectId)?.models?.[0]?.[0];
+  if (modelId !== undefined) {
+    sender.sendInterfaceRawModel(modelUid, modelId);
+    sender.sendClientScript(DISPLAY_SPINNER_SCRIPT, 0, 5, 0, modelUid);
+  }
+  sender.sendInterfaceScript(DISPLAY_SCREEN_SCRIPT, [0, 100]);
+  sender.sendInterface(group);
+  return true;
+}
+
+function resetDisplayBusy({ player, interfaceId }) {
+  if ((interfaceId === DIGSITE_INTERFACE || interfaceId === TIMELINE_INTERFACE)
+    && studyingDisplay.delete(player)) {
+    // rsprox 227/01723.txt tick 14871: busy off, sequence -1, the case closes and the HUD returns.
+    player.getPacketSender().sendVarbit(DISPLAY_BUSY_VARBIT, 0);
+    player.performAnimation(new api.core.Animation(-1));
+    if (hudHiddenForStudy.delete(player)) showKudosHud(player);
+  }
+  if (interfaceId === KUDOS_INFO_INTERFACE && readingKudosInfo.delete(player)) {
+    player.getPacketSender().sendVarbit(DISPLAY_BUSY_VARBIT, 0);
+  }
+}
+
+function showKudosHud(player) {
+  kudosHudShown.add(player);
+  player.getPacketSender().sendSubInterface(OVERLAY_HUD_UID, KUDOS_HUD_INTERFACE, 1);
+  sendKudosVarbit(player);
+}
+
+function hideKudosHud(player) {
+  if (!kudosHudShown.delete(player)) return;
+  player.getPacketSender().closeSubInterface(OVERLAY_HUD_UID);
+}
+
+function createMuseumArea(core) {
+  class MuseumArea extends core.Area {
+    getName() {
+      return "Varrock Museum";
+    }
+
+    // Crossing the boundary owns the HUD: a case closing afterwards must not bring it back outside, or add a second one.
+    postEnter(mobile) {
+      if (!mobile.isPlayer()) return;
+      hudHiddenForStudy.delete(mobile.getAsPlayer());
+      showKudosHud(mobile.getAsPlayer());
+    }
+
+    postLeave(mobile, logout) {
+      if (!mobile.isPlayer()) return;
+      hudHiddenForStudy.delete(mobile.getAsPlayer());
+      if (!logout) hideKudosHud(mobile.getAsPlayer());
+    }
+  }
+  return new MuseumArea(MUSEUM_BOUNDS.map((b) => new core.Boundary(b.minX, b.maxX, b.minY, b.maxY, b.z)));
+}
+
 function handleLogin({ player }) {
   syncDisplayVarbits(player);
   sendKudosVarbit(player);
@@ -654,6 +931,7 @@ function handleBootstrap({ player }) {
 
 module.exports = {
   name: "Museum",
+  description: "Varrock Museum Kudos: the Dig Site cleaning activity, display cases, Historian Minas's quest timeline reports and Curator Haig Halen's salvaging relics.",
   members: true,
   register(pluginApi) {
     api = pluginApi;
@@ -666,16 +944,22 @@ module.exports = {
     pluginApi.onCustomEvent("npc-dialogue:condition", recordMinasCondition);
     pluginApi.onCustomEvent("npc-dialogue:condition", recordArtefactCondition);
     pluginApi.onCustomEvent("npc-dialogue:line", completeMinasLine);
+    pluginApi.onCustomEvent("npc-dialogue:action", showMinasMessage);
     pluginApi.onNpcDialogueCondition(answerMinasCondition);
     pluginApi.onNpcDialogueCondition(answerArtefactCondition);
     pluginApi.onObjectInteraction("Dig Site specimen rocks", { Take: takeFind });
     pluginApi.onObjectInteraction("Tools", { Take: takeTools });
+    pluginApi.onObjectInteraction("Information booth", { "Check Kudos": checkKudos });
+    pluginApi.onObjectInteraction("Display case", { Study: studyDisplay });
     pluginApi.onItemOnObject(cleanFind);
     pluginApi.onItemOnObject(placeArtefact);
     pluginApi.onItemOnNpc(showArtefact);
     pluginApi.onItemAction("Antique lamp", { Rub: rubLamp });
+    pluginApi.onCustomEvent("interface:closed", resetDisplayBusy);
+    pluginApi.registerArea(createMuseumArea(pluginApi.core));
     pluginApi.onPlayerLogin(handleLogin);
     pluginApi.onCustomEvent("player:bootstrap-complete", handleBootstrap);
     require("./museum/NaturalHistoryQuiz.Museum")(pluginApi);
+    require("./museum/SalvagingRelics.Museum")(pluginApi);
   },
 };

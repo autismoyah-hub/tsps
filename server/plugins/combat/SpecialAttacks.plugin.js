@@ -4,6 +4,7 @@
  */
 module.exports = {
   name: "SpecialAttacks",
+  description: "Weapon special attacks, one handler per weapon from the dragon dagger to the Osmumten's fang, each with its own combat method and drain.",
   register(api) {
     require("./specials/AbyssalBludgeon.SpecialAttack")(api);
     require("./specials/AbyssalDagger.SpecialAttack")(api);
@@ -53,10 +54,13 @@ module.exports = {
     require("./specials/Emberlight.SpecialAttack")(api);
     require("./specials/Excalibur.SpecialAttack")(api);
     require("./specials/EyeOfAyak.SpecialAttack")(api);
+    require("./specials/FangOfTheHound.SpecialAttack")(api);
     require("./specials/GraniteHammer.SpecialAttack")(api);
     require("./specials/GraniteMaul.SpecialAttack")(api);
+    require("./specials/InfernalTecpatl.SpecialAttack")(api);
     require("./specials/KerisPartisanOfCorruption.SpecialAttack")(api);
     require("./specials/KerisPartisanOfTheSun.SpecialAttack")(api);
+    require("./specials/LithicSceptre.SpecialAttack")(api);
     require("./specials/MagicLongbow.SpecialAttack")(api);
     require("./specials/MagicShortbow.SpecialAttack")(api);
     require("./specials/MorrigansJavelin.SpecialAttack")(api);
@@ -71,6 +75,7 @@ module.exports = {
     require("./specials/SaradominGodsword.SpecialAttack")(api);
     require("./specials/SaradominSword.SpecialAttack")(api);
     require("./specials/SaradominsBlessedSword.SpecialAttack")(api);
+    require("./specials/ScorchingBow.SpecialAttack")(api);
     require("./specials/Seercull.SpecialAttack")(api);
     require("./specials/Shove.SpecialAttack")(api);
     require("./specials/SoulflameHorn.SpecialAttack")(api);

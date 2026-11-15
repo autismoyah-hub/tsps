@@ -263,14 +263,11 @@ export class PathFinder {
     }
 
     static calculateEntityRoute(player: Mobile, target: Mobile, range = 1) {
-        const targetSize = Math.max(target.getSize(), 1);
-        const interactionRange = Math.max(1, Math.floor(range));
-        const extraReach = interactionRange - 1;
-        const destinationSize = interactionRange === 1 ? targetSize : interactionRange * 2 - 1;
+        const { destX, destY, destinationSize } = PathFinder.entityRouteArea(target, range);
         return PathFinder.applyRsmodRoute(
             player,
-            target.getLocation().getX() - extraReach,
-            target.getLocation().getY() - extraReach,
+            destX,
+            destY,
             {
                 // Widen the destination area for plugin-approved long-range interactions. The
                 // route finder still walks only across collision-valid tiles; this lets an
@@ -281,6 +278,89 @@ export class PathFinder {
                 moveNear: true,
             }
         );
+    }
+
+    /**
+     * Whether calculateEntityRoute would find a route with no step: the actor already stands on the
+     * nearest tile to `target` it can reach. Queues nothing and sends no flag.
+     */
+    static isOnEntityRouteEnd(player: Mobile, target: Mobile, range = 1): boolean {
+        const { destX, destY, destinationSize } = PathFinder.entityRouteArea(target, range);
+        const location = player.getLocation();
+        const route = PathFinder.rsmodRouteFinding.findRoute({
+            level: location.getZ(),
+            srcX: location.getX(),
+            srcY: location.getY(),
+            srcSize: Math.max(player.getSize(), 1),
+            destX,
+            destY,
+            destWidth: destinationSize,
+            destLength: destinationSize,
+            locAngle: 0,
+            locShape: -2,
+            moveNear: true,
+            blockAccessFlags: 0,
+            maxWaypoints: 25,
+            privateArea: player.getPrivateArea(),
+        });
+        return route.success && route.waypoints.length === 0;
+    }
+
+    private static entityRouteArea(target: Mobile, range: number) {
+        const targetSize = Math.max(target.getSize(), 1);
+        const interactionRange = Math.max(1, Math.floor(range));
+        const extraReach = interactionRange - 1;
+        return {
+            destX: target.getLocation().getX() - extraReach,
+            destY: target.getLocation().getY() - extraReach,
+            destinationSize: interactionRange === 1 ? targetSize : interactionRange * 2 - 1,
+        };
+    }
+
+    /** Route to the least-cost reachable exact tile in a small set of valid interaction positions. */
+    static calculateRouteToAny(player: Mobile, destinations: Location[]): number {
+        const location = player.getLocation();
+        const srcX = location.getX();
+        const srcY = location.getY();
+        const level = location.getZ();
+        let best: { destination: Location; cost: number } | null = null;
+
+        for (const destination of destinations) {
+            if (destination.getZ() !== level) continue;
+            const route = PathFinder.rsmodRouteFinding.findRoute({
+                level,
+                srcX,
+                srcY,
+                srcSize: Math.max(player.getSize(), 1),
+                destX: destination.getX(),
+                destY: destination.getY(),
+                destWidth: 1,
+                destLength: 1,
+                locShape: -1,
+                moveNear: false,
+                privateArea: player.getPrivateArea(),
+            });
+            if (!route.success) continue;
+
+            let cost = 0;
+            let fromX = srcX;
+            let fromY = srcY;
+            for (const waypoint of route.waypoints) {
+                cost += Math.max(Math.abs(waypoint.x - fromX), Math.abs(waypoint.y - fromY));
+                fromX = waypoint.x;
+                fromY = waypoint.y;
+            }
+            if (!best || cost < best.cost) best = { destination, cost };
+        }
+
+        if (!best) {
+            player.getMovementQueue().reset();
+            return 0;
+        }
+        // Re-run once to install the selected route in the movement queue.
+        return PathFinder.applyRsmodRoute(player, best.destination.getX(), best.destination.getY(), {
+            moveNear: false,
+        });
     }
 
     /** OpenRune's footprint-aware destination for one-step NPC pursuit. */

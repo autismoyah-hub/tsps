@@ -12,6 +12,7 @@ const protocol = require('../dist/net/protocol/ClientProtocol');
 const { TaskManager } = require('../dist/game/task/TaskManager');
 const { Task } = require('../dist/game/task/Task');
 const { PlayerRights } = require('../dist/game/model/rights/PlayerRights');
+const { Dialogue } = require('../dist/game/model/dialogues/entries/Dialogue');
 const Clans = require('../plugins/interface/clans/Clans.plugin');
 
 const CHAT_MESSAGE = 120;
@@ -85,6 +86,8 @@ function player(name) {
       isActive: () => false,
       startDialogues(chain) {
         self.dialogue = chain;
+        // The box logs its own chat line as it opens, as the real one does (the fake builder hands over the box itself).
+        if (chain.text !== undefined) Dialogue.sendBoxChatLine(self, chain.text);
       },
     }),
     setEnteredSyntaxAction: (action) => (self.syntaxAction = action),
@@ -100,6 +103,7 @@ function player(name) {
     sendMessage: (text) => self.messages.push(text),
     getSession: () => ({ sendClientPacket: (packet) => self.packets.push(packet) }),
     getPacketSender: () => ({
+      getVarbit: (id) => self.varbits.get(id) ?? 0,
       sendVarbit(id, value) {
         self.varbits.set(id, value);
         return this;
@@ -127,6 +131,7 @@ function player(name) {
       },
       isChatboxInterface: (group) => self.chatbox === group,
       closeInterface(group) {
+        (self.closedGroups ??= []).push(group);
         if (self.chatbox === group) self.chatbox = -1;
         return this;
       },
@@ -301,7 +306,7 @@ beforeEach(() => {
       RegionManager: { blocked: () => false },
       ItemOnGround: class {
         constructor(state, owner, location, item) {
-          Object.assign(this, { location, item });
+          Object.assign(this, { state, owner, location, item });
         }
       },
       GroundItemState: { SEEN_BY_EVERYONE: 1 },
@@ -1120,12 +1125,32 @@ test('titles open from the settings, take the client\'s edits, and save', () => 
   const edit = { player: owner, varpId: 3023, value: 25, handled: false };
   hooks.custom.get('player:varp-transmit')(edit);
   assert.equal(edit.handled, true);
-  clickGroup(owner, 695, 13);
+  clickGroup(owner, 695, 14);
   assert.equal(CoreClans().titleSetting(clan, 1), 25);
   assert.equal(owner.mounted.at(-1), 690);
   const other = { player: owner, varpId: 3023, value: 30, handled: false };
   hooks.custom.get('player:varp-transmit')(other);
   assert.equal(other.handled, false, 'no longer editing');
+});
+
+test('titles Cancel (695:13, rev 241 clans_ranktitles:cancel) throws the edits away', () => {
+  const { owner, clan } = clanOfThree();
+  clickGroup(owner, 690, 24);
+  const before = CoreClans().titleSetting(clan, 1);
+  hooks.custom.get('player:varp-transmit')({ player: owner, varpId: 3023, value: 25, handled: false });
+  clickGroup(owner, 695, 13);
+  assert.equal(CoreClans().titleSetting(clan, 1), before, 'not saved');
+  assert.equal(owner.mounted.at(-1), 690, 'back to Clan Settings');
+});
+
+test('event form Exit (704:26, rev 241 clans_events_create:exit) goes back to the list and saves nothing', () => {
+  const { owner, clan } = clanOfThree();
+  clickGroup(owner, 690, 19);
+  clickGroup(owner, 703, 5);
+  assert.equal(owner.mounted.at(-1), 704);
+  clickGroup(owner, 704, 26);
+  assert.equal(owner.mounted.at(-1), 703);
+  assert.equal((clan.events ?? []).length, 0);
 });
 
 test('Rename, Talk and Guests rows work for those allowed', () => {
@@ -1160,6 +1185,17 @@ test('logging in sends last seen and today, as 3886 tick 664', () => {
     { type: 'member_extra_info', index: 1, value: day - 6880, startBit: 0, endBit: 12 },
     { type: 'int_setting', setting: 8, value: day },
   ]));
+});
+
+test("logging in with 'last seen' updates off keeps the old last seen day", () => {
+  const { member, clan } = clanOfThree();
+  hooks.logout({ player: member });
+  clan.members[1].lastSeenDay = 6880 + 5;
+  const before = sent(member, CLAN_SETTINGS_DELTA).length;
+  member.varbits.set(16118, 1);
+  login(member);
+  assert.equal(clan.members[1].lastSeenDay, 6880 + 5);
+  assert.equal(sent(member, CLAN_SETTINGS_DELTA).length, before, 'no last seen delta');
 });
 
 // ---------------------------------------------------------------- phase 4: guests
@@ -1591,6 +1627,30 @@ test('an application accepted while away adds the member when they are offline',
   assert.equal(CoreClans().memberOf(clan, 'away').rank, 0);
 });
 
+test('an applicant banned after applying is not accepted, online or offline', () => {
+  const { owner, clan } = clanOfThree();
+  const Management = require('../plugins/interface/clans/Management.Clans');
+  const Guests = require('../plugins/interface/clans/Guests.Clans');
+  clan.inviting = true;
+  const hopeful = player('Hopeful');
+  seek(hopeful, 'Blur');
+  Guests.toggleApplication(hopeful, clan);
+  assert.equal(clan.applicants.length, 1);
+  Management.addBan(owner, clan, 'Hopeful');
+  clickGroup(owner, 690, 21);
+  pause(owner, 699, 11, 0);
+  pause(owner, 699, 1, 3);
+  assert.equal(CoreClans().clanOf(hopeful) ?? null, null);
+  assert.deepEqual(clan.applicants, []);
+  assert.match(owner.messages.at(-1), /banned/);
+  clan.applicants = [{ account: 'away', name: 'Away', stats: 'Away|3|32' }];
+  Management.addBan(owner, clan, 'Away');
+  clickGroup(owner, 690, 21);
+  pause(owner, 699, 11, 0);
+  pause(owner, 699, 1, 3);
+  assert.equal(CoreClans().memberOf(clan, 'away'), undefined);
+});
+
 test('minimums block applying, and the board lists clans that are inviting (2778)', () => {
   const { owner, clan } = clanOfThree();
   clan.inviting = true;
@@ -1947,15 +2007,15 @@ test('an event is edited and deleted as listed, whatever another organiser did s
   row(member, 2); // Third, on member's list
   clickGroup(owner, 703, 9);
   row(owner, 0);
-  clickGroup(owner, 704, 24); // owner deletes First: Third is at slot 1 now
+  clickGroup(owner, 704, 25); // owner deletes First: Third is at slot 1 now
   assert.deepEqual(clan.events.map((each) => each.creator), ['Second', 'Third']);
-  clickGroup(member, 704, 24);
+  clickGroup(member, 704, 25);
   assert.deepEqual(clan.events.map((each) => each.creator), ['Second'], 'Third, as they chose, not by its old slot');
   clan.events = [event('A'), event('B')];
   clickGroup(owner, 690, 19);
   clickGroup(member, 690, 19);
   row(owner, 1);
-  clickGroup(owner, 704, 24);
+  clickGroup(owner, 704, 25);
   row(member, 1); // B has gone from under their list
   assert.match(member.messages.at(-1), /Another organiser/);
   assert.deepEqual(clan.events.map((each) => each.creator), ['A']);
@@ -2048,7 +2108,7 @@ test('an event is created through the form, listed, edited and deleted', () => {
   assert.equal(owner.varbits.get(12223), 1110);
   formField(owner, 21, 101);
   assert.equal(owner.varbits.get(10986), 101);
-  clickGroup(owner, 704, 23);
+  clickGroup(owner, 704, 24);
   assert.equal(clan.events.length, 1);
   assert.equal(owner.mounted.at(-1), 703);
   const row = owner.scripts.filter((script) => script[0] === 4407).at(-10);
@@ -2063,10 +2123,10 @@ test('an event is created through the form, listed, edited and deleted', () => {
   for (const handler of hooks.clicks) handler({ player: owner, groupId: 703, childId: 9, slot: 0 });
   assert.equal(owner.varbits.get(12224), 1);
   formField(owner, 17, 331);
-  clickGroup(owner, 704, 23);
+  clickGroup(owner, 704, 24);
   assert.equal(clan.events[0].world, 331);
   for (const handler of hooks.clicks) handler({ player: owner, groupId: 703, childId: 9, slot: 0 });
-  clickGroup(owner, 704, 24);
+  clickGroup(owner, 704, 25);
   assert.deepEqual(clan.events, []);
   assert.equal(JSON.parse(fs.readFileSync(process.env.TSPS_CLANS_FILE, 'utf8')).clans[0].events.length, 0);
 });
@@ -2102,7 +2162,7 @@ test('all eight title settings are sent, and ranks 96-124 save', () => {
   clickGroup(owner, 690, 24);
   const edit = { player: owner, varpId: 736, value: 77, handled: false };
   hooks.custom.get('player:varp-transmit')(edit);
-  clickGroup(owner, 695, 13);
+  clickGroup(owner, 695, 14);
   assert.equal(CoreClans().titleSetting(clan, 103), 77);
 });
 
@@ -2337,6 +2397,15 @@ test('the piano forgets a player who has gone', () => {
   assert.equal(member.sounds.length, 1, 'closed by walking off');
 });
 
+test("the piano's Close (698:45, clan_piano:close_button) closes it rather than playing a note", () => {
+  const { owner, member } = clanOfThree();
+  inHall(owner, member);
+  hooks.objects.Piano.Entertain({ player: owner });
+  op(owner, 698, 45);
+  assert.deepEqual(owner.closedGroups, [698]);
+  assert.equal(member.sounds?.length ?? 0, 0, 'no note');
+});
+
 test('the chest is refused below its rank, and elsewhere is not ours', () => {
   const { owner, member, clan } = clanOfThree();
   assert.equal(openChest(owner), false, 'not in a hall');
@@ -2446,6 +2515,7 @@ test('the lever costs 1,000 and needs its rank; balloons drop a stack and leave 
     member.ironman = 'none';
     burst({ player: member, location: at(hooks.placed[0]) });
     assert.equal(hooks.ground[0].item.id, 4151);
+    assert.equal(hooks.ground[0].owner, member.getUsername(), "owned by who popped it, so no Ironman can take it");
     assert.equal(owner.area.chest.length, 0);
   } finally {
     Math.random = random;

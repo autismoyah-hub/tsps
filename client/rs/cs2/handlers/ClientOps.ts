@@ -8,14 +8,17 @@ import {
     DEFAULT_SCREEN_WIDTH,
 } from "../../../game/ClientState";
 import { getClientClock } from "../../../game/TransmitCycles";
-import { getSafeAreaBounds, isTouchDevice } from "../../../common/utils/DeviceUtil";
+import { getRebootTimer } from "../../../network/serverConnection/timing";
+import { getSafeAreaBounds } from "../../../common/utils/DeviceUtil";
 import { isMobileClient, reportedClientType } from "../ClientType";
 import { VARBIT_ROOF_REMOVAL } from "../../../common/vars";
 import { MenuTargetType } from "../../MenuEntry";
 import { chatHistory } from "../ChatHistory";
+import { getHoverTarget, getInteractionCanvases, minMenuSnapshot, type MinMenuSnapshot } from "../minimenu";
 import { Opcodes } from "../Opcodes";
-import { CANCEL_SELECTION_HANDLER } from "../../../widgets/gl/widgetsGl/constants";
-import type { HandlerMap } from "./HandlerTypes";
+import type { HandlerContext, HandlerMap } from "./HandlerTypes";
+import { locHighlightKey, type ModelHighlightManager } from "../../../game/highlights/ModelHighlightManager";
+import { menuOptionDisplayText } from "../../../ui/menu/menuOptionDisplayText";
 
 const DEVICE_OPTION_INTERFACE_SCALING = 27;
 // Fixed layout toplevel (OSRS fixed mode).
@@ -30,7 +33,7 @@ const SPELL_REQUIREMENT_SCRIPT = 19;
 
 function getUiZoomDefaultPercent(ctx: any): number {
     const wm = ctx.widgetManager as any;
-    return wm?.rootInterface === 601 || isTouchDevice
+    return isMobileClient(wm?.rootInterface) || ctx.varManager?.getVarbit(6352) === 1
         ? UIZOOM_DEFAULT_MOBILE_PERCENT
         : UIZOOM_DEFAULT_DESKTOP_PERCENT;
 }
@@ -249,7 +252,7 @@ export function registerClientOps(handlers: HandlerMap): void {
     });
 
     handlers.set(Opcodes.REBOOTTIMER, (ctx) => {
-        ctx.pushInt(-1);
+        ctx.pushInt(getRebootTimer());
     });
 
     handlers.set(Opcodes.PLAYERMOD, (ctx) => {
@@ -626,11 +629,14 @@ export function registerClientOps(handlers: HandlerMap): void {
     });
 
     handlers.set(Opcodes.SETTAPTODROP, (ctx) => {
-        ctx.intStackSize--; // pop enabled
+        const enabled = ctx.intStack[--ctx.intStackSize] === 1;
+        const osrsClient = (ctx.widgetManager as any).osrsClient;
+        if (osrsClient?.settings) osrsClient.settings.tapToDrop = enabled;
     });
 
     handlers.set(Opcodes.GETTAPTODROP, (ctx) => {
-        ctx.pushInt(0);
+        const osrsClient = (ctx.widgetManager as any).osrsClient;
+        ctx.pushInt(osrsClient?.settings?.tapToDrop ? 1 : 0);
     });
 
     handlers.set(Opcodes.SETSHIFTCLICKDROP, (ctx) => {
@@ -816,30 +822,41 @@ export function registerClientOps(handlers: HandlerMap): void {
         ctx.pushInt(0);
     });
     handlers.set(Opcodes.HIGHLIGHT_NPC_CLEAR, consumeHighlightInt1);
-    handlers.set(Opcodes.HIGHLIGHT_NPCTYPE_SETUP, consumeHighlightSetup);
-    handlers.set(Opcodes.HIGHLIGHT_NPCTYPE_ON, consumeHighlightInt2);
-    handlers.set(Opcodes.HIGHLIGHT_NPCTYPE_OFF, consumeHighlightInt2);
-    handlers.set(Opcodes.HIGHLIGHT_NPCTYPE_GET, (ctx) => {
-        consumeHighlightInt2(ctx);
-        ctx.pushInt(0);
-    });
-    handlers.set(Opcodes.HIGHLIGHT_NPCTYPE_CLEAR, consumeHighlightInt1);
-    handlers.set(Opcodes.HIGHLIGHT_LOC_SETUP, consumeHighlightSetup);
-    handlers.set(Opcodes.HIGHLIGHT_LOC_ON, consumeHighlightInt4);
-    handlers.set(Opcodes.HIGHLIGHT_LOC_OFF, consumeHighlightInt4);
-    handlers.set(Opcodes.HIGHLIGHT_LOC_GET, (ctx) => {
-        consumeHighlightInt4(ctx);
-        ctx.pushInt(0);
-    });
-    handlers.set(Opcodes.HIGHLIGHT_LOC_CLEAR, consumeHighlightInt1);
-    handlers.set(Opcodes.HIGHLIGHT_LOCTYPE_SETUP, consumeHighlightSetup);
-    handlers.set(Opcodes.HIGHLIGHT_LOCTYPE_ON, consumeHighlightInt2);
-    handlers.set(Opcodes.HIGHLIGHT_LOCTYPE_OFF, consumeHighlightInt2);
-    handlers.set(Opcodes.HIGHLIGHT_LOCTYPE_GET, (ctx) => {
-        consumeHighlightInt2(ctx);
-        ctx.pushInt(0);
-    });
-    handlers.set(Opcodes.HIGHLIGHT_LOCTYPE_CLEAR, consumeHighlightInt1);
+    const modelHighlightOps = [
+        ["npcType", Opcodes.HIGHLIGHT_NPCTYPE_SETUP, Opcodes.HIGHLIGHT_NPCTYPE_ON, Opcodes.HIGHLIGHT_NPCTYPE_OFF, Opcodes.HIGHLIGHT_NPCTYPE_GET, Opcodes.HIGHLIGHT_NPCTYPE_CLEAR],
+        ["loc", Opcodes.HIGHLIGHT_LOC_SETUP, Opcodes.HIGHLIGHT_LOC_ON, Opcodes.HIGHLIGHT_LOC_OFF, Opcodes.HIGHLIGHT_LOC_GET, Opcodes.HIGHLIGHT_LOC_CLEAR],
+        ["locType", Opcodes.HIGHLIGHT_LOCTYPE_SETUP, Opcodes.HIGHLIGHT_LOCTYPE_ON, Opcodes.HIGHLIGHT_LOCTYPE_OFF, Opcodes.HIGHLIGHT_LOCTYPE_GET, Opcodes.HIGHLIGHT_LOCTYPE_CLEAR],
+    ] as const;
+    for (const [kind, setup, on, off, get, clear] of modelHighlightOps) {
+        const highlights = (ctx: HandlerContext) =>
+            (ctx.widgetManager?.osrsClient?.modelHighlightManager as ModelHighlightManager | undefined)?.[kind];
+        handlers.set(setup, (ctx) => {
+            const flags = ctx.popInt();
+            const alpha = ctx.popInt();
+            const width = ctx.popInt();
+            const color = ctx.popInt();
+            const slot = ctx.popInt();
+            highlights(ctx)?.configure(slot, color, width, alpha, flags);
+        });
+
+        for (const op of [on, off, get]) {
+            handlers.set(op, (ctx) => {
+                const group = kind === "loc" ? ctx.popInt() : 0;
+                const slot = ctx.popInt();
+                const coord = kind === "loc" ? ctx.popInt() : -1;
+                const id = ctx.popInt();
+                const target = kind === "loc" ? locHighlightKey(id, coord) : id;
+                const store = highlights(ctx);
+                if (op === get) ctx.pushInt(store?.has(slot, target, group) ? 1 : 0);
+                else store?.set(slot, target, group, op === on);
+            });
+        }
+        handlers.set(clear, (ctx) => {
+            const slot = ctx.popInt();
+            highlights(ctx)?.clear(slot);
+        });
+    }
+
     handlers.set(Opcodes.HIGHLIGHT_OBJ_SETUP, consumeHighlightSetup);
     handlers.set(Opcodes.HIGHLIGHT_OBJ_ON, consumeHighlightInt4);
     handlers.set(Opcodes.HIGHLIGHT_OBJ_OFF, consumeHighlightInt4);
@@ -906,15 +923,9 @@ export function registerClientOps(handlers: HandlerMap): void {
     handlers.set(Opcodes.HIGHLIGHT_GROUP_GET, consumeHighlightStringIntGet);
     handlers.set(Opcodes.HIGHLIGHT_GROUP_CLEAR, consumeHighlightInt1);
 
-    type MinMenuSnapshot = {
-        option: string;
-        target: string;
-        numOps: number;
-        type: number;
-        hasComponentHover: boolean;
-    };
-
     const getOsrsClient = (ctx: any): any => (ctx?.widgetManager as any)?.osrsClient;
+
+    const getMinMenuSnapshot = (ctx: any): MinMenuSnapshot => minMenuSnapshot(getOsrsClient(ctx));
 
     const getMinMenuEntryType = (entry: any): number => {
         const targetType =
@@ -935,184 +946,11 @@ export function registerClientOps(handlers: HandlerMap): void {
         }
     };
 
-    const getInteractionCanvases = (osrsClient: any): any[] => {
-        const renderer = osrsClient?.renderer as any;
-        const widgetCanvas =
-            typeof renderer?.getWidgetsGLCanvas === "function"
-                ? renderer.getWidgetsGLCanvas()
-                : undefined;
-        const mainCanvas = renderer?.canvas;
-        const canvases: any[] = [];
-        if (widgetCanvas) canvases.push(widgetCanvas);
-        if (mainCanvas && mainCanvas !== widgetCanvas) canvases.push(mainCanvas);
-        return canvases;
-    };
-
     const getUi = (osrsClient: any): any => {
         for (const canvasAny of getInteractionCanvases(osrsClient)) {
             if (canvasAny?.__ui) return canvasAny.__ui;
         }
         return undefined;
-    };
-
-    // While an item or spell is selected, every op-less widget gets a target that only clears
-    // the selection on click. Over the game view those would hide the world entry
-    // ("Use Knife -> Goblin") behind an empty component hover.
-    const isMenuHoverTarget = (t: any): boolean => t?.onClick !== CANCEL_SELECTION_HANDLER;
-
-    const getHoverTarget = (osrsClient: any): any => {
-        for (const canvasAny of getInteractionCanvases(osrsClient)) {
-            const clicks =
-                (canvasAny?.__input as any)?.getClicks?.() ||
-                (canvasAny?.__inputBridge as any)?.getClicks?.() ||
-                canvasAny?.__clicks;
-            if (!clicks) continue;
-            // Re-pick at the live pointer position instead of trusting the cached
-            // hover id: CS2 timers rebuild widget rows (e.g., the side journal),
-            // which unregisters the hovered target and nulls the hover id while the
-            // pointer is stationary - making the mouseover text vanish mid-hover.
-            const ui = canvasAny?.__ui;
-            if (
-                typeof clicks.pick === "function" &&
-                typeof ui?.mouseX === "number" &&
-                typeof ui?.mouseY === "number"
-            ) {
-                const sxRaw = Number(canvasAny?.__uiInputScaleX ?? 1);
-                const syRaw = Number(canvasAny?.__uiInputScaleY ?? 1);
-                const sx = Number.isFinite(sxRaw) && sxRaw > 0 ? sxRaw : 1;
-                const sy = Number.isFinite(syRaw) && syRaw > 0 ? syRaw : 1;
-                const px = Math.round(ui.mouseX * sx);
-                const py = Math.round(ui.mouseY * sy);
-                // Prefer the topmost target with menu text: listener-only widgets
-                // (e.g., the diary rows' hover-highlight rects) layer above the
-                // op-bearing rows and would otherwise blank the minimenu.
-                const hit =
-                    clicks.pick(px, py, (t: any) => !!t?.primaryOption?.option) ||
-                    clicks.pick(px, py, isMenuHoverTarget);
-                if (hit) return hit;
-            }
-            const hoverTarget = clicks?.getHoverTarget?.();
-            if (hoverTarget && isMenuHoverTarget(hoverTarget)) return hoverTarget;
-        }
-        return undefined;
-    };
-
-    const getMinMenuSnapshot = (ctx: any): MinMenuSnapshot => {
-        const osrsClient = getOsrsClient(ctx);
-        // A plugin pointer aimed at the world (the backquote crosshair) clicks the world, never
-        // the UI, so its mouseover text is the world option. UI hover state can also be stale
-        // under it: the locked pointer holds still, so nothing re-picks the widget under it.
-        const input = (osrsClient as any)?.inputManager;
-        const aimsAtWorld =
-            input?.hasInteractionPointerOverride?.() === true && input?.isWidgetInteractionPointer?.() !== true;
-        const hoverTarget = aimsAtWorld ? undefined : getHoverTarget(osrsClient);
-
-        const hoverId = typeof hoverTarget?.id === "string" ? hoverTarget.id : "";
-        const componentTargetFromClicks =
-            hoverId.startsWith("widget:") || hoverId.startsWith("__menu_opt_");
-        const hoveredWidgetsByUid: Map<number, any> | undefined = (osrsClient as any)
-            ?.hoveredWidgetsByUid as Map<number, any> | undefined;
-        const hasHoveredWidgetState = !aimsAtWorld && !!(hoveredWidgetsByUid && hoveredWidgetsByUid.size > 0);
-        const hasComponentHover = componentTargetFromClicks || hasHoveredWidgetState;
-        const primaryOption = hoverTarget?.primaryOption;
-        let componentOption = typeof primaryOption?.option === "string" ? primaryOption.option : "";
-        let componentTarget = typeof primaryOption?.target === "string" ? primaryOption.target : "";
-        // CS2 mouseover scripts treat numops as actionable options (exclude Cancel).
-        const componentNumOpsRaw =
-            typeof hoverTarget?.menuOptionsCount === "number"
-                ? Math.max(0, hoverTarget.menuOptionsCount | 0)
-                : 0;
-        const componentNumOps = Math.max(0, componentNumOpsRaw - 1);
-        const componentHasText =
-            componentOption.trim().length > 0 || componentTarget.trim().length > 0;
-
-        // When hovering UI components, prefer component metadata. If there is no menu text
-        // available, treat minimenu as empty so CS2 mouseover_text does not create stray top-left labels.
-        if (hasComponentHover) {
-            return {
-                option: componentOption,
-                target: componentTarget,
-                numOps: componentHasText ? Math.max(componentNumOps, 1) : componentNumOps,
-                type: componentHasText ? 7 : 0,
-                hasComponentHover: true,
-            };
-        }
-
-        const worldEntries: any[] = Array.isArray(osrsClient?.menuActiveSimpleEntries)
-            ? (osrsClient.menuActiveSimpleEntries as any[])
-            : [];
-        let worldTop: any = undefined;
-        let worldNumOps = 0;
-        for (let i = 0; i < worldEntries.length; i++) {
-            const row = worldEntries[i];
-            const optionText = typeof row?.option === "string" ? row.option.trim() : "";
-            if (optionText.toLowerCase() === "cancel") continue;
-            worldNumOps++;
-            if (!worldTop) worldTop = row;
-        }
-        if (!worldTop) worldTop = worldEntries[0];
-
-        // when no actionable minimenu entries exist, selected item/spell still shows
-        // "Use <item> ->" / "<spellAction> <spell> ->" hover text.
-        if (worldNumOps <= 0) {
-            if (ClientState.isItemSelected === 1) {
-                const itemName = String(ClientState.selectedSpellName || "").trim();
-                return {
-                    option: "Use",
-                    target: itemName.length > 0 ? `${itemName} ->` : "->",
-                    numOps: 1,
-                    type: 1,
-                    hasComponentHover: false,
-                };
-            }
-            if (ClientState.isSpellSelected) {
-                const spellAction = String(ClientState.selectedSpellActionName || "Cast").trim();
-                const spellName = String(ClientState.selectedSpellName || "").trim();
-                return {
-                    option: spellAction.length > 0 ? spellAction : "Cast",
-                    target: spellName.length > 0 ? `${spellName} ->` : "->",
-                    numOps: 1,
-                    type: 1,
-                    hasComponentHover: false,
-                };
-            }
-        }
-
-        const worldOption = typeof worldTop?.option === "string" ? worldTop.option : "";
-        const worldTarget = typeof worldTop?.target === "string" ? worldTop.target : "";
-        const worldTargetType =
-            typeof worldTop?.targetType === "number"
-                ? worldTop.targetType | 0
-                : MenuTargetType.NONE;
-
-        let worldType = 0;
-        switch (worldTargetType) {
-            case MenuTargetType.NPC:
-                worldType = 2;
-                break;
-            case MenuTargetType.LOC:
-                worldType = 3;
-                break;
-            case MenuTargetType.OBJ:
-                worldType = 4;
-                break;
-            case MenuTargetType.PLAYER:
-                worldType = 6;
-                break;
-            default: {
-                const lower = worldOption.toLowerCase();
-                worldType = lower === "walk here" ? 1 : 0;
-                break;
-            }
-        }
-
-        return {
-            option: worldOption,
-            target: worldTarget,
-            numOps: Math.max(0, worldNumOps),
-            type: worldType,
-            hasComponentHover: false,
-        };
     };
 
     const getMinMenuEntries = (ctx: any): any[] => {
@@ -1167,7 +1005,8 @@ export function registerClientOps(handlers: HandlerMap): void {
 
     handlers.set(Opcodes.MINIMENU_ENTRY, (ctx) => {
         const snap = getMinMenuSnapshot(ctx);
-        ctx.pushString(snap.option);
+        // Shown text only (script 4726's mouseover); the snapshot keeps the game's option.
+        ctx.pushString(menuOptionDisplayText(snap.option));
         ctx.pushString(snap.target);
     });
 
@@ -1800,8 +1639,9 @@ export function registerClientOps(handlers: HandlerMap): void {
     });
 
     handlers.set(Opcodes.OPENURL, (ctx) => {
-        ctx.intStackSize--; // pop internal
-        ctx.stringStackSize--; // pop url
+        const newWindow = ctx.intStack[--ctx.intStackSize] === 1;
+        const url = String(ctx.stringStack[--ctx.stringStackSize] ?? "");
+        ctx.openUrl?.(url, newWindow);
     });
 
     // bug_report(template, string, string)

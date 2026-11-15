@@ -36,8 +36,13 @@ function createPlayer({ ring = null, doses = 1 } = {}) {
   const equipment = new Array(14).fill(null).map(() => item(0));
   if (ring) equipment[Equipment.RING_SLOT] = ring;
   const messages = [];
+  const attributes = new Map();
   return {
     messages,
+    getAttribute: (key) => attributes.get(key),
+    setAttribute: (key, value) => attributes.set(key, value),
+    isPlayer: () => true,
+    getAsPlayer() { return this; },
     getEquipment: () => ({ get: (slot) => equipment[slot], refreshItems: () => {} }),
     getInventory: () => ({
       deleteNumber: () => {},
@@ -92,14 +97,19 @@ test("a worn charged ring doubles a stamina dose and spends one charge", () => {
   assert.equal(plain.energy, 20, "no ring, no doubling");
 });
 
-test("a ring with 500 charges skips 15% of run-energy drain", () => {
+test("a ring with 500 charges cuts run-energy drain to 85%, unless stamina is active", () => {
   const ring = item(ItemIds.RING_OF_ENDURANCE, { "ring-of-endurance": 500 });
   const player = createPlayer({ ring });
-  assert.equal(RingOfEndurance._test.passiveApplies(player, 14), true);
-  assert.equal(RingOfEndurance._test.passiveApplies(player, 15), false);
+  assert.equal(RingOfEndurance._test.passiveApplies(player), true);
+  assert.equal(RingOfEndurance._test.drainModifier(player, 60), 51);
   ring.setMetaValue("ring-of-endurance", 499);
-  assert.equal(RingOfEndurance._test.passiveApplies(player, 0), false);
-  assert.equal(RingOfEndurance._test.passiveApplies(createPlayer(), 0), false);
+  assert.equal(RingOfEndurance._test.passiveApplies(player), false);
+  assert.equal(RingOfEndurance._test.drainModifier(player, 60), 60);
+  assert.equal(RingOfEndurance._test.drainModifier(createPlayer(), 60), 60);
+  // A stamina potion's 30% already applies and the ring must not stack on it.
+  ring.setMetaValue("ring-of-endurance", 500);
+  player.getAttribute = () => Date.now() + 60_000;
+  assert.equal(RingOfEndurance._test.drainModifier(player, 60), 60);
 });
 
 test("uncharging drops the charges without refunding them", () => {
@@ -117,4 +127,34 @@ test('charging leaves unrelated target items and their materials untouched', () 
   const event={player,usedItem:material,usedWithItem:target,usedItemId:material.getId(),usedWithItemId:target.getId()};
   RingOfEndurance._test.chargeRing(event);
   assert.equal(event.handled,undefined);assert.deepEqual(target.meta,{});
+});
+
+test("extended stamina doses charge the ring two charges each and cost two charges to double", () => {
+  const ring = item(ItemIds.RING_OF_ENDURANCE_UNCHARGED_);
+  const player = createPlayer({ ring });
+  RingOfEndurance._test.chargeRing({
+    player,
+    usedItem: item(ItemIds.EXTENDED_STAMINA_POTION_4_),
+    usedWithItem: ring,
+    usedItemId: ItemIds.EXTENDED_STAMINA_POTION_4_,
+    usedWithItemId: ItemIds.RING_OF_ENDURANCE_UNCHARGED_,
+    handled: false,
+  });
+  assert.equal(ring.getId(), ItemIds.RING_OF_ENDURANCE);
+  assert.equal(RingOfEndurance._test.charges(ring), 8);
+  RingOfEndurance._test.chargeRing({
+    player,
+    usedItem: ring,
+    usedWithItem: item(ItemIds.EXTENDED_STAMINA_POTION_1_),
+    usedItemId: ItemIds.RING_OF_ENDURANCE,
+    usedWithItemId: ItemIds.EXTENDED_STAMINA_POTION_1_,
+    handled: false,
+  });
+  assert.equal(RingOfEndurance._test.charges(ring), 10);
+
+  const request = { player, energy: 40, durationMs: 240000, charges: 2 };
+  RingOfEndurance._test.doubleStamina(request);
+  assert.equal(request.energy, 80);
+  assert.equal(request.durationMs, 480000);
+  assert.equal(RingOfEndurance._test.charges(ring), 8);
 });

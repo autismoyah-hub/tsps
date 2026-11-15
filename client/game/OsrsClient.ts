@@ -1,14 +1,21 @@
+import { AGILITY_HELPER_HIGHLIGHT_OBSTACLES_ENABLED, HELPER_AGILITY_HIGHLIGHTED_COURSE } from "@runelite/api/gameval/VarbitID";
+import { retainedInventory, stopInventoryTransmit } from "./sync/InventoryStopTransmit";
+import { openClientUrl } from "../common/openUrl";
+import { applyNpcSpecificEffect } from "./sync/NpcSpecificEffects";
+import { applyGlobalNpcHeadIcons, applyNpcSpecificHeadIcon } from "./sync/NpcHeadIcons";
+import { createNpcEcs, type NpcGraphicsEcs } from "./ecs/createNpcEcs";
+import { initializeWidgetItemModel } from "../widgets/WidgetItemModel";
 import { LISTENED_CLAN_TYPE, OWN_CLAN_TYPE } from "../common/social/Clans";
 import type { MinimapGeometry, SceneGeometry } from "./scene/SceneGeometry";
 import { vec3 } from "gl-matrix";
-import { closeOpenModal } from "./widgets/input/widgetKeyboardInput";
+import { closeOpenModal, hasOpenModal } from "./widgets/input/widgetKeyboardInput";
 import { getNpcMenuActions } from "./menu/WorldMenuBuilder";
+import { handleCommandShortcut } from "./chat/commandShortcuts";
 
 import { directionToDelta } from "../common/Direction";
 import { ChatMessageType } from "../common/chat/ChatMessageType";
 import type { ProjectileLaunch } from "../common/projectiles/ProjectileLaunch";
 import { buildSelectedSpellPayload } from "../common/spells/selectedSpellPayload";
-import type { QuestListWidgetGroup } from "../common/ui/questList";
 import {
     INTERFACE_ACHIEVEMENT_DIARY_ID,
     INTERFACE_QUEST_LIST_ID,
@@ -21,6 +28,15 @@ import {
     tooltipsEnabledByDefault,
 } from "../common/utils/DeviceUtil";
 import { clamp } from "../common/utils/MathUtil";
+import { MINIMAP_STATE } from "../runelite/api/gameval/VarbitID";
+import {
+    BLUE_FIRE,
+    FIRE,
+    GREEN_FIRE,
+    RED_FIRE,
+    TRAIL_PURPLE_FIRE,
+    TRAIL_WHITE_FIRE,
+} from "../runelite/api/gameval/ObjectID";
 import {
     TRANSMIT_VARPS,
     VARBIT_COMBATLEVEL_TRANSMIT,
@@ -37,6 +53,11 @@ import {
     VARBIT_LEAGUE_RELIC_8,
     VARBIT_ROOF_REMOVAL,
     VARBIT_ACTIVE_SPELLBOOK,
+    VARBIT_FOLLOWEROPS_DEPRIORITISED,
+    VARBIT_HOTKEY_CANNOT_CLOSE_SIDEPANEL,
+    VARBIT_KEYBINDING_ESC_TO_CLOSE,
+    VARBIT_MOUSECAM_DISABLED,
+    VARBIT_WORLDSWITCHER_DISABLE_CONFIRMATION,
     VARBIT_STAMINA_ACTIVE,
     VARC_COMBAT_LEVEL,
     VARC_ACTIVE_TAB,
@@ -44,6 +65,7 @@ import {
     VARP_ATTACK_STYLE,
     VARP_MAP_FLAGS_CACHED,
     VARP_MASTER_VOLUME,
+    VARP_MOUSE_BUTTONS,
     VARP_MUSIC_VOLUME,
     VARP_OPTION_ATTACK_PRIORITY_NPC,
     VARP_OPTION_ATTACK_PRIORITY_PLAYER,
@@ -90,6 +112,7 @@ import {
     subscribeInventory,
     subscribeNotifications,
     subscribeNpcInfo,
+    subscribeNpcSpecificEffects,
     subscribePlayJingle,
     subscribePlaySong,
     subscribePlayerSync,
@@ -130,7 +153,9 @@ import {
     sendBankCustomQuantity,
     LOGIN_FLAG_REMEMBER,
     LOGIN_FLAG_TOKEN,
+    disposeServerConnection,
     forgetRememberedLogin,
+    sendHandshake,
     sendLogin,
     sendInteractStop,
     sendLogout,
@@ -171,6 +196,7 @@ import {
     ArchiveMapElementTypeLoader,
     type MapElementTypeLoader,
 } from "../rs/config/meltype/MapElementTypeLoader";
+import type { NpcType } from "../rs/config/npctype/NpcType";
 import { NpcTypeLoader } from "../rs/config/npctype/NpcTypeLoader";
 import { ObjModelLoader } from "../rs/config/objtype/ObjModelLoader";
 import { ObjTypeLoader, PostProcessedObjTypeLoader } from "../rs/config/objtype/ObjTypeLoader";
@@ -182,6 +208,9 @@ import { SeqTypeLoader } from "../rs/config/seqtype/SeqTypeLoader";
 import { SpotAnimTypeLoader } from "../rs/config/spotanimtype/SpotAnimTypeLoader";
 import { VarManager } from "../rs/config/vartype/VarManager";
 import { chatHistory } from "../rs/cs2/ChatHistory";
+import { addExaminePriceLine, EXAMINE_PRICE_ALCH_VARBIT, EXAMINE_PRICE_GE_VARBIT } from "./examinePrice";
+import { alchemyValues, guidePrice, itemPricesPending } from "../network/serverConnection/domain/itemPrices";
+import { FriendLoginUpdates, friendLoginNoticesShown } from "./chat/FriendLoginUpdates";
 import { Cs2Vm, ScriptArgMagic, type ScriptEvent, createScriptEvent } from "../rs/cs2/Cs2Vm";
 import { setSpawnSearch } from "../rs/cs2/spawnSearch";
 import { Opcodes as Cs2Opcodes } from "../rs/cs2/Opcodes";
@@ -202,7 +231,9 @@ import type { SkeletalSeqLoader } from "../rs/model/skeletal/SkeletalSeqLoader";
 import { SkillId } from "../rs/skill/skills";
 import { TextureLoader } from "../rs/texture/TextureLoader";
 import { faceAngleRs } from "../rs/utils/rotation";
+import { npcAddedRotation } from "./utils/rotation";
 import { getOsrsInterfaceScalingPercent, setOsrsInterfaceScalingPercent } from "../ui/UiScale";
+import { isMobileClient } from "../rs/cs2/ClientType";
 import {
     DEVICE_OPTION_SCREEN_BRIGHTNESS,
     gammaFromScreenBrightness,
@@ -223,7 +254,6 @@ import { markWidgetInteractionDirty } from "../widgets/WidgetInteraction";
 import { WidgetManager } from "../widgets/WidgetManager";
 import { WidgetSessionManager } from "../widgets/WidgetSessionManager";
 import { runWidgetJsOp } from "../widgets/custom/dynamicWidgets";
-import { applyQuestListWidgetGroups, questListPreferences } from "../widgets/custom/questList";
 import { cleanupInterfaceClickTargets, cleanupWidgetClickTarget } from "../widgets/gl/widgets-gl";
 import { layoutWidgets } from "../widgets/layout/WidgetLayout";
 import { sanitizeText } from "../widgets/menu/utils";
@@ -239,6 +269,7 @@ import {
     DEFAULT_SCREEN_WIDTH,
     MOUSE_CROSS_YELLOW,
 } from "./ClientState";
+import { type ChatRequest, chatRequestOption, chatRequestSlot } from "./chatRequests";
 import { GameRenderer } from "./GameRenderer";
 import { OsrsRendererType, createRenderer } from "./GameRenderers";
 import { InputManager } from "./InputManager";
@@ -271,12 +302,14 @@ import { isInTouchScrollLayer } from "./widgets/input/widgetTouchScrollInput";
 import { MobileChatKeyboard } from "./chat/MobileChatKeyboard";
 import { KeyboardButtonProbe } from "./chat/keyboardButtonProbe";
 import { collectInputWidgetsAtPoint } from "./widgets/interaction/widgetClickProbe";
+import { isChatboxClickThroughActive } from "./widgets/interaction/chatboxClickThrough";
 import { CombatOptionsController } from "./combat/CombatOptionsController";
 import { HitsplatFlushController } from "./combat/HitsplatFlushController";
 import { ClientScriptLoader } from "./cs2/ClientScriptLoader";
+import type { GroundItemsServerPayload } from "../network/serverConnection/types/messages";
 import { ClientGroundItemStack, GroundItemStore } from "./data/ground/GroundItemStore";
-import { NpcEcs } from "./ecs/NpcEcs";
 import { PlayerEcs } from "./ecs/PlayerEcs";
+import { ModelHighlightManager } from "./highlights/ModelHighlightManager";
 import { TileHighlightManager } from "./highlights/TileHighlightManager";
 import { PlayerInteractionSystem } from "./interactions/PlayerInteractionSystem";
 import { IProjectileManager } from "./interfaces/IProjectileManager";
@@ -302,9 +335,11 @@ import { headingIndicator } from "./sailing/HeadingIndicator";
 import { retryOnMissingGroup } from "../rs/cache/js5/retryOnMissingGroup";
 import type { GraphicsDefaults } from "../rs/config/defaults/GraphicsDefaults";
 import { interactionModes } from "./InteractionModes";
+import { npcOpsVisibility } from "./NpcOpsVisibility";
+import { groundObjOpsVisibility } from "./GroundObjOpsVisibility";
 import { RuneLite } from "../runelite/client/RuneLite";
 import { notifyActorGraphic, notifyActorHitsplat, notifyActorHealth } from "./ActorEventHooks";
-import { dispatchMenuAction } from "../ui/menu/menuEvents";
+import { dispatchMenuAction, menuClickListeners, type MenuActionData } from "../ui/menu/menuEvents";
 import { setMenuTransform } from "../ui/menu/menuTransforms";
 import { ResolveTilePlaneFn } from "./scene/PlaneResolver";
 import {
@@ -362,8 +397,10 @@ import { isPauseButtonWidget, setMenuObjTypeLookup } from "../widgets/menu/utils
 import { INVENTORY } from "../runelite/api/gameval/InterfaceID";
 import { RenderDataWorkerPool } from "./worker/RenderDataWorkerPool";
 import { WorldMapController, type WorldMapRenderedIcon } from "./worldMap/WorldMapController";
+import type { PluginWorldMapPointEntry, RenderedWorldMapPoint } from "@runelite/client/ui/overlay/worldmap/worldMapLayout";
 import type { WorldMapViewport } from "./worldMap/WorldMapTypes";
 import { WorldViewManager } from "./worldview/WorldViewManager";
+import { keybindingTabFor } from "./keybindingTabs";
 
 const DEVICE_OPTION_INTERFACE_SCALING = 27;
 
@@ -371,32 +408,15 @@ const DEVICE_OPTION_INTERFACE_SCALING = 27;
 // configurable keybinding, so it stays hardcoded.
 const ESCAPE_TAB_SHORTCUT = 3;
 
-// All Settings keybindings map a varbit to the side-panel tab it opens. Values
-// are OSRS key codes: 0 = unbound, 1 = F1 ... 12 = F12. Names/tabs verified
-// against RuneLite VarbitID (STONE_*_KEY) and interface-layouts.json tabIds.
-// The server (Settings.plugin.js) owns the current values and defaults.
-const KEYBINDING_TABS: ReadonlyArray<{ varbit: number; tab: number }> = [
-    { varbit: 4675, tab: 0 }, // Combat
-    { varbit: 4676, tab: 1 }, // Stats
-    { varbit: 4677, tab: 2 }, // Journal/Quests
-    { varbit: 4678, tab: 3 }, // Inventory
-    { varbit: 4679, tab: 4 }, // Worn equipment
-    { varbit: 4680, tab: 5 }, // Prayer
-    { varbit: 4682, tab: 6 }, // Magic
-    { varbit: 4683, tab: 7 }, // Clan chat
-    { varbit: 4684, tab: 8 }, // Friends
-    { varbit: 4686, tab: 11 }, // Options (settings)
-    { varbit: 4687, tab: 10 }, // Options (secondary)
-    { varbit: 4688, tab: 13 }, // Music
-    { varbit: 4689, tab: 10 }, // Logout
-];
-
 // Enum IDs consumed by the stock tab-switch script (914), per game-frame layout.
 const TAB_SWITCH_SCRIPT = 914;
+// The side-panel switch script 914 calls: (display enum, tab, the open tab's key closes it, 0).
+const TAB_OPEN_SCRIPT = 71;
+const AGILITY_OBSTACLE_HIGHLIGHTS_SCRIPT = 5167;
 /** Server-set widget properties held while their cache interface is not loaded. */
 const HELD_WIDGET_ACTIONS: ReadonlySet<string> = new Set([
     "set_text", "set_hidden", "set_model", "set_angle", "set_colour", "set_position", "set_item",
-    "set_npc_head", "set_animation", "set_player_head",
+    "set_npc_head", "set_animation", "set_player_head", "set_rotate_speed",
 ]);
 const DEFAULT_ROOT_INTERFACE = 161;
 const DEFAULT_DISPLAY_ENUM = 1130;
@@ -441,12 +461,17 @@ const VARBIT_ACCOUNT_TYPE = 1777;
 const VARBIT_POPOUT_OPEN = 13090;
 const VARBIT_POPOUT_PANEL_DESKTOP_DISABLED = 13982;
 const VARC_CHATBOX_SELECTED_TAB = 41;
-const ACCOUNT_TYPE_MAIN = 0;
+/** VarClientID.OSM_CHATBOX_DISABLED: the mobile chatbox is toggled off. */
+const VARC_OSM_CHATBOX_DISABLED = 1220;const ACCOUNT_TYPE_MAIN = 0;
 const SCRIPT_HIGHLIGHT_SCREEN_COMPONENT = 2463;
 const SCRIPT_HIGHLIGHT_TEXTBOX_DEFAULT = 2465;
 // Chatbox search: its title says whether this one is a spawn search, and 138 closes it.
 const SCRIPT_CHATBOX_SEARCH = 750;
 const SCRIPT_CHATBOX_SEARCH_CLOSE = 138;
+// chatbox:meslayerinput (44) and its container (39). A server-run search (GE, bank) opens the
+// soft keyboard outside the touch that started it, which iOS refuses; tapping the text line is
+// the trusted gesture that brings it back.
+const CHATBOX_INPUT_UIDS: ReadonlySet<number> = new Set([(162 << 16) | 39, (162 << 16) | 44]);
 
 // Use shared OSRS rotation scale
 
@@ -459,8 +484,25 @@ const LOGOUT_WORLD_SWITCHER_UID = (182 << 16) | 3;
 /** The logout tab's stone (stone10) in the modern, classic and fixed layouts (rsprox captures). */
 const LOGOUT_STONE_UIDS = new Set([(161 << 16) | 46, (164 << 16) | 34, (548 << 16) | 51]);
 
+const PLAYER_MADE_FIRES = new Set([
+    FIRE,
+    RED_FIRE,
+    GREEN_FIRE,
+    BLUE_FIRE,
+    TRAIL_WHITE_FIRE,
+    TRAIL_PURPLE_FIRE,
+]);
+const BURNING_LOG_MESH_TIMEOUT_MS = 2000;
+
+type BurningLogMesh = {
+    stack: ClientGroundItemStack;
+    locId: number;
+    shape: number;
+    rotation: number;
+    expiresAt: number;
+};
+
 export class OsrsClient {
-    private serverQuestListGroups: QuestListWidgetGroup[] | undefined;
     private static readonly CLIENT_TICK_MS = 20;
     // Maximum amount of client-tick backlog (in ms) we will attempt to simulate.
     // This avoids multi-second/minute "catch-up" after sleep/throttling while still allowing
@@ -488,6 +530,8 @@ export class OsrsClient {
             });
     }
 
+    /** Plugin markers on the world map (Quest Helper's step, RuneLite points via the WorldMapPointManager); the world map draws them. */
+    pluginWorldMapPoints?: PluginWorldMapPointEntry[];
     inputManager: InputManager = new InputManager();
     camera: Camera = new Camera(3242, -26, 3202, 245, 1862);
 
@@ -584,7 +628,8 @@ export class OsrsClient {
     isMembersWorld: boolean = true;
     private localChatNameIcons: number[] = [];
     private localChatNamePrefix: string = "";
-    private readonly tradeRequestTargetsByName = new Map<string, number>();
+    /** Request lines (trade, challenge, load-out share) by sender: who sent it, what answers it. */
+    private readonly chatRequestsByName = new Map<string, ChatRequest>();
     private accountTypeVarbitAvailable?: boolean;
 
     // ========== Game State ==========
@@ -598,6 +643,8 @@ export class OsrsClient {
     readonly sidebar: SidebarStore;
     readonly runeLite: RuneLite;
     readonly clientPlugins: ClientPluginManager = new ClientPluginManager();
+    readonly modelHighlightManager = new ModelHighlightManager();
+    private highlightedAgilityCourse: number | undefined;
     readonly tileHighlightManager: TileHighlightManager = new TileHighlightManager();
 
     /** Current game state (getter for backwards compatibility) */
@@ -647,10 +694,17 @@ export class OsrsClient {
     showMouseOverText: boolean = true;
 
     /**
-     * Mouse camera enabled/disabled (set by MOUSECAM opcode).
-     * When false, disables mouse-based camera rotation.
+     * Mouse camera enabled/disabled (set by the MOUSECAM opcode and varbit 4134).
+     * When false, the middle mouse button doesn't turn the camera.
      */
-    mouseCamEnabled: boolean = true;
+    get mouseCamEnabled(): boolean {
+        return this.inputManager.mouseCamEnabled;
+    }
+
+    set mouseCamEnabled(enabled: boolean) {
+        this.inputManager.mouseCamEnabled = enabled;
+        if (!enabled) this.inputManager.mouseWheelDown = false;
+    }
 
     /**
      * Render local player model in the 3D scene (set by RENDERSELF opcode).
@@ -703,6 +757,8 @@ export class OsrsClient {
     menuFrozenSimpleEntries?: SimpleMenuEntry[];
     menuFrozenSimpleEntriesVersion: number = 0;
     menuActiveSimpleEntries: SimpleMenuEntry[] = [];
+    /** A click-through chat line's options, shown above the world menu opened on `frame`. */
+    menuChatLineEntries: { frame: number; entries: SimpleMenuEntry[] } | undefined;
     menuState: MenuState = new MenuState();
 
     debugText?: string;
@@ -852,11 +908,16 @@ export class OsrsClient {
     // Appearance is server-driven; no client defaults.
 
     // ECS stores
-    npcEcs: NpcEcs = new NpcEcs();
+    npcEcs: NpcGraphicsEcs = createNpcEcs(() => this.renderer, serverId => this.npcHeadIcons.delete(serverId));
     /** The active renderer's scene geometry, for plugins drawing over the scene in 2D. */
     sceneGeometry?: SceneGeometry;
     /** The minimap as last drawn, for plugins marking it. */
     minimapGeometry?: MinimapGeometry;
+    /**
+     * The rate this player's Hitpoints XP is paid at (the world's times a league's), sent by the
+     * server's Hitpoints XP Rate plugin. A Hitpoints gain divided by it is the OSRS-rate gain.
+     */
+    hitpointsXpRate = 1;
     playerEcs: PlayerEcs = new PlayerEcs();
     private continuousMovement?: ContinuousMovement;
     playerAnimController!: PlayerAnimController;
@@ -967,6 +1028,8 @@ export class OsrsClient {
     equipment: Inventory = new Inventory(14); // Equipment has 14 slots
     /** Bank container inventory (ID 95) - indexed 0..1409 for CS2 bankmain_build */
     bankInventory: Inventory = new Inventory(1410);
+    /** The bank's last contents for plugins: follows bankInventory but keeps them past a stop-transmit. */
+    readonly lastKnownBank: Inventory = retainedInventory(this.bankInventory);
     /** Collection log inventory (ID 620) - stores obtained items for CS2 inv_total queries */
     collectionInventory: Inventory = new Inventory(2048);
     /** Shop stock inventory (ID 516) - stores shop items for CS2 inv queries */
@@ -975,6 +1038,13 @@ export class OsrsClient {
     tradeOfferInventory: Inventory = new Inventory(28);
     /** The other player's offered items use OSRS's inventory-other offset. */
     tradeOtherOfferInventory: Inventory = new Inventory(28);
+    /**
+     * Ids of the extra inventories (beyond inv/worn/bank) the server has actually sent. The CS2 VM
+     * map is seeded with empty trade/shop/collection inventories at startup, so presence in that
+     * map alone does not mean the server sent one; the RuneLite facade reads this set instead.
+     */
+    // Trade, shop and collection inventories arrive through their own handlers and are never added here, so getItemContainer returns null for those ids.
+    readonly serverSentInventoryIds = new Set<number>();
     private tradeState?: TradeWindowState;
     private inventorySeededFromServer: boolean = false;
     private readonly pendingInventoryMovePredictions: Array<{
@@ -1043,6 +1113,7 @@ export class OsrsClient {
     private handleWidgetPayload?: (payload: any) => void;
     private heldWidgetProperties = new HeldWidgetProperties();
     private unsubscribeNpcInfo?: () => void;
+    private unsubscribeNpcSpecificEffects?: () => void;
     private unsubscribeCombat?: () => void;
     private unsubscribePlayerSync?: () => void;
     private unsubscribeSpot?: () => void;
@@ -1053,8 +1124,11 @@ export class OsrsClient {
     private unsubscribePathDebug?: () => void;
     private unsubscribeGroundItems?: () => void;
     private groundItemMeshesPending = false;
+    private removedLogs?: ClientGroundItemStack[];
+    private readonly burningLogMeshes = new Map<number, BurningLogMesh>();
     private unsubscribeChatMessages?: () => void;
     private unsubscribeFriendsChat?: () => void;
+    private readonly friendLoginUpdates = new FriendLoginUpdates();
     private unsubscribeClans?: () => void;
     private unsubscribeSkills?: () => void;
     private unsubscribeRunEnergy?: () => void;
@@ -1067,7 +1141,90 @@ export class OsrsClient {
 
     private refreshGroundItemMeshes(): void {
         this.groundItemMeshesPending =
-            (this.renderer as any)?.updateGroundItemMeshes?.(this.groundItems.getAllStacks()) === true;
+            (this.renderer as any)?.updateGroundItemMeshes?.(this.getGroundItemMeshStacks()) === true;
+    }
+
+    private applyGroundItemUpdate(payload: GroundItemsServerPayload): void {
+        if (payload?.kind === "delta") {
+            for (const stackId of payload.removes ?? []) {
+                const stack = this.groundItems.getStackById(stackId);
+                if (!stack || !this.objTypeLoader?.load(stack.itemId)?.groundActions?.includes("Light")) continue;
+                if (!this.removedLogs) {
+                    this.removedLogs = [];
+                    // The server sends the consumed log and its fire in one socket message.
+                    // Pair them before changing the mesh, while applying store mutations immediately.
+                    queueMicrotask(() => {
+                        this.removedLogs = undefined;
+                        this.refreshGroundItemMeshes();
+                    });
+                }
+                this.removedLogs.push(stack);
+            }
+        } else {
+            if (this.removedLogs) this.removedLogs.length = 0;
+            this.burningLogMeshes.clear();
+        }
+        this.groundItems.update(payload);
+        if (!this.removedLogs) this.refreshGroundItemMeshes();
+    }
+
+    private pruneBurningLogMeshes(): boolean {
+        if (this.burningLogMeshes.size === 0) return false;
+        const now = performance.now();
+        let changed = false;
+        for (const [stackId, { stack, locId, shape, rotation, expiresAt }] of this.burningLogMeshes) {
+            const { x, y, level } = stack.tile;
+            const fireReady = this.sceneGeometry?.locsAtTile(x, y, level).some(
+                (loc) => loc.id === locId && loc.shape === shape && loc.rotation === rotation,
+            );
+            if (fireReady || now >= expiresAt || this.groundItems.getStackById(stackId)) {
+                this.burningLogMeshes.delete(stackId);
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    /** Before WebGL draws, drop any held log whose replacement is in the built scene. */
+    updateGroundItemMeshHandoffs(): void {
+        if (this.pruneBurningLogMeshes()) this.refreshGroundItemMeshes();
+    }
+
+    /** Mesh input only. Menus, labels and plugins continue to read the ground item store. */
+    getGroundItemMeshStacks(): ClientGroundItemStack[] {
+        this.pruneBurningLogMeshes();
+        const stacks = this.groundItems.getAllStacks();
+        for (const { stack } of this.burningLogMeshes.values()) stacks.push(stack);
+        return stacks;
+    }
+
+    private updateBurningLogMesh(
+        tile: { x: number; y: number },
+        level: number,
+        shape: number,
+        locId?: number,
+        rotation?: number,
+    ): void {
+        for (const mesh of this.burningLogMeshes.values()) {
+            const { x, y, level: logLevel } = mesh.stack.tile;
+            if (x !== tile.x || y !== tile.y || logLevel !== level || mesh.shape !== shape) continue;
+            if (mesh.locId !== locId || mesh.rotation !== rotation) mesh.expiresAt = 0;
+        }
+        const logs = this.removedLogs;
+        if (!logs || locId === undefined || rotation === undefined || !PLAYER_MADE_FIRES.has(locId)) return;
+        const index = logs.findIndex(
+            ({ tile: log }) => log.x === tile.x && log.y === tile.y && log.level === level,
+        );
+        if (index < 0) return;
+        const [stack] = logs.splice(index, 1);
+        this.burningLogMeshes.set(stack.id, {
+            stack,
+            locId,
+            shape,
+            rotation,
+            // A stalled map rebuild must not leave a stale item mesh indefinitely.
+            expiresAt: performance.now() + BURNING_LOG_MESH_TIMEOUT_MS,
+        });
     }
     // Skills data from server - maps skill ID to {currentLevel, baseLevel, xp}
     private skillsMap: Map<number, { currentLevel: number; baseLevel: number; xp: number }> =
@@ -1147,6 +1304,7 @@ export class OsrsClient {
         document.addEventListener(
             "keydown",
             (event) => {
+                if (handleCommandShortcut(event, this.isLoggedIn())) return;
                 // Capture build-menu chat before tab shortcuts, plugin handlers,
                 // or focus on a non-input component can swallow the event.
                 const constructionOpen = this.widgetManager?.rootInterface === 458 ||
@@ -1159,14 +1317,7 @@ export class OsrsClient {
                     event.stopImmediatePropagation();
                     return;
                 }
-                const shortcut = this.resolveKeyShortcut(event);
-                if (!this.isLoggedIn() || event.repeat || shortcut === undefined) {
-                    return;
-                }
-
-                this.switchToTab(shortcut);
-                event.preventDefault();
-                if (event.key !== "Escape") event.stopImmediatePropagation();
+                this.handleSidePanelHotkey(event);
             },
             true,
         );
@@ -1423,8 +1574,7 @@ export class OsrsClient {
      * gameframe root; -1 means the component has no equivalent in this layout
      * (e.g. the buff bar in fixed mode) and the mount is dropped.
      */
-    private mapGameframeTargetUid(uid: number): number {
-        const root = this.widgetManager?.rootInterface ?? STANDARD_GAMEFRAME_ROOT;
+    private mapGameframeTargetUid(uid: number, root = this.widgetManager?.rootInterface ?? STANDARD_GAMEFRAME_ROOT): number {
         if (root === STANDARD_GAMEFRAME_ROOT) return uid;
         if (((uid >>> 16) & 0xffff) !== STANDARD_GAMEFRAME_ROOT) return uid;
         const redirect = this.getGameframePaneRedirect(root);
@@ -1456,8 +1606,11 @@ export class OsrsClient {
         return false;
     }
 
-    /** Mounts a sub-interface and runs everything the open packet asked for. */
-    private mountSubInterface(payload: any): void {
+    /**
+     * Mounts a sub-interface and runs everything the open packet asked for. `remount` mounts
+     * an open again after a root change, which the server does not resend the contents of.
+     */
+    private mountSubInterface(payload: any, remount = false): void {
         if (!this.widgetManager) {
             return;
         }
@@ -1507,7 +1660,7 @@ export class OsrsClient {
                 this.widgetManager.invalidateWidgetRender(w);
             }
         }
-        this.customInterfaces.onInterfaceOpened(payload.groupId | 0);
+        this.customInterfaces.onInterfaceOpened(payload.groupId | 0, remount);
     }
 
     /**
@@ -1546,8 +1699,20 @@ export class OsrsClient {
             getWidgetManager: () => this.widgetManager,
             getInputManager: () => this.inputManager,
             getRendererCanvas: () => this.renderer?.canvas,
-            getTradeRequestTargetsByName: () => this.tradeRequestTargetsByName,
+            getChatRequestsByName: () => this.chatRequestsByName,
+            isChatboxClickThrough: () => this.isChatboxClickThrough(),
         });
+    }
+
+    /** Whether the transparent chatbox's message area lets clicks through to the world. */
+    isChatboxClickThrough(): boolean {
+        const varManager = this.varManager;
+        const widgetManager = this.widgetManager;
+        if (!varManager || !widgetManager) return false;
+        return isChatboxClickThroughActive(
+            (id) => varManager.getVarbit(id),
+            (uid) => widgetManager.getWidgetByUid(uid),
+        );
     }
 
     private initSpellSelectionController(): void {
@@ -1827,8 +1992,8 @@ export class OsrsClient {
                 applyWildernessHudLayout(self.widgetManager, self.varManager, scriptId);
                 self.clientPlugins.onScriptFinished(scriptId);
             },
-            onScriptPre: (scriptId: number) => {
-                self.clientPlugins.onScriptPreFired(scriptId);
+            onScriptPre: (scriptId: number, vm?: Cs2Vm) => {
+                self.clientPlugins.onScriptPreFired(scriptId, vm);
             },
             clientRevision: 235,
             // Canvas dimensions as defined by the renderer's current UI layout space.
@@ -1978,13 +2143,15 @@ export class OsrsClient {
             },
             resolveChatPlayerName: (scriptId: number) =>
                 self.resolveChatPlayerNameForScript(scriptId | 0),
+            openUrl: openClientUrl,
             sendPlayerOption: (playerName: string, option: number) => {
                 const normalizedName = playerName.trim().toLowerCase();
-                const tradeTarget = self.tradeRequestTargetsByName.get(normalizedName);
-                if (tradeTarget !== undefined) {
-                    // Type-101's chat action is always Trade, even if the
-                    // cache script passes a menu-specific action value.
-                    sendPlayerOption(tradeTarget, 2);
+                const request = self.chatRequestsByName.get(normalizedName);
+                const requestSlot = request ? chatRequestSlot(request.option) : undefined;
+                if (request && requestSlot !== undefined) {
+                    // A request line's accept answers with the option it asks for (Trade, or the
+                    // Challenge / Load-outs the server labelled), whatever value the script passes.
+                    sendPlayerOption(request.playerId, requestSlot);
                     return;
                 }
                 const index = self.playerEcs.findIndexByName(playerName);
@@ -2234,7 +2401,7 @@ export class OsrsClient {
             // Option ID 19 = master_volume (enhanced client)
             getDeviceOption: (optionId: number): number => {
                 if (optionId === DEVICE_OPTION_INTERFACE_SCALING) {
-                    return getOsrsInterfaceScalingPercent();
+                    return getOsrsInterfaceScalingPercent(isMobileClient(self.widgetManager?.rootInterface) || self.varManager?.getVarbit(6352) === 1);
                 }
                 return self.deviceOptions.get(optionId) ?? 0;
             },
@@ -2336,6 +2503,9 @@ export class OsrsClient {
         this.cs2Vm.scriptCallbackListeners.add((_script, eventName) =>
             this.clientPlugins.onScriptCallback({ eventName, vm: this.cs2Vm }),
         );
+        const menuClick = (action: MenuActionData) => this.clientPlugins.onMenuOptionClicked(action);
+        menuClickListeners.add(menuClick);
+        this.serverSubscriptions.push(() => menuClickListeners.delete(menuClick));
 
         this.initCustomInterfaces();
         this.initWidgetInteractionController();
@@ -2375,6 +2545,10 @@ export class OsrsClient {
                 if (widgetManager.isEffectivelyHidden((widget?.uid ?? 0) | 0)) continue;
                 if (keyboardButtons.widgetShowsKeyboard(widget)) {
                     this.mobileChatKeyboard.show();
+                    return;
+                }
+                if (CHATBOX_INPUT_UIDS.has((widget?.uid ?? 0) | 0)) {
+                    this.mobileChatKeyboard.showFromGesture();
                     return;
                 }
             }
@@ -2588,6 +2762,11 @@ export class OsrsClient {
                     markChatTransmit();
                 } catch {}
             },
+            overheadChatText: (serverId, text) => {
+                const ecsIndex = this.playerEcs.getIndexForServerId(serverId | 0);
+                const name = ecsIndex === undefined ? "" : (this.playerEcs.getName(ecsIndex) ?? "");
+                return this.clientPlugins.overheadChatText(name, text);
+            },
             resolveTilePlane: this.resolvePlayerPlane,
             onInteractionIndex: (serverId, interactionIndex) => {
                 if ((serverId | 0) === (this.controlledPlayerServerId | 0)) {
@@ -2661,6 +2840,39 @@ export class OsrsClient {
                 console.log("[OsrsClient] Server setting root interface", payload.groupId);
                 if (this.widgetManager) {
                     const previousMounts = [...this.serverSubInterfaces];
+                    const previousRoot = this.widgetManager.rootInterface;
+                    const gameframes = [161, 164, 165, 548, 601];
+                    const transfers = gameframes.includes(previousRoot) && gameframes.includes(payload.groupId)
+                        ? new Map<number, number>() : undefined;
+                    const transferredTargets = new Set<number>();
+                    if (transfers) {
+                        const parents = this.widgetManager.interfaceParents;
+                        // Nested mounts keep their component address when their containing pane moves.
+                        for (const [target] of parents) {
+                            if ((target >>> 16) !== previousRoot) transfers.set(target, target);
+                        }
+                        for (const [standardTargetUid, entry] of previousMounts) {
+                            const source = this.mapGameframeTargetUid(standardTargetUid, previousRoot);
+                            const target = this.mapGameframeTargetUid(standardTargetUid, payload.groupId);
+                            if (source >= 0 && target >= 0 &&
+                                this.widgetManager.getSubInterface(source)?.group === entry.payload.groupId) {
+                                transfers.set(source, target);
+                                transferredTargets.add(standardTargetUid);
+                            }
+                        }
+                        // ...but not when that pane is dropped: a mount inside it closes with it (and is
+                        // announced as closed), however deep, instead of staying mounted out of sight.
+                        for (let pruned = true; pruned;) {
+                            pruned = false;
+                            const keptGroups = new Set([...transfers.keys()].map((target) => parents.get(target)?.group));
+                            for (const source of [...transfers.keys()]) {
+                                if ((source >>> 16) === previousRoot || keptGroups.has(source >>> 16)) continue;
+                                transfers.delete(source);
+                                transferredTargets.delete(source);
+                                pruned = true;
+                            }
+                        }
+                    }
                     // Set varc 170 (display mode) based on the root interface
                     // Enum 185 maps: 0->1137 (161 widgets), 1->1101, 2->1067, 3->1175, 4->1293
                     // For interface 161/165, use mode 0 since Enum 1137 has interface 161 tab widgets
@@ -2691,18 +2903,24 @@ export class OsrsClient {
                             this.varManager.setVarbit(VARBIT_POPOUT_OPEN, 0);
                         }
                     }
-                    this.widgetManager.setRootInterface(payload.groupId);
+                    this.widgetManager.setRootInterface(payload.groupId, transfers);
+                    this.widgetInputController.invalidateHoverCache();
                     // PERF: Clear CS2 handler caches when switching root interfaces
                     // This prevents memory leaks from stale cached widget references
                     this.cs2Vm.clearHandlerCaches();
-                    // OSRS keeps server-mounted interfaces across a layout change by
-                    // moving them onto the new gameframe's components; set_root drops
-                    // them, so put each one back at its translated target.
+                    // Transfers preserve widgets and listeners, without replaying onLoad,
+                    // postScripts or the original hidden state. Only bootstrap opens and
+                    // panes previously absent from the layout need initialization.
                     for (const [standardTargetUid, entry] of previousMounts) {
+                        if (transferredTargets.has(standardTargetUid)) continue;
+                        // A nested mount comes back with its pane (opened before it), not into an unmounted one.
+                        const container = (standardTargetUid >>> 16) & 0xffff;
+                        if (!gameframes.includes(container) &&
+                            this.widgetManager.getContainerUidForGroup(container) === undefined) continue;
                         this.mountSubInterface({
                             ...entry.payload,
                             targetUid: standardTargetUid,
-                        });
+                        }, true);
                     }
                     // Trigger initial onVarTransmit for root interface widgets
                     this.triggerInitialVarTransmitForGroup(payload.groupId);
@@ -2756,9 +2974,8 @@ export class OsrsClient {
                         this.mountSubInterface(payload);
                     } else {
                         // A server-defined interface the client has not seen yet: fetch its
-                        // definition, then mount. This costs one round trip on the first
-                        // open of a session, so a server should not send component updates
-                        // in the same batch as that open - they would land before the
+                        // definition, then mount. Updates for it that arrive in the meantime
+                        // (its contents, sent with the open) are held and applied once its
                         // widgets exist.
                         const pendingGroupId = payload.groupId | 0;
                         const pendingTargetUid = payload.targetUid | 0;
@@ -2865,6 +3082,13 @@ export class OsrsClient {
                     w.modelZoom = Number(payload.zoom) | 0;
                     this.widgetManager.invalidateWidgetRender(w, "server-set-angle");
                 }
+            } else if (payload?.action === "set_rotate_speed") {
+                // IF_SETROTATESPEED: yaw speed in the high short, x speed in the low, per cycle.
+                const w = this.widgetManager?.getWidgetByUid(Number(payload.uid) | 0);
+                if (w) {
+                    w.modelRotationSpeed = ((Number(payload.speedY) | 0) & 0xffff) << 16 | ((Number(payload.speedX) | 0) & 0xffff);
+                    this.widgetManager.invalidateWidgetRender(w, "server-set-rotate-speed");
+                }
             } else if (payload?.action === "set_colour") {
                 // IF_SETCOLOUR: as the cs2 op, the colour of text and rectangles alike.
                 const w = this.widgetManager?.getWidgetByUid(Number(payload.uid) | 0);
@@ -2934,6 +3158,7 @@ export class OsrsClient {
                         (w as any).itemId = normalizedItemId;
                         (w as any).itemQuantity = quantity;
                         (w as any).modelOrthog = true;
+                        if (obj) initializeWidgetItemModel(w, obj);
                         markWidgetInteractionDirty(w);
                         this.widgetManager.invalidateWidgetRender(w);
                     }
@@ -2949,6 +3174,7 @@ export class OsrsClient {
                     (w as any).isNpcChathead = npcId >= 0;
                     (w as any).npcTypeId = npcId >= 0 ? npcId : undefined;
                     (w as any).isPlayerChathead = false;
+                    (w as any).isPlayerModel = false;
                     (w as any).playerAppearance = undefined;
                     this.widgetManager.invalidateWidgetRender(w);
                 }
@@ -2974,25 +3200,17 @@ export class OsrsClient {
                     (w as any).isNpcChathead = false;
                     (w as any).npcTypeId = undefined;
                     (w as any).isPlayerChathead = true;
+                    (w as any).isPlayerModel = false;
                     (w as any).playerAppearance = appearance
                         ? {
                               gender: appearance.gender,
+                              npcTransformationId: appearance.npcTransformationId,
                               colors: Array.from(appearance.colors ?? []),
                               kits: Array.from(appearance.kits ?? []),
                               equip: Array.from(appearance.equip ?? []),
                           }
                         : undefined;
                     this.widgetManager.invalidateWidgetRender(w);
-                }
-            } else if (payload?.action === "set_quest_list") {
-                if (this.widgetManager && Array.isArray(payload.groups)) {
-                    this.serverQuestListGroups = payload.groups as QuestListWidgetGroup[];
-                    applyQuestListWidgetGroups(
-                        this.widgetManager,
-                        payload.groups as QuestListWidgetGroup[],
-                        questListPreferences(this.varManager),
-                    );
-                    markWidgetsLoaded();
                 }
             } else if (payload?.action === "set_flags") {
                 // Set widget flags override (enables/disables click permissions)
@@ -3040,6 +3258,8 @@ export class OsrsClient {
                         this.widgetManager.invalidateWidgetRender(parent, "flags-range");
                     }
                 }
+            } else if (payload?.action === "inventory_stop_transmit") {
+                stopInventoryTransmit(inventoriesMap, payload.inventoryId, this.serverSentInventoryIds);
             } else if (payload?.action === "run_script") {
                 // RUNCLIENTSCRIPT packet - run a CS2 script with arguments
                 const scriptId = Number(payload.scriptId) | 0;
@@ -3105,6 +3325,7 @@ export class OsrsClient {
                                 Array.isArray(snapshot.slots) ? snapshot.slots : [],
                                 { selectedSlot: null },
                             );
+                            this.serverSentInventoryIds.add(inventoryId);
                             // Interfaces listening to this inventory redraw, as for any update;
                             // an "other" inventory (id + 32768) notifies listeners of its id.
                             markInvTransmit(inventoryId & 0x7fff);
@@ -3153,6 +3374,14 @@ export class OsrsClient {
                 this.applyNpcInfo(payload);
             } catch (err) {
                 console.warn("[OsrsClient] npc_info error", err);
+            }
+        });
+        this.unsubscribeNpcSpecificEffects = subscribeNpcSpecificEffects(effect => {
+            if (effect.kind === "headicon") {
+                applyNpcSpecificHeadIcon(this.npcEcs, this.npcHeadIcons,
+                    typeId => this.headIconNpcType(typeId), effect);
+            } else {
+                applyNpcSpecificEffect(this.npcEcs, this.renderer, effect, getClientCycle());
             }
         });
         // Subscribe to server-side GFX (spot) messages and forward to renderer
@@ -3218,12 +3447,20 @@ export class OsrsClient {
                     try {
                         if (!this.soundEffectSystem) return;
                         const hasPosition = payload.x !== undefined && payload.y !== undefined;
+                        if (hasPosition && payload.radius !== undefined) {
+                            this.updateSoundListener();
+                            // Native receipt admission uses pathX/Y[0], before drawing catches up.
+                            const tile = this.getCameraTargetPosition() ? undefined : this.getControlledPlayerMovementTile();
+                            if (!this.soundEffectSystem.isAreaSoundInRange(
+                                payload.x!, payload.y!, payload.radius, tile?.tileX, tile?.tileY,
+                            )) return;
+                        }
                         // Wire loops: n = play n times; skip if zero
                         const wireLoops = payload.loops !== undefined ? payload.loops | 0 : 1;
                         if (wireLoops <= 0) return;
                         // Radius in tiles -> scene units (128 per tile)
                         const radiusScene =
-                            payload.radius !== undefined && payload.radius > 0
+                            hasPosition && payload.radius !== undefined
                                 ? (payload.radius | 0) * 128
                                 : undefined;
                         this.soundEffectSystem.playSoundEffect(payload.soundId, {
@@ -3278,11 +3515,12 @@ export class OsrsClient {
             this.unsubscribeChatMessages = subscribeChatMessages((msg) => {
                 // Add message to chat history for CS2 scripts to query
                 const isTradeRequest = msg.chatType === ChatMessageType.TRADE_REQUEST;
-                if (isTradeRequest && msg.from && msg.playerId !== undefined) {
-                    this.tradeRequestTargetsByName.set(
-                        msg.from.trim().toLowerCase(),
-                        msg.playerId | 0,
-                    );
+                const requestOption = chatRequestOption(msg.chatType ?? -1, msg.text);
+                if (requestOption && msg.from && msg.playerId !== undefined) {
+                    this.chatRequestsByName.set(msg.from.trim().toLowerCase(), {
+                        playerId: msg.playerId | 0,
+                        option: requestOption,
+                    });
                 }
                 if (msg.style && msg.playerId !== undefined) {
                     this.playerSyncManager?.setPublicChatStyle(msg.playerId, msg.style);
@@ -3336,6 +3574,7 @@ export class OsrsClient {
         } catch {}
         try {
             this.unsubscribeFriendsChat = subscribeFriendsChat((snapshot) => {
+                this.friendLoginUpdates.update(snapshot.friends);
                 const channel = snapshot.channel;
                 this.cs2Vm.context.friendList = snapshot.friends.map((friend) => ({ ...friend }));
                 this.cs2Vm.context.ignoreList = snapshot.ignores.map((ignored) => ({ ...ignored }));
@@ -3356,6 +3595,8 @@ export class OsrsClient {
                 context.clanChannel = clans.channels.get(OWN_CLAN_TYPE) ?? null;
                 context.listenedClanSettings = clans.settings.get(LISTENED_CLAN_TYPE) ?? null;
                 context.listenedClanChannel = clans.channels.get(LISTENED_CLAN_TYPE) ?? null;
+                context.affinedClanSettings = new Map([...clans.settings].filter(([type]) => type !== LISTENED_CLAN_TYPE));
+                context.affinedClanChannels = new Map([...clans.channels].filter(([type]) => type !== LISTENED_CLAN_TYPE));
                 context.clanVars = clans.vars;
                 markClanSettingsTransmit();
                 markClanChannelTransmit();
@@ -3632,6 +3873,9 @@ export class OsrsClient {
             this.trackServerSubscription(
                 subscribeHandshake(({ id, name, appearance, chatIcons, chatPrefix, isAdmin, membersWorld }) => {
                     try {
+                        if (this.controlledPlayerServerId !== -1 && this.controlledPlayerServerId !== (id | 0)) {
+                            this.resetWorld(true);
+                        }
                         const isMembersWorld = membersWorld !== false;
                         if (isMembersWorld !== this.isMembersWorld) {
                             this.isMembersWorld = isMembersWorld;
@@ -3904,8 +4148,7 @@ export class OsrsClient {
             );
             this.unsubscribeGroundItems = subscribeGroundItems((payload) => {
                 try {
-                    this.groundItems.update(payload);
-                    this.refreshGroundItemMeshes();
+                    this.applyGroundItemUpdate(payload);
                 } catch (err) {
                     console.warn("ground item update failed", err);
                 }
@@ -4092,6 +4335,10 @@ export class OsrsClient {
         this.worldMap.setRenderedWorldMapIcons(icons);
     }
 
+    setRenderedWorldMapPoints(points: RenderedWorldMapPoint[]): void {
+        this.worldMap.setRenderedWorldMapPoints(points);
+    }
+
     getWorldMapMenuEntriesAt(screenX: number, screenY: number): SimpleMenuEntry[] {
         return this.worldMap.getWorldMapMenuEntriesAt(screenX, screenY);
     }
@@ -4151,27 +4398,53 @@ export class OsrsClient {
         input.saveClickY = -1;
         if (!action) return;
 
+        if (action.type === "cancel_server_switch") {
+            this.loginState.serverSwitchConfirm = null;
+            return;
+        }
+        if (action.type === "confirm_server_switch") {
+            const asked = this.loginState.serverSwitchConfirm;
+            this.loginState.serverSwitchConfirm = null;
+            // The list may have been refreshed while it asked: switch to the server it named.
+            const index = asked ? this.loginRenderer.serverList.findIndex((server) =>
+                server.name === asked.name && server.address === asked.address &&
+                server.worldId === asked.worldId && server.signalUrl === asked.signalUrl) : -1;
+            if (index >= 0) this.switchToServer(index, true);
+            return;
+        }
         if (action.type === "select_server") {
-            const server = this.loginRenderer.serverList[action.index];
-            const transport = server?.transport ?? "websocket";
-            const isCurrent =
-                transport === this.loginState.serverTransport &&
-                (transport === "webrtc"
-                    ? server?.worldId === this.loginState.serverWorldId &&
-                      server?.signalUrl === this.loginState.serverSignalUrl
-                    : server?.address === this.loginState.serverAddress &&
-                      server?.secure === this.loginState.serverSecure);
-            if (isCurrent) {
-                this.processLoginAction({ type: "close_server_list" });
-                return;
-            }
-
-            this.loginState.serverListOpen = false;
-            this.performLogout(() => this.processLoginAction(action));
+            this.switchToServer(action.index, false);
             return;
         }
 
         this.processLoginAction(action);
+    }
+
+    /**
+     * The World Switcher's server chosen in game. While "World Switcher confirmation" is on
+     * (varbit 4100 at 0) the list asks first; then the client logs out and connects there.
+     */
+    private switchToServer(index: number, confirmed: boolean): void {
+        const server = this.loginRenderer.serverList[index];
+        const transport = server?.transport ?? "websocket";
+        const isCurrent =
+            transport === this.loginState.serverTransport &&
+            (transport === "webrtc"
+                ? server?.worldId === this.loginState.serverWorldId &&
+                  server?.signalUrl === this.loginState.serverSignalUrl
+                : server?.address === this.loginState.serverAddress &&
+                  server?.secure === this.loginState.serverSecure);
+        if (isCurrent) {
+            this.processLoginAction({ type: "close_server_list" });
+            return;
+        }
+        if (!confirmed && this.varManager?.getVarbit(VARBIT_WORLDSWITCHER_DISABLE_CONFIRMATION) !== 1) {
+            this.loginState.serverSwitchConfirm = server ?? null;
+            return;
+        }
+
+        this.loginState.serverListOpen = false;
+        this.performLogout(() => this.processLoginAction({ type: "select_server", index }));
     }
 
     runClientScriptWithInts(scriptId: number, args: number[]): void {
@@ -4179,6 +4452,31 @@ export class OsrsClient {
         const script = this.cs2Vm.context?.loadScript?.(scriptId | 0);
         if (!script) return;
         this.cs2Vm.run(script, args, []);
+    }
+
+    /** Switch the side panel for a keybinding's key (F-keys and Esc). */
+    private handleSidePanelHotkey(event: KeyboardEvent): void {
+        const shortcut = this.resolveKeyShortcut(event);
+        if (!this.isLoggedIn() || event.repeat || shortcut === undefined) {
+            return;
+        }
+        // Script 2068 (toplevel_keypress): with "Esc closes current interface" on, an Esc that
+        // closes a modal does only that; the side panel stays as it is.
+        if (
+            (event.key === "Escape" || event.code === "Escape") &&
+            (this.varManager?.getVarbit(VARBIT_KEYBINDING_ESC_TO_CLOSE) ?? 0) !== 0 &&
+            this.widgetManager &&
+            hasOpenModal(this.widgetManager)
+        ) {
+            return;
+        }
+
+        // A hotkey, Esc included, closes its own open side panel unless "Side panel can be
+        // closed by the hotkeys" is off (script 907 binds the cache's own key handler the same way).
+        const keepsPanelOpen = this.varManager?.getVarbit(VARBIT_HOTKEY_CANNOT_CLOSE_SIDEPANEL) === 1;
+        this.switchToTab(shortcut, false, !keepsPanelOpen);
+        event.preventDefault();
+        if (event.key !== "Escape") event.stopImmediatePropagation();
     }
 
     /** Resolve a keydown to a side-panel tab using the All Settings keybindings. */
@@ -4197,20 +4495,18 @@ export class OsrsClient {
 
         const varManager = this.varManager;
         if (!varManager) return undefined;
-        for (const binding of KEYBINDING_TABS) {
-            if (varManager.getVarbit(binding.varbit) === pressed) return binding.tab;
-        }
-        return undefined;
+        return keybindingTabFor(pressed, (varbit) => varManager.getVarbit(varbit));
     }
 
     /** Switch the stock side panel through its cache script so all tab widgets update together. */
-    switchToTab(tab: number, forceOpen = false): void {
+    switchToTab(tab: number, forceOpen = false, closesOpenTab = true): void {
         if (forceOpen && this.varManager?.getVarcInt(VARC_ACTIVE_TAB) === tab) return;
         const rootInterface = this.widgetManager?.rootInterface ?? DEFAULT_ROOT_INTERFACE;
         const displayEnum = DISPLAY_ENUM_BY_ROOT_INTERFACE[rootInterface] ?? DEFAULT_DISPLAY_ENUM;
-        const script = this.cs2Vm?.context?.loadScript?.(TAB_SWITCH_SCRIPT);
-        if (script) this.cs2Vm.run(script, [1, displayEnum, tab], []);
-        else this.varManager?.setVarcInt(VARC_ACTIVE_TAB, tab);
+        const script = this.cs2Vm?.context?.loadScript?.(closesOpenTab ? TAB_SWITCH_SCRIPT : TAB_OPEN_SCRIPT);
+        if (!script) this.varManager?.setVarcInt(VARC_ACTIVE_TAB, tab);
+        else if (closesOpenTab) this.cs2Vm.run(script, [1, displayEnum, tab], []);
+        else this.cs2Vm.run(script, [displayEnum, tab, 0, 0], []);
     }
 
     private substituteWidgetScriptMagicArgs(intArgs: number[], widget: any): number[] {
@@ -4281,6 +4577,10 @@ export class OsrsClient {
             return;
         }
 
+        // An open All Settings window follows the mobile chat toggle (MobileHudLayout). Checked
+        // here, between frames, because the toggle's cs2 runs inside a layout batch.
+        widgetManager.syncMobileChatToggle();
+
         const rootInterface = widgetManager.rootInterface;
         if (rootInterface !== -1 && this.renderer && this.renderer.canvas) {
             // Use dimensions from widgetManager (set by renderer on resize)
@@ -4332,6 +4632,13 @@ export class OsrsClient {
 
     private processWidgetTransmits(): void {
         this.widgetTransmitProcessor.processWidgetTransmits();
+        if (!this.isLoggedIn() || !this.cs2Vm) return;
+        const course = this.varManager.getVarbit(AGILITY_HELPER_HIGHLIGHT_OBSTACLES_ENABLED) === 1
+            ? this.varManager.getVarbit(HELPER_AGILITY_HIGHLIGHTED_COURSE)
+            : undefined;
+        if (course === this.highlightedAgilityCourse) return;
+        this.highlightedAgilityCourse = course;
+        if (course !== undefined) this.runClientScriptWithInts(AGILITY_OBSTACLE_HIGHLIGHTS_SCRIPT, [course]);
     }
 
     /** Per frame: moves the cursor mouseover box to where the mouse is now (see WidgetTransmitProcessor). */
@@ -4351,10 +4658,34 @@ export class OsrsClient {
         this.deviceOptions.set(DEVICE_OPTION_SCREEN_BRIGHTNESS, brightness);
         saveScreenBrightness(brightness);
         if (this.renderer) this.renderer.brightness = gammaFromScreenBrightness(brightness);
+        this.screenBrightnessListener?.(brightness);
+    }
+
+    /** Receives every brightness the client applies; the GPU plugin mirrors it into its own option. */
+    screenBrightnessListener?: (value: number) => void;
+
+    /** The current Settings "Screen brightness" (0..100). */
+    getScreenBrightness(): number {
+        return this.deviceOptions.get(DEVICE_OPTION_SCREEN_BRIGHTNESS) ?? loadScreenBrightness();
     }
 
     private applyInterfaceScalingPercentDeviceOption(value: number): void {
         this.audioVarp.applyInterfaceScalingPercentDeviceOption(value);
+    }
+
+    /**
+     * Single mouse button mode, the middle-mouse camera and follower options apply as soon as
+     * their var changes, and again at login (a logout resets the vars without a change, so a
+     * value left by the last account is replaced by the next login's varps). Varbit changes
+     * arrive through their varp, so they are re-read on every varp update, as the roof varbit is.
+     */
+    private applyControlSettingVars(): void {
+        const varManager = this.varManager;
+        if (!varManager) return;
+        this.settings.leftClickOpensMenu = varManager.getVarp(VARP_MOUSE_BUTTONS) === 1;
+        const mouseCamEnabled = varManager.getVarbit(VARBIT_MOUSECAM_DISABLED) !== 1;
+        if (this.mouseCamEnabled !== mouseCamEnabled) this.mouseCamEnabled = mouseCamEnabled;
+        ClientState.followerOpsLowPriority = varManager.getVarbit(VARBIT_FOLLOWEROPS_DEPRIORITISED) === 1;
     }
 
     private applyAudioVarpChange(varpId: number, value: number): void {
@@ -5395,6 +5726,7 @@ export class OsrsClient {
     // URL/search params are not supported
 
     init(): void {
+        void this.loginState.refreshServerName();
         // Initialize default controlled player if not set by server
         if (this.controlledPlayerServerId === -1) {
             this.controlledPlayerServerId = 0; // Default server ID
@@ -5433,6 +5765,7 @@ export class OsrsClient {
 
     /** Enter on the login screen: Play for the remembered account, else Login on the form. */
     submitLoginFromKeyboard(): void {
+        if (this.loginState.extension) { this.loginState.extension.submit(); return; }
         if (this.gameState === GameState.CONNECTING) return;
         if (this.loginState.loginIndex === LoginIndex.WELCOME_DISPLAY_NAME) {
             if (this.processLoginAction(LoginActions.PLAY) === "connect") this.sendLoginRequest();
@@ -5831,7 +6164,7 @@ export class OsrsClient {
         if (!this.isOnLoginScreen()) return false;
 
         const handled = this.loginRenderer.handleKeyInput(this.loginState, key, char);
-        if (handled && this.loginState.loginIndex === LoginIndex.LOGIN_FORM) {
+        if (handled && !this.loginState.extension && this.loginState.loginIndex === LoginIndex.LOGIN_FORM) {
             this.loginState.savePersistedLoginState();
         }
         return handled;
@@ -6008,6 +6341,7 @@ export class OsrsClient {
 
             case "open_server_list":
                 this.loginState.serverListOpen = true;
+                this.loginState.serverSwitchConfirm = null;
                 this.loginState.virtualKeyboardVisible = false;
                 this.loginRenderer
                     .fetchServerList()
@@ -6017,6 +6351,7 @@ export class OsrsClient {
             case "close_server_list":
                 this.loginState.serverListOpen = false;
                 this.loginState.hoveredServerIndex = -1;
+                this.loginState.serverSwitchConfirm = null;
                 return undefined;
 
             case "refresh_server_list":
@@ -6033,6 +6368,7 @@ export class OsrsClient {
                     this.loginState.serverSignalUrl = server.signalUrl;
                     this.loginState.serverWorldId = server.worldId;
                     this.loginState.serverIceServers = server.iceServers ?? [];
+                    this.loginState.serverWorldFlags = 0;
                     this.loginState.serverListOpen = false;
                     this.loginState.hoveredServerIndex = -1;
                     setServerUrl(
@@ -6045,6 +6381,7 @@ export class OsrsClient {
                               }
                             : null,
                     );
+                    void this.loginState.refreshServerName();
                     this.loginState.saveLastServer();
                     this.loginState.showRememberedLogin();
                 }
@@ -6344,6 +6681,13 @@ export class OsrsClient {
                     this.widgetManager?.invalidateAll?.();
                 }
             } catch {}
+
+            if (this.isLoggedIn()) {
+                const messages = this.friendLoginUpdates.drain();
+                if (friendLoginNoticesShown((id) => this.varManager.getVarbit(id))) {
+                    for (const message of messages) chatHistory.addMessage(5, message, "", "");
+                }
+            }
 
             // Widget transmit handlers and timers are processed on the client tick,
             // not on the render frame. These queue CS2 events which are then processed below.
@@ -6699,9 +7043,6 @@ export class OsrsClient {
             this.combatOptions.initVarDefaults();
 
             this.varManager.onVarpChange = (varpId, _oldValue, newValue) => {
-                if (varpId >= 3408 && varpId <= 3412 && this.serverQuestListGroups && this.widgetManager) {
-                    applyQuestListWidgetGroups(this.widgetManager, this.serverQuestListGroups, questListPreferences(this.varManager));
-                }
                 // Server-backed stockmarket fields are separate from cache pending-offer varps.
                 if (varpId >= 7900 && varpId < 7900 + 8 * 7) markStockTransmit();
                 if (this.cs2Vm?.isRunning()) {
@@ -6725,12 +7066,21 @@ export class OsrsClient {
                 } else if (varpId === VARP_OPTION_ATTACK_PRIORITY_NPC) {
                     ClientState.npcAttackOption = clamp(newValue | 0, 0, 3);
                 }
+                this.applyControlSettingVars();
                 // Varbit changes arrive through their underlying varp, so re-read the
                 // roof varbit on every varp update.
                 try {
                     const varbitValue = this.varManager.getVarbit(VARBIT_ROOF_REMOVAL);
                     if (varbitValue !== undefined) {
                         this.setRoofsHidden(varbitValue === 1);
+                    }
+                } catch {}
+                // Varbit 6719 (minimap_state) rides in the toplevel_temp varp, so
+                // re-read it on every varp update: 2 and 5 hide the map, 3-5 the compass.
+                try {
+                    const minimapState = this.varManager.getVarbit(MINIMAP_STATE);
+                    if (minimapState !== undefined) {
+                        this.widgetManager?.setMinimapState(minimapState);
                     }
                 } catch {}
                 // Varbit 4070 is packed into varp 439: track its value so a
@@ -6795,9 +7145,22 @@ export class OsrsClient {
             // Phase 9: Preparing interface
             await showPhase(90, "Preparing interface...");
             this.widgetManager = new WidgetManager(this.cacheSystem);
+            this.widgetManager.isMobileChatDisabled = () =>
+                (this.varManager.getVarcInt(VARC_OSM_CHATBOX_DISABLED) ?? 0) !== 0;
+            try {
+                const initialMinimapState = this.varManager.getVarbit(MINIMAP_STATE);
+                if (initialMinimapState !== undefined) {
+                    this.widgetManager.setMinimapState(initialMinimapState);
+                }
+            } catch (err) {
+                console.warn("[OsrsClient] Failed to init minimap state", err);
+            }
             this.widgetManager.onGroupLoaded = (groupId) => {
                 for (const held of this.heldWidgetProperties.take(groupId)) this.handleWidgetPayload?.(held);
             };
+            // RuneLite's WidgetLoaded and dialogue chat sources read the widget manager, which did not
+            // exist when RuneLite loaded in the constructor.
+            this.runeLite?.bindWidgetSources();
             if (graphicsDefaults && graphicsDefaults.compass >= 0) {
                 this.widgetManager.compassSpriteId = graphicsDefaults.compass;
             }
@@ -7044,6 +7407,8 @@ export class OsrsClient {
             }
         }
 
+        // Sent again after a stop-transmit: getItemContainer(BANK) answers for it again.
+        this.serverSentInventoryIds.add(95);
         // Mark inv cycle for bank (95) - handlers fire during processWidgetTransmits()
         markInvTransmit(95);
 
@@ -7099,6 +7464,11 @@ export class OsrsClient {
         try {
             console.log("[shop] server update", state.stock?.length ?? 0, "items");
         } catch {}
+
+        // The legacy shop wire uses 516, also the native looting-bag inventory.
+        // A bag snapshot replaces this registry entry with its 28-slot container.
+        // Rebind the shop's retained container before publishing stock/transmits.
+        this.cs2Vm?.context?.inventories?.set(516, this.shopInventory);
 
         // Clear existing items and populate with shop stock
         this.shopInventory.clear();
@@ -7187,14 +7557,17 @@ export class OsrsClient {
     }
 
     /** Display an item's cache-defined Examine text in game chat. */
-    examineWidgetItem(widget: { itemId?: number; fileId?: number } | null | undefined): boolean {
+    examineWidgetItem(
+        widget: { itemId?: number; itemQuantity?: number; fileId?: number } | null | undefined,
+    ): boolean {
         // A worn-equipment slot (387, 84) keeps its ops on a static layer and draws the item in a
         // CC_CREATE child (script 546), so a static widget without an item examines its child's.
         const own = widget?.itemId ?? -1;
-        const itemId = own >= 0 || widget?.fileId === -1
-            ? own
+        const item = own >= 0 || widget?.fileId === -1
+            ? widget
             : this.widgetManager?.getDynamicChildrenByParent(widget as any)
-                .find((child) => (child.itemId ?? -1) >= 0)?.itemId ?? -1;
+                .find((child) => (child.itemId ?? -1) >= 0);
+        const itemId = item?.itemId ?? -1;
         if (!(itemId >= 0)) return false;
         try {
             const examine = this.objTypeLoader?.load?.(itemId)?.examine;
@@ -7202,6 +7575,16 @@ export class OsrsClient {
                 return false;
             }
             chatHistory.addMessage("game", examine);
+            const varbit = (id: number) => this.varManager.getVarbit(id) | 0;
+            if (varbit(EXAMINE_PRICE_GE_VARBIT) !== 1 && varbit(EXAMINE_PRICE_ALCH_VARBIT) !== 1) {
+                return true;
+            }
+            void addExaminePriceLine(itemId, item?.itemQuantity ?? 1, {
+                definition: (id) => this.objTypeLoader?.load?.(id),
+                guidePrice,
+                alchemy: alchemyValues,
+                varbit,
+            }, itemPricesPending(), (line) => chatHistory.addMessage("game", line));
             return true;
         } catch {
             return false;
@@ -7364,6 +7747,7 @@ export class OsrsClient {
             if (key.startsWith(prefix)) this.locOpFlags.delete(key);
         }
         if (opFlags !== undefined) this.locOpFlags.set(`${prefix}${locId | 0}`, opFlags);
+        this.updateBurningLogMesh(tile, level, shape, locId, rotation);
         try {
             console.log(
                 `[OsrsClient] Loc add: ${locId} at (${tile.x}, ${tile.y}, ${level}) shape=${shape} rot=${rotation}`,
@@ -7381,6 +7765,7 @@ export class OsrsClient {
         for (const key of this.locOpFlags.keys()) {
             if (key.startsWith(prefix)) this.locOpFlags.delete(key);
         }
+        this.updateBurningLogMesh(tile, level, shape);
         try {
             console.log(
                 `[OsrsClient] Loc del at (${tile.x}, ${tile.y}, ${level}) shape=${shape} rot=${rotation}`,
@@ -7506,6 +7891,7 @@ export class OsrsClient {
 
         const decoded = this.npcUpdateDecoder.decode(payload.packet, {
             large: payload.large === true,
+            crossFloor: payload.crossFloor === true,
             loopCycle: payload.loopCycle | 0,
             clientCycle: getClientCycle() | 0,
             localTileX: decodeBase.tileX | 0,
@@ -7519,9 +7905,7 @@ export class OsrsClient {
             level: decodeBase.level | 0,
         });
 
-        for (const npcId of decoded.removals) {
-            this.despawnNpcBinary(npcId | 0);
-        }
+        this.npcEcs.removeForNpcInfo(decoded, npcId => this.despawnNpcBinary(npcId));
 
         for (const spawn of decoded.spawns) {
             this.spawnNpcBinary(spawn, payload.loopCycle | 0);
@@ -7659,6 +8043,10 @@ export class OsrsClient {
                 },
                 { forceImmediateRotation: !!spawn.teleport },
             );
+            // Like a new one, a re-added NPC that never turns is drawn at angle 0 again.
+            if ((this.npcEcs.getRotationSpeed(existingEcs) | 0) === 0) {
+                this.npcEcs.setRotation(existingEcs, 0);
+            }
             this.npcEcs.setLevel(existingEcs, spawn.level | 0);
             this.npcEcs.setOccTile(existingEcs, localTileX, localTileY, spawn.level | 0);
             const nextWorldView = (spawn as any).worldViewId ?? -1;
@@ -7696,6 +8084,8 @@ export class OsrsClient {
         const size = Math.max(1, npcType?.size | 0);
         // A turn speed of 0 never turns (the Inferno's Ancestral Glyph slides side to side).
         const rotSpeed = Math.max(0, npcType?.rotationSpeed | 0);
+        // Such an NPC is drawn at angle 0 (Sir Tiffy's bench is part of his model, built for it).
+        const drawnRot = npcAddedRotation(rotSpeed, spawn.rot | 0);
         const localX = (localTileX * 128 + size * 64) | 0;
         const localY = (localTileY * 128 + size * 64) | 0;
 
@@ -7707,7 +8097,7 @@ export class OsrsClient {
             localX,
             localY,
             spawn.level | 0,
-            spawn.rot | 0,
+            drawnRot,
             localTileX,
             localTileY,
             rotSpeed,
@@ -7718,7 +8108,7 @@ export class OsrsClient {
             this.worldViewManager.addNpcToWorldView((spawn as any).worldViewId, ecsId);
         }
         this.npcEcs.setTargetRot(ecsId, spawn.rot | 0);
-        this.npcEcs.setRotation(ecsId, spawn.rot | 0);
+        this.npcEcs.setRotation(ecsId, drawnRot);
         this.npcEcs.setOccTile(ecsId, localTileX, localTileY, spawn.level | 0);
 
         // Actor world coords include size-based center offset (size * 64).
@@ -7828,8 +8218,7 @@ export class OsrsClient {
         const ecsId = this.npcEcs.getEcsIdForServer(serverId);
 
         if (Array.isArray(block.headIcons)) {
-            if (block.headIcons.length > 0) this.npcHeadIcons.set(serverId, block.headIcons);
-            else this.npcHeadIcons.delete(serverId);
+            applyGlobalNpcHeadIcons(this.npcHeadIcons, serverId, block.headIcons);
         }
 
         if (ecsId !== undefined) {
@@ -7897,7 +8286,7 @@ export class OsrsClient {
         }
 
         if (block.say && ecsId !== undefined) {
-            this.npcEcs.setOverheadText(ecsId, block.say, 100);
+            this.npcEcs.setOverheadText(ecsId, this.clientPlugins.npcOverheadText(serverId, block.say), 100);
         }
 
         if (block.colorOverride && ecsId !== undefined) {
@@ -8038,6 +8427,21 @@ export class OsrsClient {
         this.npcInstances.scheduleFlush();
     }
 
+    /**
+     * The type whose head icons a specific-headicon packet starts from: the transformed one, as the
+     * head-icon renderer draws (getEffectiveNpcType), so a transformed NPC keeps its own defaults.
+     */
+    private headIconNpcType(typeId: number): NpcType | undefined {
+        if ((typeId | 0) < 0) return undefined;
+        try {
+            const base = this.npcTypeLoader?.load(typeId | 0);
+            if (!base?.transforms) return base;
+            return base.transform(this.varManager, this.npcTypeLoader);
+        } catch {
+            return undefined;
+        }
+    }
+
     private despawnNpcBinary(serverId: number): void {
         const sid = serverId | 0;
         if (sid <= 0) return;
@@ -8045,7 +8449,8 @@ export class OsrsClient {
         const existingInstance = this.npcInstances.instanceMap.get(instanceKey);
         // Keep OSRS-style global NPC index array in sync for menuAction packet gates.
         ClientState.npcs[sid] = null;
-        this.npcHeadIcons.delete(sid);
+        // The ECS unmap callback owns head-icon cleanup. A remove/re-add in the same
+        // NPC_INFO can change this NPC's type without ending its customized icon lifetime.
         this.npcModelOverrides.delete(sid);
         try {
             (this.renderer as any)?.clearNpcHealthBars?.(sid);
@@ -8434,12 +8839,44 @@ export class OsrsClient {
     }
 
     /**
+     * Forget the extra inventories the last session sent: ids no longer count as sent, VM entries
+     * the server added are dropped, and the startup-seeded trade/shop/collection ones are put back
+     * to their empty seeded state. INV/WORN/BANK keep their objects; the bank counts as unsent
+     * until the server sends it again.
+     */
+    private forgetSentInventories(): void {
+        this.serverSentInventoryIds.clear();
+        const map = this.cs2Vm?.context?.inventories;
+        if (!map) return;
+        const seeded = new Map<number, Inventory>([
+            [90, this.tradeOfferInventory],
+            [90 + 32768, this.tradeOtherOfferInventory],
+            [516, this.shopInventory],
+            [620, this.collectionInventory],
+        ]);
+        for (const id of [...map.keys()]) {
+            if (id === 93 || id === 94 || id === 95) continue;
+            const original = seeded.get(id);
+            if (original) {
+                original.clear();
+                map.set(id, original);
+            } else {
+                map.delete(id);
+            }
+        }
+    }
+
+    /**
      * Reset all world/game state - used on disconnect/logout to prevent memory leaks.
      * Clears all players, NPCs, widgets, ground items, and other game entities.
      * @param fullReset If true, also clears chat history, vars, and transmit cycles (for full logout to login screen)
      */
     resetWorld(fullReset: boolean = false): void {
         this.continuousMovement?.reset();
+        if (fullReset) {
+            this.modelHighlightManager.reset();
+            this.highlightedAgilityCourse = undefined;
+        }
         this.mobileChatKeyboard?.hide();
         console.log(`[OsrsClient] Resetting world state (fullReset=${fullReset})...`);
 
@@ -8471,8 +8908,11 @@ export class OsrsClient {
             console.warn("[OsrsClient] WidgetManager clear error:", err);
         }
         this.serverSubInterfaces.clear();
+        this.forgetSentInventories();
 
         // Clear ground items
+        if (this.removedLogs) this.removedLogs.length = 0;
+        this.burningLogMeshes.clear();
         try {
             this.groundItems?.clear?.();
         } catch (err) {
@@ -8556,6 +8996,7 @@ export class OsrsClient {
 
         // Full reset only - clear persistent session state when going back to login screen
         if (fullReset) {
+            this.friendLoginUpdates.clear();
             // Clear chat history to prevent memory leak across sessions
             try {
                 chatHistory.clear();
@@ -8564,6 +9005,8 @@ export class OsrsClient {
             }
             // Live sets walk again before every logout; a dropped connection doesn't get that far.
             interactionModes.clear();
+            npcOpsVisibility.clear();
+            groundObjOpsVisibility.clear();
 
             // Clear the last account's varps and transient varcs, keeping persistent client
             // preferences loaded: the next login only sends its non-zero varps, so anything
@@ -8604,6 +9047,7 @@ export class OsrsClient {
             ...this.serverSubscriptions.splice(0),
             this.unsubscribeWidgetEvents,
             this.unsubscribeNpcInfo,
+            this.unsubscribeNpcSpecificEffects,
             this.unsubscribeCombat,
             this.unsubscribePlayerSync,
             this.unsubscribeSpot,

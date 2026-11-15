@@ -13,16 +13,23 @@ const ATTR_WAVE = "tzhaar:fight-cave-wave";
 const ATTR_ROTATION = "tzhaar:fight-cave-rotation";
 const WAVE_MESSAGE_COLOUR = "ef1020";
 const FINAL_WAVE = 63;
+const DEFEATED_MESSAGE = "You have been defeated!";
 const WAVE_DELAY_TICKS = 6;
 const EXIT_DELAY_TICKS = 8;
 const JAD_KILL_BONUS = 4000;
 const HEALER_HEAL = 5;
 const HEALER_HEAL_TICKS = 4;
-const HEALER_COMBAT_REACH = 4;
+// Capture 83: a healer that had been fighting went back to Jad with the player 10 and 12 tiles off, 9 and 10 ticks after
+// it was last hit. Both numbers are ours, from those 2 cases.
+const HEALER_LOSES_PLAYER_AT = 10;
+const HEALER_LOSES_PLAYER_TICKS = 9;
+const ATTR_HEALER_LAST_HIT = "tzhaar:healer-last-hit";
 const HEAL_GRAPHIC = 444; // TZHAAR_HEAL
 const TZREK_JAD = /^TzRek-Jad$/;
-const LOGOUT_PAUSED = "Your logout request has been received. The minigame will be paused at the end of this wave. "
-  + "If you try to log out before that, you will have to repeat this wave.";
+// rsprox 236/03960.txt:6017, 227/02118.txt:4620 (the Inferno's identical request line).
+const LOGOUT_PAUSED = "<col=ef1020>Your logout request has been received. The minigame will be paused at the end of this wave."
+  + "<br><col=ef1020>If you try to log out before that, you will have to repeat this wave.";
+const LOGOUT_VARBIT = 1548; // tzhaar_fightcave_logout: 1 once a logout is requested
 
 const BOUNDS = { minX: 2368, maxX: 2431, minY: 5056, maxY: 5119 };
 const ENTRY = { x: 2413, y: 5117 };
@@ -132,7 +139,12 @@ function spawn(session, player, id, at, attack = true) {
   npc.__skipDefaultRespawn = true;
   session.area.add(npc);
   session.npcs.add(npc);
-  if (attack) npc.getCombat().attack(player);
+  if (attack) {
+    // Capture 551: unclicked monsters stand still for up to 41 ticks, then walk on; the Tz-Kih traced at 2384,5095 stood
+    // 20 ticks out of reach without clearing its face. Healers aren't flagged: the Wiki has them lose interest.
+    npc.setFlag("combat:keep-target");
+    npc.getCombat().attack(player);
+  }
   return npc;
 }
 
@@ -171,16 +183,30 @@ function tendJad(player, session) {
   for (const healer of session.healers) {
     const distance = healer.calculateDistance(jad);
     const fighting = healer.getCombat().getTarget() != null;
-    if (distance <= 1 || (fighting && distance <= HEALER_COMBAT_REACH)) {
+    if (fighting) {
+      // Captures 83 and 551: all 21 of Jad's heals came with a healer beside him facing him, none from one fighting.
+      if (healer.calculateDistance(player) >= HEALER_LOSES_PLAYER_AT
+          && cycle - Number(healer.getAttribute(ATTR_HEALER_LAST_HIT) ?? 0) >= HEALER_LOSES_PLAYER_TICKS) {
+        healer.getCombat().reset();
+      }
+      continue;
+    }
+    if (distance <= 1) {
       if (cycle % HEALER_HEAL_TICKS === 0 && jad.getHitpoints() < maxHp) {
         healer.setMobileInteraction?.(jad);
         jad.performGraphic(new Graphic(HEAL_GRAPHIC));
         jad.heal(HEALER_HEAL);
         CombatAchievements.jadHealed(player);
       }
-    } else if (!fighting) {
+    } else {
       PathFinder.calculateWalkRoute(healer, jad.getLocation().getX(), jad.getLocation().getY());
     }
+  }
+}
+
+function healerHit({ target }) {
+  if (target?.isNpc?.() && target.getId() === core.NpcIdentifiers.YT_HURKOT) {
+    target.setAttribute(ATTR_HEALER_LAST_HIT, core.World.getProcessCycle());
   }
 }
 
@@ -194,8 +220,9 @@ function processRun({ player }) {
   const cycle = core.World.getProcessCycle();
   if (session.exitAt !== -1) {
     if (cycle >= session.exitAt) {
+      const logout = session.logoutRequested;
       finishRun(player, FINAL_WAVE, true);
-      if (session.logoutRequested) player.getSession().logout();
+      if (logout) player.getSession().logout();
     }
     return;
   }
@@ -218,6 +245,7 @@ function processRun({ player }) {
     session.nextWaveAt = cycle + WAVE_DELAY_TICKS;
     if (session.logoutRequested) {
       session.logoutRequested = false;
+      player.getPacketSender().sendVarbit(LOGOUT_VARBIT, 0);
       player.getSession().logout();
       return;
     }
@@ -240,6 +268,11 @@ function finishRun(player, wavesCleared, wonJad) {
   player.setAttribute(ATTR_WAVE, null);
   player.setAttribute(ATTR_ROTATION, null);
   if (session) {
+    // A pending logout request ends with the run (death, the exit, Jad's win), so its varbit goes too.
+    if (session.logoutRequested) {
+      session.logoutRequested = false;
+      player.getPacketSender().sendVarbit(LOGOUT_VARBIT, 0);
+    }
     rescueGroundItems(player, session.area);
     session.area.leave(player, false);
     if (player.getArea() === session.area) player.setArea(null);
@@ -266,7 +299,9 @@ function finishRun(player, wavesCleared, wonJad) {
 function rescueGroundItems(player, area) {
   const { ItemOnGroundManager, World } = core;
   for (const item of [...World.getItems()]) {
-    if (item.getPrivateArea() !== area) continue;
+    // A stack picked up this tick is only marked pending until the next ground-item pass: it is in the inventory
+    // already, and moving it to the exit as well gave it twice (Gallery.ChampionsChallenge skips these too).
+    if (item.isPendingRemoval?.() || item.getPrivateArea() !== area) continue;
     ItemOnGroundManager.deregister(item);
     ItemOnGroundManager.registerLocation(player, item.getItem(), tile(EXIT), null);
   }
@@ -274,6 +309,7 @@ function rescueGroundItems(player, area) {
 
 function enterCave({ player }) {
   startRun(player, 1, core.Misc.getRandom(SPAWN_CYCLE.length - 1), ENTRY);
+  api.emitCustomEvent("fight-caves:entered", { player });
   say(player, "You're on your own now JalYt, prepare to fight for your life!");
   return true;
 }
@@ -282,6 +318,14 @@ function leaveCave({ player }) {
   const session = sessions.get(player);
   finishRun(player, session ? session.wave - 1 : 0, false);
   return true;
+}
+
+/**
+ * A death in here prints "You have been defeated!" instead of "Oh dear, you are dead!", with the
+ * usual jingle (rsprox_transcripts/227/00075.txt, 227/00551.txt, 234/03276.txt).
+ */
+function defeatedLine(event) {
+  if (sessions.has(event.player)) event.message = DEFEATED_MESSAGE;
 }
 
 function caveDeath(event) {
@@ -316,12 +360,17 @@ function noTeleportOut(event) {
 }
 
 // The logout button mid-wave (or with Jad down) waits for the wave to end, then logs out with
-// the next wave saved; between waves it goes straight through. A dropped connection can't wait,
-// so it restarts the wave it happened in.
+// the next wave saved; between waves it goes straight through. A second click in the same wave
+// logs out at once (Wiki: "clicking the logout button twice during the same wave"; rsprox
+// 236/03959.txt:5305-5348 logs out the tick after it), and like a dropped connection it restarts
+// the wave it happened in. Once Jad is down there is no wave left to repeat: every click waits
+// for the exit, which pays the run and then logs out.
 function holdLogout(event) {
   const session = sessions.get(event.player);
   if (!session || (session.nextWaveAt !== -1 && session.exitAt === -1)) return;
+  if (session.logoutRequested && session.exitAt === -1) return;
   session.logoutRequested = true;
+  event.player.getPacketSender().sendVarbit(LOGOUT_VARBIT, 1);
   event.allow = false;
   event.reason = LOGOUT_PAUSED;
 }
@@ -353,6 +402,7 @@ function splitTzKek(player, session, npc) {
 
 module.exports = {
   name: "TzhaarFightCaves",
+  description: "Adds the TzHaar Fight Cave: 63 waves ending with TzTok-Jad, healers, wave resume on logout and the cave's entry and exit.",
   members: true,
   register(pluginApi) {
     api = pluginApi;
@@ -367,6 +417,8 @@ module.exports = {
     pluginApi.onObjectSecondClick(core.ObjectIdentifiers.CAVE_ENTRANCE_45, leaveCave);
     pluginApi.onPlayerLogin(resumeRun);
     pluginApi.onPlayerProcess(processRun);
+    pluginApi.onCombatHitResolved(healerHit);
+    pluginApi.onPlayerBeforeDeath(defeatedLine);
     pluginApi.onPlayerDeath(caveDeath);
     pluginApi.onShouldDropItemsOnDeath(keepItemsInCave);
     pluginApi.onCanTeleport(noTeleportOut);

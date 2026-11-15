@@ -18,6 +18,7 @@ const { inCrater } = require("./Fort.BountyHunter");
 const UNLOCKED_ATTRIBUTE = "bounty-hunter:target-teleport-unlocked";
 const UNLOCKED_VARBIT = "bounty_target_teleport";
 const SPELL_NAME = "Teleport to Target";
+const WARNING_OP = 10;
 const LEVEL = 85;
 const EXPERIENCE = 45;
 const COMBAT_COOLDOWN_MS = 12_000;
@@ -122,7 +123,7 @@ function refusal(player, target) {
   if (!target || !inCrater(target)) return "You don't have a target to teleport to.";
   if (Date.now() - (lastCombatAt.get(player) ?? 0) < COMBAT_COOLDOWN_MS) return "You can't cast this spell so soon after combat.";
   if (usesOf(player, target) >= USES_PER_TARGET) return "You have already teleported to this target five times.";
-  if (!player.getCombat().getTeleblockTimer().finished()) return "A magical spell is blocking you from teleporting.";
+  if (!player.getCombat().getTeleblockTimer().finished()) return core.TeleBlock.attemptMessage(player);
   if (bh.inLobby(player) && !bh.inLobby(target)) return arenaRefusal(player);
   return null;
 }
@@ -137,8 +138,10 @@ function arenaRefusal(player) {
 function spellFor(player) {
   const { Item, ItemIdentifiers: Items } = core;
   const spellbook = player.getSpellbook();
+  const widget = core.CacheDefinitions.getSpellByName(SPELL_NAME);
+  if (!widget) throw new Error(`Missing cache spell: ${SPELL_NAME}`);
   const spell = new (class extends core.Spell {
-    spellId() { return -1; }
+    spellId() { return widget.widgetId; }
     levelRequired() { return LEVEL; }
     baseExperience() { return EXPERIENCE; }
     itemsRequired() { return [new Item(Items.LAW_RUNE, 1), new Item(Items.DEATH_RUNE, 1), new Item(Items.CHAOS_RUNE, 1)]; }
@@ -151,18 +154,32 @@ function spellFor(player) {
 }
 
 function cast(event) {
-  if (event.spellName !== SPELL_NAME) return;
+  // op10 toggles the spell's Wilderness warning (SpellTeleports.plugin.js), it doesn't cast.
+  if (event.spellName !== SPELL_NAME || event.opId === WARNING_OP) return;
   event.handled = true;
   const { player } = event;
-  if (player.busy() || player.getMovementQueue().isMovementBlocked()) return;
-  const target = targetOf(player);
-  const refused = refusal(player, target);
+  if (!castable(player)) return;
+  // The spell's Wilderness warning (SpellTeleports.plugin.js) asks first; nothing is used until the player confirms.
+  const request = { player, name: SPELL_NAME.toLowerCase(), proceed: () => castable(player) && teleportToTarget(player), handled: false };
+  pluginApi.emitCustomEvent("spell:teleport-confirm", request);
+  if (!request.handled) request.proceed();
+}
+
+/** Whether the spell can be cast now, with the refusal's message when it can't. Takes nothing. */
+function castable(player) {
+  if (player.busy() || player.getMovementQueue().isMovementBlocked()) return false;
+  const refused = refusal(player, targetOf(player));
   if (refused) {
     player.sendMessage(refused);
-    return;
+    return false;
   }
+  return spellFor(player).canCast(player, false);
+}
+
+function teleportToTarget(player) {
+  const target = targetOf(player);
   const spell = spellFor(player);
-  if (!spell.canCast(player, false) || !spell.canCast(player, true)) return;
+  if (!spell.canCast(player, true)) return;
   usesByPlayer.set(player, { target, count: usesOf(player, target) + 1 });
   core.TeleportHandler.teleport(player, landingNear(target), player.getSpellbook().getTeleportType(), false);
   player.getSkillManager().addExperiences(core.Skill.MAGIC, EXPERIENCE);

@@ -32,6 +32,7 @@ const WATER_SOURCES = new Map([
   ["pump and tub", null],
 ]);
 
+let api;
 let core;
 let FILLED_BY_EMPTY;
 
@@ -60,14 +61,16 @@ function fillOne(player, emptyId, container, sound) {
   const inventory = player.getInventory();
   const slot = inventory.getSlotForItemId(emptyId);
   if (slot < 0) return false;
-  inventory.setItem(slot, new core.Item(container.filled, 1)).refreshItems();
+  // The filled container keeps the empty one's meta: a preset vial (PvP presets) stays a preset copy.
+  const meta = inventory.getItems()[slot]?.getMeta?.();
+  inventory.setItem(slot, new core.Item(container.filled, 1, meta ? JSON.parse(JSON.stringify(meta)) : undefined)).refreshItems();
   player.performAnimation(new core.Animation(FILL_ANIMATION));
   player.getPacketSender().sendSoundEffect(sound, 1, 0);
   return true;
 }
 
 function fillFromWaterSource(event) {
-  const { player, itemId, objectId } = event;
+  const { player, itemId, objectId, location } = event;
   const container = FILLED_BY_EMPTY.get(itemId);
   if (!container) return;
   const name = sourceName(player, objectId);
@@ -77,7 +80,11 @@ function fillFromWaterSource(event) {
   const sound = name === "well" ? WELL_FILL_SOUND : FILL_SOUND;
   if (!fillOne(player, itemId, container, sound)) return;
   const from = WATER_SOURCES.get(name);
-  player.sendMessage(from ? `You fill the ${container.noun} ${from}.` : `You fill the ${container.noun}.`);
+  // Spam in every recording: "You fill the bucket from the sink." (12), "...the kettle from the sink." (12),
+  // "...the vial from the fountain." (3), "You fill the bucket." (3, 227/01849.txt:14671).
+  player.getPacketSender().sendTypedMessage(core.ChatType.SPAM,
+    from ? `You fill the ${container.noun} ${from}.` : `You fill the ${container.noun}.`);
+  api.emitCustomEvent("water-source:filled", { player, objectId, name, itemId, filledId: container.filled, location });
 
   // Keyed to the player's index, so walking or another click cancels the rest (walkToReset).
   const at = player.getLocation().clone();
@@ -92,7 +99,9 @@ function fillFromWaterSource(event) {
 
 module.exports = {
   name: "WaterSources",
-  register(api) {
+  description: "Using an empty jug, vial, bucket, bowl, cup, fishbowl or waterskin on a fountain, sink, well, pump or tap fills them one per tick.",
+  register(pluginApi) {
+    api = pluginApi;
     core = api.core;
     defineContainers(core);
     api.onItemOnObject(fillFromWaterSource, { noted: false });

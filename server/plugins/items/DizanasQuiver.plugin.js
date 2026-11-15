@@ -1,4 +1,6 @@
 "use strict";
+const { PlayerDeathTask } = require("../../src/main/typescript/elvarg/game/task/impl/PlayerDeath");
+const { EquipmentRequirements } = require("../../src/main/typescript/elvarg/game/model/equipment/EquipmentRequirements");
 
 /**
  * Dizana's quiver: its extra ammunition slot, charges and death rules.
@@ -24,6 +26,7 @@
 const { Ammunition, RangedWeapon } = require("../../src/main/typescript/elvarg/game/content/combat/ranged/RangedData");
 const { PluginManager } = require("../../src/main/typescript/elvarg/plugins/PluginManager");
 const { TYPE_GRAPHIC, TYPE_RECTANGLE, TYPE_TEXT, createWidgetGroup } = require("../interface/widgetGroup");
+const { takeInto } = require("./TakeInto");
 
 const VARP = { AMOUNT: 4141, ITEM: 4142 };
 const PARAM_QUIVER = 1910;
@@ -45,6 +48,8 @@ const RANGED_STRENGTH = 11;
 const SUNFIRE_ATTACK = 10;
 const SUNFIRE_STRENGTH = 1;
 const COINS = 995;
+/** Settings > Gameplay > "Ammo-picking behaviour" (setting 305, `take_ammo_toggle`). */
+const AMMO_PICKUP_VARBIT = 5697;
 
 const OPEN_GROUP_ID = 30010;
 const OPEN_COMPONENT = { ROOT: 0, FRAME: 1, TITLE: 2, ITEM: 3, CONTENT: 4, CHARGES: 5 };
@@ -100,7 +105,8 @@ function stageOf(itemId) {
 
 /**
  * The stage of a worn quiver. Dizana's max cape "retains the perks of the blessed Dizana's
- * quiver" (Wiki), so it is one while worn; its death rules stay with broken-items.json.
+ * quiver" (Wiki), so it is one while worn; the cape's own death rules stay with broken-items.json, its stored
+ * ammo's with maxCapeDeathAmmo.
  */
 function wornStageOf(itemId) {
   const I = itemIdentifiers();
@@ -136,8 +142,13 @@ function stored(player) {
   return value && Number(value.id) > 0 && Number(value.amount) > 0 ? { id: Number(value.id), amount: Number(value.amount) } : null;
 }
 
-function store(player, ammo) {
-  player.setAttribute(ATTRIBUTE, ammo && ammo.amount > 0 ? { id: ammo.id, amount: ammo.amount } : null);
+function store(player, ammo, keepStack = false) {
+  const current = player.getAttribute(ATTRIBUTE);
+  if (keepStack && current && ammo && ammo.amount > 0 && Number(current.id) === ammo.id) {
+    current.amount = ammo.amount;
+  } else {
+    player.setAttribute(ATTRIBUTE, ammo && ammo.amount > 0 ? { id: ammo.id, amount: ammo.amount } : null);
+  }
   sendSlot(player);
   pluginApi.getBonusManager().update(player);
 }
@@ -258,7 +269,7 @@ function uncharge({ player, item }) {
   if (stageOf(item?.getId?.()) !== "charged") return false;
   const amount = itemCharges(item);
   const inventory = player.getInventory();
-  if (amount > 0 && !inventory.contains(itemIdentifiers().SUNFIRE_SPLINTERS) && inventory.getFreeSlots() <= 0) {
+  if (amount > 0 && inventory.getAddableAmount(new (core().Item)(itemIdentifiers().SUNFIRE_SPLINTERS, amount)) < amount) {
     player.sendMessage("You don't have enough inventory space to do that.");
     return true;
   }
@@ -320,6 +331,13 @@ function itemOnItem(event) {
 
 // ------------------------------------------------------------------ the slot's options
 
+/** The quiver keeps only an id and an amount, so preset (restricted) ammo would come back plain. */
+function restrictedAmmo(player, worn) {
+  if (!worn || !(worn.isPresetItem() || worn.isUntradeable() || worn.isUnbankable())) return false;
+  player.sendMessage("Preset items cannot be used for this.");
+  return true;
+}
+
 function wornAmmo(player) {
   const item = player.getEquipment().getItems()[core().Equipment.AMMUNITION_SLOT];
   return item && item.getId() > 0 && item.getAmount() > 0 ? item : null;
@@ -338,13 +356,15 @@ function name(itemId) {
 function fill(player) {
   const worn = wornAmmo(player);
   if (!worn) {
-    player.sendMessage("You have nothing in your worn quiver to fill your Dizana's Quiver with.");
+    // rsprox 238/04144.txt:23998, :24037 (and the Wiki): in red.
+    player.sendMessage("<col=ff3045>You have nothing in your worn quiver to fill your Dizana's Quiver with.");
     return;
   }
   if (!isArrowOrBolt(worn.getId())) {
     player.sendMessage("Dizana's quiver can only hold arrows or bolts.");
     return;
   }
+  if (restrictedAmmo(player, worn)) return;
   const ammo = stored(player);
   if (ammo && ammo.id !== worn.getId()) {
     player.sendMessage(`Your quiver already holds ${name(ammo.id)}.`);
@@ -353,7 +373,7 @@ function fill(player) {
   const total = Math.min(MAX_AMOUNT, (ammo?.amount ?? 0) + worn.getAmount());
   const left = (ammo?.amount ?? 0) + worn.getAmount() - total;
   setWornAmmo(player, left > 0 ? { id: worn.getId(), amount: left } : null);
-  store(player, { id: worn.getId(), amount: total });
+  store(player, { id: worn.getId(), amount: total }, true);
 }
 
 function swap(player) {
@@ -363,27 +383,48 @@ function swap(player) {
     player.sendMessage("Dizana's quiver can only hold arrows or bolts.");
     return;
   }
+  if (restrictedAmmo(player, worn)) return;
+  if (ammo && !canWear(player, ammo)) return;
   setWornAmmo(player, ammo);
   store(player, worn ? { id: worn.getId(), amount: worn.getAmount() } : null);
 }
 
+/**
+ * The stored ammo goes into the ammo slot only as wearing it would: its Ranged level (base, as equip checks) and the
+ * can-equip rules (a duel's no-ammo rule). Written straight in, dragon arrows went on at any level, in any duel.
+ */
+function canWear(player, ammo) {
+  const item = new (core().Item)(ammo.id, ammo.amount);
+  const unmet = EquipmentRequirements.getUnmet(player, item.getDefinition());
+  if (unmet != null) {
+    player.sendMessage(EquipmentRequirements.message(unmet, `your ${name(ammo.id)}`));
+    return false;
+  }
+  return PluginManager.emitCanEquip(player, core().Equipment.AMMUNITION_SLOT, item) !== false;
+}
+
+/** Moves the stored ammo to the inventory; true when any moved. */
 function remove(player) {
   const ammo = stored(player);
-  if (!ammo) return;
+  if (!ammo) return false;
   const inventory = player.getInventory();
-  if (!inventory.contains(ammo.id) && inventory.getFreeSlots() <= 0) {
-    player.sendMessage("You don't have enough inventory space to do that.");
-    return;
-  }
-  const room = MAX_AMOUNT - inventory.getAmount(ammo.id);
-  const moved = Math.min(room, ammo.amount);
+  const moved = inventory.getAddableAmount(new (core().Item)(ammo.id, ammo.amount));
   if (moved <= 0) {
     player.sendMessage("You don't have enough inventory space to do that.");
-    return;
+    return false;
   }
   inventory.adds(ammo.id, moved);
   inventory.refreshItems();
-  store(player, { id: ammo.id, amount: ammo.amount - moved });
+  store(player, { id: ammo.id, amount: ammo.amount - moved }, true);
+  return true;
+}
+
+/**
+ * The worn slot's Remove: rsprox (238/04144.txt:23330, 237/01156.txt:880383, 234/03299.txt:388259)
+ * follows it with this spam line. The item's own Empty isn't recorded, so it stays silent.
+ */
+function removeWorn(player) {
+  if (remove(player)) player.getPacketSender().sendTypedMessage(core().ChatType.SPAM, "You remove the ammo from Dizana's Quiver.");
 }
 
 function examine(player) {
@@ -395,7 +436,7 @@ function slotClicked(event) {
   if (event.groupId !== SLOT_COMPONENT.group || event.childId !== SLOT_COMPONENT.child) return;
   const op = Number(event.opId ?? event.action);
   event.handled = true;
-  if (op === OP.REMOVE) remove(event.player);
+  if (op === OP.REMOVE) removeWorn(event.player);
   else if (op === OP.FILL_OR_SWAP) (stored(event.player) ? swap : fill)(event.player);
   else if (op === OP.EXAMINE) examine(event.player);
 }
@@ -442,7 +483,8 @@ function renderOpen(player) {
   const ammo = stored(player);
   const quiver = wornQuiverItem(player) ?? [player.getInventory().getItems?.() ?? [], player.getEquipment().getItems?.() ?? []]
     .flat().find((item) => stageOf(item?.getId?.()));
-  const stage = quiver ? stageOf(quiver.getId()) : "uncharged";
+  // A worn Dizana's max cape is a blessed quiver (wornStageOf), so a carried quiver's Open shows its permanence.
+  const stage = quiver ? wornStageOf(quiver.getId()) : "uncharged";
   const charges = quiver ? itemCharges(quiver) : 0;
   const blessing = quiver ? blessingProgress(quiver) : 0;
   const sender = player.getPacketSender();
@@ -472,7 +514,11 @@ function resolveAmmo(player) {
 
 function checkAmmo(player, amountRequired, silent) {
   if (!firedAmmunition(player)) return null;
-  if (stored(player).amount >= amountRequired) return true;
+  if (stored(player).amount >= amountRequired) {
+    const permission = { player, itemId: stored(player).id, silent, allowed: true };
+    pluginApi.emitCustomEvent("ranged:ammo-permission", permission);
+    return permission.allowed;
+  }
   if (!silent) player.sendMessage("You don't have the required amount of ammunition to fire that.");
   return false;
 }
@@ -481,6 +527,7 @@ function checkAmmo(player, amountRequired, silent) {
 function decrementAmmo(player, pos, amount, delayTicks = 0) {
   if (!firedAmmunition(player)) return false;
   const { Item, ItemOnGroundManager, Misc, Task, TaskManager } = core();
+  const stack = player.getAttribute(ATTRIBUTE);
   const ammoId = stored(player).id;
   const dropChance = 80 - PluginManager.rangedAmmoRecovery(player);
   let used = 0;
@@ -493,11 +540,11 @@ function decrementAmmo(player, pos, amount, delayTicks = 0) {
   const apply = () => {
     const ammo = stored(player);
     // Swapped or emptied mid-flight: leave the new contents alone.
-    if (!ammo || ammo.id !== ammoId) return;
+    if (!ammo || ammo.id !== ammoId || player.getAttribute(ATTRIBUTE) !== stack) return;
     if (dropped > 0 && pos) ItemOnGroundManager.registerLocation(player, new Item(ammoId, dropped), pos);
     const left = ammo.amount - used - dropped;
-    store(player, { id: ammoId, amount: left });
-    if (left <= 0) player.sendMessage("You have run out of ammunition!");
+    // Emptied without a line, as worn ammo is (rsprox 227/00096:101682); the next attempt says so.
+    store(player, { id: ammoId, amount: left }, true);
   };
   if (delayTicks > 0) {
     TaskManager.submit(new (class extends Task {
@@ -581,7 +628,7 @@ function shouldKeepQuiver({ player, item }) {
 function dropCoins(event, amount) {
   if (!event.location) return;
   const { Item, ItemOnGroundManager } = core();
-  ItemOnGroundManager.registerLocation(event.killer ?? event.player, new Item(COINS, amount), event.location);
+  ItemOnGroundManager.registerLocation(PlayerDeathTask.lootOwner(event.player, event.killer), new Item(COINS, amount), event.location);
 }
 
 function clearQuiverState(player, item) {
@@ -592,9 +639,34 @@ function clearQuiverState(player, item) {
   store(player, null);
 }
 
+/**
+ * Dizana's max cape holds the quiver's ammo while worn, and its Wilderness death keeps the quiver's ammo rule (Wiki,
+ * Dizana's quiver: locking applies to "its max cape variant" too): up to level 20, or unlocked above it, the ammo
+ * drops where the player died; a locked cape above 20 loses it. The cape itself breaks by broken-items.json, which
+ * on a PvP death can change or destroy it before this plugin's death hook sees it, so that death comes through
+ * `broken-items:pvp-death`; other Wilderness deaths (to an NPC) through deathItemDrop.
+ */
+function maxCapeDeathAmmo(event) {
+  const { player, item } = event;
+  const I = itemIdentifiers();
+  if (item?.getId?.() !== I.DIZANAS_MAX_CAPE && item?.getId?.() !== I.DIZANAS_MAX_CAPE_L_) return;
+  const locked = item.getId() === I.DIZANAS_MAX_CAPE_L_;
+  const level = wildernessLevel(player);
+  const ammo = stored(player);
+  if (level <= 0 || !ammo || event.shouldDropItems === false) return;
+  if (event.location && (level <= 20 || !locked)) {
+    const { Item, ItemOnGroundManager } = core();
+    ItemOnGroundManager.registerLocation(PlayerDeathTask.lootOwner(player, event.killer), new Item(ammo.id, ammo.amount), event.location);
+  }
+  store(player, null);
+}
+
 function deathItemDrop(event) {
   const { player, item } = event;
-  if (!stageOf(item?.getId?.())) return;
+  if (!stageOf(item?.getId?.())) {
+    maxCapeDeathAmmo(event);
+    return;
+  }
   const level = wildernessLevel(player);
   if (level <= 0) return;
   const ammo = stored(player);
@@ -611,9 +683,27 @@ function deathItemDrop(event) {
   // Above 20 a locked quiver is kept, but its ammo is lost rather than dropped (Wiki).
   if (ammo && event.location && (level <= 20 || !locked)) {
     const { Item, ItemOnGroundManager } = core();
-    ItemOnGroundManager.registerLocation(event.killer ?? player, new Item(ammo.id, ammo.amount), event.location);
+    ItemOnGroundManager.registerLocation(PlayerDeathTask.lootOwner(player, event.killer), new Item(ammo.id, ammo.amount), event.location);
   }
   clearQuiverState(player, item);
+}
+
+/**
+ * With Ammo-picking behaviour on, ground ammo matching the worn quiver's goes into it. Ours:
+ * ammo that matches the worn ammo slot too goes there first (the Ranged combat tutor's pickup).
+ */
+function pickupIntoQuiver(event) {
+  const { player, groundItemId } = event;
+  if (player?.getPacketSender?.().getVarbit?.(AMMO_PICKUP_VARBIT) !== 1 || !wornQuiver(player)) return;
+  const ammo = stored(player);
+  if (!ammo || ammo.id !== groundItemId || wornAmmo(player)?.getId?.() === groundItemId) return;
+  takeInto(pluginApi, event, {
+    room: () => (wornQuiver(player) && stored(player)?.id === groundItemId ? MAX_AMOUNT - stored(player).amount : 0),
+    store: (amount) => {
+      store(player, { id: groundItemId, amount: stored(player).amount + amount }, true);
+      return amount;
+    },
+  });
 }
 
 function login({ player }) {
@@ -622,17 +712,20 @@ function login({ player }) {
 
 module.exports = {
   name: "DizanasQuiver",
+  description: "Dizana's quiver: an extra ammunition slot with Fill, charges, Open, Empty and Uncharge, plus its death rules and the Shrine of Ralos blessing.",
   members: true,
   register(api) {
     pluginApi = api;
     api.persistAttribute(ATTRIBUTE);
     api.persistAttribute(AVA_ATTRIBUTE, 0);
     api.onPlayerLogin(login);
+    api.onGroundItemPickup(pickupIntoQuiver);
     api.onInterfaceActionClick(slotClicked);
     api.onItemOnItem(itemOnItem, { noted: false });
     api.onCombatHitResolved(spendCharge);
     api.onShouldKeepItemOnDeath(shouldKeepQuiver);
     api.onPlayerDeathItemDrop(deathItemDrop);
+    api.onCustomEvent("broken-items:pvp-death", maxCapeDeathAmmo);
     api.registerCustomInterface(buildOpenInterface());
     for (const quiver of QUIVER_NAMES) {
       api.onItemAction(quiver, { Open: openQuiver, Empty: emptyQuiver, Uncharge: uncharge });
@@ -650,5 +743,5 @@ module.exports = {
   stored,
   firedAmmunition,
   slotClicked,
-  _test: { stageOf, idFor, itemCharges, blessingProgress, chargeWithSplinters, uncharge, blessAtShrine, upgradeWithAva, avaRecovery, hasSunfire, quiverBonuses, spendCharge, shouldKeepQuiver, deathItemDrop, openQuiver, renderOpen, activeAmmoId, brokenIdFor },
+  _test: { stageOf, idFor, itemCharges, blessingProgress, chargeWithSplinters, uncharge, blessAtShrine, upgradeWithAva, avaRecovery, hasSunfire, quiverBonuses, spendCharge, shouldKeepQuiver, deathItemDrop, openQuiver, renderOpen, activeAmmoId, brokenIdFor, pickupIntoQuiver },
 };

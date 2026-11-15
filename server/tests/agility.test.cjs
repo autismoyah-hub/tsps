@@ -12,6 +12,10 @@ const { CachePipeline } = require("../dist/game/cache/CachePipeline");
 const { CacheDefinitions } = require("../dist/game/cache/CacheDefinitions");
 const { ObjectIds } = require("../dist/util/IdEnums");
 const { PluginManager } = require("../dist/plugins/PluginManager");
+const AchievementDiaries = require("../plugins/achievements/AchievementDiaries.plugin");
+const DiaryData = require("../plugins/achievements/diaries/Data.AchievementDiaries");
+const DiaryProgress = require("../plugins/achievements/diaries/Progress.AchievementDiaries");
+const YanilleGrappleDiary = require("../plugins/achievements/diaries/ArdougneYanilleGrappleDiary.AchievementDiaries");
 
 /** Runs submitted tasks on demand instead of on the game loop. */
 const tasks = [];
@@ -24,18 +28,22 @@ const taskManager = {
   },
 };
 
+/** Ticks played so far, for timing checks. */
+let ticksPlayed = 0;
+
 function tick() {
+  ticksPlayed++;
   for (const task of tasks.splice(0)) {
     if (task.tick()) tasks.push(task);
   }
 }
 
-const hooks = { persisted: {}, areas: [], route: [], click: new Map(), logout: [], login: [], teleport: [], events: [], npcs: {}, answers: {}, listeners: {} };
+const hooks = { persisted: {}, areas: [], route: [], click: new Map(), objectActions: new Map(), logout: [], login: [], teleport: [], events: [], npcs: {}, answers: {}, listeners: {} };
 const groundItems = [];
 /** Answers ItemOnGroundManager.ownedBy: the stacks a test has put on the floor. */
 const floorStacks = [];
 const Agility = require("../plugins/skills/Agility.plugin");
-Agility.register({
+const agilityApi = {
   core: PluginManager.getCoreApi(),
   getTaskManager: () => taskManager,
   getItemOnGroundManager: () => ({
@@ -47,10 +55,13 @@ Agility.register({
   persistAttribute: (key, value) => { hooks.persisted[key] = value; },
   onObjectRoute: (handler) => hooks.route.push(handler),
   onObjectFirstClick: (ids, handler) => ids.forEach((id) => hooks.click.set(id, handler)),
+  onObjectInteraction: (name, actions) => hooks.objectActions.set(name, { ...(hooks.objectActions.get(name) ?? {}), ...actions }),
   onCanTeleport: (handler) => hooks.teleport.push(handler),
+  registerRunEnergyRestoreModifier: (modifier) => require("../dist/game/content/combat/EquipmentEffects").registerRunEnergyRestoreModifier(modifier),
   registerArea: (area) => hooks.areas.push(area),
   onPlayerLogout: (handler) => hooks.logout.push(handler),
   onPlayerLogin: (handler) => hooks.login.push(handler),
+  onPlayerProcess() {},
   onNpcInteraction: (name, actions) => { hooks.npcs[name] = actions; },
   onCustomEvent: (name, handler) => { hooks.listeners[name] = handler; },
   emitCustomEvent: (name, payload) => {
@@ -58,7 +69,7 @@ Agility.register({
     hooks.answers[name]?.(payload);
   },
   log() {},
-});
+};
 
 const { COURSES } = require("../plugins/skills/agility/courses/Courses.Agility");
 const { Anim } = require("../plugins/skills/agility/Constants.Agility");
@@ -79,6 +90,7 @@ function createPlayer(x, y, z, level = 99, { skills = {}, worn = [], held = [], 
     setLocation: (next) => { location = next.clone(); return player; },
     moveTo: (next) => { location = next.clone(); return player; },
     setWalkingDirection: () => { state.walked++; },
+    setRunningDirection: () => { state.ran = (state.ran ?? 0) + 1; },
     getMovementQueue: () => ({
       reset() {},
       setBlockMovement: (blocked) => { state.blocked = blocked; },
@@ -86,10 +98,11 @@ function createPlayer(x, y, z, level = 99, { skills = {}, worn = [], held = [], 
     }),
     getForceMovement: () => forceMovement,
     setForceMovement: (value) => { forceMovement = value; return player; },
-    setSkillAnimation() {},
+    setSkillAnimation: (id) => { (state.renders ??= []).push(id); },
     getUpdateFlag: () => ({ flag() {} }),
     performAnimation: (animation) => state.animations.push(animation.getId()),
     performGraphic() {},
+    mergeObject: (object, start, end, bounds) => { state.merges = [...(state.merges ?? []), { object, start, end, bounds }]; },
     setPositionToFace() {},
     forceChat() {},
     sendMessage: (message) => state.messages.push(message),
@@ -114,7 +127,10 @@ function createPlayer(x, y, z, level = 99, { skills = {}, worn = [], held = [], 
       sendSoundEffect: (id, loops, delay) => state.sounds.push(id),
       sendObjectAnimation() {},
     }),
-    getCombat: () => ({ getHitQueue: () => ({ addPendingDamage: () => { state.hits++; } }) }),
+    getCombat: () => ({ getHitQueue: () => ({ addPendingDamage: (damage) => {
+      state.hits++;
+      (state.damage ??= []).push(...damage.map((hit) => hit.getDamage()));
+    } }) }),
     getInventory: () => ({
       isFull: () => false,
       addItem() {},
@@ -135,11 +151,18 @@ function createPlayer(x, y, z, level = 99, { skills = {}, worn = [], held = [], 
 
 function gameObject(id, x, y, z, face = 0) {
   const definition = CacheDefinitions.getObject(id);
+  const actions = definition?.actions ?? [];
   return {
     getId: () => id,
     getFace: () => face,
     getLocation: () => new Location(x, y, z),
-    getDefinition: () => ({ getSizeX: () => definition?.sizeX ?? 1, getSizeY: () => definition?.sizeY ?? 1 }),
+    getDefinition: () => ({
+      getName: () => definition?.name,
+      getSizeX: () => definition?.sizeX ?? 1,
+      getSizeY: () => definition?.sizeY ?? 1,
+      getActions: () => actions,
+      getInteractions: () => actions,
+    }),
   };
 }
 
@@ -149,20 +172,26 @@ function tileOf(player) {
 }
 
 /** Routes the player the way the object packet would, clicks, and plays the obstacle out. */
-function operate(player, objectId, objectTile) {
-  const object = gameObject(objectId, ...objectTile);
-  const route = { player, object, objectId, clickType: 1, destination: null };
+function operate(player, objectId, objectTile, face = 0, clickType = 1) {
+  const object = gameObject(objectId, ...objectTile, face);
+  const definition = object.getDefinition();
+  const route = { player, object, definition, objectId, clickType, destination: null };
   hooks.route.forEach((handler) => handler(route));
   if (route.destination) {
     player.setLocation(new Location(route.destination.x, route.destination.y, route.destination.z));
   }
-  const handler = hooks.click.get(objectId);
-  assert.ok(handler, `no click handler for object ${objectId}`);
+  const option = definition.getActions()?.[clickType - 1];
+  const handler = clickType === 1
+    ? hooks.click.get(objectId)
+    : hooks.objectActions.get(definition.getName())?.[option];
+  assert.ok(handler, `no click handler for object ${objectId}, option ${option}`);
   const handled = handler({
     player,
     object,
+    definition,
     objectId,
-    clickType: 1,
+    clickType,
+    option,
     location: { x: objectTile[0], y: objectTile[1], z: objectTile[2] },
     handled: false,
   });
@@ -203,6 +232,7 @@ function runLap(course, player, { beforeLast } = {}) {
 
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
+  Agility.register(agilityApi);
 });
 
 /** A loc the cache has: named, or a nameless multiloc (Wyrmscraig's cliff top) drawn as one. */
@@ -342,6 +372,110 @@ test("every shortcut plays out from either side without leaving the player locke
   }
 });
 
+test("Karuulm Slayer Dungeon stepover rocks (34544) are shortcuts that cross two tiles in either direction", () => {
+  const rocks = SHORTCUTS.filter((shortcut) => shortcut.object === 34544);
+  assert.deepEqual(rocks.map((shortcut) => shortcut.at).sort(), [[1302, 10205, 0], [1311, 10215, 0], [1321, 10205, 0]]);
+  const east = rocks.find((shortcut) => shortcut.at[0] === 1321);
+  const context = (pos) => ({ obj: { id: 34544, x: 1321, y: 10205, z: 0 }, pos });
+  const west = east.steps(context({ x: 1320, y: 10205, z: 0 }));
+  const back = east.steps(context({ x: 1322, y: 10205, z: 0 }));
+  assert.deepEqual([west[0].move, back[0].move].map((m) => [m.x ?? m[0], m.y ?? m[1]]), [[1322, 10205], [1320, 10205]]);
+  assert.equal(east.end, "You climb over the rocks.");
+});
+
+test("shortcut audit: current directional Agility gates and captured no-sequence climbs", () => {
+  const entry = (name, objectId) => SHORTCUTS.find((shortcut) =>
+    shortcut.name === name && (Array.isArray(shortcut.object) ? shortcut.object.includes(objectId) : shortcut.object === objectId));
+  const context = (obj, pos) => ({ obj: { ...obj, id: obj.id ?? 0 }, pos });
+
+  assert.equal(entry("Strange floor (Fremennik Slayer Dungeon)", 16544).level, 43);
+  assert.equal(entry("Pipe (Brimhaven Dungeon)", 21727).level, 1);
+  assert.equal(entry("Pipe (Brimhaven Dungeon, toward demons)", 60840).level, 34);
+  assert.equal(entry("Pipe (Brimhaven Dungeon Entrance)", 21728).level, 22);
+  assert.equal(entry("Pipe (Brimhaven Dungeon Entrance, toward entrance)", 60841).level, 1);
+  assert.equal(entry("Log balance (Brimhaven Dungeon, heading east)", 20882).level, 30);
+  assert.equal(entry("Log balance (Brimhaven Dungeon, heading west)", 20884).level, 1);
+  assert.equal(entry("Stepping stones (Western Brimhaven Dungeon)", 21738).level, 12);
+  assert.equal(entry("Stepping stones (Western Brimhaven Dungeon)", 21739).level, 1);
+
+  const river = entry("Stepping stones (Eastern Brimhaven Dungeon)", 19040);
+  assert.deepEqual([
+    river.level(context({ x: 2688, y: 9547 }, { x: 2690, y: 9547 })),
+    river.level(context({ x: 2684, y: 9548 }, { x: 2682, y: 9548 })),
+    river.level(context({ x: 2695, y: 9531 }, { x: 2695, y: 9533 })),
+    river.level(context({ x: 2696, y: 9527 }, { x: 2697, y: 9525 })),
+  ], [1, 56, 56, 1]);
+
+  const pyramid = entry("Climbing rocks (Agility Pyramid)", 11948);
+  assert.equal(pyramid.level(context({ x: 3335, y: 2827 }, { x: 3334, y: 2827 })), 1);
+  assert.equal(pyramid.level(context({ x: 3335, y: 2827 }, { x: 3336, y: 2827 })), 30);
+
+  const middleRailing = entry("Railing (Arceuus Library, middle floor)", 28373);
+  const topRailing = entry("Railing (Arceuus Library, top floor)", 28373);
+  assert.equal(middleRailing.level, 52);
+  assert.equal(topRailing.level, 62);
+  for (const [obj, from, landing] of [
+    [{ x: 1628, y: 3806, z: 1, face: 3 }, [1627, 3806, 1], [1629, 3806, 0]],
+    [{ x: 1637, y: 3804, z: 2, face: 1 }, [1638, 3804, 2], [1636, 3804, 0]],
+    [{ x: 1629, y: 3803, z: 1, face: 2 }, [1629, 3802, 1], [1629, 3804, 0]],
+    [{ x: 1631, y: 3812, z: 2, face: 0 }, [1631, 3813, 2], [1631, 3811, 0]],
+  ]) {
+    assert.deepEqual(middleRailing.route(context(obj, { x: from[0], y: from[1], z: from[2] })), from);
+    assert.deepEqual(middleRailing.steps(context(obj, { x: from[0], y: from[1], z: from[2] })), [{ move: landing }]);
+  }
+
+  const yanille = entry("Climbing rocks (Yanille)", 23543);
+  const yanilleObj = { x: 2561, y: 3108, z: 0 };
+  assert.equal(yanille.precondition(context(yanilleObj, { x: 2561, y: 3106, z: 0 })), null);
+  assert.match(yanille.precondition(context(yanilleObj, { x: 2561, y: 3111, z: 0 })), /this side/);
+  assert.deepEqual(yanille.steps(context(yanilleObj, { x: 2561, y: 3108, z: 0 })), [
+    { move: [2561, 3111, 0], speed: [0, 60], ticks: 1 },
+    { sound: 2453 },
+    { msg: "You climb over the wall." },
+  ]);
+  const townPlayer = createPlayer(2561, 3106, 0, 5);
+  operate(townPlayer, 23543, [2561, 3108, 0]);
+  assert.deepEqual(tileOf(townPlayer), [2561, 3111, 0]);
+  assert.equal(townPlayer.state.xp, 25);
+  const northPlayer = createPlayer(2561, 3111, 0, 5);
+  operate(northPlayer, 23543, [2561, 3108, 0]);
+  assert.deepEqual(tileOf(northPlayer), [2561, 3111, 0]);
+  assert.equal(northPlayer.state.xp, 0);
+  assert.ok(northPlayer.state.messages.some((message) => message.includes("this side")));
+  const taverleySteps = entry("Climbing rocks (Taverley)", 53255).steps(
+    context({ x: 2946, y: 3439, z: 0 }, { x: 2947, y: 3439, z: 0 })
+  );
+  assert.deepEqual(taverleySteps, [
+    { move: [2943, 3439, 0], speed: [0, 60], ticks: 1 },
+    { sound: 2453 },
+    { msg: "You climb over the wall." },
+  ]);
+});
+
+test("Arceuus railings use their cached Jump-down option and award Agility XP", () => {
+  for (const [objectId, floor, level, xp] of [[28373, 1, 52, 3], [28374, 2, 62, 4]]) {
+    const actions = CacheDefinitions.getObject(objectId)?.actions ?? [];
+    assert.equal(actions[0], "Inspect", `object ${objectId} keeps its Inspect action first`);
+    const clickType = actions.indexOf("Jump-down") + 1;
+    assert.ok(clickType > 1, `object ${objectId} has a cached Jump-down action`);
+
+    const inspect = createPlayer(1627, 3806, floor, level);
+    assert.equal(operate(inspect, objectId, [1628, 3806, floor], 3, actions.indexOf("Inspect") + 1), false);
+    assert.deepEqual(tileOf(inspect), [1627, 3806, floor], "Inspect does not route or jump");
+    assert.equal(inspect.state.xp, 0, "Inspect does not award Agility XP");
+
+    const player = createPlayer(1627, 3806, floor, level);
+    operate(player, objectId, [1628, 3806, floor], 3, clickType);
+    assert.deepEqual(tileOf(player), [1629, 3806, 0]);
+    assert.equal(player.state.xp, xp);
+  }
+
+  const demonPipe = createPlayer(2698, 9492, 0, 34);
+  operate(demonPipe, 60840, [2698, 9493, 0]);
+  assert.deepEqual(tileOf(demonPipe), [2698, 9500, 0]);
+  assert.equal(demonPipe.state.xp, 10);
+});
+
 test("the cache-backed Varrock broken fence crosses its clipped north-south edge", () => {
   const { RegionManager } = require("../dist/game/collision/RegionManager");
   const { MapObjects } = require("../dist/game/entity/impl/object/MapObjects");
@@ -392,18 +526,74 @@ test("the shortcut data refuses unknown kinds, scripts, animations and keys", ()
   assert.throws(() => build({ ...base, steps: [], colour: "red" }, 0), /unknown key "colour"/);
 });
 
+test("cache-rotated Kandarin stiles route to the near side and cross their long footprint (#2871)", () => {
+  const { RegionManager } = require("../dist/game/collision/RegionManager");
+  const { MapObjects } = require("../dist/game/entity/impl/object/MapObjects");
+  RegionManager.init();
+  const placements = [
+    { at: [2761, 3436, 0], ends: [[2761, 3435, 0], [2761, 3438, 0]], approaches: [[2761, 3433, 0], [2761, 3440, 0]] },
+    { at: [2638, 3350, 0], ends: [[2637, 3350, 0], [2640, 3350, 0]] },
+    { at: [2647, 3375, 0], ends: [[2646, 3375, 0], [2649, 3375, 0]] },
+    { at: [2655, 3347, 0], ends: [[2654, 3347, 0], [2657, 3347, 0]] },
+    { at: [2917, 3438, 0], ends: [[2916, 3438, 0], [2919, 3438, 0]] },
+  ];
+  for (const { at, ends, approaches = ends } of placements) {
+    RegionManager.loadMapFiles(at[0], at[1]);
+    const object = MapObjects.get(ObjectIds.STILE, new Location(...at), null);
+    assert.ok(object, `cache stile at ${at}`);
+    for (const side of [0, 1]) {
+      const from = ends[side], to = ends[1 - side];
+      assert.equal(RegionManager.blocked(new Location(...from), null), false, "approach is walkable");
+      assert.equal(RegionManager.blocked(new Location(...to), null), false, "landing is walkable");
+      const player = createPlayer(...approaches[side], 1);
+      const route = { player, object, objectId: ObjectIds.STILE, clickType: 1, destination: null };
+      hooks.route.forEach(handler => handler(route));
+      assert.deepEqual(route.destination, { x: from[0], y: from[1], z: from[2] },
+        `the approach stays on side ${side} at ${at}`);
+      // Arrival is fixtured here; live MCP covers the actual approach path.
+      player.setLocation(new Location(...from));
+      assert.notEqual(operate(player, ObjectIds.STILE, at, object.getFace()), false);
+      assert.deepEqual(tileOf(player), to, `crossing from side ${side} at ${at}`);
+      assert.equal(player.state.xp, 0, "a level-1 stile grants no XP");
+    }
+  }
+});
+
+test("Piscatoris falconry stile (19222) crosses its 1x2 footprint both ways at level 1", () => {
+  const { RegionManager } = require("../dist/game/collision/RegionManager");
+  const { MapObjects } = require("../dist/game/entity/impl/object/MapObjects");
+  RegionManager.init();
+  const at = [2371, 3620, 0], ends = [[2371, 3619, 0], [2371, 3622, 0]];
+  RegionManager.loadMapFiles(at[0], at[1]);
+  const object = MapObjects.get(19222, new Location(...at), null);
+  assert.ok(object, "cache stile at the falconry fence");
+  for (const side of [0, 1]) {
+    const from = ends[side], to = ends[1 - side];
+    const player = createPlayer(...from, 1);
+    const route = { player, object, objectId: 19222, clickType: 1, destination: null };
+    hooks.route.forEach(handler => handler(route));
+    assert.deepEqual(route.destination, { x: from[0], y: from[1], z: from[2] }, `approach stays on side ${side}`);
+    player.setLocation(new Location(...from));
+    assert.notEqual(operate(player, 19222, at, object.getFace()), false);
+    assert.deepEqual(tileOf(player), to, `crossing from side ${side}`);
+    assert.equal(player.state.xp, 0);
+  }
+});
+
 test("native Lizardman Canyon handholds enter and leave both crossings at level 1", () => {
   const { RegionManager } = require("../dist/game/collision/RegionManager");
   const { MapObjects } = require("../dist/game/entity/impl/object/MapObjects");
   RegionManager.init();
   RegionManager.loadMapFiles(1470, 3687);
-  for (const [upperLoc, lowerLoc, upper, lower] of [
-    [[1474, 3687, 0], [1471, 3687, 0], [1475, 3687, 0], [1470, 3687, 0]],
-    [[1459, 3690, 0], [1457, 3690, 0], [1460, 3690, 0], [1456, 3690, 0]],
+  // The east pair as recorded (rsprox 231/00725 ticks 238 and 743-747): east to west walks a tile a tick with
+  // the climbing render; west to east is one 4-tick move with sequence 1148. The west pair has no recording.
+  for (const [upperLoc, lowerLoc, upper, lower, recorded] of [
+    [[1474, 3687, 0], [1471, 3687, 0], [1475, 3687, 0], [1470, 3687, 0], true],
+    [[1459, 3690, 0], [1457, 3690, 0], [1460, 3690, 0], [1456, 3690, 0], false],
   ]) {
     for (const [id, at, from, to, animation] of [
-      [27362, upperLoc, upper, lower, "human_climbing_down"],
-      [42009, lowerLoc, lower, upper, "human_climbing"],
+      [27362, upperLoc, upper, lower, recorded ? null : "human_climbing_down"],
+      [42009, lowerLoc, lower, upper, recorded ? "death_human_climbing_down" : "human_climbing"],
     ]) {
       const object = MapObjects.get(id, new Location(...at), null);
       assert.ok(object, `the active map places handholds ${id} at ${at}`);
@@ -412,17 +602,171 @@ test("native Lizardman Canyon handholds enter and leave both crossings at level 
       assert.equal(RegionManager.blocked(new Location(...from), null), false, "approach is walkable");
       assert.equal(RegionManager.blocked(new Location(...to), null), false, "landing is walkable");
       const player = createPlayer(...from, 1);
+      const moves = [];
+      const setForceMovement = player.setForceMovement;
+      player.setForceMovement = (value) => { if (value) moves.push(value.getDirection()); return setForceMovement(value); };
       const route = { player, object, objectId: id, clickType: 1, destination: null };
       hooks.route.forEach(handler => handler(route));
       assert.deepEqual([route.destination.x, route.destination.y, route.destination.z], from,
         "routing stays on this side of the clipped cliff");
+      const startTick = ticksPlayed;
       assert.notEqual(operate(player, id, at), false);
+      const ticks = ticksPlayed - startTick;
       assert.deepEqual(tileOf(player), to);
-      assert.ok(player.state.animations.includes(CacheDefinitions.getSeqId(animation)));
+      if (recorded && id === 42009) {
+        // rsprox 231/00725 ticks 237-238: facing west (512) a tick, then the 4-tick move east, still facing west
+        // (exactmove angle 512, ForceMovement direction 3).
+        assert.deepEqual(moves, [3], "one exact move, facing west");
+        assert.equal(ticks, 5, "the 1-tick facing lead-in, then the 4-tick move");
+      }
+      if (animation) assert.ok(player.state.animations.includes(CacheDefinitions.getSeqId(animation)), animation);
+      else assert.equal(player.state.renders?.[0], CacheDefinitions.getSeqId("human_climbing"), "the climbing walk render");
       assert.equal(player.state.xp, 0, "a canyon entrance does not award Agility XP");
       assert.equal(player.state.blocked, false, "finishing the climb releases movement");
     }
   }
+});
+
+test("the native Draynor underwall tunnel crosses both ways in one click (rsprox 4001)", () => {
+  const core = PluginManager.getCoreApi();
+  core.RegionManager.init();
+  core.RegionManager.loadMapFiles(3067, 3257);
+  for (const [id, tile, from, to] of [
+    [19032, [3067, 3257, 0], [3066, 3257, 0], [3070, 3257, 0]],
+    [19036, [3069, 3257, 0], [3070, 3257, 0], [3066, 3257, 0]],
+  ]) {
+    const object = core.MapObjects.get(id, new Location(...tile), null);
+    assert.equal(object?.getDefinition().getActions()[0], "Climb-into");
+    const player = createPlayer(...from, 42);
+    const route = { player, object, objectId: id, clickType: 1, destination: null };
+    hooks.route.forEach(handler => handler(route));
+    assert.deepEqual(route.destination, { x: from[0], y: from[1], z: 0 });
+    operate(player, id, tile);
+    assert.deepEqual(tileOf(player), to);
+    assert.ok(player.state.animations.includes(844));
+    assert.equal(player.state.xp, 0);
+    assert.equal(player.state.blocked, false);
+    const low = createPlayer(...from, 41);
+    operate(low, id, tile);
+    assert.deepEqual(tileOf(low), from);
+    assert.match(low.state.messages.at(-1), /42/);
+  }
+});
+
+/** Plays a crossing, logging each exact move (tick it started, its end tile, cycles, sounds sent by then). */
+function crossLogged(player, id, tile) {
+  const moves = [];
+  const startTick = ticksPlayed;
+  const setForceMovement = player.setForceMovement;
+  player.setForceMovement = (value) => {
+    if (value) {
+      const end = value.getEnd();
+      moves.push({
+        tick: ticksPlayed - startTick,
+        to: [player.getLocation().getX() + end.getX(), player.getLocation().getY() + end.getY()],
+        cycles: [value.getSpeed(), value.getReverseSpeed()],
+        sounds: player.state.sounds.slice(),
+      });
+    }
+    return setForceMovement(value);
+  };
+  operate(player, id, tile);
+  return { moves, ticks: ticksPlayed - startTick };
+}
+
+test("the underwall tunnels cross in three one-tick legs with the tunnel sound (rsprox 238/4169, 237/4001)", () => {
+  for (const [name, ids, level, path] of [
+    ["Grand Exchange", [16530, 16529], 21, [[3142, 3513], [3141, 3513], [3138, 3516], [3137, 3516]]],
+    ["Falador", [16528, 16527], 26, [[2948, 3313], [2948, 3312], [2948, 3310], [2948, 3309]]],
+    ["Yanille", [16520, 16519], 16, [[2575, 3112], [2575, 3111], [2575, 3108], [2575, 3107]]],
+  ]) {
+    for (const [id, route] of [[ids[0], path], [ids[1], path.slice().reverse()]]) {
+      const [from, ...legs] = route;
+      const player = createPlayer(...from, 0, level);
+      const { moves, ticks } = crossLogged(player, id, from.concat(0));
+      assert.deepEqual(moves.map((move) => move.to), legs, `${name}: in, through and out`);
+      assert.deepEqual(moves.map((move) => move.cycles), [[0, 30], [0, 30], [0, 30]]);
+      assert.deepEqual(tileOf(player), legs[2].concat(0));
+      assert.deepEqual(player.state.sounds, [2452]);
+      assert.deepEqual(moves[0].sounds, [2452], "the sound plays as the player enters");
+      assert.equal(moves[0].tick, 1, "a tick facing the tunnel first");
+      assert.deepEqual(moves.map((move) => move.tick), [1, 2, 3], "then one leg a tick");
+      assert.equal(ticks - moves[0].tick, 3, "free a tick after the last leg starts");
+      assert.deepEqual(player.state.animations.slice(-3), [2589, 2590, 2591], "enter, walk, and the exit plays out");
+      assert.equal(player.state.xp, 0);
+    }
+  }
+});
+
+test("the Draynor underwall tunnel plays the tunnel sound with the crawl (rsprox 237/4001)", () => {
+  for (const [id, from, to] of [[19032, [3066, 3257, 0], [3070, 3257, 0]], [19036, [3070, 3257, 0], [3066, 3257, 0]]]) {
+    const player = createPlayer(...from, 42);
+    operate(player, id, [3067, 3257, 0]);
+    assert.deepEqual(tileOf(player), to);
+    assert.deepEqual(player.state.sounds, [2452]);
+    assert.deepEqual(player.state.animations.slice(-2), [844, 65535], "the crawl, then reset on landing");
+  }
+});
+
+test("the Piscatoris colony wall hole: a two-tick entry, three-tick crawl and exit, with its sounds (rsprox 224/1440)", () => {
+  for (const [from, legs] of [
+    [[2344, 3650], [[2344, 3651], [2344, 3654], [2344, 3655]]],
+    [[2344, 3655], [[2344, 3654], [2344, 3651], [2344, 3650]]],
+  ]) {
+    const player = createPlayer(...from, 0, 1);
+    const { moves, ticks } = crossLogged(player, 12656, [2344, from[1] === 3650 ? 3651 : 3654, 0]);
+    assert.deepEqual(moves.map((move) => move.to), legs);
+    assert.deepEqual(moves.map((move) => move.tick - moves[0].tick), [0, 2, 5]);
+    assert.deepEqual(moves.map((move) => move.cycles), [[0, 50], [0, 100], [15, 33]]);
+    assert.deepEqual(moves.map((move) => move.sounds), [[2489], [2489], [2489, 2490]]);
+    assert.equal(ticks - moves[0].tick, 6);
+    assert.deepEqual(tileOf(player), legs[2].concat(0));
+    assert.deepEqual(player.state.animations.slice(-4), [2589, 2590, 2591, 65535], "enter, walk, exit, then reset");
+  }
+});
+
+test("the native Draynor River Lum stone routes to this shore and finishes across the river", () => {
+  const { RegionManager } = require("../dist/game/collision/RegionManager");
+  const { MapObjects } = require("../dist/game/entity/impl/object/MapObjects");
+  const DRAYNOR_STONE = 16533;
+  const stoneTile = [3151, 3363, 0];
+  // rsprox 237/04001.txt:45675: the east crossing starts from 3155.
+  const west = [3149, 3363, 0], east = [3155, 3363, 0];
+  RegionManager.init();
+  RegionManager.loadMapFiles(...stoneTile);
+  const object = MapObjects.get(DRAYNOR_STONE, new Location(...stoneTile), null);
+  assert.ok(object, "the active cache places a single clickable stone in the river");
+  assert.equal(object.getDefinition().getName(), "Stepping stone");
+  assert.equal(object.getDefinition().getActions()[0], "Jump-onto");
+  assert.equal(RegionManager.blocked(new Location(...stoneTile), null), true, "the stone is not a walking destination");
+  for (const shore of [west, east]) assert.equal(RegionManager.blocked(new Location(...shore), null), false);
+
+  for (const [from, approach, to] of [[west, west, east], [east, east, west], [[3147, 3363, 0], west, east], [[3156, 3363, 0], east, west]]) {
+    const player = createPlayer(...from, 31);
+    const landings = [], moveTo = player.moveTo;
+    player.moveTo = location => {
+      landings.push([location.getX(), location.getY(), location.getZ()]);
+      return moveTo(location);
+    };
+    const route = { player, object, objectId: DRAYNOR_STONE, clickType: 1, destination: null };
+    hooks.route.forEach(handler => handler(route));
+    assert.deepEqual(route.destination, { x: approach[0], y: approach[1], z: approach[2] }, "approach stays on the near shore");
+    assert.notEqual(operate(player, DRAYNOR_STONE, stoneTile), false);
+    assert.deepEqual(landings, [stoneTile, to], "the crossing uses the actual stone before reaching shore");
+    assert.deepEqual(tileOf(player), to, "one click completes the crossing");
+    assert.equal(player.state.xp, 3);
+    // rsprox 237/04001.txt:45813 (the newest crossing).
+    assert.equal(player.state.messages.at(-1), "You manage to make it to the other side of the river.");
+    assert.equal(player.state.blocked, false);
+    assert.equal(player.getAttribute("agility.obstacle") ?? null, null);
+  }
+
+  const underLevel = createPlayer(...west, 30);
+  assert.notEqual(operate(underLevel, DRAYNOR_STONE, stoneTile), false);
+  assert.deepEqual(tileOf(underLevel), west);
+  assert.equal(underLevel.state.xp, 0);
+  assert.equal(underLevel.state.blocked, false);
+  assert.match(underLevel.state.messages.at(-1), /31.*Agility|Agility.*31/);
 });
 
 test("a crossing's via tiles are walked in travel order, both ways", () => {
@@ -468,6 +812,153 @@ test("a grapple needs the gear and skills, or the barehanded Agility level (Wiki
   assert.ok(!fires(climber), "no grapple fired");
 });
 
+test("the Catherby rocks grapple needs 35 Strength (Wiki: 32 Agility, 35 Strength, 35 Ranged)", () => {
+  const rocks = [2869, 3429, 0];
+  const weak = createPlayer(2869, 3428, 0, 32, { skills: { strength: 34, ranged: 35 }, worn: grappleGear() });
+  operate(weak, 17042, rocks);
+  assert.ok(weak.state.messages.includes("You need a Strength level of at least 35 to attempt this."), weak.state.messages.join(" | "));
+  assert.deepEqual(tileOf(weak), [2869, 3428, 0], "refused at 34 Strength");
+  const strong = createPlayer(2869, 3428, 0, 32, { skills: { strength: 35, ranged: 35 }, worn: grappleGear() });
+  operate(strong, 17042, rocks);
+  assert.ok(!strong.state.messages.some((m) => /Strength level/.test(m)), "35 Strength is enough");
+});
+
+test("the Strong Tree crosses barehanded at 78 Agility, with no grapple fired (Wiki: Shortcuts)", () => {
+  const tree = [2873, 3134, 0];
+  const fires = (player) => player.state.animations.includes(4455); // ShortcutAnim.FIRE_GRAPPLE
+  const short = createPlayer(2874, 3142, 0, 77);
+  operate(short, 17074, tree);
+  assert.deepEqual(tileOf(short), [2874, 3142, 0], "refused: no crossbow, and short of the barehanded 78");
+  const climber = createPlayer(2874, 3142, 0, 78);
+  operate(climber, 17074, tree);
+  assert.deepEqual(tileOf(climber), [2874, 3136, 0], "barehanded across the north channel at 78");
+  assert.ok(!fires(climber), "no grapple fired");
+  const geared = createPlayer(2874, 3142, 0, 53, { skills: { strength: 21, ranged: 42 }, worn: grappleGear() });
+  operate(geared, 17074, tree);
+  assert.deepEqual(tileOf(geared), [2874, 3136, 0], "the grapple still crosses at 53");
+  assert.ok(fires(geared), "fires the grapple");
+});
+
+test("Yanille's south-wall grapple updates Ardougne medium progress after crossing", () => {
+  const wall = [2556, 3074, 0];
+  const credits = () => hooks.events.filter((event) => event.name === "agility:yanille-grapple");
+  const taskKey = "grapple-over-yanille-s-south-wall";
+  const ardougne = DiaryData.BY_KEY.get("ardougne");
+  const medium = ardougne.tiers.medium;
+  const assertNoProgress = (player) => {
+    assert.equal(player.getAttribute(DiaryProgress.TASKS_ATTRIBUTE)?.ardougne?.includes(taskKey) ?? false, false);
+    assert.equal(player.state.varbits.get(medium.countVarbit), undefined);
+  };
+
+  DiaryProgress({
+    core: PluginManager.getCoreApi(),
+    persistAttribute() {},
+    onPlayerLogin() {},
+    onPlayerProcess() {},
+    getTaskManager: () => taskManager,
+    emitCustomEvent() {},
+  });
+  hooks.answers["diary:task"] = AchievementDiaries._test.onTask;
+  YanilleGrappleDiary.register({
+    onCustomEvent: (name, handler) => { hooks.answers[name] = handler; },
+    emitCustomEvent: (name, payload) => {
+      hooks.events.push({ name, payload });
+      hooks.answers[name]?.(payload);
+    },
+  });
+
+  hooks.events.length = 0;
+  const grappler = createPlayer(2556, 3075, 0, 39, {
+    skills: { strength: 38, ranged: 21 },
+    worn: grappleGear(),
+  });
+  operate(grappler, 17047, wall);
+  assert.deepEqual(tileOf(grappler), [2556, 3074, 1]);
+  assert.equal(credits().length, 1);
+  assert.equal(credits()[0].payload.method, "grapple");
+  assert.deepEqual(grappler.getAttribute(DiaryProgress.TASKS_ATTRIBUTE).ardougne, [taskKey]);
+  assert.equal(grappler.state.varbits.get(medium.countVarbit), 1);
+  assert.equal(grappler.state.varbits.get(ardougne.startedVarbit), 1);
+
+  hooks.events.length = 0;
+  const otherApproach = createPlayer(2556, 3072, 0, 39, {
+    skills: { strength: 38, ranged: 21 },
+    worn: grappleGear(),
+  });
+  operate(otherApproach, 17047, [2556, 3073, 0]);
+  assert.deepEqual(tileOf(otherApproach), [2556, 3073, 1]);
+  assert.equal(credits().length, 1);
+  assert.deepEqual(otherApproach.getAttribute(DiaryProgress.TASKS_ATTRIBUTE).ardougne, [taskKey]);
+  assert.equal(otherApproach.state.varbits.get(medium.countVarbit), 1);
+
+  hooks.events.length = 0;
+  const barehanded = createPlayer(2556, 3075, 0, 69, {
+    skills: { strength: 37, ranged: 21 },
+    worn: grappleGear(),
+  });
+  operate(barehanded, 17047, wall);
+  assert.deepEqual(tileOf(barehanded), [2556, 3074, 1]);
+  assert.equal(credits().length, 0, "the level-69 barehanded alternative does not count");
+  assertNoProgress(barehanded);
+
+  hooks.events.length = 0;
+  const privateArea = createPlayer(2556, 3075, 0, 39, {
+    skills: { strength: 38, ranged: 21 },
+    worn: grappleGear(),
+  });
+  privateArea.getPrivateArea = () => ({});
+  operate(privateArea, 17047, wall);
+  assert.equal(credits().length, 0, "a private crossing does not count");
+  assertNoProgress(privateArea);
+
+  hooks.events.length = 0;
+  const interrupted = createPlayer(2556, 3075, 0, 39, {
+    skills: { strength: 38, ranged: 21 },
+    worn: grappleGear(),
+  });
+  hooks.click.get(17047)({ player: interrupted, object: gameObject(17047, ...wall), objectId: 17047, clickType: 1, location: { x: wall[0], y: wall[1], z: wall[2] }, handled: false });
+  interrupted.getAttribute("agility.obstacle").stop();
+  assert.equal(credits().length, 0, "an interrupted action does not count");
+  assertNoProgress(interrupted);
+
+  hooks.events.length = 0;
+  const otherWall = createPlayer(2556, 3072, 0, 39, {
+    skills: { strength: 38, ranged: 21 },
+    worn: grappleGear(),
+  });
+  otherWall.setLocation(new Location(3033, 3390, 0));
+  operate(otherWall, 17047, [3033, 3390, 0]);
+  assert.deepEqual(tileOf(otherWall), [3033, 3389, 1]);
+  assert.equal(credits().length, 0, "a Falador wall crossing does not count");
+  assertNoProgress(otherWall);
+
+  hooks.events.length = 0;
+  const loggedOut = createPlayer(2556, 3075, 0, 39, {
+    skills: { strength: 38, ranged: 21 },
+    worn: grappleGear(),
+  });
+  const object = gameObject(17047, ...wall);
+  hooks.click.get(17047)({ player: loggedOut, object, objectId: 17047, clickType: 1, location: { x: wall[0], y: wall[1], z: wall[2] }, handled: false });
+  tick();
+  hooks.logout.forEach((handler) => handler({ player: loggedOut }));
+  assert.equal(credits().length, 0, "logout fast-forward does not count");
+  assertNoProgress(loggedOut);
+
+  hooks.events.length = 0;
+  const dead = createPlayer(2556, 3075, 0, 39, {
+    skills: { strength: 38, ranged: 21 },
+    worn: grappleGear(),
+  });
+  hooks.click.get(17047)({ player: dead, object: gameObject(17047, ...wall), objectId: 17047, clickType: 1, location: { x: wall[0], y: wall[1], z: wall[2] }, handled: false });
+  dead.getHitpoints = () => 0;
+  tick();
+  assert.equal(credits().length, 0, "death interrupts the crossing");
+  assertNoProgress(dead);
+
+  delete hooks.answers["agility:yanille-grapple"];
+  delete hooks.answers["diary:task"];
+});
+
 test("a quest gate refuses only when the quest plugin says it isn't done", () => {
   const window = [3290, 3158, 0];
   try {
@@ -489,6 +980,22 @@ test("a quest gate refuses only when the quest plugin says it isn't done", () =>
   const unknown = createPlayer(3290, 3157, 0);
   operate(unknown, ObjectIds.BIG_WINDOW, window);
   assert.ok(!unknown.state.messages.some((message) => message.includes("Prince Ali")), "a quest no plugin knows is no bar");
+});
+
+// Wiki (Shortcuts): the Al Kharid big window and broken wall are one shortcut that "Requires completion of Prince Ali
+// Rescue"; the Stalker Den cave is "after Shadows of Custodia". The broken wall and the cave had no quest gate.
+test("the Al Kharid broken wall and the Stalker Den cave need their quests", () => {
+  try {
+    hooks.answers["quest:is-complete"] = (request) => { request.complete = false; };
+    const wall = createPlayer(3295, 3157, 0);
+    operate(wall, 33344, [3295, 3157, 0]);
+    assert.ok(wall.state.messages.includes("You need to complete Prince Ali Rescue to use this shortcut."), wall.state.messages.join(" | "));
+    const cave = createPlayer(1324, 3363, 0);
+    operate(cave, 57279, [1324, 3364, 0]);
+    assert.ok(cave.state.messages.includes("You need to complete Shadows of Custodia to use this shortcut."), cave.state.messages.join(" | "));
+  } finally {
+    delete hooks.answers["quest:is-complete"];
+  }
 });
 
 test("diary gates are recorded but not enforced until the diary's tasks can be done", () => {
@@ -587,6 +1094,200 @@ test("an obstacle above the player's level is refused without moving them", () =
   assert.equal(player.state.xp, 0);
 });
 
+test("Crandor's rocks refuse below 84 Agility in the agility_climb item box, as captured (rev242 tick 3375)", () => {
+  const ItemStatementDialogue = PluginManager.getCoreApi().ItemStatementDialogue;
+  const text = "You need an Agility level of at least 84 to climb up these rocks.";
+  const player = createPlayer(2832, 3247, 0, 1);
+  const shown = [];
+  player.getDialogueManager = () => ({ startDialogues: (chain) => shown.push(...chain.getDialogues().values()) });
+  operate(player, 53234, [2832, 3248, 0]);
+  assert.deepEqual(tileOf(player), [2832, 3247, 0], "refused: not moved");
+  assert.equal(shown.length, 1);
+  assert.ok(shown[0] instanceof ItemStatementDialogue);
+  assert.equal(shown[0].getItemId(), 6517);
+  assert.equal(shown[0].getText(), text);
+  // No generic game message: the item box logs its own mesbox chat line as it opens.
+  assert.deepEqual(player.state.messages, []);
+
+  const able = createPlayer(2832, 3247, 0, 84);
+  operate(able, 53234, [2832, 3248, 0]);
+  for (let i = 0; i < 10; i++) tick();
+  assert.deepEqual(tileOf(able), [2832, 3252, 0], "84 Agility climbs to the top");
+});
+
+test("Varrock's fallable obstacles stop failing at 46, the Wiki's no-fail level", () => {
+  const obstacles = [
+    { index: 2, object: ObjectIds.CLOTHES_LINE, start: [3214, 3414, 3], tile: [3213, 3414, 3], xp: 23 },
+    { index: 4, object: ObjectIds.WALL_14, start: [3194, 3416, 1], tile: [3191, 3415, 1], xp: 28 },
+  ];
+  const random = Math.random;
+  Math.random = () => 0.999;
+  try {
+    for (const { index, object, start, tile, xp } of obstacles) {
+      const failing = createPlayer(...start, 45);
+      operate(failing, object, tile);
+      assert.equal(failing.state.xp, 0, `obstacle ${index} still fails at 45`);
+      assert.equal(failing.state.hits, 1, `obstacle ${index} takes fall damage at 45`);
+
+      const boundary = createPlayer(...start, 46);
+      operate(boundary, object, tile);
+      assert.equal(boundary.state.xp, xp, `obstacle ${index} succeeds at 46`);
+      assert.equal(boundary.state.hits, 0, `obstacle ${index} takes no fall damage at 46`);
+
+      const high = createPlayer(...start, 99);
+      operate(high, object, tile);
+      assert.equal(high.state.xp, xp, `obstacle ${index} succeeds at 99`);
+      assert.equal(high.state.hits, 0, `obstacle ${index} takes no fall damage at 99`);
+
+      const below = createPlayer(...start, 29);
+      operate(below, object, tile);
+      assert.deepEqual(below.state.messages, ["You need an Agility level of at least 30 to attempt this."], `obstacle ${index} refuses below 30`);
+      assert.equal(below.state.xp, 0);
+      assert.equal(below.getAttribute("agility.obstacle") ?? null, null);
+    }
+  } finally {
+    Math.random = random;
+  }
+});
+
+test("rooftop failures fitted to the main-game captures stop at the Wiki's no-fail levels: Seers' 79, Falador's hand holds 66", () => {
+  const obstacles = [
+    { key: "seers", index: 2, start: [2721, 3494, 3], tile: [2720, 3492, 3], never: 79, xp: 20 },
+    { key: "seers", index: 3, start: [2710, 3490, 2], tile: [2710, 3489, 2], never: 79, xp: 20 },
+    { key: "falador", index: 3, start: [3050, 3349, 3], tile: [3050, 3350, 3], never: 66, xp: 60.3 },
+  ];
+  const random = Math.random;
+  Math.random = () => 0.999;
+  try {
+    for (const { key, index, start, tile, never, xp } of obstacles) {
+      const { object } = course(key).obstacles.find((entry) => entry.index === index);
+      const failing = createPlayer(...start, never - 1);
+      operate(failing, object, tile);
+      assert.equal(failing.state.xp, 0, `${key} ${index} still fails at ${never - 1}`);
+      assert.equal(failing.state.hits, 1, `${key} ${index}: one fall`);
+      const boundary = createPlayer(...start, never);
+      operate(boundary, object, tile);
+      assert.equal(boundary.state.xp, xp, `${key} ${index} never fails from ${never}`);
+    }
+  } finally {
+    Math.random = random;
+  }
+});
+
+test("rooftop falls land, hurt and end as captured; the damage follows current Hitpoints (rsprox 20261109T090342, 20261027T185126, 20261024T001512)", () => {
+  // At 99 Hitpoints: floor(HP x percent) + plus, the formulas the captured falls fit, held to the
+  // Wiki's maximum where it gives one (Varrock: 8 for the clothes line, 5 for the wall).
+  const falls = [
+    { key: "seers", index: 2, start: [2721, 3494, 3], tile: [2720, 3492, 3], landing: [2715, 3494, 0], tick: 5, damage: 9 },
+    { key: "seers", index: 3, start: [2710, 3490, 2], tile: [2710, 3489, 2], landing: [2710, 3484, 0], tick: 7, damage: 7 },
+    { key: "falador", index: 3, start: [3050, 3349, 3], tile: [3050, 3350, 3], landing: [3050, 3351, 0], tick: 2, damage: 8 },
+    { key: "varrock", index: 2, start: [3214, 3414, 3], tile: [3213, 3414, 3], landing: [3212, 3414, 0], tick: 3, damage: 8 },
+    { key: "varrock", index: 4, start: [3194, 3416, 1], tile: [3191, 3415, 1], landing: [3190, 3410, 0], tick: 10, damage: 5 },
+  ];
+  const random = Math.random;
+  Math.random = () => 0.999;
+  try {
+    for (const { key, index, start, tile, landing, tick: at, damage } of falls) {
+      const { object, level } = course(key).obstacles.find((entry) => entry.index === index);
+      const player = createPlayer(...start, level);
+      const ticks = timeline(player, object, tile);
+      assert.deepEqual(tileOf(player), landing, `${key} ${index}: landing`);
+      assert.equal(ticks.length - 1, at, `${key} ${index}: on the ground and free ${at} ticks after the op`);
+      assert.ok(ticks[at].moved, `${key} ${index}: the fall is the last tick's`);
+      assert.deepEqual(player.state.damage, [damage], `${key} ${index}: damage`);
+      assert.ok(player.state.sounds.includes(2455), `${key} ${index}: the thud`);
+      assert.ok(player.state.sounds.some((sound) => sound >= 518 && sound <= 521), `${key} ${index}: a hurt sound`);
+      assert.equal(player.state.xp, 0);
+    }
+  } finally {
+    Math.random = random;
+  }
+});
+
+test("Seers' Village Rooftop plays as captured, tick by tick from the op (rsprox 20261109T090342 and 15 others)", () => {
+  const seers = course("seers");
+  // [index, start, loc tile, the ticks after the op of: its first animation, the XP; its end tile]
+  const expected = [
+    [1, [2729, 3489, 0], [2729, 3489, 0], Anim.CLIMB_WALL, 1, 5, [2729, 3491, 3]],
+    [2, [2721, 3494, 3], [2720, 3492, 3], Anim.LEAP, 2, 6, [2713, 3494, 2]],
+    [3, [2710, 3490, 2], [2710, 3489, 2], null, null, 9, [2710, 3480, 2]],
+    [4, [2712, 3477, 2], [2710, 3476, 2], Anim.JUMP_SHORT, 1, 4, [2712, 3472, 3]],
+    [5, [2702, 3470, 3], [2700, 3469, 3], Anim.LEAP, 2, 4, [2702, 3465, 2]],
+    [6, [2702, 3464, 2], [2703, 3461, 2], Anim.LEAP, 2, 4, [2704, 3464, 0]],
+  ];
+  const player = createPlayer(2729, 3489, 0, 99);
+  for (const [index, start, tile, anim, animTick, xpTick, end] of expected) {
+    const obstacle = seers.obstacles.find((entry) => entry.index === index);
+    player.setLocation(new Location(...start));
+    const ticks = timeline(player, obstacle.object, tile);
+    if (anim != null) assert.equal(ticks.findIndex((entry) => entry.animations.includes(anim)), animTick, `obstacle ${index}: first animation`);
+    assert.equal(ticks.findIndex((entry) => entry.xp > 0), xpTick, `obstacle ${index}: XP tick`);
+    assert.equal(ticks.length - 1, xpTick, `obstacle ${index}: free with the XP`);
+    assert.deepEqual(tileOf(player), end, `obstacle ${index}: end tile`);
+  }
+  assert.equal(player.getAttribute("agility.laps")?.seers, 1);
+  assert.deepEqual(player.state.spam.slice(0, 2), ["You climb up the wall...", "...jump, and grab hold of the sign!"]);
+  assert.equal(player.state.ran, 1, "the tightrope's two-tile step is sent as a run step");
+});
+
+test("Seers' tightrope: a tile, two tiles the next tick, then a tile a tick, creaking on the second and sixth (rsprox 20261110T020354)", () => {
+  const rope = course("seers").obstacles.find((entry) => entry.index === 3);
+  const player = createPlayer(2710, 3490, 2);
+  const tiles = [];
+  const setLocation = player.setLocation;
+  player.setLocation = (location) => {
+    tiles.push([location.getX(), location.getY()]);
+    return setLocation(location);
+  };
+  const ticks = timeline(player, rope.object, [2710, 3489, 2]);
+  assert.deepEqual(tiles.map(([, y]) => y), [3490, 3489, 3488, 3487, 3486, 3485, 3484, 3483, 3482, 3481, 3480]);
+  assert.deepEqual(ticksWith(ticks, (entry) => entry.sounds.includes(2495)), [2, 6]);
+  assert.deepEqual(ticksWith(ticks, (entry) => entry.xp > 0), [9]);
+});
+
+test("the last obstacle of the Draynor, Varrock and Falador laps ends a tick after the lap, as captured; Seers' with it", () => {
+  const lastObstacles = [
+    ["draynor", 7, [3101, 3261, 3], [3102, 3261, 3], true],
+    ["varrock", 9, [3236, 3415, 3], [3236, 3416, 3], true],
+    ["falador", 13, [3024, 3334, 3], [3025, 3332, 3], true],
+    ["seers", 6, [2702, 3464, 2], [2703, 3461, 2], false],
+  ];
+  for (const [key, index, start, tile, extraTick] of lastObstacles) {
+    const obstacle = course(key).obstacles.find((entry) => entry.index === index);
+    const player = createPlayer(...start);
+    player.setAttribute("agility.progress", { course: key, index: index - 1 });
+    const ticks = timeline(player, obstacle.object, tile);
+    const lap = ticks.findIndex((entry) => entry.messages.some((message) => message.includes("lap count is")));
+    assert.ok(lap > 0, `${key}: the lap`);
+    assert.equal(ticks.length - 1, lap + (extraTick ? 1 : 0), `${key}: free ${extraTick ? "a tick after" : "with"} the lap`);
+  }
+});
+
+test("Seers' marks of grace spawn on the five captured tiles (91 marks, rsprox 20261109T090342 and 20261110T020354)", () => {
+  assert.deepEqual(course("seers").marks.tiles, [[2727, 3493, 3], [2706, 3493, 2], [2709, 3493, 2], [2712, 3481, 2], [2698, 3465, 2]]);
+});
+
+test("Falador's obstacles pay the captured helper_agility_add_xp amounts, adding up to the Wiki's 586", () => {
+  const xp = course("falador").obstacles.filter((entry) => entry.object !== ObjectIds.LEDGE_14).map((entry) => entry.xp);
+  assert.deepEqual(xp, [10.7, 22.7, 60.3, 26.8, 26.8, 60.3, 53.6, 30, 13.4, 13.4, 13.4, 13.4, 241.2]);
+  assert.equal(course("falador").lapBonus, 0);
+});
+
+test("Al Kharid's zip line cannot fail after the 2024 fail-point removal", () => {
+  const zipline = COURSES.find((entry) => entry.key === "alkharid").obstacles.find((entry) => entry.index === 4);
+  const random = Math.random;
+  Math.random = () => 0.999;
+  try {
+    const player = createPlayer(3301, 3163, 3, 20);
+    operate(player, zipline.object, [3301, 3163, 3]);
+    assert.deepEqual(tileOf(player), [3315, 3163, 1]);
+    assert.equal(player.state.xp, 48);
+    assert.equal(player.state.hits, 0);
+  } finally {
+    Math.random = random;
+  }
+});
+
 test("a low-level Prifddinas runner can fall from a tightrope and take damage", () => {
   const rope = COURSES.find((entry) => entry.key === "prifddinas").obstacles.find((entry) => entry.index === 2);
   const random = Math.random;
@@ -650,6 +1351,42 @@ test("the Chasm of Fire gaps land where the captures do: one long jump, then two
   assert.deepEqual(tileOf(player), [1440, 10098, 1]);
 });
 
+test("the Chasm of Fire platform edge drops a floor, as captured (73 Agility, 3.2 XP)", () => {
+  // rsprox captures 817, 819: from 1438,10097 a south-facing move onto the edge (cycles 22-35,
+  // 827 delay 4, sounds 2454 and 2461), a tick later the spam line and the floor below.
+  const player = createPlayer(1440, 10096, 2);
+  const animations = [];
+  const original = player.performAnimation;
+  player.performAnimation = (animation) => { animations.push([animation.getId(), animation.getDelay?.() ?? 0]); original(animation); };
+  const object = gameObject(56371, 1438, 10098, 2);
+  const route = { player, object, definition: object.getDefinition(), objectId: 56371, clickType: 1, destination: null };
+  hooks.route.forEach((handler) => handler(route));
+  assert.deepEqual([route.destination.x, route.destination.y, route.destination.z], [1438, 10097, 2]);
+  player.setLocation(new Location(1438, 10097, 2));
+  hooks.click.get(56371)({ player, object, objectId: 56371, clickType: 1, location: { x: 1438, y: 10098, z: 2 }, handled: false });
+  const move = player.getForceMovement();
+  assert.ok(move, "the exact move starts on the arrival tick");
+  assert.deepEqual([move.getEnd().getX(), move.getEnd().getY()], [0, 1]);
+  assert.deepEqual([move.getSpeed(), move.getReverseSpeed(), move.getDirection()], [22, 35, 2], "cycles 22-35, facing south (angle 0)");
+  assert.deepEqual(player.state.sounds, [2454, 2461]);
+  assert.deepEqual(animations[0], [827, 4]);
+  assert.deepEqual(player.state.spam, []);
+  tick();
+  assert.deepEqual(tileOf(player), [1438, 10098, 1], "a tick later, the floor below");
+  for (let ticks = 0; player.getAttribute("agility.obstacle") != null && ticks < 10; ticks++) tick();
+  assert.deepEqual(player.state.spam, ["You slide off the lip of the platform, landing on the one below."]);
+  assert.deepEqual(tileOf(player), [1438, 10098, 1]);
+  assert.equal(player.state.xp, 3.2);
+  assert.deepEqual(animations.map(([id]) => id), [827], "no sequence reset at landing (none in the captures)");
+
+  const novice = createPlayer(1438, 10097, 2, 72);
+  hooks.click.get(56371)({ player: novice, object, objectId: 56371, clickType: 1, location: { x: 1438, y: 10098, z: 2 }, handled: false });
+  tick();
+  assert.deepEqual(tileOf(novice), [1438, 10097, 2]);
+  assert.equal(novice.state.xp, 0);
+  assert.match(novice.state.messages[0], /Agility level of at least 73/);
+});
+
 test("the Prifddinas course's second half is played south-west of the city, as captured", () => {
   // rsprox capture 1149: the first dark hole drops to 2269,3389, the last climbs back to the city.
   const course = COURSES.find((entry) => entry.key === "prifddinas");
@@ -711,7 +1448,65 @@ test("Falador's rough wall is climbed facing it (north, across its edge)", () =>
   const falador = COURSES.find((course) => course.key === "falador");
   const first = falador.obstacles.find((obstacle) => obstacle.index === 1);
   const steps = first.steps({ player: null, obj: wall, pos: { x: 3036, y: 3341, z: 0 } });
-  assert.deepEqual(steps[0], { face: [3036, 3342] });
+  assert.deepEqual(steps.find((step) => step.face), { face: [3036, 3342] });
+});
+
+test("Falador's hand holds play as captured: the jump, the corner, three holds two ticks apart and the drop (rsprox 20261027T185126)", () => {
+  const falador = COURSES.find((course) => course.key === "falador");
+  const holds = falador.obstacles.find((obstacle) => obstacle.index === 3);
+  assert.equal(holds.object, ObjectIds.HAND_HOLDS_4);
+
+  const player = createPlayer(3050, 3349, 3);
+  const landings = [];
+  const moveTo = player.moveTo;
+  player.moveTo = (location) => {
+    landings.push([location.getX(), location.getY(), location.getZ()]);
+    return moveTo(location);
+  };
+  hooks.events.length = 0;
+  const random = Math.random;
+  Math.random = () => 0;
+  let ticks;
+  try {
+    ticks = timeline(player, holds.object, [3050, 3350, 3]);
+  } finally {
+    Math.random = random;
+  }
+
+  assert.deepEqual(landings, [
+    [3050, 3351, 3], [3050, 3351, 2], [3051, 3352, 2], [3051, 3353, 2], [3051, 3354, 2], [3051, 3355, 2],
+    [3050, 3357, 2], [3050, 3357, 3],
+  ]);
+  // As captured, from the op: the jump (2583) a tick on, hanging (1118) a tick later, a hold at each
+  // of ticks 4, 6 and 8, the drop (1120) at 10 and the roof with the XP at 12.
+  assert.deepEqual(ticksWith(ticks, (entry) => entry.animations.includes(Anim.JUMP_SHORT)), [1]);
+  assert.deepEqual(ticksWith(ticks, (entry) => entry.animations.includes(Anim.HANG)), [2, 4, 6, 8]);
+  assert.deepEqual(ticksWith(ticks, (entry) => entry.animations.includes(Anim.HANG_DROP)), [10]);
+  assert.deepEqual(ticksWith(ticks, (entry) => entry.xp > 0), [12]);
+  assert.equal(player.state.xp, 60.3, "the captured 603 tenths");
+  assert.deepEqual(tileOf(player), [3050, 3357, 3]);
+  assert.equal(hooks.events.filter((event) => event.name === "agility:obstacle" && event.payload.objectId === holds.object).length, 1);
+  assert.equal(player.getAttribute("agility.obstacle") ?? null, null);
+});
+
+test("Falador's diagonal tightrope walks the captured tiles, with the XP on the last (rsprox 20261027T185126)", () => {
+  const falador = COURSES.find((course) => course.key === "falador");
+  const rope = falador.obstacles.find((obstacle) => obstacle.index === 6);
+  const player = createPlayer(3035, 3361, 3);
+  const tiles = [];
+  const setLocation = player.setLocation;
+  player.setLocation = (location) => {
+    tiles.push([location.getX(), location.getY(), location.getZ()]);
+    return setLocation(location);
+  };
+  const ticks = timeline(player, rope.object, [3034, 3361, 3]);
+  assert.deepEqual(tiles.slice(1), [
+    [3034, 3361, 3], [3033, 3361, 3], [3032, 3360, 3], [3031, 3359, 3], [3030, 3358, 3], [3029, 3357, 3],
+    [3028, 3356, 3], [3028, 3355, 3], [3028, 3354, 3],
+  ], "after the route to 3035,3361: one tile a tick");
+  assert.deepEqual(ticksWith(ticks, (entry) => entry.moved).slice(0, 1), [1], "onto the rope a tick after the op");
+  assert.deepEqual(ticksWith(ticks, (entry) => entry.xp > 0), [9], "the XP with the last tile, 3028,3354");
+  assert.equal(player.state.xp, 60.3);
 });
 
 const MARK_OF_GRACE = 11849;
@@ -760,6 +1555,46 @@ test("a mark of grace is rolled when a lap is completed, and lasts 10 minutes fo
   assert.deepEqual(marks[0].options, { goesGlobal: false, despawnDelay: 1000 });
   const { x, y, z } = { x: marks[0].position.getX(), y: marks[0].position.getY(), z: marks[0].position.getZ() };
   assert.ok(draynor.marks.tiles.some((tile) => tile[0] === x && tile[1] === y && tile[2] === z), "on one of the course's mark tiles");
+});
+
+test("every course's loot tracker source is the cache's entry for it (enum 4976)", () => {
+  const sources = CacheDefinitions.getEnumValues(4976);
+  // The enum's names for courses this server names otherwise.
+  const words = { "ape-atoll": "Ape Atoll", "wyrm-basic": "Colossal Wyrm", "wyrm-advanced": "Colossal Wyrm", gnome: "Gnome Stronghold",
+    "shayzien-basic": "Shayzien Basic", "shayzien-advanced": "Shayzien Advanced", wilderness: "Wilderness Agility", werewolf: "Werewolf" };
+  for (const course of COURSES) {
+    if (course.lootSource == null) continue;
+    const name = String(sources.get(course.lootSource));
+    const word = words[course.key] ?? course.name.replace(/ (Rooftop|Agility Course)$/, "").replace(/ Village$/, "");
+    assert.ok(name.includes(word), `${course.key}: source ${course.lootSource} is "${name}"`);
+  }
+  assert.equal(COURSES.find((course) => course.key === "barbarian").lootSource, undefined, "the enum has no Barbarian Outpost course");
+  assert.equal(COURSES.filter((course) => course.lootSource != null).length, COURSES.length - 1, "every other course has one");
+});
+
+test("a lap goes in the loot tracker after the helper's lap end, with the mark it spawned (rsprox 20261109T090342: 7197, then 7198)", () => {
+  hooks.events.length = 0;
+  // Where the scripts stood when the entry was asked for, to compare with the helper's lap end (5174).
+  let scriptsBefore = null;
+  hooks.answers["loot-tracker:add"] = ({ player }) => { scriptsBefore = player.state.scripts.length; };
+  try {
+    lapWithMarkRolls("seers", createPlayer(2729, 3489, 0, 60), [0]);
+  } finally {
+    delete hooks.answers["loot-tracker:add"];
+  }
+  const entries = hooks.events.filter((event) => event.name === "loot-tracker:add").map((event) => event.payload);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].source, 27);
+  assert.equal(entries[0].category, 5);
+  assert.deepEqual(entries[0].items, [[MARK_OF_GRACE, 1]]);
+  const [{ player }] = entries;
+  const endLap = player.state.scripts.findIndex(([id]) => id === 5174);
+  assert.ok(endLap >= 0 && endLap < scriptsBefore, "the helper's lap end was sent before the entry");
+
+  hooks.events.length = 0;
+  lapWithMarkRolls("seers", createPlayer(2729, 3489, 0, 60), [0.99, 0.99]);
+  const missed = hooks.events.filter((event) => event.name === "loot-tracker:add").map((event) => event.payload);
+  assert.deepEqual(missed.map((entry) => entry.items), [[]], "a lap with no mark is still added");
 });
 
 test("after a mark, laps can't roll another until the third clock minute on; the cooldown is saved (Wiki: Mark of Grace)", () => {
@@ -839,10 +1674,15 @@ test("a course mark picked up finishes a lap only when agility:mark-taken says s
   const inventory = player.getInventory();
   player.getInventory = () => ({ ...inventory, getAddableAmount: (item) => item.getAmount(), adds: (id, amount) => added.push([id, amount]) });
   player.setAttribute("agility.progress", { course: "draynor", index: 2 });
-  const mark = { getItem: () => ({ getId: () => MARK_OF_GRACE }), getgoesGlobal: () => false, getDespawnDelay: () => 1000 };
-  const pickUp = (groundItem = mark, location = { x: 3098, y: 3281, z: 3 }) => hooks.pickup({ player, groundItem, groundItemId: MARK_OF_GRACE, clickType: 1, location, handled: false });
+  const mark = {
+    getItem: () => ({ getId: () => MARK_OF_GRACE }), getgoesGlobal: () => false, getDespawnDelay: () => 1000,
+    getPosition: () => new Location(3098, 3281, 3),
+  };
+  // The mark credited to the inventory (ItemOnGroundManager's "ground-items:taken"); a click that took nothing sends none.
+  const taken = (groundItem = mark, source = "pickup") => hooks.listeners["ground-items:taken"]({ player, groundItem, source, itemId: MARK_OF_GRACE, amount: 1 });
+  assert.equal(hooks.pickup, undefined, "clicking a mark pays nothing before the pickup succeeds");
   hooks.events.length = 0;
-  pickUp();
+  taken();
   assert.deepEqual(hooks.events.find((event) => event.name === "agility:mark-taken")?.payload.course, "draynor");
   assert.deepEqual(player.getAttribute("agility.progress"), { course: "draynor", index: 2 }, "unanswered: nothing but the pick-up");
   assert.equal(player.getAttribute("agility.laps")?.draynor, undefined);
@@ -852,9 +1692,11 @@ test("a course mark picked up finishes a lap only when agility:mark-taken says s
   };
   try {
     hooks.events.length = 0;
-    pickUp({ ...mark, getgoesGlobal: () => true });
+    taken({ ...mark, getgoesGlobal: () => true });
     assert.equal(hooks.events.length, 0, "a dropped mark is not a course's");
-    pickUp();
+    taken(mark, "telegrab");
+    assert.equal(player.getAttribute("agility.laps")?.draynor, undefined, "only a picked-up mark finishes a lap");
+    taken();
     assert.equal(player.getAttribute("agility.laps").draynor, 1);
     assert.equal(player.getAttribute("agility.progress"), null);
     assert.deepEqual(added, [[995, 10]]);
@@ -905,13 +1747,21 @@ test("Grace's Toggle Counter hides the lap count message, and laps still count",
   runLap(draynor, player);
   assert.equal(lapMessages(), 1);
 
+  const said = [];
+  player.getDialogueManager = () => ({ startDialogues: (chain) => said.push(...chain.getDialogues().values()) });
+  const before = player.state.messages.length;
   hooks.npcs.Grace["Toggle Counter"]({ player });
-  assert.equal(player.state.messages.at(-1), "Your lap count will no longer be shown when you complete a lap.");
+  // rsprox 233/03247.txt:25731: Grace's chathead (5919, chathap3 569), no game message.
+  assert.equal(player.state.messages.length, before, "no game message");
+  assert.equal(said.length, 1);
+  assert.equal(said[0].getNpcId(), 5919);
+  assert.equal(said[0].text, "I've disabled your lap counter messages, if you want to turn it back on, so you can see your total laps after you finish one, speak to me again.");
   runLap(draynor, player);
   assert.equal(lapMessages(), 1, "no message for the second lap");
   assert.equal(player.getAttribute("agility.laps").draynor, 2, "but it counted");
 
   hooks.npcs.Grace["Toggle Counter"]({ player });
+  assert.equal(said.at(-1).text, "I've turned on your lap counter, you'll get a message when you complete a lap on a course. To help you keep track.", "rsprox 233/03247.txt:25773");
   runLap(draynor, player);
   assert.equal(lapMessages(), 2);
 });
@@ -1021,7 +1871,7 @@ test("Ape Atoll: the rope won't take a pet across (Wiki)", () => {
   }
 });
 
-test("Wilderness Agility dispenser (Wiki): a paid lap started without Tag resets the streak and the unclaimed ticket and reward; the payment stays", () => {
+test("Wilderness Agility dispenser (Wiki): a paid lap started without Tag resets the streak but keeps the unclaimed ticket and reward; the payment stays", () => {
   const listeners = {};
   const Dispenser = require("../plugins/skills/AgilityDispenser.plugin");
   Dispenser.register(new Proxy({
@@ -1030,6 +1880,9 @@ test("Wilderness Agility dispenser (Wiki): a paid lap started without Tag resets
   }, { get: (target, key) => (key in target ? target[key] : () => {}) }));
   const answers = ["agility:lap", "agility:obstacle-start"];
   for (const name of answers) hooks.answers[name] = listeners[name];
+  const random = Math.random;
+  // The Wilderness obstacles can fail even at 99; this is about the dispenser, so the laps pass.
+  Math.random = () => 0;
   try {
     const course = COURSES.find((entry) => entry.key === "wilderness");
     const player = createPlayer(3004, 3937, 0);
@@ -1039,11 +1892,18 @@ test("Wilderness Agility dispenser (Wiki): a paid lap started without Tag resets
     assert.equal(varbit("wildy_agility_reward_lap_new"), 1, "a paid lap: streak 1");
     assert.equal(varbit("wildy_agility_reward_available"), 1);
     player.setLocation(new Location(3004, 3937, 0));
-    runLap(course, player);
+    runLap(course, player, {
+      beforeLast: () => {
+        assert.equal(player.getAttribute(Dispenser.ATTRIBUTES.ticket), 1,
+          "starting another lap does not lose the pending ticket (#2711)");
+        assert.equal(player.getAttribute(Dispenser.ATTRIBUTES.reward), 1, "nor the pending reward");
+      },
+    });
     assert.equal(varbit("wildy_agility_reward_lap_new"), 1, "the untagged lap's pipe reset it, so this lap starts again at 1");
     assert.equal(player.getAttribute(Dispenser.ATTRIBUTES.deposit), 1, "the payment stays");
     assert.equal(varbit("wildy_agility_token_available"), 1, "this lap's own ticket");
   } finally {
+    Math.random = random;
     for (const name of answers) delete hooks.answers[name];
   }
 });
@@ -1093,6 +1953,37 @@ test("the Waterbirth crevice goes one way, from the crab room down; from below i
   assert.deepEqual(low.messages, ["You need an Agility level of at least 81 to attempt this."]);
 });
 
+test("run energy does not recover while an Agility obstacle is crossed, and does again after", () => {
+  // Wiki (Energy): no regeneration while "crossing an agility obstacle". rsprox_transcripts/223/00003.txt:
+  // on the Trollheim climbing rocks no update_runenergy is sent while BUSY is set, and +20 comes back
+  // on the tick it clears.
+  const { MovementQueue } = require("../dist/game/model/movement/MovementQueue");
+  const ObstacleRunner = require("../plugins/skills/agility/ObstacleRunner.Agility");
+  const CREVICE = 53258;
+  const { player } = realPlayer(1852, 4406, 3, 81);
+  player.setRunEnergyUnits(5000);
+  const resting = MovementQueue.runEnergyRestoreUnits(player);
+  assert.equal(resting, Math.floor(81 / 10) + 15);
+
+  const object = gameObject(CREVICE, 1853, 4406, 3);
+  hooks.click.get(CREVICE)({ player, object, definition: object.getDefinition(), objectId: CREVICE, clickType: 1, location: { x: 1853, y: 4406, z: 3 }, handled: false });
+  let crossingTicks = 0;
+  for (; ObstacleRunner.isBusy(player); crossingTicks++) {
+    assert.ok(crossingTicks < 100, "the crevice never finished");
+    assert.equal(MovementQueue.runEnergyRestoreUnits(player), 0, `tick ${crossingTicks}: no recovery mid-obstacle`);
+    tick();
+  }
+  assert.ok(crossingTicks > 0);
+  assert.deepEqual(tileOf(player), [1862, 4406, 1]);
+  assert.equal(MovementQueue.runEnergyRestoreUnits(player), resting, "recovery resumes once across");
+
+  // The same runner playing a door or lever (no `agility` flag) leaves recovery alone.
+  ObstacleRunner.run({ player }, [{ wait: 2 }]);
+  assert.equal(ObstacleRunner.isBusy(player), true);
+  assert.equal(MovementQueue.runEnergyRestoreUnits(player), resting);
+  while (ObstacleRunner.isBusy(player)) tick();
+});
+
 test("a refuse entry is a message or a mesbox, and nothing else", () => {
   assert.throws(() => build({ name: "x", object: 1, level: 1, refuse: { text: "no" } }, 0), /refuse needs a message or a mesbox/);
 });
@@ -1129,6 +2020,26 @@ function timeline(player, objectId, objectTile) {
   return ticks;
 }
 
+/** The ticks of a `timeline` whose entry passes `test`. */
+function ticksWith(ticks, test) {
+  return ticks.map((entry, index) => (test(entry) ? index : null)).filter((index) => index != null);
+}
+
+test("as captured (RSProx 20261109T224258-5ab63b4): the Auburn Valley log balance, a tile a tick with sound 2470 each", () => {
+  for (const [objectId, start, object, finish, steps] of [
+    [56991, [1453, 3336, 0], [1453, 3335, 0], [1453, 3329], 7],
+    [56990, [1401, 3291, 0], [1401, 3290, 0], [1401, 3283], 8],
+    [56990, [1401, 3283, 0], [1401, 3284, 0], [1401, 3291], 8],
+  ]) {
+    const player = createPlayer(...start, 45);
+    const ticks = timeline(player, objectId, object);
+    assert.deepEqual(tileOf(player).slice(0, 2), finish);
+    assert.equal(ticks.flatMap((entry) => entry.sounds).filter((sound) => (sound.id ?? sound) === 2470).length, steps, `${objectId}: a sound per tile`);
+    assert.equal(ticks.reduce((sum, entry) => sum + entry.xp, 0), 19.5);
+    assert.equal(player.state.blocked, false);
+  }
+});
+
 const course = (key) => COURSES.find((entry) => entry.key === key);
 const HIGHLIGHT_VARBIT = 13140;
 const [START_LAP, END_LAP, ADD_XP] = [5173, 5174, 5175];
@@ -1144,6 +2055,15 @@ test("Varrock: the course helper is highlighted for the lap and told each obstac
   assert.deepEqual(player.state.varbitLog.filter(([id]) => id === HIGHLIGHT_VARBIT).map(([, value]) => value), [7, 0]);
   assert.equal(course("varrock").lapBonus, 0, "the Wiki's obstacle XP adds up to the lap");
   assert.equal(course("canifis").lapBonus, 0);
+});
+
+// Wiki (Obstacle pipe (Barbarian Outpost)): "Passing through the pipe awards the player 10 Agility experience."
+test("the Barbarian Outpost pipe gives 10 Agility XP, either way through", () => {
+  for (const from of [[2552, 3561, 0], [2552, 3558, 0]]) {
+    const player = createPlayer(...from);
+    const ticks = timeline(player, 20210, [2552, 3559, 0]);
+    assert.equal(ticks.reduce((sum, entry) => sum + entry.xp, 0), 10, `from ${from}`);
+  }
 });
 
 test("rooftop gaps: the jump two ticks after arriving, the landing (2588) a tick later, the XP the tick after (rsprox captures)", () => {
@@ -1329,7 +2249,7 @@ test("Agility Pyramid blocks slide out over two ticks, wait two, and slide back:
   assert.deepEqual([north.npc, north.home, north.dir], [5787, [3366, 2845, 3], [0, 1]]);
 });
 
-test("course pipes replay the squeeze with every crawl, so no weapon shows on the way", () => {
+test("course pipes replay the squeeze with every crawl", () => {
   const SQUEEZE_PIPE = 749; // human_doublepipesqueeze: both hands empty
   const pipes = [
     ["gnome", ObjectIds.OBSTACLE_PIPE_10, { x: 2484, y: 3430, z: 0 }],
@@ -1348,4 +2268,268 @@ test("course pipes replay the squeeze with every crawl, so no weapon shows on th
   const wildy = COURSES.find((entry) => entry.key === "wilderness").obstacles.find((entry) => entry.object === ObjectIds.OBSTACLE_PIPE_9);
   const route = wildy.steps({ player: null, obj: null, pos: { x: 3004, y: 3937, z: 0 } }).filter((step) => step.move || step.tele).map((step) => (step.move ?? step.tele)[1]);
   assert.deepEqual(route, [3940, 3947, 3950]);
+
+  // rsprox 449 sends SEQUENCE 749 exactly twice, on the two crawl ticks; the unseen middle tick
+  // has no sequence.
+  const steps = wildy.steps({ player: null, obj: null, pos: { x: 3004, y: 3937, z: 0 } });
+  assert.equal(steps.filter((step) => step.anim === SQUEEZE_PIPE).length, 2);
+  const gap = steps.findIndex((step) => step.tele);
+  assert.notEqual(gap, -1);
+  assert.equal(steps[gap + 1].anim, undefined, "no third sequence on the unseen tick");
+
+  // rsprox 449: each crawl's 30-cycle sequence delay and its exact-move start are the same cycle,
+  // so the client's native hand-override gate empties the hands exactly as the crawl begins.
+  for (const move of steps.filter((step) => step.anim === SQUEEZE_PIPE)) {
+    assert.equal(move.delay, 30);
+    assert.deepEqual(move.speed, [30, 126]);
+  }
+});
+
+test("Wilderness ridge door: opening the south door and the north gates swaps the captured locs for two ticks (rsprox 449/450)", () => {
+  const { RIDGE, openRidgeDoor, openRidgeGates } = require("../plugins/skills/agility/shortcuts/Wilderness.Agility")._test;
+  const events = [];
+  const placed = new Map();
+  const key = (id, tile) => `${id}:${tile[0]},${tile[1]},${tile[2]}`;
+  const place = (id, tile) => placed.set(key(id, tile), {
+    getId: () => id,
+    getLocation: () => new Location(tile[0], tile[1], tile[2]),
+  });
+  place(RIDGE.door, RIDGE.doorTile);
+  place(RIDGE.gateLeft, RIDGE.gateLeftTile);
+  place(RIDGE.gateRight, RIDGE.gateRightTile);
+  const core = {
+    Location,
+    GameObject: class {
+      constructor(id, location, type, face) { this.id = id; this.location = location; this.face = face; }
+      getId() { return this.id; }
+      getLocation() { return this.location; }
+    },
+    MapObjects: { get: (id, location) => placed.get(key(id, [location.getX(), location.getY(), location.getZ()])) ?? null },
+    ObjectManager: {
+      register: (object) => events.push(["register", object.getId()]),
+      deregister: (object) => events.push(["deregister", object.getId()]),
+    },
+    Task: class { constructor(delay, key) { this.delay = delay; this.key = key; } stop() { this.stopped = true; } },
+    TaskManager: { submit: (task) => events.push(["task", task]) },
+  };
+  const context = { core, player: { getPrivateArea: () => null } };
+
+  assert.equal(openRidgeDoor(context), true);
+  assert.deepEqual(events.slice(0, 3), [
+    ["deregister", RIDGE.door], ["register", RIDGE.invisWall], ["register", RIDGE.prisonDoorOpen],
+  ]);
+  assert.equal(events[3][0], "task");
+  const doorTask = events[3][1];
+  assert.equal(doorTask.delay, 2);
+  events.length = 0;
+  doorTask.execute();
+  assert.deepEqual(events, [
+    ["deregister", RIDGE.invisWall], ["deregister", RIDGE.prisonDoorOpen], ["register", RIDGE.door],
+  ]);
+
+  events.length = 0;
+  assert.equal(openRidgeGates(context), true);
+  assert.deepEqual(events.filter(([kind]) => kind !== "task"), [
+    ["deregister", RIDGE.gateLeft], ["deregister", RIDGE.gateRight],
+    ["register", RIDGE.invisWall], ["register", RIDGE.invisWall],
+    ["register", RIDGE.gateOpenLeft], ["register", RIDGE.gateOpenRight],
+  ]);
+
+  // A missing gate leaf leaves every closed loc in place: no partial swap.
+  placed.delete(key(RIDGE.gateRight, RIDGE.gateRightTile));
+  events.length = 0;
+  assert.equal(openRidgeGates(context), false);
+  assert.deepEqual(events, []);
+
+  const enter = require("../plugins/skills/agility/shortcuts/Wilderness.Agility").wildernessRidgeIn();
+  assert.deepEqual(enter.end, { spam: RIDGE.endIn });
+  assert.deepEqual(enter.steps[0], { msg: { spam: RIDGE.start } });
+  assert.deepEqual(enter.steps[2], { walk: [[2998, 3931]] });
+  const leave = require("../plugins/skills/agility/shortcuts/Wilderness.Agility").wildernessRidgeOut();
+  assert.deepEqual(leave.end, { spam: RIDGE.endOut });
+  assert.deepEqual(leave.steps[2], { walk: [[2998, 3918]] });
+  assert.deepEqual(leave.steps[4], { walk: [[2998, 3916]] });
+});
+
+test("Fossil Island sea-floor obstacles and holes each give 4.5 Agility XP (Wiki: Underwater Agility and Thieving)", () => {
+  const obstacles = [
+    [30962, [3758, 10260, 1], [3757, 10260, 1], 3759],
+    [30962, [3726, 10245, 1], [3725, 10245, 1], 3727],
+    [30962, [3824, 10264, 1], [3825, 10264, 1], 3823],
+    [30964, [3754, 10244, 1], [3754, 10243, 1], null],
+    [30964, [3808, 10253, 1], [3807, 10253, 1], 3809],
+  ];
+  for (const [object, at, from, landingX] of obstacles) {
+    const player = createPlayer(...from);
+    operate(player, object, at);
+    assert.equal(player.state.xp, 4.5, `${object} at ${at}`);
+    if (landingX != null) assert.equal(tileOf(player)[0], landingX, `${object} at ${at} crosses`);
+  }
+  const hole = createPlayer(3754, 10243, 1);
+  operate(hole, 30966, [3754, 10241, 1]);
+  assert.equal(hole.state.xp, 4.5);
+  assert.deepEqual(tileOf(hole), [3779, 10241, 1]);
+});
+
+// The older tests above use local fake hooks. This final test exercises the actual loader,
+// equipment producer, cache map, object-action listener and World task phases.
+test("Broken Raft checks the grapple requirements on both approaches", async (t) => {
+  const { Player } = require("../dist/game/entity/impl/player/Player");
+  const { PlayerSession } = require("../dist/net/PlayerSession");
+  const { Inventory } = require("../dist/game/model/container/impl/Inventory");
+  const { EquipPacketListener } = require("../dist/net/packet/impl/EquipPacketListener");
+  const { EquipmentRequirements } = require("../dist/game/model/equipment/EquipmentRequirements");
+  const { ObjectActionPacketListener } = require("../dist/net/packet/impl/ObjectActionPacketListener");
+  const core = PluginManager.getCoreApi();
+  const oldBots = process.env.DISABLE_PLAYER_BOTS, oldSubmit = core.TaskManager.submit, oldError = console.error;
+  const ownedTasks = new Set(), actors = [], errors = [], rolls = new Map(), rollLevels = new Map();
+  let started = false;
+  process.env.DISABLE_PLAYER_BOTS = "1";
+  t.after(() => {
+    try {
+      for (const p of actors) {
+        const task = p.getAttribute("agility.obstacle");
+        if (task?.isRunning()) task.stop();
+        if (p.isRegistered()) core.World.getPlayers().removes(p);
+      }
+      if (started) PluginManager.emitServerShutdown({});
+      for (const task of ownedTasks) if (task.isRunning()) task.stop();
+      core.World.process();
+      assert.ok([...ownedTasks].every((task) => !task.isRunning()), "fixture-owned tasks stop");
+      assert.deepEqual(errors, [], "no hidden plugin or teardown errors");
+    } finally {
+      core.TaskManager.submit = oldSubmit; console.error = oldError;
+      if (oldBots === undefined) delete process.env.DISABLE_PLAYER_BOTS; else process.env.DISABLE_PLAYER_BOTS = oldBots;
+    }
+  });
+  core.TaskManager.submit = function (...args) { if (args[0]) ownedTasks.add(args[0]); return oldSubmit.apply(this, args); };
+  console.error = (...args) => { errors.push(args.map(String).join(" ")); return oldError.apply(console, args); };
+  core.ObjectDefinition.init(); core.RegionManager.init();
+  PluginManager.loadFromDirectory(path.resolve(__dirname, "../plugins"));
+  assert.ok(PluginManager.loadedPlugins.includes("Agility"), "real Agility plugin is registered");
+  assert.equal(core.WorldDefinition.isMembersWorld(), true);
+  PluginManager.createApi("RaftFixture").onCustomEvent("agility:roll", ({ player, objectId }) => {
+    if (objectId !== 17068) return;
+    rolls.set(player, (rolls.get(player) ?? 0) + 1);
+    const sm = player.getSkillManager();
+    rollLevels.set(player, [Skill.AGILITY, Skill.STRENGTH, Skill.RANGED].map((skill) => ({
+      current: sm.getCurrentLevel(skill), base: sm.getMaxLevel(skill), xp: sm.getExperience(skill),
+    })));
+  });
+  PluginManager.emitServerStartup({}); started = true;
+  const { World, RegionManager, MapObjects, Item, Equipment } = core;
+  const raftTile = new Location(3252, 3179, 0);
+  RegionManager.loadMapFiles(raftTile.getX(), raftTile.getY());
+  const raft = MapObjects.get(17068, raftTile, null);
+  assert.ok(raft, "the active map contains the actual Broken Raft object");
+  const raftDef = raft.getDefinition();
+  assert.equal(raftDef.getName(), "Broken Raft");
+  assert.equal(raftDef.getInteractions()[0], "Grapple");
+  const channel = () => ({ kind: "test", remoteAddress: "127.0.0.1", isOpen: () => true, send: () => true,
+    close() {}, onData() {}, onError() {}, onClose() {} });
+  function actor(name, tile, agility, strength, ranged, geared, baseLevels) {
+    const player = new Player(new PlayerSession(channel())); actors.push(player);
+    player.setUsername(name); player.setLongUsername(core.Misc.stringToLongBigInt(name));
+    player.setAttribute("bot-skip-persistence", true); player.setLocation(new Location(...tile));
+    assert.equal(RegionManager.blocked(player.getLocation(), null), false, "approach tile is walkable in the active map");
+    assert.equal(World.getPlayers().add(player), true); player.needsPlacement = false;
+    const sm = player.getSkillManager();
+    for (const [skill, base] of [[Skill.AGILITY, baseLevels.agility], [Skill.STRENGTH, baseLevels.strength], [Skill.RANGED, baseLevels.ranged]]) {
+      sm.setExperiences(skill, core.SkillManager.getExperienceForLevel(base), false);
+      sm.setMaxLevel(skill, base); sm.setCurrentLevels(skill, base);
+    }
+    if (geared) {
+      for (const id of [9174, 9419]) {
+        player.getInventory().add(new Item(id, 1), true);
+        const slot = player.getInventory().getItems().findIndex((item) => item.getId() === id);
+        assert.ok(slot >= 0, "real item is present before equipment action");
+        const definition = core.ItemDefinition.forId(id);
+        assert.ok(definition, "active item definition exists");
+        assert.equal(EquipmentRequirements.getUnmet(player, definition), null, "equipment is legal at base levels");
+        EquipPacketListener.equip(player, id, slot, Inventory.INTERFACE_ID);
+      }
+      assert.equal(player.getEquipment().getItems()[Equipment.WEAPON_SLOT].getId(), 9174, "bronze crossbow was actually equipped");
+      assert.equal(player.getEquipment().getItems()[Equipment.AMMUNITION_SLOT].getId(), 9419, "mith grapple was actually equipped");
+    }
+    for (const [skill, desired, base] of [[Skill.AGILITY, agility, baseLevels.agility],
+      [Skill.STRENGTH, strength, baseLevels.strength], [Skill.RANGED, ranged, baseLevels.ranged]]) {
+      if (desired > base) sm.increaseCurrentLevel(skill, desired - base, desired);
+      else sm.setCurrentLevels(skill, desired);
+      assert.equal(sm.getMaxLevel(skill), base);
+      assert.equal(sm.getCurrentLevel(skill), desired);
+      assert.equal(sm.getExperience(skill), core.SkillManager.getExperienceForLevel(base));
+    }
+    return player;
+  }
+  async function check(name, tile, agility, strength, ranged, geared, accepted, options = {}) {
+    const baseLevels = { agility: options.baseAgility ?? agility, strength: options.baseStrength ?? 19, ranged: options.baseRanged ?? 37 };
+    const p = actor(name, tile, agility, strength, ranged, geared, baseLevels), messages = [];
+    const send = p.sendMessage.bind(p);
+    p.sendMessage = (message, ...args) => { messages.push(String(message)); return send(message, ...args); };
+    try {
+    assert.deepEqual([p.getLocation().getX(), p.getLocation().getY(), p.getLocation().getZ()], tile, "actor starts on the intended map-derived approach");
+    assert.equal(p.getAttribute("agility.obstacle") == null, true, "no earlier obstacle");
+    assert.equal(p.getMovementQueue().isMovementBlocked(), false, "movement starts unlocked");
+    const snapshot = () => ({ tile: [p.getLocation().getX(), p.getLocation().getY(), p.getLocation().getZ()],
+      xp: p.getSkillManager().getExperience(Skill.AGILITY), hp: p.getHitpoints(),
+      inventory: p.getInventory().getItems().map((item) => [item.getId(), item.getAmount()]),
+      equipment: p.getEquipment().getItems().map((item) => [item.getId(), item.getAmount()]) });
+    const before = snapshot();
+    const sourceRefusal = () => messages.some((message) => /^You need (?:an? (?:Agility|Strength|Ranged) level of at least |a crossbow equipped)/.test(message));
+    new ObjectActionPacketListener().executeAction(p, 17068, raftTile.getX(), raftTile.getY(), 1);
+    for (let tick = 0; tick < 30 && !sourceRefusal() && !p.getAttribute("agility.obstacle"); tick++) World.process();
+    const obstacle = p.getAttribute("agility.obstacle");
+    const sm = p.getSkillManager();
+    assert.equal(sm.getCurrentLevel(Skill.AGILITY), agility, "Agility at dispatch outcome");
+    assert.equal(sm.getCurrentLevel(Skill.STRENGTH), strength, "Strength at dispatch outcome");
+    assert.equal(sm.getCurrentLevel(Skill.RANGED), ranged, "Ranged at dispatch outcome");
+    assert.equal(sm.getMaxLevel(Skill.AGILITY), baseLevels.agility);
+    assert.equal(sm.getMaxLevel(Skill.STRENGTH), baseLevels.strength);
+    assert.equal(sm.getMaxLevel(Skill.RANGED), baseLevels.ranged);
+    if (accepted) {
+      const expected = [[Skill.AGILITY, agility, baseLevels.agility], [Skill.STRENGTH, strength, baseLevels.strength],
+        [Skill.RANGED, ranged, baseLevels.ranged]].map(([skill, current, base]) => ({
+        current, base, xp: core.SkillManager.getExperienceForLevel(base),
+      }));
+      assert.deepEqual(rollLevels.get(p), expected, "current levels, base levels and XP at the actual agility roll");
+      assert.ok(obstacle?.isRunning(), "valid requirements start the real obstacle task");
+      assert.equal(rolls.get(p), 1, "the actual agility attempt was reached exactly once");
+      assert.equal(p.getMovementQueue().isMovementBlocked(), true, "the obstacle owns movement");
+      obstacle.stop(); // Immediate initial steps may already have run; stop the remaining crossing.
+      assert.equal(p.getAttribute("agility.obstacle"), null);
+      assert.equal(p.getMovementQueue().isMovementBlocked(), false, "stopping releases movement");
+      assert.equal(p.getForceMovement() == null, true, "stopping leaves no forced movement");
+    } else {
+      assert.equal(rolls.get(p) ?? 0, 0, "refusal occurs before an agility attempt");
+      assert.equal(obstacle == null, true, "refusal does not start an obstacle");
+      assert.equal(sourceRefusal(), true, "the existing shortcut consumer reported a requirements refusal");
+      if (options.refusal) assert.ok(messages.includes(options.refusal), "the expected skill is named in the refusal");
+      assert.equal(p.getMovementQueue().isMovementBlocked(), false, "refusal leaves movement unlocked");
+      assert.deepEqual(snapshot(), before, "refusal conserves position, XP, hitpoints and items");
+    }
+    assert.equal(p.isRegistered(), true); assert.deepEqual(errors, []);
+    } finally {
+      const task = p.getAttribute("agility.obstacle");
+      if (task?.isRunning()) task.stop();
+      if (p.isRegistered()) World.getPlayers().removes(p);
+    }
+  }
+  // Approaches come from the existing map-derived server row; no destination or crossing is asserted.
+  const west = [3246, 3179, 0], east = [3253, 3179, 0];
+  await t.test("west exact grapple thresholds", () => check("raftgoodw", west, 8, 19, 37, true, true));
+  await t.test("below Agility threshold", () => check("raftagilo", west, 7, 19, 37, true, false));
+  await t.test("missing grapple gear", () => check("raftnogear", west, 8, 19, 37, false, false));
+  await t.test("west below Strength", () => check("raftweakw", west, 8, 18, 37, true, false,
+    { refusal: "You need a Strength level of at least 19 to attempt this." }));
+  await t.test("east below Ranged", () => check("raftrangee", east, 8, 19, 36, true, false,
+    { refusal: "You need a Ranged level of at least 37 to attempt this." }));
+  await t.test("east exact grapple thresholds", () => check("raftgoode", east, 8, 19, 37, true, true));
+  await t.test("barehanded below 48", () => check("raftbarelo", west, 47, 1, 1, false, false));
+  await t.test("barehanded at 48", () => check("raftbareok", east, 48, 1, 1, false, true));
+  await t.test("Agility boosted above base reaches the grapple requirement", () =>
+    check("raftboostag", west, 8, 19, 37, true, true, { baseAgility: 7 }));
+  await t.test("Strength boosted above base reaches the grapple requirement", () =>
+    check("raftboostst", east, 8, 19, 37, true, true, { baseStrength: 18 }));
+  await t.test("Ranged boosted above base reaches the grapple requirement", () =>
+    check("raftboostra", west, 8, 19, 37, true, true, { baseRanged: 36 }));
 });

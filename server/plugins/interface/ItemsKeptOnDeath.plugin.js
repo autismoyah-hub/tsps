@@ -1,5 +1,6 @@
 let PrayerHandler;
 let core;
+let pluginApi;
 
 // OpenRune cache names: component.wornitems:deathkeep and interface.deathkeep.
 const OPEN_ITEMS_KEPT_ON_DEATH_BUTTON = (387 << 16) | 5;
@@ -10,9 +11,17 @@ const ITEMS_KEPT_SETTINGS_COMPONENT = (ITEMS_KEPT_ON_DEATH_INTERFACE_ID << 16) |
 const DEATH_ITEMS_INVENTORY_ID = 584;
 const DEATH_ITEM_STATE_INVENTORY_ID = 468;
 const DEATH_INVENTORY_CAPACITY = 50;
-// Clientscript 974 uses these otherwise unrelated object IDs as item-state markers.
+// Clientscript 974 uses these otherwise unrelated object IDs as item-state markers: kept;
+// to the gravestone, with the item's grave fee plus one as the count; lost to the killer, or
+// dropped where the player dies; and deleted (any other marker).
 const KEPT_ITEM_STATE = 323;
+const GRAVE_ITEM_STATE = 367;
 const LOST_ITEM_STATE = 1991;
+const DELETED_ITEM_STATE = 368;
+// Wiki: Items Kept on Death: the looting bag "disappears completely"; its contents drop.
+const LOOTING_BAG = "Looting bag";
+// Priced at face value in the guide risk value.
+const CURRENCY = new Set(["Coins", "Platinum token"]);
 const previewSettings = new WeakMap();
 
 function getSettings(player) {
@@ -36,13 +45,56 @@ function getAmountToKeep(player, settings) {
   return (settings.skullActive ? 0 : 3) + (settings.protectItemPrayer ? 1 : 0);
 }
 
-/** The death's own choice (PlayerDeathTask.getItemsToKeep), for the count the toggles give. */
-function getItemsToKeep(player, settings) {
-  return core.PlayerDeathTask.getItemsToKeep(player, getAmountToKeep(player, settings));
+/**
+ * The death's own choice (PlayerDeathTask.getKeptItems), for the count the toggles give. An
+ * ornamented item the death protects beyond the count is listed with the other items, marked
+ * kept; the PvP and Wilderness toggles show a death that does not protect it.
+ */
+function getKeptItems(player, settings) {
+  const cosmetics = !settings.playerKill && settings.wildernessLevel === 0
+    && core.PlayerDeathTask.protectsCosmetics(player, null);
+  return core.PlayerDeathTask.getKeptItems(player, getAmountToKeep(player, settings), cosmetics);
 }
 
-function getDeathItems(player, toKeep) {
+/** One item's grave fee: the client multiplies the marker's count by the stack size. */
+function graveFee(player, item) {
+  const query = { player, items: [{ id: item.getId(), amount: 1 }], fee: 0 };
+  pluginApi.emitCustomEvent("gravestones:fee", query);
+  return Math.max(0, Number(query.fee) || 0);
+}
+
+/** Destroyed on every unsafe death (NeverKeptOnDeath answers `items:never-kept-on-death`). */
+function neverKept(item) {
+  const query = { item, neverKept: false };
+  pluginApi.emitCustomEvent("items:never-kept-on-death", query);
+  return query.neverKept === true;
+}
+
+function itemState(player, item, lostOnDeath, makesGrave) {
+  if (item.getDefinition().getName() === LOOTING_BAG || neverKept(item)) return { itemId: DELETED_ITEM_STATE, quantity: 1 };
+  if (!lostOnDeath) return { itemId: KEPT_ITEM_STATE, quantity: 1 };
+  if (makesGrave) return { itemId: GRAVE_ITEM_STATE, quantity: 1 + graveFee(player, item) };
+  return { itemId: LOST_ITEM_STATE, quantity: 1 };
+}
+
+/**
+ * What one item adds to the guide risk value: coins and platinum tokens at their face value, any
+ * other item at the price a death ranks it by (Grand Exchange price, else its alchemy value),
+ * untradeables included. Ours: the Wiki gives no formula for untradeables.
+ */
+function riskValue(item) {
+  const definition = item.getDefinition();
+  const value = CURRENCY.has(definition.getName())
+    ? definition.getValue()
+    : core.PlayerDeathTask.keepValue(item);
+  return Math.max(0, Number(value) || 0);
+}
+
+function getDeathItems(player, toKeep, settings, cosmetic = []) {
   const kept = new Set(toKeep);
+  const protectedItems = new Set(cosmetic);
+  const grave = { player, playerKill: settings.playerKill, makesGrave: false };
+  pluginApi.emitCustomEvent("gravestones:makes-grave", grave);
   const items = [];
   const states = [];
   let risk = 0;
@@ -56,24 +108,17 @@ function getDeathItems(player, toKeep) {
     }
 
     const tradeable = item.isTradeable();
-    const lostOnDeath = tradeable || item.isLostOnDeath();
+    const lostOnDeath = !protectedItems.has(item) && (tradeable || item.isLostOnDeath() || grave.makesGrave);
     items.push({
       slot: items.length,
       itemId: item.getId(),
       quantity: item.getAmount(),
     });
-    states.push({
-      slot: states.length,
-      itemId: lostOnDeath ? LOST_ITEM_STATE : KEPT_ITEM_STATE,
-      quantity: 1,
-    });
+    const state = itemState(player, item, lostOnDeath, grave.makesGrave);
+    states.push({ slot: states.length, ...state });
 
-    if (tradeable) {
-      const value = Math.max(0, Number(core.PlayerDeathTask.keepValue(item)) || 0);
-      risk = Math.min(
-        Number.MAX_SAFE_INTEGER,
-        risk + value * item.getAmount()
-      );
+    if (state.itemId !== KEPT_ITEM_STATE) {
+      risk = Math.min(Number.MAX_SAFE_INTEGER, risk + riskValue(item) * item.getAmount());
     }
   }
 
@@ -81,8 +126,9 @@ function getDeathItems(player, toKeep) {
 }
 
 function open(player, settings = getSettings(player)) {
-  const toKeep = getItemsToKeep(player, settings);
-  const deathItems = getDeathItems(player, toKeep);
+  const { ranked, always, cosmetic } = getKeptItems(player, settings);
+  const toKeep = [...ranked, ...always];
+  const deathItems = getDeathItems(player, toKeep, settings, cosmetic);
   const keptItemIds = toKeep.map((item) => item.getId());
   while (keptItemIds.length < 4) keptItemIds.push(-1);
   player.setInterfaceId(ITEMS_KEPT_ON_DEATH_INTERFACE_ID);
@@ -143,8 +189,10 @@ function toggleSetting({ player, action }) {
 
 module.exports = {
   name: "ItemsKeptOnDeath",
+  description: "Items Kept on Death screen showing what you would keep or lose, with skull, Protect Item, PvP and Wilderness level toggles.",
   register(api) {
     core = api.core;
+    pluginApi = api;
     PrayerHandler = api.getPrayerHandler();
     api.onInterfaceActionButton(OPEN_ITEMS_KEPT_ON_DEATH_BUTTON, openFromWornItems);
     api.onInterfaceActionButton(ITEMS_KEPT_SETTINGS_COMPONENT, toggleSetting);

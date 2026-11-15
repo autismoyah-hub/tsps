@@ -1,3 +1,4 @@
+const { hasKey, ownsStoredKey } = require("../../items/KeyAvailability");
 /**
  * Spirits of the Elid (members).
  *
@@ -71,7 +72,6 @@ module.exports = function registerSpiritsOfTheElidQuest(api) {
     RangedCombatMethod,
     RangedWeapon,
     Skill,
-    WeaponProfiles,
   } = api.core;
   const { registerQuest, refreshQuestList, startTranscript } = require("../QuestRuntime");
   const { createQuestScenes } = require("../QuestScenes");
@@ -564,6 +564,9 @@ module.exports = function registerSpiritsOfTheElidQuest(api) {
   function handleDialogueLine(event) {
     const { player, npcId } = event;
     const text = String(event.text ?? "");
+    if (npcId === GENIE_NPC_ID) {
+      api.emitCustomEvent("diary:task", { player, diary: "desert", task: "visit-the-genie" });
+    }
     if (npcId === AWUSAH_NPC_ID && quest.getStage(player) === STAGE_SPIRITS) {
       if (text.includes("deep crevice in the desert to the west")) {
         quest.setStage(player, STAGE_MAYOR);
@@ -945,7 +948,7 @@ module.exports = function registerSpiritsOfTheElidQuest(api) {
   }
 
   function useAncestralDoor(player) {
-    if (!held(player, ANCESTRAL_KEY_ITEM_ID)) {
+    if (!hasKey(api, player, ANCESTRAL_KEY_ITEM_ID)) {
       player.sendMessage("The door is locked.");
       return;
     }
@@ -1073,8 +1076,8 @@ module.exports = function registerSpiritsOfTheElidQuest(api) {
     player.getCombat().setRangedWeapon(rangedWeapon);
     player.getCombat().setAmmunition(Ammunition.getFor(player));
     const method = new RangedCombatMethod();
-    const ammoRequired = WeaponProfiles.ranged(player).ammoRequired ?? 1;
-    if (!CombatFactory.checkAmmo(player, ammoRequired, true)) return false;
+    // One arrow is enough, even for a dark bow (RangedCombatMethod.arrowsPerShot).
+    if (!CombatFactory.checkAmmo(player, 1, true)) return false;
     if (!CombatRange.canReach(player, method, npc)) {
       player.sendMessage("You can't reach the target.");
       return false;
@@ -1164,12 +1167,17 @@ module.exports = function registerSpiritsOfTheElidQuest(api) {
 
   function prayAtStatuette(player) {
     const skills = player.getSkillManager();
+    const prayerBefore = skills.getCurrentLevel(Skill.PRAYER);
     player.performAnimation(new Animation(645));
     skills.setCurrentLevels(Skill.HITPOINTS, skills.getMaxLevel(Skill.HITPOINTS));
     skills.updateSkill(Skill.HITPOINTS);
     skills.setCurrentLevels(Skill.PRAYER, skills.getMaxLevel(Skill.PRAYER));
     skills.updateSkill(Skill.PRAYER);
     player.sendMessage("You feel Elidinis' blessing restore you.");
+    // The Desert Diary's "Pray at the Elidinis statuette in Nardah" needs a prayer to restore (Wiki).
+    if (prayerBefore < skills.getMaxLevel(Skill.PRAYER)) {
+      api.emitCustomEvent("diary:task", { player, diary: "desert", task: "pray-at-the-elidinis-statuette-in-nardah" });
+    }
   }
 
   // ==========================================================================
@@ -1228,7 +1236,7 @@ module.exports = function registerSpiritsOfTheElidQuest(api) {
   function ensureAncestralKey(player) {
     const stage = quest.getStage(player);
     if (stage < STAGE_BALLAD || stage >= STAGE_STATUETTE) return;
-    if (held(player, ANCESTRAL_KEY_ITEM_ID)) return;
+    if (held(player, ANCESTRAL_KEY_ITEM_ID) || ownsStoredKey(api, player, ANCESTRAL_KEY_ITEM_ID)) return;
     if (
       itemOnGroundManager.getGroundItem(
         player.getUsername(),

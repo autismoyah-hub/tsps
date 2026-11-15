@@ -28,10 +28,21 @@ function abyssDone(h) {
   h.api.onCustomEvent('quest:is-complete', event => { if (event.key === 'enter_the_abyss') event.complete = true; });
 }
 
+/** Stands in for Mining's mining:best-pickaxe / mining:pickaxe answers with the plain bronze-to-dragon tools. */
+function answerPickaxes(api) {
+  const I = core.ItemIdentifiers;
+  const ids = [I.BRONZE_PICKAXE, I.IRON_PICKAXE, I.STEEL_PICKAXE, I.BLACK_PICKAXE, I.MITHRIL_PICKAXE, I.ADAMANT_PICKAXE, I.RUNE_PICKAXE, I.DRAGON_PICKAXE];
+  const holds = (player, id) => player.getInventory?.().getAmount?.(id) > 0 || player.getInventory?.().contains?.(id)
+    || player.getEquipment?.().getItems?.()?.some?.((item) => item?.getId?.() === id);
+  api.onCustomEvent('mining:best-pickaxe', (request) => { request.pickaxe ??= ids.find((id) => holds(request.player, id)) != null ? { id: 0 } : null; });
+  api.onCustomEvent('mining:pickaxe', (request) => { request.pickaxe ??= ids.includes(request.itemId) ? { id: request.itemId } : null; });
+}
+
 function harness(name) {
   const itemOnObjectNamed = new Map();
   const hooks = {}, events = {}, tasks = [], areas = [], npcs = [], removed = [], objects = [], ground = [], clicks = new Map(), buttons = new Map(), namedNpcs = new Map(), namedObjects = new Map(), persisted = new Map();
   const objectManager = { register: object => objects.push(object), deregister: object => { const i = objects.indexOf(object); if (i >= 0) objects.splice(i, 1); } };
+  objectManager.replaceInPlace = (outgoing, incoming) => { objectManager.deregister(outgoing); objectManager.register(incoming); };
   const api = new Proxy({ core: { ...core, PathFinder: { calculateWalkRoute: noop }, ObjectManager: objectManager, World: { ...core.World, getNpcsNear: () => npcs }, TaskManager: {
     submit(task) { task.setRunning(true); tasks.push(task); },
     cancelTasks(key) { tasks.filter(task => task.key === key).forEach(task => task.stop()); },
@@ -71,6 +82,9 @@ function harness(name) {
       }; npcs.push(npc); return npc;
     }, removeNpc: npc => { npc.removed = true; removed.push(npc); },
   }, { get: (target, key) => target[key] ?? ((...args) => (hooks[key] ??= []).push(args.find(x => typeof x === 'function'))) });
+  // The quests ask Mining for the player's pickaxe; Mining isn't loaded here, so this stands in for it with the plain
+  // tools these routes carry (held or wielded).
+  answerPickaxes(api);
   require(`../plugins/quests/quests/${name}.Quest`)(api);
   PluginManager.emitNpcDialogueCondition = event => {
     for (const fn of hooks.onNpcDialogueCondition ?? []) { const answer = fn(event); if (answer !== null && answer !== undefined) return answer; }
@@ -99,7 +113,25 @@ function harness(name) {
     tick(count) { while (count-- > 0) [...tasks].forEach(task => task.tick()); },
     choose(p, text) { const prompt = p.prompt; assert.ok(prompt, `no menu for ${text}`); const index = prompt.options.findIndex(label => label === text); assert.ok(index >= 0, `missing ${text} in ${prompt.options}`); p.prompt = null; prompt.pairs[index * 2 + 1](); },
     continueUntil(p, predicate, limit = 120) { while (!predicate()) { assert.ok(limit-- > 0, `dialogue stalled at ${p.text}`); assert.ok(p.manager.getCurrent(), `dialogue ended at ${p.text}`); p.manager.advance(); } },
-    finish(p, limit = 300) { let n = limit; const polite = ['I\'ll be back soon.', 'Okay, thanks.', 'Goodbye.', 'See you around.', 'I\'d better go.', 'Nothing thanks, I\'m just looking around.', 'Nothing. I\'m just looking around.', 'No thanks.', 'Actually, I don\'t need anything right now.']; while (n-- > 0) { if (p.prompt) { const label = polite.find(option => p.prompt.options.includes(option)); if (!label) break; h.choose(p, label); continue; } if (!p.manager.getCurrent()) break; p.manager.advance(); } assert.ok(n > 0, `dialogue did not end at ${p.text}`); p.prompt = null; },
+    finish(p, limit = 300) {
+      let n = limit;
+      const polite = ['I\'ll be back soon.', 'Okay, thanks.', 'Goodbye.', 'See you around.', 'I\'d better go.', 'Nothing thanks, I\'m just looking around.', 'Nothing. I\'m just looking around.', 'No thanks.', 'Actually, I don\'t need anything right now.'];
+      while (n-- > 0) {
+        if (p.prompt) {
+          const label = polite.find(option => p.prompt.options.includes(option));
+          if (!label) break;
+          h.choose(p, label);
+          continue;
+        }
+        const current = p.manager.getCurrent();
+        if (!current) break;
+        // Timed overhead lines and cinematic holds resume from their task, not Continue.
+        if (current.constructor?.name === 'ActionDialogue' && tasks.some(task => task.isRunning())) h.tick(1);
+        else p.manager.advance();
+      }
+      assert.ok(n > 0, `dialogue did not end at ${p.text}`);
+      p.prompt = null;
+    },
   }; return h;
 }
 
@@ -115,11 +147,14 @@ const sourceAt = p => sourceXY(p, p.getLocation().getX(), p.getLocation().getY()
 function player() {
   const attrs = new Map(), items = new Map(), configs = new Map(), varbits = new Map(), log = [], xp = [];
   let location = new core.Location(3210, 3220, 0), area = null;
+  let npcViewDistance = 15;
   const inv = { getAmount: id => items.get(id) ?? 0, isFull: () => Boolean(p.full), getFreeSlots: () => p.full ? 0 : 28 - items.size, contains: id => (items.get(id) ?? 0) > 0,
     adds(id, amount) { items.set(id, (items.get(id) ?? 0) + amount); },
     deleteNumber(id, amount) { assert.ok((items.get(id) ?? 0) >= amount, `missing ${id}`); items.set(id, items.get(id) - amount); },
   };
   const packet = new Proxy({
+    // Scoped presentation must run its callback, just as the real PacketSender does.
+    withChatboxOwner(_owner, present) { return present(); },
     sendConfig(id, value) { configs.set(id, value); return packet; }, sendVarbit(id, value) { varbits.set(id, value); return packet; },
     sendString(text, uid) { if ([6, 3, 2].some(child => [217, 231, 229, 193].some(group => uid === (group << 16 | child)))) p.text = text; log.push(['text', uid, text]); return packet; },
     sendInterfaceRemoval() { p.manager.reset(); p.prompt = null; return packet; },
@@ -129,13 +164,16 @@ function player() {
     log.push([key, ...args]); return packet;
   }) });
   const p = { setEnteredAmountAction: action => { p.amountAction = action; }, attrs, items, configs, varbits, log, xp, messages: [], animations: [], prompt: null, text: '', index: nextIndex++,
+    getNpcViewDistance: () => npcViewDistance,
+    setNpcViewDistance: value => { npcViewDistance = value == null ? 15 : Math.max(1, Math.min(127, Math.trunc(value))); },
     getAttribute: key => attrs.get(key), setAttribute: (key, value) => attrs.set(key, value), getInventory: () => inv,
     getBanks: () => [{ getAmount: id => p.bank?.get(id) ?? 0 }], getEquipment: () => ({ get: () => null, getItems: () => [] }),
     getSession: () => ({ sendClientPacket: frame => { log.push(['frame', Buffer.from(frame)]); return true; } }), getPacketSender: () => packet, getDialogueManager: () => p.manager, getUpdateFlag: () => ({ flag: noop }),
     getSkillManager: () => ({ addExperiences: (skill, amount) => xp.push([skill.getIndex(), amount]), addExperience: (skill, amount) => xp.push([skill.getIndex(), amount]), getCombatLevel: () => p.combat ?? 3, getCurrentLevel: () => p.magic ?? 99, getMaxLevel: () => p.level ?? 99 }),
-    getMovementQueue: () => ({ reset() { return this; }, setBlockMovement(value) { p.blocked = value; return this; }, addSteps(to) { location = to; return this; }, isBlockMovement: () => Boolean(p.blocked) }),
+    getMovementQueue: () => ({ reset() { return this; }, setBlockMovement(value) { p.blocked = value; return this; }, addSteps(to) { location = to; return this; }, requestWalk(to) { location = to; return this; }, isBlockMovement: () => Boolean(p.blocked) }),
     setUntargetable: value => { p.untargetable = value; }, setForceMovement: movement => { p.forceMovement = movement; }, getLocation: () => location, moveTo: to => { location = to; },
     getArea: () => area, getPrivateArea: () => area, setArea: value => { area = value; }, getIndex: () => p.index, getInterfaceId: () => -1,
+    setRunEnergy: value => { p.runEnergy = value; },
     isPlayer: () => true, isNpc: () => false, getAsPlayer: () => p, isRegistered: () => true,
     getCombat: () => ({ getHitQueue: () => ({ addPendingDamage: damage => { p.damage = damage; } }) }),
     getUsername: () => 'Parity', getDisplayName: () => 'Parity', getAppearance: () => ({ isMale: () => true }), setPositionToFace: noop, forceChat: noop,
@@ -257,7 +295,8 @@ test('the captured chant opens an owner-only portal for the scene only, and neve
 test('Temple of the Eye follows varbit stages 5..125 through dialogue, items, altars and the tutorial', () => {
   const h = harness('TempleOfTheEye'), p = player();
   abyssDone(h);
-  h.api.onCustomEvent('mining:best-pickaxe', event => { event.pickaxe = { animation: new core.Animation(625), attemptIntervalTicks: 3 }; });
+  // As Mining: only while a pickaxe is held (the quest also asks whether to lay a spare one by the tables).
+  h.api.onCustomEvent('mining:best-pickaxe', event => { if (event.player?.getInventory?.().contains(core.ItemIdentifiers.BRONZE_PICKAXE)) event.pickaxe = { animation: new core.Animation(625), attemptIntervalTicks: 3 }; });
   p.getLocalNpcs = () => h.npcs;
   p.level = 99; p.attrs.set('quest.rune_mysteries.stage', 6);
   const stage = () => h.quest.getStage(p);
@@ -817,7 +856,7 @@ test('Perilous Moons completes naturally from Attala to the Moons on the real st
   h.object(p, O.ENTRANCE_15, { x: 1439, y: 9600, z: 1 }, 1, ['Pass-through']);
   assert.equal(stage(), 8);
   h.tick(9);
-  assert.ok(p.log.some(row => row[0] === 'sendSubInterface'), 'Neypotzli entrance fades');
+  assert.ok(p.log.some(row => row[0] === 'mountSubInterface' && row[2] === 174), 'Neypotzli entrance fades');
   assert.ok(p.log.some(row => row[0] === 'sendCameraMoveTo' && row[1] === 1448 && row[2] === 9580 && row[3] === 1400), 'Neypotzli entrance camera');
   assert.ok(p.log.some(row => row[0] === 'sendCameraReset'), 'Neypotzli camera resets');
   h.talk(p, N.ATTALA); finish();
@@ -830,8 +869,15 @@ test('Perilous Moons completes naturally from Attala to the Moons on the real st
   h.object(p, O.BUILDING_SUPPLIES_3, { x: 1436, y: 9637, z: 1 }, 1, ['Take-from']);
   finish();
   assert.ok(p.items.get(I.BUILDING_SUPPLIES) >= 3);
-  for (const [x, y] of [[1349, 9580], [1374, 9710], [1510, 9693]]) {
-    h.itemOnObject(p, I.BUILDING_SUPPLIES, O.COOKING_STOVE, { x, y, z: 0 });
+  // Rec 1693: each cavern is the player's own copy in the camp phase, its camp a camp spot to Build.
+  for (const [entrance, spot] of [[[1421, 9613, 1], [1348, 9580]], [[1421, 9650, 1], [1373, 9710]], [[1458, 9650, 1], [1509, 9693]]]) {
+    h.object(p, O.ENTRANCE_16, { x: entrance[0], y: entrance[1], z: entrance[2] }, 1, ['Pass-through']);
+    h.tick(6);
+    const copy = p.getPrivateArea();
+    assert.ok(copy instanceof core.TemplatedInstanceArea, `the cavern behind ${entrance} is a copy`);
+    const at = copy.sourceTile(spot[0], spot[1], 0);
+    h.namedObjects.get('Camp spot').Build({ player: p, objectId: O.CAMP_SPOT, location: at, clickType: 1 });
+    h.tick(6);
   }
   assert.equal(stage(), 12);
 
@@ -957,7 +1003,8 @@ test('Temple of the Eye tutorial progress survives relog and lost cells/chisel a
 
 test('Temple of the Eye: essence lost after the first workbench round can be made again', () => {
   const h = harness('TempleOfTheEye'), p = player();
-  h.api.onCustomEvent('mining:best-pickaxe', event => { event.pickaxe = { animation: new core.Animation(625), attemptIntervalTicks: 3 }; });
+  // As Mining: only while a pickaxe is held (the quest also asks whether to lay a spare one by the tables).
+  h.api.onCustomEvent('mining:best-pickaxe', event => { if (event.player?.getInventory?.().contains(core.ItemIdentifiers.BRONZE_PICKAXE)) event.pickaxe = { animation: new core.Animation(625), attemptIntervalTicks: 3 }; });
   const at = (x, y) => ({ x, y, z: 0 });
   h.quest.setStage(p, 115);
   p.attrs.set('temple-of-the-eye:stage-schema', 2);
@@ -1085,7 +1132,7 @@ test('Perilous Moons entrance scene tasks are cancelled on logout without losing
   h.quest.setStage(p, 7);
   h.object(p, O.ENTRANCE_15, { x: 1439, y: 9600, z: 1 }, 1, ['Pass-through']);
   assert.equal(h.quest.getStage(p), 8);
-  assert.ok(p.log.some(row => row[0] === 'sendSubInterface'), 'fade starts');
+  assert.ok(p.log.some(row => row[0] === 'mountSubInterface' && row[2] === 174), 'fade starts');
   for (const fn of h.hooks.onPlayerLogout ?? []) fn({ player: p });
   h.tick(10);
   assert.equal(p.log.filter(row => row[0] === 'sendCameraMoveTo' && row[1] === 1448).length, 0, 'cancelled entrance camera');
@@ -1411,15 +1458,22 @@ test('shipped NpcDialogues resolves both Wizard Persten intro paths and decline/
   assert.equal(declined.items.get(I.EYE_AMULET), 1);
 });
 
-test('Perilous Moons tunnel gates use the captured destinations and leave the non-tunnel gate alone', () => {
+test('Perilous Moons tunnel gates use the expected destinations and leave the non-tunnel gate alone', () => {
   const h = harness('PerilousMoons'), p = player();
   h.quest.setStage(p, 18);
+  const tunnelMessage = 'You follow a long and winding tunnel before emerging on the other side.';
   h.object(p, O.ENTRANCE_17, { x: 1527, y: 9670, z: 0 }, 1, ['Pass-through']);
   assert.deepEqual([p.getLocation().getX(), p.getLocation().getY(), p.getLocation().getZ()], [1513, 9596, 0]);
-  assert.ok(p.messages.includes('You follow a long and winding tunnel before emerging on the other side.'));
+  assert.ok(p.messages.includes(tunnelMessage));
   h.tick(5);
   h.object(p, O.ENTRANCE_17, { x: 1512, y: 9560, z: 0 }, 1, ['Pass-through']);
   assert.deepEqual([p.getLocation().getX(), p.getLocation().getY(), p.getLocation().getZ()], [1355, 9538, 0]);
+  const messageCount = p.messages.filter(message => message === tunnelMessage).length;
+  h.tick(5);
+  h.object(p, O.ENTRANCE_15, { x: 1356, y: 9536, z: 0 }, 1, ['Pass-through']);
+  assert.deepEqual([p.getLocation().getX(), p.getLocation().getY(), p.getLocation().getZ()], [1512, 9563, 0]);
+  assert.equal(p.messages.filter(message => message === tunnelMessage).length, messageCount + 1);
+  h.tick(5);
   p.moveTo(new core.Location(1510, 9582, 0));
   h.object(p, O.ENTRANCE_17, { x: 1493, y: 9579, z: 0 }, 1, ['Pass-through']);
   assert.deepEqual([p.getLocation().getX(), p.getLocation().getY()], [1510, 9582], 'walk-through gate is not a tunnel');
@@ -1460,16 +1514,17 @@ test('Temple shared stage guards use 60..130 and real cache pages for Sedridor/T
 });
 
 
-test('cache map placements prove the two Perilous tunnels are real Pass-through gates with walkable landings', () => {
+test('cache placements prove Perilous tunnel gates are real Pass-through objects with walkable landings', () => {
   const { MapObjects } = require('../dist/game/entity/impl/object/MapObjects');
   const { RegionManager } = require('../dist/game/collision/RegionManager');
   RegionManager.init();
-  for (const [x, y, z, lx, ly, lz] of [
-    [1527, 9670, 0, 1513, 9596, 0],
-    [1512, 9560, 0, 1355, 9538, 0],
+  for (const [id, x, y, z, lx, ly, lz] of [
+    [core.ObjectIdentifiers.ENTRANCE_15, 1356, 9536, 0, 1512, 9563, 0],
+    [core.ObjectIdentifiers.ENTRANCE_17, 1527, 9670, 0, 1513, 9596, 0],
+    [core.ObjectIdentifiers.ENTRANCE_17, 1512, 9560, 0, 1355, 9538, 0],
   ]) {
-    const object = MapObjects.get(core.ObjectIdentifiers.ENTRANCE_17, new core.Location(x, y, z), null);
-    assert.ok(object, `cache placement 51377@${x},${y},${z}`);
+    const object = MapObjects.get(id, new core.Location(x, y, z), null);
+    assert.ok(object, `cache placement ${id}@${x},${y},${z}`);
     assert.equal(object.getDefinition().getInteractions()[0], 'Pass-through');
     assert.ok(object.getFace() >= 0);
     assert.equal(RegionManager.blocked(new core.Location(lx, ly, lz), null), false, `landing ${lx},${ly},${lz}`);

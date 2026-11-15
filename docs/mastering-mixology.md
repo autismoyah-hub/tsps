@@ -60,7 +60,7 @@ Most Mixology recordings come from Leagues VI worlds, whose relics speed station
 - **Refiner:** each click refines one herb straight away, then the refiner keeps going every second tick. Each herb gives `human_alchemy01_mill01_interact01`, its paste (Lantadyme +40 Aga, Harralander +20 Mox) and 6 XP.
 - **Hopper:** puts all carried paste in at once. The message box reads "You deposit the following into the mixer:<br>410 Mox paste<br>...", with `human_alchemy01_hopper01_interact01` and synth 2739.
 - **Levers:** a pull plays `human_alchemy01_lever01_interact01`, synth 2400 (delay 2), the lever's interact loop, and a colour change on each changed mixer (mox blue, aga green, lye red: `machinery_alchemy01_mixer_clear_to_blue01` and so on). With three slots set, the vessel takes that potion and plays `vessel01_filling01`. Taking from the vessel plays `human_pickuptable_walkmerge`, then a tick later synth 2582 and `vessel01_emptying01`. The mixers go back to clear and 10 paste per letter comes out of the hopper. When paste is short, a message box lists what is missing.
-- **Stations:** see `Stations.Mixology.js`. Progress goes up 1 per tick to `45 - floor(Herblore / 3)`, counting boosted levels (normal worlds: 20 at 75, 12 at 99 and 100; Leagues: 21 at 72, 11 at 102, 8 at 111). Each click on the retort adds 1 more. The alembic cues at progress 4 (synth 2655 and its vfx, 30 cycles late); a click on the next tick hits. The agitator cues at progress 2-5, and either of the next two ticks hits. A hit adds a third of the total, then +2 for that tick, and gives 14 XP (the agitator's second hit gives 2 more). A miss loses 2. A potion left in a station waits there.
+- **Stations:** see `Stations.Mixology.js`. Progress goes up 1 per tick to `45 - floor(Herblore / 3)`, counting boosted levels (normal worlds: 20 at 75, 12 at 99 and 100; Leagues: 21 at 72, 11 at 102, 8 at 111). Each click on the retort adds 1 more. The alembic's initial cue is counted after four active processing pumps rather than saved progress (see the recovery caveat below) (synth 2655 and its vfx, 30 cycles late); a click on the next tick hits. The agitator cues at progress 2-5, and either of the next two ticks hits. A hit adds a third of the total, then +2 for that tick, and gives 14 XP (the agitator's second hit gives 2 more). A miss loses 2. A potion left in a station waits there.
 - **Conveyor:** each finished potion fills the first open order that matches both its potion and its modifier. With none matching, the first finished potion goes in unordered. All three orders are redrawn on the same tick. The resin message reads "You are rewarded a/b/c. You now have x/y/z.". Each potion gets a `mm_conveor_travel_<potion>` projectile, and NPC 13919 says "<col=389cff>+10 Mox</col>" over the belt for ten ticks.
 - **Digweed:** spawning, collecting and mixing it in are described in `Digweed.Mixology.js`. "A herb to the south east has matured..." and "The matured herb has died."
 - **Colours:** live picks the message colours from the chatbox's transparency (varbit 4608): <col=6800bf> and <col=0000b2>/<col=06600c>/<col=e00a19> on the opaque chatbox, <col=a53fff> and <col=3366ff>/<col=229628>/<col=ff3045> on the transparent one.
@@ -74,7 +74,7 @@ Most Mixology recordings come from Leagues VI worlds, whose relics speed station
 
 These aren't in the captures, so they are reasoned from what is:
 - **Digweed spawn rule.** The count reached somewhere between 9 and 12 at levels 72-80 and 4 to 7 at 100+ before a herb matured, a few ticks after a hand-in. The threshold here is drawn from that range by level, and the herb matures 1-15 ticks after the hand-in that reaches it.
-- **The alembic's second chance after a miss** (the Wiki's "7th pump") isn't modelled. There is one window per run.
+- **Alembic recovery after a mistimed click.** The Wiki's seventh-pump retry is modelled as a cue after seven following active processing updates, retaining the existing delayed-cue response window. Counting resets on leaving/restarting, while the saved potion hit prevents a second bonus. Recovery timing is not independently captured: the active-update/pump phase is an explicit implementation approximation, not a new raw retail tick/cycle claim. Only one recovery is scheduled per continuous work session; further opportunities and passive expiry without a mistimed click are not established.
 - **Uncaptured messages:**
   - an empty refiner: "You have nothing that can be refined."
   - a vessel potion above the player's level: "You need a Herblore level of N to mix that potion."
@@ -86,4 +86,31 @@ These aren't in the captures, so they are reasoned from what is:
 
 ## Rewards
 
-The shop sells everything at the cache's prices. Buying potion storage sets 11295. The rewards' own behaviour is a follow-up: the potion packs' Open, the goggles' and amulet's Herblore effects, the reagent pouch, the chugging barrel, and the potion storage bank section.
+The shop sells everything at the cache's prices. Buying potion storage sets 11295. The rewards' own behaviour is a follow-up: the potion packs' Open, the alchemist's amulet's Herblore effect, the reagent pouch, and the potion storage bank section.
+
+## Chugging barrel Drink
+
+Drinking from an assembled barrel drinks one dose of each stored potion in the barrel's order
+(`plugins/items/ChuggingBarrel.plugin.js`). Facts from rsprox captures 4236 and 4242:
+
+- The drink plays the swig animation (11645) and one synth sound (9491, delay 30) per click, however many
+  potions drink.
+- Each stored potion is checked on its own, one after another. One that cannot be drunk (a divine potion at
+  10 Hitpoints or fewer: "You need more than 10 hitpoints to survive the power of a divine potion.") sends its
+  message and keeps its dose; the other potions still drink. In 4242 the five-potion barrel drank three with two
+  divine potions refused, and the potion counter rose by three.
+- Away from a bank: "You must be near a bank to use that barrel."; an empty barrel: "You have no potions in
+  your barrel that you can drink." (4236).
+
+What happens when every stored potion is refused was not captured; no swig, sound or delay starts then.
+
+## Prescription goggles
+
+`Goggles.Mixology.js`. Wiki (https://oldschool.runescape.wiki/w/Prescription_goggles): worn, they give a 10% chance to save a secondary ingredient when mixing potions, with no message. Herblore offers each mix to `herblore:mix` before it takes anything and the goggles set what they keep to nothing.
+
+- **Worn:** `mm_alchemist_hat` and `mm_alchemist_hat_alt`, the two worn items (the Wiki says the focused and unfocused variants both apply the effect; which id is which was not checked). Only worn items count.
+- **Once per potion:** one roll covers the whole mix. A save keeps every copy the recipe takes: the Wiki's example is 20 Zulrah's scales kept on a four-dose anti-venom (5 a dose).
+- **What counts as a secondary:** an ingredient after the first that is not a potion or a vial. That covers the Wiki's list: the herb of an antidote+ (unf) or antidote++ (unf) (made from a vial of coconut milk), weapon poison++'s nightshade and poison ivy berries, a haemostatic dressing's squid paste and cotton yarn, a barbarian potion's caviar or roe, and a super combat potion's or anti-venom+'s torstol. The torstol potion (unf) also counts there, and keeps the vial it came in. Unfinished potions made from a vial of water, and the other potions' primaries, are not secondaries.
+- **Never saved:** crystal dust (divine potions). Serum 207 has no recipe here yet.
+- **Not captured:** the live recordings that wear the goggles (rev 237, Leagues) only show the equip itself; the saving is server-side and silent, so its rules come from the Wiki page alone.
+- **Assumed:** the goggles page names weapon poison++ only; weapon poison and weapon poison+ count here as any other secondary ("most potions").

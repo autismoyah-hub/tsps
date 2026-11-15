@@ -119,6 +119,10 @@ module.exports = function registerBearYourSoulQuest(api) {
     if (!inZone(LIBRARY_ZONE, location ?? player.getLocation?.())) return false;
     if (stageOf(player) !== STAGE_NOT_STARTED) return false;
     if (owns(player, SOUL_JOURNEY)) return false;
+    // The Kourend Library activity owns its randomised shelf layout; yield to it when loaded.
+    const claim = { player, location: location ?? player.getLocation?.(), handled: false };
+    api.emitCustomEvent("arceuus-library:shelf-claim", claim);
+    if (claim.handled) return false;
     player.performAnimation?.(SEARCH_ANIMATION);
     if (inventory(player).isFull()) {
       inventory(player).full();
@@ -140,7 +144,6 @@ module.exports = function registerBearYourSoulQuest(api) {
     if (!String(event.option ?? "").toLowerCase().includes("read")) return false;
     const { player } = event;
     if (!has(player, SOUL_JOURNEY)) return false;
-    player.performAnimation?.(READ_ANIMATION);
     openBook(player, BOOK_TITLE, BOOK_PAGES, () => finishReadingBook(player));
     event.handled = true;
     return true;

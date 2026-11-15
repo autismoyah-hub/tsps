@@ -4,6 +4,10 @@
  * The choice is kept across logins (rsprox 3886 logs in on Your Clan, 2762 on Grouping).
  *
  * Your Clan and Guest Clan are the cache's own interfaces; Clans.plugin.js feeds them.
+ *
+ * Grouping's "Switch <world>" button: script 435 shows it whenever enum 850 gives the chosen
+ * activity a suggested world (Castle Wars too, for members). A server has one world, so every
+ * login sends enum 850 with no world for any activity, and live's playermember script.
  */
 
 const GROUP = 707;
@@ -12,6 +16,7 @@ const TAB_SELECTED_VARBIT = 13071; // side_channels_tab_selected
 const TAB_ATTRIBUTE = "side-channels:tab";
 const CHAT_CHANNEL_TAB = 0;
 const YOUR_CLAN_TAB = 1;
+const GROUPING_TAB = 3;
 const SOCIAL_SIDE_BUTTON = 7;
 const CHAT_CHANNEL_GROUP = 7;
 /** Button component -> tab index and interface, by the rev 241 cache's 707:2-5. */
@@ -21,20 +26,32 @@ const TABS = [
   { button: 4, group: 702 }, // Guest Clan
   { button: 5, group: 76 }, // Grouping
 ];
-// The activity list's rows: op1 on 76:30 (rsprox 2762, 75).
+// Live (rev 242) mounts Grouping with op1 on its Teleport and world-hop buttons, slots 0-30: each is
+// the dynamic child at the chosen activity's index (script 435; 0 when none is chosen).
 const GROUPING_GROUP = 76;
-const GROUPING_LIST_UID = (GROUPING_GROUP << 16) | 30;
-const GROUPING_LAST_ROW = 27;
+const GROUPING_TELEPORT_UID = (GROUPING_GROUP << 16) | 32;
+const GROUPING_HOP_UID = (GROUPING_GROUP << 16) | 26;
+const GROUPING_LAST_SLOT = 30;
 const OP1 = 1 << 1;
+const SUGGESTED_WORLD_ENUM = 850;
+const NO_WORLD = -1;
+const ONE_WORLD_SENDER = "grouping-tab";
+// Live runs it as the social tab mounts (rev 230, 242): varc 103 (PLAYERMEMBER) for the tab's scripts.
+const PLAYER_MEMBER_SCRIPT = 828;
+
+let core;
 
 /** What stands in for the chat-channel tab, such as the raid party: { group, onMount }. */
 const replacements = new WeakMap();
 /** What stands in for Your Clan, such as the clan creation panel: { group, onMount }. */
 const clanReplacements = new WeakMap();
+/** What stands in for Grouping, such as the PvP Arena side panel: { group, onMount }. */
+const groupingReplacements = new WeakMap();
 
 function replacementFor(player, tab) {
   if (tab === CHAT_CHANNEL_TAB) return replacements.get(player);
-  return tab === YOUR_CLAN_TAB ? clanReplacements.get(player) : undefined;
+  if (tab === YOUR_CLAN_TAB) return clanReplacements.get(player);
+  return tab === GROUPING_TAB ? groupingReplacements.get(player) : undefined;
 }
 
 function selectedTab(player) {
@@ -49,7 +66,10 @@ function mountSelected(player) {
   const group = replacement?.group ?? TABS[tab].group;
   sender.sendVarbit(TAB_SELECTED_VARBIT, tab);
   sender.sendSubInterface(CONTENT_UID, group, 1);
-  if (group === GROUPING_GROUP) sender.sendInterfaceFlagsRange(GROUPING_LIST_UID, 0, GROUPING_LAST_ROW, OP1);
+  if (group === GROUPING_GROUP) {
+    sender.sendInterfaceFlagsRange(GROUPING_TELEPORT_UID, 0, GROUPING_LAST_SLOT, OP1);
+    sender.sendInterfaceFlagsRange(GROUPING_HOP_UID, 0, GROUPING_LAST_SLOT, OP1);
+  }
   replacement?.onMount?.();
 }
 
@@ -98,15 +118,43 @@ function replaceYourClan({ player, group, onMount }) {
   if (selectedTab(player) === YOUR_CLAN_TAB) mountSelected(player);
 }
 
+/**
+ * "side-channels:replace-grouping" ({ player, group, onMount }): shows `group` on Grouping and
+ * brings it up. A null group puts Grouping back.
+ */
+function replaceGrouping({ player, group, onMount }) {
+  if (group == null) groupingReplacements.delete(player);
+  else {
+    groupingReplacements.set(player, { group, onMount });
+    player.setAttribute(TAB_ATTRIBUTE, GROUPING_TAB);
+    player.getPacketSender().sendTab(SOCIAL_SIDE_BUTTON);
+  }
+  if (selectedTab(player) === GROUPING_TAB) mountSelected(player);
+}
+
+/** One world: no activity suggests another, so script 435 never offers "Switch <world>". */
+function sendOneWorld({ player }) {
+  const entries = [...core.CacheDefinitions.getEnumValues(SUGGESTED_WORLD_ENUM).keys()].map((key) => [key, NO_WORLD]);
+  const sender = player.getPacketSender();
+  sender.sendContentData(ONE_WORLD_SENDER, [
+    { key: "enumOverrides", rows: [{ enumId: SUGGESTED_WORLD_ENUM, valueType: "I", defaultValue: NO_WORLD, entries }] },
+  ]);
+  sender.sendClientScript(PLAYER_MEMBER_SCRIPT, core.WorldDefinition.isMembersWorld() ? 1 : 0);
+}
+
 module.exports = {
   name: "SideChannels",
+  description: "Tab bar of the social tab, switching between chat channel, Your Clan and grouping, and remembering the chosen tab between logins.",
   register(api) {
+    core = api.core;
     api.persistAttribute(TAB_ATTRIBUTE, CHAT_CHANNEL_TAB);
+    api.onPlayerLogin(sendOneWorld);
     api.onInterfaceActionClick(selectTab);
     api.onCustomEvent("player:bootstrap-complete", restoreSelectedTab);
     api.onCustomEvent("gameframe:ready", restoreSelectedTab);
     api.onCustomEvent("gameframe:tab-mounted", restoreSelectedTabOnMount);
     api.onCustomEvent("side-channels:replace-chat-channel", replaceChatChannel);
     api.onCustomEvent("side-channels:replace-your-clan", replaceYourClan);
+    api.onCustomEvent("side-channels:replace-grouping", replaceGrouping);
   },
 };

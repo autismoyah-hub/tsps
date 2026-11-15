@@ -8,6 +8,7 @@ const { PluginManager } = require("../dist/plugins/PluginManager");
 const core = PluginManager.getCoreApi();
 const plugin = require("../plugins/treasuretrails/TreasureTrails.plugin");
 const Runtime = require("../plugins/treasuretrails/trails/Runtime.TreasureTrails");
+const Dialogue = require("../plugins/treasuretrails/trails/Dialogue.TreasureTrails");
 const Caskets = require("../plugins/treasuretrails/trails/Caskets.TreasureTrails");
 const Stash = require("../plugins/treasuretrails/trails/Stash.TreasureTrails");
 const Catalogue = require("../plugins/treasuretrails/trails/Catalogue.TreasureTrails");
@@ -15,6 +16,8 @@ const { TIERS, byName } = require("../plugins/treasuretrails/trails/Tiers.Treasu
 const TABLES = require("../data/definitions/clue-caskets.json").tables;
 const EASY = byName.get("easy");
 const I = core.ItemIdentifiers;
+const Screen = require("../plugins/treasuretrails/CasketRewardScreen.plugin");
+Screen.initialize(core);
 
 function fixture() {
   const actions = new Map(), events = new Map(), attributes = new Map(), sent = [], ground = [], spawned = [];
@@ -31,7 +34,7 @@ function fixture() {
   const sender = new Proxy({}, { get: (_, name) => (...args) => (sent.push([name, ...args]), sender) });
   const skills = { level: 1, xp: 0, getCurrentLevel() { return this.level; }, addExperiences(skill, xp) { this.xp += xp; } };
   const player = { getInventory: () => inventory, getSkillManager: () => skills, getEquipment: () => ({ getItems: () => worn }),
-    getPacketSender: () => sender, getLocation: () => position, getPrivateArea: () => null,
+    getPacketSender: () => sender, getLocation: () => position, getPrivateArea: () => null, isPlayer: () => true, getAsPlayer: () => player,
     getAttribute: key => attributes.get(key), setAttribute: (key, value) => attributes.set(key, value),
     sendMessage: message => sent.push(["message", message]), performAnimation: value => sent.push(["animation", value]),
     getDialogueManager: () => ({ startDialogues: value => { chain = value; } }) };
@@ -45,6 +48,10 @@ function fixture() {
   plugin.register(api);
   // ClueCapacity answers milestones in the game; the casket must refuse to open without it.
   api.onCustomEvent("treasure-trails:milestone-rewards", request => { request.handled = true; });
+  // ...and answers for its scroll cases, which it pays itself.
+  api.onCustomEvent("treasure-trails:case-eligible", request => {
+    if (/scroll case/i.test(core.ItemDefinition.forId(request.itemId)?.getName?.() ?? "")) request.eligible = false;
+  });
   function place(step, length = 2, slot = 0) {
     items[slot] = new core.Item(step.itemId, 1).setMetaValue(Runtime.metaKey(EASY),
       { version: 1, token: `t${slot}-${++placed}`, revision: 0, completed: 0, length, row: step.row });
@@ -93,8 +100,11 @@ test("conditional object interceptors run before earlier object handlers and can
 test("every easy step is a distinct cache clue item with a solvable target", () => {
   fixture();
   const data = Runtime.data(EASY);
-  assert.equal(data.steps.length, 166);
-  for (const [family, target, count] of [["cryptic", "npc", 41], ["cryptic", "loc", 71], ["cryptic", "coord", 8], ["emote", "coord", 33], ["map", "coord", 7], ["music", "npc", 6]])
+  // Rev 242: item 3499's clue (param 623) moved from row 1327 ("Search the boxes in a shop in Taverley.",
+  // now row 17195, which no easy clue item names) to row 1328, the Duke's bedroom chest that item 2677
+  // already gives, so the cache has one easy step (a cryptic loc) fewer than 241's 166.
+  assert.equal(data.steps.length, 165);
+  for (const [family, target, count] of [["cryptic", "npc", 41], ["cryptic", "loc", 70], ["cryptic", "coord", 8], ["emote", "coord", 33], ["map", "coord", 7], ["music", "npc", 6]])
     assert.equal(ofFamily(family, target).length, count, `${family}/${target}`);
   assert.equal(new Set(data.steps.map(step => step.itemId)).size, data.steps.length);
   for (const step of data.steps) {
@@ -247,6 +257,7 @@ test("the imported easy table rolls 2-4 resolvable rewards and the casket opens 
   assert.equal(Caskets.open(event), true);
   assert.notEqual(f.items[0]?.getId(), I.REWARD_CASKET_EASY_);
   assert.equal(f.attributes.get(Runtime.completedAttribute(EASY)), 1);
+  Screen.closed({ player: f.player, interfaceId: 73 });
   const granted = f.items.filter(Boolean).length + f.ground.length;
   assert.ok(granted >= 1, "rewards were given");
   assert.equal(Caskets.open(event), false, "the opened casket cannot be opened again");
@@ -266,6 +277,7 @@ test("opening an ordinary casket asks drops:chance once and applies its boost to
     Math.random = () => 0.2;
     try { assert.equal(Caskets.open(f.event()), true); } finally { Math.random = random; }
     assert.equal(f.attributes.get(Runtime.completedAttribute(EASY)), 1, "the casket opened");
+    Screen.closed({ player: f.player, interfaceId: 73 });
     return { asked, given: [...f.items.filter(Boolean), ...f.ground].map(item => item.getId()), player: f.player };
   };
   const plain = openAt(null);
@@ -324,12 +336,41 @@ test("the Large spade comes with the 500th easy casket, while scroll cases stay 
   const ids = count => Caskets.itemMilestones(f.player, EASY, count).map(drop => drop.itemId);
   assert.deepEqual(ids(500), [I.LARGE_SPADE]);
   assert.deepEqual(ids(499), []);
-  assert.deepEqual(ids(501), []);
   f.attributes.set(Runtime.completedAttribute(EASY), 499);
   f.items[0] = new core.Item(I.REWARD_CASKET_EASY_, 1);
   Caskets.open(f.event());
   assert.equal(f.attributes.get(Runtime.completedAttribute(EASY)), 500);
+  Screen.closed({ player: f.player, interfaceId: 73 });
   assert.ok([...f.items, ...f.ground].some(item => item?.getId() === I.LARGE_SPADE));
+});
+
+// Wiki (Large spade): "If lost, it can be re-obtained by completing another easy clue scroll."
+test("a lost Large spade comes back with any later easy casket, but not while the player still has one", () => {
+  const f = fixture();
+  const ids = count => Caskets.itemMilestones(f.player, EASY, count).map(drop => drop.itemId);
+  assert.deepEqual(ids(501), [I.LARGE_SPADE], "past 500 with none: given again");
+  assert.deepEqual(ids(400), [], "not before the milestone");
+  f.items[3] = new core.Item(I.LARGE_SPADE, 1);
+  assert.deepEqual(ids(501), [], "carried");
+  f.items[3] = null;
+  f.worn[3] = new core.Item(I.LARGE_SPADE, 1);
+  assert.deepEqual(ids(501), [], "worn");
+  f.worn[3] = null;
+  const bank = [new core.Item(I.LARGE_SPADE, 1)];
+  f.player.getBank = tab => ({ getItems: () => (tab === 2 ? bank : []) });
+  assert.deepEqual(ids(501), [], "banked");
+  bank[0] = new core.Item(I.LARGE_SPADE, 0);
+  assert.deepEqual(ids(501), [I.LARGE_SPADE], "a bank placeholder is not the spade");
+  f.player.getBank = tab => ({ getItems: () => (tab === core.Bank.BANK_SEARCH_TAB_INDEX ? [new core.Item(I.LARGE_SPADE, 1)] : []) });
+  assert.deepEqual(ids(501), [I.LARGE_SPADE], "the search tab is not storage");
+  delete f.player.getBank;
+  // Opened twice before closing the reward screen: the first spade is still waiting there.
+  f.attributes.set(Runtime.completedAttribute(EASY), 600);
+  f.items[0] = new core.Item(I.REWARD_CASKET_EASY_, 2);
+  Caskets.open(f.event());
+  Caskets.open(f.event());
+  Screen.closed({ player: f.player, interfaceId: 73 });
+  assert.equal([...f.items, ...f.ground].filter(item => item?.getId() === I.LARGE_SPADE).length, 1, "one spade from two caskets");
 });
 
 test("an easy STASH unit is built with Construction 27, then stores and returns its full outfit", () => {
@@ -382,4 +423,17 @@ test("\"Have nothing equipped at all\" steps accept only an empty outfit", () =>
     f.worn.push(new core.Item(I.GOLD_RING, 1));
     assert.equal(Runtime.emoteReady(f.player, step), false, step.key);
   }
+});
+
+test("a dig that gives the next easy clue plays the dig sound and says \"You've found another clue!\"", t => {
+  const boxes = [];
+  t.mock.method(Dialogue, "itemBox", (player, itemId, text) => boxes.push(text));
+  const f = fixture();
+  f.place(ofFamily("map", "coord")[0], 3);
+  f.items[1] = new core.Item(I.SPADE, 1);
+  const event = { player: f.player, itemId: I.SPADE, option: "Dig", allow: true };
+  Runtime.dig(event);
+  assert.equal(event.allow, false);
+  assert.ok(f.sent.some(([kind, id]) => kind === "sendSoundEffect" && id === 1470), "dig sound 1470");
+  assert.deepEqual(boxes, ["You've found another clue!"]);
 });

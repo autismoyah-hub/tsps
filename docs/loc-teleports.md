@@ -27,7 +27,7 @@ The capture index lists every loc option that moved the player, per loc and clic
 python3 rsprox_index.py loc-teleports --out loc-teleports.json
 ```
 
-Per loc: the destinations (and the tile the player clicked from, for locs used from either side), the tick of the move, the player's animation, sounds, whether the screen faded, the messages of attempts that didn't move anyone, a dialogue choice on the way, and labels for instances, boats, agility shortcuts and Leagues or event worlds. Ticks count from the player arriving at the loc.
+Per loc: the destinations (and the tile the player clicked from, for locs used from either side), the tick of the move, the player's animation, sounds (the first one that is not a fight's: `ignoreSounds` in `loc-teleport-sync.json` lists the attack, hit, block and weapon sounds the sync skips, as a monster fighting nearby is the first thing a capture hears), whether the screen faded, the messages of attempts that didn't move anyone, a dialogue choice on the way, and labels for instances, boats, agility shortcuts and Leagues or event worlds. Ticks count from the player arriving at the loc.
 
 ## The sync
 
@@ -88,7 +88,8 @@ Locs live OSRS turned some players away from need their requirement before they 
 **Requirement kinds:**
 - a total level;
 - worn items (any one set);
-- an item used on the loc once before, which stays (a rope tied to a crevice).
+- an item used on the loc once before, which stays (a rope tied to a crevice);
+- a skill level (`skill`, `atLeast`) or a Slayer task (`slayerTask`, any of the names; the Slayer plugin's `slayer:current-task` answers it).
 
 **Refusal kinds:**
 - a game message;
@@ -101,6 +102,7 @@ Locs live OSRS turned some players away from need their requirement before they 
 | | Zamorak monk robes or Zamorak robe top and legs, worn | The Monk of Zamorak: "You better dress appropriately, if you want to go up there!" |
 | Mos Le'Harmless underwater stairs (3788, 9254) | A fishbowl helmet and diving apparatus worn, or the Medallion of the Deep | "You cannot go diving without your diving helmet and diving apparatus!" |
 | The Elid crevice (all three tiles) | A rope used on it once | A message box: "That looks too steep to safely climb down with just your bare hands." |
+| Araxxor's lair web tunnel (3655, 9814) | 92 Slayer, Priest in Peril, an araxyte or spider task | Not captured: the lair's own lines ("You need a Slayer level of at least 92 to enter Araxxor's lair.") |
 
 The skill total's number is scrubbed in the captures (`#`), so 500 comes from the Wiki. Using a rope on the crevice ties it and goes down ("You climb down the rope."), as do later climbs; the rope isn't used up, as captured.
 
@@ -148,6 +150,7 @@ Some options ask a question before moving the player. The captures record only t
 **Left for their own work:**
 - **The damaging Fossil Island mushroom jump:** it hurts the player.
 - **Callisto's cave:** a 50,000-coin fee.
+- **Cavey Davey's cave:** done since, see [Mos Le'Harmless cave](#mos-leharmless-cave-4091).
 - **The boat networks:** Fossil Island's rowboats, the Myreque boats between Burgh de Rott, Meiyerditch, the Icyene Graveyard and Slepe. Their rides run longer than the capture window, so the arrival isn't recorded for every stop.
 - **Owned by other plugins:** the Wilderness agility pipe, Wintertodt's door, the Revenant caves' fee, the Edgeville lever.
 
@@ -254,6 +257,10 @@ For Draynor's: "You open the trapdoor." a tick after arriving, the open-chest an
 
 Plugins that own a trapdoor (Edgeville's, the Werewolf course's) load first and keep it; Varrock's manholes stay with Misthalin. An open trapdoor is only on the map once opened, so the sync opens it while probing its Climb-down.
 
+**Per-player trapdoors** (`toggles` in `loc-swaps.json`) are a multiloc that a varbit shows closed or open for each player, so Open and Close set that varbit instead of swapping the loc. The open state's option 1 is the loc's `loc-teleports.json` entry; with the varbit at its closed value, option 1 is Open. The varbit is kept per player (`loc-teleports:toggled`, saved) and sent again at login, as live sends it on login.
+
+- **Evil Dave's cellar trapdoor** (multiloc 12266 at 3077,3493; 12267 closed "Open", 12268 open "Go-down"/"Close"), varbit 1888 `hundred_dave_trapdoor`. From rsprox captures: rec 3212 (rev 232) opens it (0 -> 1, synth sound 89) and closes it twice (1 -> 0, sound 88) on the tick the Go-down plays its animation (tick 2 after arriving, 0 when already beside it); recs 270, 271, 3216 and 3219 log in with it at 1 and go straight down (animation 827, move to 3077,9893 on tick 4); the user's Edgeville capture opens, closes, reopens and goes down. Going down and climbing the cellar stairs leave it open. The Wiki's Shadow of the Storm requirement isn't checked (no capture of a refusal).
+
 ## Playing an entry
 
 An entry can supply an `approach` tile when surrounding walls block ordinary loc reach.
@@ -262,7 +269,7 @@ The object-route hook walks to that threshold before playing the transition.
 The click is handled the tick after the player arrives, so each captured tick comes one tick earlier from the click:
 1. **The animation's tick:** the animation and sound, and the fade out when there is one.
 2. **A tick later:** the minimap goes off.
-3. **The captured tick:** the move.
+3. **The captured tick:** the move, after the entry's `message` when it has one: the game message live OSRS sends on a successful crossing (`messageType: "spam"` for one the chat filter hides). The Cam Torum squeeze doors say "You manage to squeeze through the tiny door." as spam on the teleport's tick (226/1693; 237/1098, 1102, 1105, 1135). The capture export keeps success messages without their type or tick, so the sync doesn't write them; it keeps one on an entry already in the data.
 4. **After the move:** the fade back in a tick later, and the overlay closed two ticks after that.
 
 Movement is blocked meanwhile. The sequence stops if the player is moved, dies or logs out.
@@ -298,6 +305,53 @@ No new animation or sound is claimed for the uncaptured platforms.
 
 - **Boats, portals, doors, gates and barriers:** fares, quests and requirements; among them the Holy barrier under Paterdomus, which needs Priest in Peril (no capture of the refusal yet).
 - **The Kalphite Lair's rope** (a consumed rope and a varbit kept per player), and **the Brimhaven Dungeon's fare.**
-- **Gates still to decide:** the Agility Arena ladder (a minute's wait after leaving), Cavey Davey's cave (a warning dialogue), and the refused locs that aren't ladders, stairs or caves.
+- **Gates still to decide:** the Agility Arena ladder (a minute's wait after leaving), and the refused locs that aren't ladders, stairs or caves.
 - **Climb dialogues:** ladders whose "Climb" asks up or down, with both answers.
 - **The Prifddinas agility tree ladder:** the Agility plugin sends the player to the city's coordinates on another part of the map, where the capture goes to (2269, 3393, 2).
+
+## Trahaearn mine (#3823)
+
+The cave entrance (36556, 4x4 at 3269,6047) and the Steps out (36215, 3x2 at 3301,12455) had no
+handler, so clicking Enter did nothing. `prif_mine_entrance` and `prif_mine_exit` now fade between
+them. Capture 1105 shows the Enter click, the fade (client script 948) and a rebuild into the
+mine map; it has no capture of the Steps. Both landings are inferred, not captured: the mine side
+is 3302,12454 and the surface side is 3271,6051, the tiles the agent `transports.json` uses.
+
+## Mos Le'Harmless cave (#4091)
+
+The cave entrance (`harmless_cave_entrance_left`, 3650, at 3748,2973) and both halves of the way
+out (`harmless_dungeon_exit_left` 6702 and `harmless_dungeon_exit_right` 5553, at 3749,9374 and
+3749,9373) had no handler, so Enter did nothing.
+
+- **Enter** lands on 3748,9373 two ticks after arriving, with no animation or fade (captures 1638,
+  1846, 4066).
+- **The warning:** until it is turned off, Enter plays Cavey Davey's conversation (NPC 1052, fifteen
+  lines with their head animations, capture 4066) and ends on "Do you still want to proceed?" with
+  "Yes, I am not afraid to be killed in nasty ways." and "No, I think I need to go get one of
+  these Icon things." It is an entry's `warn`: the varbit, the lines and the question.
+- **Toggle-warning** asks "Disable warnings?" Yes. / No. and sets varbit `cave_horror_warning`
+  (4331, varp 622 bit 29) on Yes., as captured in 1846 and 4066. It is an entry's `toggle`. The
+  choice is saved (`loc-teleports:warnings-off`) and the varbit is sent again at login.
+- **Exit** lands on 3749,2973 two ticks after arriving (capture 1638, the north half).
+
+Inferred, not captured: the south half of the exit mirrors the north; "Yes, I am not afraid..."
+goes in a tick after the answer; and turning the warning back on asks "Enable warnings?". The
+conversation is the one branch the captures show (the player has "killed a few of them").
+
+Not part of this: the cave's darkness and insects without a light source, and the Witchwood
+icon's protection.
+
+## Araxxor's web tunnels
+
+The tunnel into Araxxor's lair (54161) and the one out (54274) are loc teleports, not crawls:
+captured (rev 237), the player crawls (844) with sound 2454 as the screen fades out, the minimap
+goes off a tick later, the teleport comes two ticks after the crawl, and the screen fades back
+in a tick after it. The way in also shows "You crawl through the webbed tunnel." The lair is the
+player's own instance, so the move out leaves it; the fade back in still plays after that.
+
+The outer tunnels' reverse directions (54272, 54273) crawl with 844 and sound 2454 as captured
+(rev 224 and 237), the east link's reverse (54272 at 3693, 9836) among them (224/1452); 54271
+long-crawls (2796) on all three of its links.
+
+Not done: the tunnel's toggle-able "Are you sure you wish to enter?" question (Yes. / Yes, and
+don't ask again. / No.), whose setting isn't known; the sound's two loops and delay.

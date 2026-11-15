@@ -22,18 +22,24 @@ const { ActionDialogue } = require("../dist/game/model/dialogues/entries/impl/Ac
 const COINS = 995;
 const SWORD = 1277;
 const SWORD_NOTE = 1278;
+const FAMILY_CHARGED = 7000;
+const FAMILY_PLACEHOLDER = 7001;
+const FAMILY_EMPTY = 7002;
 const DEFINITIONS = {
   [COINS]: { name: "Coins", stackable: true },
   [SWORD]: { name: "Bronze sword" },
   [SWORD_NOTE]: { name: "Bronze sword", stackable: true, noteOf: SWORD },
+  [FAMILY_CHARGED]: { name: "Family item", placeholder: FAMILY_PLACEHOLDER },
+  [FAMILY_EMPTY]: { name: "Family item (empty)" },
 };
 ItemDefinition.forId = (id) => {
   const def = DEFINITIONS[id] ?? { name: `Item ${id}` };
   return {
     getId: () => id, getName: () => def.name, getExamine: () => "",
     isStackable: () => def.stackable === true, isNoted: () => def.noteOf != null,
-    unNote: () => def.noteOf ?? id, getNoteId: () => -1, getPlaceholderId: () => -1,
+    unNote: () => def.noteOf ?? id, getNoteId: () => -1, getPlaceholderId: () => def.placeholder ?? -1,
     isTradeable: () => true, isSellable: () => true, getValue: () => 1, getGrandExchangeValue: () => 1,
+    getEquipmentType: () => ({ getSlot: () => -1 }),
   };
 };
 
@@ -53,6 +59,7 @@ function createPlayer() {
       if (prop === "sendString") strings.push(args);
       if (prop === "sendClientScript") scripts.push(args);
       if (prop === "sendSound") sounds.push(args);
+      if (prop === "sendTypedMessage") messages.push(args[1]);
       return sender;
     },
   });
@@ -123,6 +130,33 @@ test("a full bank still takes more of what it holds, and notes of it", () => {
   assert.equal(player.inventory.getAmount(SWORD), 0, "the moved sword leaves the inventory");
   assert.equal(player.inventory.getAmount(SWORD_NOTE), 0, "the moved notes leave the inventory");
   assert.deepEqual(player.messages, []);
+});
+
+test("a full bank accepts another form into a plugin-defined shared placeholder", () => {
+  capacity(1);
+  handlers.set("bank:placeholder-identity", (event) => {
+    if (event.itemId === FAMILY_CHARGED || event.itemId === FAMILY_EMPTY) {
+      event.placeholderId = FAMILY_CHARGED;
+      event.itemIds = [FAMILY_CHARGED, FAMILY_EMPTY];
+    }
+  });
+  const player = createPlayer();
+  player.placeholders = true;
+  player.isPlaceholders = () => true;
+  player.setInterfaceId(Bank.MAIN_INTERFACE_ID);
+  player.getBank(0).add(new Item(FAMILY_CHARGED, 1), false);
+  Bank.withdraw(player, FAMILY_CHARGED, 0, 1, 0);
+  assert.equal(player.getBank(0).getFreeSlots(), 0);
+  assert.equal(Bank.displayItemId(player.getBank(0).getItems()[0]), FAMILY_PLACEHOLDER);
+
+  player.inventory.add(new Item(FAMILY_EMPTY, 1), false);
+  const incoming = new Item(FAMILY_EMPTY, 1);
+  assert.equal(player.getBank(0).getAddableAmount(incoming), 1);
+  assert.equal(player.getBank(0).canTake(incoming), true);
+  Bank.deposits(player, FAMILY_EMPTY, player.inventory.getSlotForItemId(FAMILY_EMPTY), 1);
+  assert.equal(player.inventory.getAmount(FAMILY_EMPTY), 0);
+  assert.equal(player.getBank(0).getValidItems().length, 1);
+  assert.equal(player.getBank(0).getItems()[0].getId(), FAMILY_EMPTY);
 });
 
 test("a full bank deposit of an unnoted item it holds moves it, never copies it", () => {
@@ -268,7 +302,9 @@ test("as captured: the Banker's offer and the purchase list at the running cost"
   assert.equal(player.getInterfaceId(), 947);
 });
 
-test("as captured: coins in the bank don't pay; the player backs out", () => {
+// The rsprox recording behind docs/bank.md refused 10M banked coins, but the Wiki (Transcript:Banker) refuses only
+// when the coins are in neither the inventory nor the bank: the Wiki is followed (#1341 review).
+test("coins in the bank pay for bank slots (Wiki: Transcript:Banker)", () => {
   const p = plugin();
   const player = createPlayer();
   player.setAttribute("bank-space:blocks", 2);
@@ -278,8 +314,62 @@ test("as captured: coins in the bank don't pay; the player backs out", () => {
   assert.equal(shown(player), "50 slots please.");
   assert.equal(next(player), "Buying 50 additional bank slots will cost 5,000,000 coins. Be warned, this purchase is not reversible. Are you happy to proceed?");
   player.dialogues.advance();
+  const confirm = player.dialogues.getCurrent();
+  assert.ok(confirm instanceof OptionDialogue, "the Yes/No is offered, not the refusal");
+  player.dialogues.handleOption(1);
+  assert.equal(next(player), "Your additional bank slots have been added.");
+  assert.equal(player.getBank(0).getAmount(COINS), 5_000_000, "paid from the bank");
+  assert.equal(player.getAttribute("bank-space:blocks"), 3);
+});
+
+test("carried and banked coins pay together, the carried ones first", () => {
+  const p = plugin();
+  const player = createPlayer();
+  player.setAttribute("bank-space:blocks", 2);
+  player.inventory.add(new Item(COINS, 2_000_000), false);
+  player.getBank(0).add(new Item(COINS, 10_000_000), false);
+  openPurchase(p, player);
+  pick(p, player, 0);
+  next(player);
+  player.dialogues.advance();
+  player.dialogues.handleOption(1);
+  next(player);
+  assert.equal(player.inventory.getAmount(COINS), 0);
+  assert.equal(player.getBank(0).getAmount(COINS), 7_000_000);
+  assert.equal(player.getAttribute("bank-space:blocks"), 3);
+});
+
+test("banked coins pay past a coins placeholder and from every tab they are split across", () => {
+  const p = plugin();
+  const player = createPlayer();
+  player.setAttribute("bank-space:blocks", 2);
+  player.getBank(0).add(new Item(COINS, 0), false);
+  player.getBank(1).add(new Item(COINS, 3_000_000), false);
+  player.getBank(2).add(new Item(COINS, 3_000_000), false);
+  openPurchase(p, player);
+  pick(p, player, 0);
+  next(player);
+  player.dialogues.advance();
+  assert.ok(player.dialogues.getCurrent() instanceof OptionDialogue, "the Yes/No is offered, not the refusal");
+  player.dialogues.handleOption(1);
+  assert.equal(next(player), "Your additional bank slots have been added.");
+  assert.equal(player.getBank(1).getAmount(COINS) + player.getBank(2).getAmount(COINS), 1_000_000);
+  assert.equal(player.getAttribute("bank-space:blocks"), 3);
+});
+
+test("with too few coins between the inventory and the bank the player backs out", () => {
+  const p = plugin();
+  const player = createPlayer();
+  player.setAttribute("bank-space:blocks", 2);
+  player.inventory.add(new Item(COINS, 2_000_000), false);
+  player.getBank(0).add(new Item(COINS, 2_000_000), false);
+  openPurchase(p, player);
+  pick(p, player, 0);
+  next(player);
+  player.dialogues.advance();
   assert.equal(shown(player), "Oh... I don't seem to have enough money for that. Never mind.");
   assert.equal(player.getAttribute("bank-space:blocks"), 2);
+  assert.equal(player.inventory.getAmount(COINS) + player.getBank(0).getAmount(COINS), 4_000_000);
 });
 
 test("as captured: paying from the inventory adds the block", () => {
@@ -365,3 +455,42 @@ test("login sends the blocks bought", () => {
 });
 
 process.on("exit", () => { PluginManager.emitCustomEvent = originalEmit; });
+
+test("a withdraw onto an inventory stack of the same id with other metadata, and no free slot, leaves the bank's stack", () => {
+  const player = createPlayer();
+  player.setInterfaceId(Bank.MAIN_INTERFACE_ID);
+  player.getBank(0).add(new Item(COINS, 500), false);
+  const preset = new Item(COINS, 10);
+  preset.setMeta({ preset: true });
+  player.inventory.add(preset, false);
+  for (let i = 1; i < 28; i++) player.inventory.add(new Item(SWORD, 1), false);
+  assert.equal(player.inventory.getFreeSlots(), 0);
+  const bank = player.getBank(0);
+  bank.switchsItem(player.inventory, bank.getItems()[0].clone(), 0, false, false);
+  assert.equal(bank.getAmount(COINS), 500, "the plain coins stay in the bank");
+  assert.equal(player.inventory.getAmount(COINS), 10, "the preset stack is untouched");
+  assert.ok(player.messages.length > 0, "and the player is told the inventory is full");
+});
+
+test("a banker menu without the bank-slots choice gets it after collecting; full or other menus are left", () => {
+  const p = plugin();
+  const menu = p.custom.get("npc-dialogue:menu");
+  const opts = (...texts) => texts.map((text) => ({ text, steps: [] }));
+  const standard = ["I'd like to access my bank account, please.", "I'd like to check my PIN settings.", "I'd like to collect items."];
+  const ferox = { options: opts(...standard, "What are you doing out here?") };
+  menu(ferox);
+  assert.deepEqual(ferox.options.map((o) => o.text), [...standard, "I'd like to buy more bank slots.", "What are you doing out here?"]);
+  assert.equal(ferox.options[3].steps.at(-1).target, "Bank space purchase");
+  const odovacar = { options: opts("Who are you?", ...standard) };
+  menu(odovacar);
+  assert.equal(odovacar.options.at(-1).text, "I'd like to buy more bank slots.");
+  for (const texts of [
+    [...standard, "I'd like to buy more bank slots.", "What is this place?"],
+    [...standard, "What is this place?", "What's a Financial Wizard?"],
+    ["What do you do?", "I'd like to access my bank, please.", "I'd like to collect items."],
+  ]) {
+    const notice = { options: opts(...texts) };
+    menu(notice);
+    assert.deepEqual(notice.options.map((o) => o.text), texts);
+  }
+});

@@ -6,10 +6,11 @@ const { PluginManager } = require('../dist/plugins/PluginManager');
 const QuestRuntime = require('../plugins/quests/QuestRuntime');
 const attachQuestCape = require('../plugins/quests/QuestCape.QuestCape');
 
-const answers = { quests: true, diaries: true };
+const answers = { quests: true, diaries: true, equipmentRequirements: true };
 const eventHandlers = new Map();
 const api = new Proxy({
   core: PluginManager.getCoreApi(),
+  getPluginConfig: (key, fallback) => key === "quests:equipment-requirements" ? answers.equipmentRequirements : fallback,
   emitCustomEvent(name, request) {
     if (name === 'quest:is-complete') request.complete = answers.quests;
     else if (name === 'diary:all-complete') request.complete = answers.diaries;
@@ -191,6 +192,8 @@ test('invalid equipped cape is banked or removed with appearance and bonuses ref
       getBanks: () => freeBankSlots > 0 ? [bank] : [],
       getAttribute: (key) => key === 'ironman:mode' ? mode : undefined,
       getUpdateFlag: () => ({ flag(value) { appearance = value === api.core.Flag.APPEARANCE; } }),
+      // The unequip refusal names the full inventory (EquipPacketListener.UNEQUIP_NO_SPACE_MESSAGE).
+      sendMessage() {},
     };
     return { player, bank, removed: () => removed, appearance: () => appearance };
   };
@@ -224,7 +227,7 @@ test('Quest point cape skillcape emote requires every quest and uses its cache a
   slots[api.core.Equipment.CAPE_SLOT] = cape;
   const player = { getEquipment: () => ({ getItems: () => slots }) };
   answers.quests = true;
-  assert.deepEqual(resolveSkillcapeEmote(player, api), { sequence: 4945, graphic: 816 });
+  assert.deepEqual(resolveSkillcapeEmote(player, api), { sequence: 4945, graphic: 816, stallTicks: 15 });
   answers.quests = false;
   assert.equal(resolveSkillcapeEmote(player, api), undefined);
   answers.quests = true;
@@ -244,4 +247,22 @@ test('Quest point cape skillcape emote requires every quest and uses its cache a
   assert.equal(resolveSkillcapeEmote(player, musicApi), undefined);
   musicUnlocked = true;
   assert.deepEqual(resolveSkillcapeEmote(player, musicApi), { sequence: 4751, graphic: 1239 });
+});
+
+test('disabled requirements and bots keep an unearned cape equipped without bypassing purchase eligibility', () => {
+  answers.quests = false;
+  try {
+    for (const bot of [false, true]) {
+      answers.equipmentRequirements = bot;
+      const player = { isPlayerBot: () => bot };
+      const event = { player, item: { getId: () => api.core.ItemIdentifiers.QUEST_POINT_CAPE }, allow: true };
+      attachQuestCape._test.canEquip(event);
+      assert.equal(event.allow, true);
+      removeInvalidCape({ player }); // No equipment access or removal when bypassed.
+      assert.equal(allQuestsComplete(player), false);
+    }
+  } finally {
+    answers.quests = true;
+    answers.equipmentRequirements = true;
+  }
 });

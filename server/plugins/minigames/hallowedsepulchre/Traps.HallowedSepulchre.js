@@ -401,6 +401,13 @@ function tickPads(run) {
   }
 }
 
+/**
+ * Wiki (Strange Tile): "The player is temporarily immune to attacks for a few seconds after being teleported";
+ * (Hallowed Sepulchre) "a momentary period of invulnerability to other traps". No length is given or recorded:
+ * 5 ticks (3 seconds) is assumed.
+ */
+const PAD_IMMUNITY_TICKS = 5;
+
 /** A pad's push: along the player's travel (back for a backward pad), 3-7 tiles where walkable. */
 function firePad(run, pad) {
   const { RegionManager } = Common.core;
@@ -423,6 +430,7 @@ function firePad(run, pad) {
   run.player.moveTo(run.area.at(landing));
   run.traps.here = landing;
   run.traps.prev = landing;
+  run.traps.immuneUntil = run.traps.tick + PAD_IMMUNITY_TICKS;
 }
 
 // ------------------------------------------------------------------ hits
@@ -466,12 +474,26 @@ function hit(run, tier, tile) {
   traps.pendingHit = null;
   traps.pendingPad = null;
   const to = checkpoint(run, tile);
-  if (!wearingHallowedRing(player)) {
+  const protectedByRing = wearingHallowedRing(player);
+  if (!protectedByRing) {
     const [low, high] = T().damage[String(tier)];
     player.addTickHit(player.decrementHealth(new HitDamage(Common.randomInt(low, high), HitMask.RED)));
   }
   player.getMovementQueue().reset();
   player.getMovementQueue().setBlockMovement?.(true);
+  if (protectedByRing) {
+    // The ring saves recovery time. Reuse the modeled checkpoint and omit the
+    // normal death/fade sequence; exact retail timing is not captured here.
+    player.moveTo(run.area.at(to));
+    traps.here = to;
+    traps.prev = to;
+    traps.recovering = false;
+    if (!traps.stunned) {
+      player.performAnimation(new Common.core.Animation(-1));
+      player.getMovementQueue().setBlockMovement?.(false);
+    }
+    return;
+  }
   run.schedule(respawn.deathAt, () => {
     Common.animate(player, respawn.deathSeq);
     Common.closeHud(player);
@@ -544,6 +566,9 @@ function tick(run) {
   traps.prev = here;
   if (traps.recovering || run.transitioning || run.ended || run.ticks < run.busyUntil) return;
 
+  // After a pad's push the player can't be hit, by a trap stood in, stepped into or already on its way.
+  const immune = traps.tick < (traps.immuneUntil ?? 0);
+  if (immune) traps.pendingHit = null;
   // A hit moved into last tick lands now.
   if (traps.pendingHit) {
     const [tier, tile] = traps.pendingHit;
@@ -551,7 +576,9 @@ function tick(run) {
     return;
   }
   const key = tileKey(...here);
-  if (teleported) {
+  if (immune) {
+    // Nothing hits during the pad's immunity.
+  } else if (teleported) {
     // Arriving by a drop, stairs or a pad is neither standing in a trap nor stepping into one.
   } else if (!moved) {
     const struck = danger.standing.find(([tile]) => tileKey(...tile) === key);
@@ -565,7 +592,7 @@ function tick(run) {
     if (struck) traps.pendingHit = [struck[1], here];
   }
   const startKey = tileKey(...prev);
-  if (!traps.stunned && stun.some((tile) => tileKey(...tile) === startKey)) stunPlayer(run);
+  if (!immune && !traps.stunned && stun.some((tile) => tileKey(...tile) === startKey)) stunPlayer(run);
 
   // Pads: the tick after arriving, unless the pad is resting; then at its next telegraph.
   const pad = traps.padKeys.get(key);

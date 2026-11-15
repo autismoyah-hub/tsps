@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { EditModePlugin } from "../game/plugins/editmode/EditModePlugin";
-import { parseNpcSpawnRecords, parseNpcSpawns } from "../game/plugins/editmode/hostProtocol/npcSpawnMessage";
+import {
+    classifyNpcSpawnPatch,
+    HiddenNpcSpawns,
+    loadNpcSpawnRegion,
+    parseNpcSpawnRecords,
+    parseNpcSpawns,
+} from "../game/plugins/editmode/hostProtocol/npcSpawnMessage";
 import type { EditModeSelection } from "../game/plugins/editmode/types";
 
 const dom = new JSDOM('<canvas tabindex="0"></canvas><input>', { pretendToBeVisual: true });
@@ -16,6 +22,56 @@ Object.assign(globalThis, {
     cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
 });
 const canvas = document.querySelector("canvas")!;
+
+{
+    // A stacked tile (two of the same NPC) pairs one for one with the patch, as the server's loader does.
+    const man = { id: 3, tileX: 3300, tileY: 3300, plane: 0 };
+    const pair = [man, man];
+    assert.deepEqual(classifyNpcSpawnPatch(pair, [{ ...man, remove: true }, { ...man, wanderRadius: 3 }]),
+        ["remove", "add"], "moved back onto its own tile: the record fills the slot its removal freed");
+    assert.deepEqual(classifyNpcSpawnPatch(pair, [{ ...man, wanderRadius: 0 }, { ...man, wanderRadius: 1 }, { ...man }]),
+        ["override", "override", "add"], "each record overrides one canonical spawn, then adds");
+    assert.deepEqual(classifyNpcSpawnPatch([man], [{ ...man, remove: true }, { ...man, remove: true }]),
+        ["remove", "remove"]);
+    assert.deepEqual(classifyNpcSpawnPatch(pair, [{ ...man, wanderRadius: 0 }, { ...man, remove: true }]),
+        ["override", "remove"], "one stacked spawn's wander changed and the other removed: one spawn left");
+
+    // One marker hides one of the pair; the other stays visible.
+    const hidden = new HiddenNpcSpawns();
+    const key = "3:3300:3300:0";
+    hidden.hide(key);
+    assert.equal(hidden.visible(pair).length, 1, "one marker hides one stacked spawn");
+    hidden.hide(key);
+    assert.equal(hidden.visible(pair).length, 0);
+    hidden.show(key);
+    assert.equal(hidden.visible(pair).length, 1, "undoing a marker brings one back");
+    hidden.show(key);
+    assert.equal(hidden.visible([...pair, { id: 4, tileX: 3300, tileY: 3300, plane: 0 }]).length, 3);
+}
+
+{
+    // A region that loads after a removal marker keeps the hidden spawn as a hidden entry with its own id, so
+    // undoing the marker (showNpcSpawn finds a hidden entry) brings it back without reloading the region.
+    const man = { id: 3, tileX: 3300, tileY: 3300, plane: 0 };
+    const other = { id: 4, tileX: 3301, tileY: 3300, plane: 0 };
+    const hidden = new HiddenNpcSpawns();
+    hidden.hide("3:3300:3300:0");
+    const spawned: unknown[] = [];
+    let nextId = 70000;
+    let reserved = 80000;
+    const entries = loadNpcSpawnRegion([man, man, other], hidden, (spawn) => {
+        spawned.push(spawn);
+        return nextId++;
+    }, () => reserved++);
+    assert.deepEqual(spawned, [man, other], "only the visible spawns are spawned");
+    assert.deepEqual(entries, [
+        { spawn: man, serverId: 80000, hidden: true },
+        { spawn: man, serverId: 70000 },
+        { spawn: other, serverId: 70001 },
+    ], "the marker's spawn stays listed, hidden, under a reserved id");
+    assert.deepEqual(loadNpcSpawnRegion([man], new HiddenNpcSpawns(), () => undefined, () => reserved++), [],
+        "a spawn the client could not create is left out, as before");
+}
 
 {
     const spawns = parseNpcSpawns(JSON.stringify([
@@ -114,6 +170,46 @@ assert.deepEqual(calls, [["hideNpcSpawn", { id: 3, tileX: 3222, tileY: 3218, pla
 assert.deepEqual(plugin.getConfig().edits.map((edit) => edit.kind), ["npcDelete"]);
 assert.equal(plugin.getState().selection, undefined, "a deleted NPC clears the selection");
 
+// Deleting the other spawn stacked on that tile keeps the first marker: one marker per spawn.
+selected = { ...spawnSelection(), npcServerId: 60001 };
+plugin.applyAtPointer();
+calls.length = 0;
+canvas.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Delete", code: "Delete", bubbles: true }));
+assert.deepEqual(calls, [["hideNpcSpawn", { id: 3, tileX: 3222, tileY: 3218, plane: 0 }]]);
+assert.deepEqual(plugin.getConfig().edits.map((edit) => edit.kind), ["npcDelete", "npcDelete"],
+    "both stacked spawns are removed, one marker each");
+
+// Deleting one stacked spawn, then changing the other's wander range, saves the override before the marker,
+// which the loader reads as that spawn's wander plus one removal (not a moved-back spawn filling the slot).
+plugin.clearEdits();
+selected = spawnSelection();
+plugin.applyAtPointer();
+canvas.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Delete", code: "Delete", bubbles: true }));
+selected = { ...spawnSelection(), npcServerId: 60001 };
+plugin.applyAtPointer();
+plugin.setSelectionWanderRadius(0);
+assert.deepEqual(plugin.getConfig().edits.map((edit) => edit.kind), ["npcWander", "npcDelete"]);
+plugin.setSelectionWanderRadius(1);
+assert.deepEqual(plugin.getConfig().edits.map((edit) => [edit.kind, edit.wanderRadius]),
+    [["npcWander", 1], ["npcDelete", undefined]], "a second change still goes before the marker");
+plugin.clearEdits();
+
+// Deleting one stacked spawn, then moving the other away, keeps the first marker: both leave the tile.
+selected = spawnSelection();
+plugin.applyAtPointer();
+canvas.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Delete", code: "Delete", bubbles: true }));
+selected = { ...spawnSelection(), npcServerId: 60001 };
+plugin.applyAtPointer();
+plugin.moveSelection();
+calls.length = 0;
+pointer = { tileX: 3226, tileY: 3218, plane: 0 };
+plugin.applyAtPointer();
+pointer = { tileX: 3222, tileY: 3218, plane: 0 };
+assert.deepEqual(plugin.getConfig().edits.map((edit) => [edit.kind, edit.tileX]),
+    [["npcDelete", 3222], ["npcDelete", 3222], ["npc", 3226]], "one marker per spawn gone from 3222");
+assert.ok(!calls.some(([name]) => name === "showNpcSpawn"), "the deleted spawn is not shown again");
+plugin.clearEdits();
+
 // Delete key removes a selected object too.
 plugin.clearEdits();
 selected = { kind: "loc", ...pointer, locId: 1276, locName: "Tree", shape: 10, rotation: 0 };
@@ -163,6 +259,60 @@ assert.deepEqual(plugin.getConfig().edits, [{
     kind: "npc", locId: 3, tileX: 3230, tileY: 3218, plane: 0, shape: 10, rotation: 0, wanderRadius: 4,
 }]);
 assert.deepEqual(calls, [], "a custom spawn's range is stored on its own edit");
+
+// A game spawn with an editor-placed copy of the same NPC on its tile: selecting the game spawn edits it,
+// never the copy.
+{
+    const copyTile = { tileX: 3250, tileY: 3218, plane: 0 };
+    const copy = { kind: "npc" as const, locId: 3, ...copyTile, shape: 10, rotation: 0, wanderRadius: 4 };
+    const canonicalThere = (): EditModeSelection => ({
+        kind: "npc", ...copyTile, locId: 3, locName: "Goblin", npcServerId: 60010,
+        npcSource: "spawn", npcSpawn: { id: 3, ...copyTile }, npcWanderRadius: 7,
+    });
+    const placeCopy = () => {
+        plugin.clearEdits();
+        pointer = copyTile;
+        plugin.setConfig({ tool: "place", placeKind: "npc", npcId: 3 });
+        plugin.applyAtPointer();
+        plugin.setConfig({ tool: "select" });
+        selected = { kind: "npc", ...copyTile, locId: 3, locName: "Goblin", npcSource: "custom", npcWanderRadius: 5 };
+        plugin.applyAtPointer();
+        plugin.setSelectionWanderRadius(4);
+        assert.deepEqual(plugin.getConfig().edits, [copy]);
+    };
+
+    placeCopy();
+    selected = canonicalThere();
+    plugin.applyAtPointer();
+    calls.length = 0;
+    plugin.setSelectionWanderRadius(2);
+    assert.deepEqual(plugin.getConfig().edits.map((edit) => [edit.kind, edit.wanderRadius]),
+        [["npc", 4], ["npcWander", 2]], "the game spawn's range is its own override; the copy keeps 4");
+
+    placeCopy();
+    selected = canonicalThere();
+    plugin.applyAtPointer();
+    calls.length = 0;
+    canvas.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Delete", code: "Delete", bubbles: true }));
+    assert.deepEqual(plugin.getConfig().edits.map((edit) => edit.kind), ["npcDelete", "npc"],
+        "deleting the game spawn marks it removed and keeps the copy (marker first, as a reload reads it)");
+    assert.deepEqual(calls, [["hideNpcSpawn", { id: 3, ...copyTile }]], "the copy is not despawned");
+    assert.deepEqual(classifyNpcSpawnPatch([{ id: 3, ...copyTile }], plugin.getConfig().edits.map((edit) => ({
+        id: edit.locId, tileX: edit.tileX, tileY: edit.tileY, plane: edit.plane,
+        ...(edit.kind === "npcDelete" ? { remove: true } : {}),
+    }))), ["remove", "add"], "the loader drops the game spawn and keeps the copy");
+
+    placeCopy();
+    selected = canonicalThere();
+    plugin.applyAtPointer();
+    plugin.moveSelection();
+    pointer = { tileX: 3254, tileY: 3218, plane: 0 };
+    plugin.applyAtPointer();
+    assert.deepEqual(plugin.getConfig().edits.map((edit) => [edit.kind, edit.tileX, edit.wanderRadius]),
+        [["npcDelete", 3250, undefined], ["npc", 3250, 4], ["npc", 3254, 7]],
+        "moving the game spawn leaves the copy on its tile");
+    plugin.clearEdits();
+}
 
 // A saved patch imported into a fresh profile rebuilds removal and spawn edits
 // once, so a later export still contains them.

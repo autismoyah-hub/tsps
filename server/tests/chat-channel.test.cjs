@@ -3,6 +3,8 @@
 // enabling, 189 refused joins, 3266 joining twice, 2528 and 75 the side panel's tabs.
 const assert = require('node:assert/strict');
 const { test, beforeEach } = require('node:test');
+// Accounts writes its file to this path; keep it off the real data/saves, before `dist` is required.
+process.env.TSPS_ACCOUNTS_FILE = require('node:path').join(require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'accounts-')), 'accounts.json');
 const { Server } = require('../dist/Server');
 Server.installProductionPathResolver();
 
@@ -60,6 +62,7 @@ beforeEach(() => {
   Manager.offlinePlayerIds.clear();
   Manager.pendingJoins.clear();
   Manager.pendingSetups.clear();
+  Manager.systemProfiles.clear();
   online.length = 0;
   World.getPlayers = () => ({
     search: (match) => online.find(match),
@@ -101,6 +104,45 @@ test('refusals use the live text, as chat-channel notifications', () => {
   Manager.join(ignored, 'Owner', true);
   assert.match(ignored.texts(), /You are not allowed to join this user's chat-channel\./);
   assert.ok(!ignored.lines.some((line) => line.startsWith('plain:')), 'never a plain game message');
+});
+
+test('refusing to ignore a friend leaves them in the owner’s channel', () => {
+  const owner = player('Owner');
+  const member = player('Member');
+  Manager.setOwnChannelName(owner, 'Blur');
+  Manager.handleAction(owner, { action: 'add_friend', name: 'Member' });
+  Manager.join(owner, 'Owner', false);
+  Manager.join(member, 'Owner', false);
+  assert.equal(Manager.channelOf(member)?.name, 'Blur');
+
+  Manager.handleAction(owner, { action: 'add_ignore', name: 'Member' });
+  assert.match(owner.texts(), /remove Member from your friend list first/);
+  assert.equal(owner.getRelations().hasIgnore(member.getLongUsername()), false);
+  assert.equal(Manager.channelOf(member)?.name, 'Blur');
+
+  Manager.handleAction(owner, { action: 'remove_friend', name: 'Member' });
+  Manager.handleAction(owner, { action: 'add_ignore', name: 'Member' });
+  assert.equal(owner.getRelations().hasIgnore(member.getLongUsername()), true);
+  assert.equal(Manager.channelOf(member), null);
+  assert.equal(Manager.join(member, 'Owner', true), false);
+  Manager.handleAction(owner, { action: 'remove_ignore', name: 'Member' });
+  assert.equal(owner.getRelations().hasIgnore(member.getLongUsername()), false);
+  assert.equal(Manager.join(member, 'Owner', true), true);
+});
+
+test('a full ignore list does not remove the requested member from the channel', () => {
+  const owner = player('Owner');
+  const member = player('Member');
+  Manager.setOwnChannelName(owner, 'Blur');
+  Manager.join(owner, 'Owner', false);
+  Manager.join(member, 'Owner', false);
+  for (let i = 0; i < 100; i++) owner.getRelations().addIgnore(Misc.stringToLongBigInt(`user${i}`));
+  assert.equal(owner.getRelations().getIgnoreList().length, 100);
+
+  Manager.handleAction(owner, { action: 'add_ignore', name: 'Member' });
+  assert.match(owner.texts(), /ignore list is full/i);
+  assert.equal(owner.getRelations().hasIgnore(member.getLongUsername()), false);
+  assert.equal(Manager.channelOf(member)?.name, 'Blur');
 });
 
 test('kick and leave use the live text, and the ban holds', () => {
@@ -177,6 +219,57 @@ test('the rejoin at login shows the join messages', () => {
   assert.match(member.texts(), /Now talking in chat-channel Blur/);
 });
 
+test('a system channel is joined by its name, wins over an account of that name and has no owner', () => {
+  // Live (rev 242): the Grouping tab's Shooting Stars channel, owner "osrs star cc", kick rank General.
+  // The cache writes the name with no-break spaces; a typed one has ordinary spaces or underscores.
+  Manager.registerSystemChannel('osrs star cc', { ownerName: 'osrs star cc', channelName: 'Stars', kickRank: FriendsChatRank.General });
+  const namesake = player('osrs star cc');
+  Manager.setOwnChannelName(namesake, 'Mine');
+  const member = player('Member');
+  const other = player('Other');
+  Manager.handleAction(member, { action: 'join', name: 'Osrs_Star_Cc' });
+  runTicks(2);
+  assert.equal(Manager.channelOf(member)?.name, 'Stars');
+  assert.equal(member.getRelations().getFriendsChatLastOwner(), 'osrs star cc', 'rejoined by the key');
+  assert.equal(Manager.join(namesake, 'osrs star cc', true), true);
+  assert.equal(Manager.channelOf(namesake)?.name, 'Stars', 'an account of the same name joins the system channel');
+  assert.equal(Manager.channelOf(namesake).rankOf(namesake), FriendsChatRank.Unranked, 'and is not its owner');
+  Manager.join(other, 'osrs star cc', false);
+  Manager.kick(member, 'Other');
+  assert.match(member.texts(), /You are not a high enough rank to kick from this chat-channel\./);
+  assert.equal(Manager.channelOf(other)?.name, 'Stars');
+});
+
+test('a system channel admits only whom it says, is rejoined at login, and its end removes everyone', () => {
+  const allowed = player('Allowed');
+  const stranger = player('Stranger');
+  const added = [];
+  const announce = Manager.memberAdded;
+  Manager.memberAdded = (member, key) => added.push([member.getUsername(), key]);
+  try {
+    Manager.registerSystemChannel('#group-1', { ownerName: 'Allowed', channelName: 'Group', admits: (p) => p === allowed });
+    assert.equal(Manager.join(stranger, '#group-1', true), false);
+    assert.match(stranger.texts(), /You are not allowed to join this user's chat-channel\./);
+    assert.equal(Manager.join(allowed, '#group-1', true), true);
+    assert.deepEqual(added, [['Allowed', '#group-1']]);
+    assert.equal(Manager.channelOf(allowed)?.name, 'Group');
+
+    Manager.onLogout(allowed);
+    Manager.offlinePlayerIds.delete(allowed.getIndex());
+    Manager.onLogin(allowed);
+    assert.equal(Manager.channelOf(allowed)?.key, '#group-1', 'a login rejoins it by its key');
+
+    Manager.registerSystemChannel('#group-1', { ownerName: 'Someone Else', channelName: 'Group', admits: () => true });
+    assert.equal(Manager.channelByKey('#group-1').ownerName, 'Someone Else', 'an update reaches the open channel');
+    Manager.removeSystemChannel('#group-1');
+    assert.equal(Manager.channelOf(allowed), null);
+    assert.match(allowed.texts(), /You have been removed from this channel\./);
+    assert.equal(Manager.join(allowed, '#group-1', true), false, 'an ended system channel does not exist');
+  } finally {
+    Manager.memberAdded = announce;
+  }
+});
+
 test('the social tab mounts side_channels with the chat-channel inside it', () => {
   const opens = (packets) => packets.map((packet) => packet.toString('hex'));
   const bootstrap = opens(encodeGameframeBootstrap('Someone', 161));
@@ -185,11 +278,17 @@ test('the social tab mounts side_channels with the chat-channel inside it', () =
   assert.ok(bootstrap.includes(inner), 'the login mounts the same content');
 });
 
-function panel() {
+function panel({ members = true } = {}) {
   const hooks = { custom: new Map() };
   const plugin = require('../plugins/interface/SideChannels.plugin.js');
   plugin.register({
+    core: {
+      // Enum 850 as the cache has it: activity -> suggested world (-1 for none).
+      CacheDefinitions: { getEnumValues: (id) => (id === 850 ? new Map([[1, 306], [5, 334], [7, -1]]) : new Map()) },
+      WorldDefinition: { isMembersWorld: () => members },
+    },
     persistAttribute() {},
+    onPlayerLogin: (hook) => { hooks.login = hook; },
     onInterfaceActionClick: (hook) => { hooks.click = hook; },
     onCustomEvent: (name, hook) => hooks.custom.set(name, hook),
   });
@@ -202,10 +301,24 @@ function panel() {
       sendVarbit(id, value) { sent.push(['varbit', id, value]); return this; },
       sendSubInterface: (uid, group) => sent.push(['mount', uid >>> 16, uid & 0xffff, group]),
       sendInterfaceFlagsRange: (uid, from, to, flags) => sent.push(['flags', uid >>> 16, uid & 0xffff, from, to, flags]),
+      sendContentData(source, datasets) { sent.push(['content', source, datasets]); return this; },
+      sendClientScript(id, ...args) { sent.push(['script', id, ...args]); return this; },
     }),
   };
   return { hooks, sent, someone };
 }
+
+test("Grouping's Switch world button never shows: one world, so no activity suggests another", () => {
+  for (const members of [true, false]) {
+    const { hooks, sent, someone } = panel({ members });
+    hooks.login({ player: someone });
+    assert.deepEqual(sent, [
+      ['content', 'grouping-tab', [{ key: 'enumOverrides', rows: [{ enumId: 850, valueType: 'I', defaultValue: -1, entries: [[1, -1], [5, -1], [7, -1]] }] }]],
+      // Live's playermember (828) as the social tab mounts: script 435 then reads Castle Wars from the enum too.
+      ['script', 828, members ? 1 : 0],
+    ]);
+  }
+});
 
 test('each tab button selects its tab, as live does', () => {
   const { hooks, sent, someone } = panel();
@@ -216,7 +329,8 @@ test('each tab button selects its tab, as live does', () => {
     assert.equal(event.handled, true);
     assert.deepEqual(sent[0], ['varbit', 13071, tab]);
     assert.deepEqual(sent[1], ['mount', 707, 7, group]);
-    if (group === 76) assert.deepEqual(sent[2], ['flags', 76, 30, 0, 27, 2]);
+    // Live (rev 242): op1 on the Teleport and world-hop buttons, slots 0-30.
+    if (group === 76) assert.deepEqual(sent.slice(2), [['flags', 76, 32, 0, 30, 2], ['flags', 76, 26, 0, 30, 2]]);
   }
   const other = { player: someone, groupId: 7, childId: 3 };
   hooks.click(other);
@@ -282,6 +396,90 @@ function named(name, sent) {
   self.getSession = () => ({ sendClientPacket: (packet) => { sent.push([self, packet]); return session.sendClientPacket(packet); } });
   return self;
 }
+
+// Decode the friend row sent by the real snapshot encoder; no client is running here.
+function friendRow(who, sent) {
+  const packet = sent.filter(([to, p]) => to === who && p[0] === FRIENDS_CHAT_UPDATE).at(-1)?.[1];
+  assert.ok(packet);
+  let offset = 3; // variable-short frame
+  assert.equal(packet[offset++], 0, 'no channel in this fixture');
+  assert.equal(packet.readUInt16BE(offset), 1); offset += 2;
+  function readString() { const end = packet.indexOf(0, offset); const value = packet.toString('latin1', offset, end); offset = end + 1; return value; }
+  const name = readString(); const previousName = readString();
+  const world = packet.readUInt16BE(offset); offset += 2;
+  const rank = packet.readInt8(offset++); const isOnline = packet[offset++] !== 0;
+  return { name, previousName, world, rank, isOnline };
+}
+
+test('ignored players see an online friend but cannot deliver private messages', () => withDisplayNames(() => {
+  const sent = [];
+  const alice = named('Alice', sent);
+  const bob = named('Bob', sent);
+  Manager.handleAction(alice, { action: 'add_friend', name: 'Bob' });
+  assert.equal(friendRow(alice, sent).world, 1, 'On mode shows Bob before ignore');
+  assert.ok(Manager.handlePrivateMessage(alice, 'Bob', 'before'));
+  Manager.handleAction(bob, { action: 'add_ignore', name: 'Alice' });
+  assert.equal(friendRow(alice, sent).world, 1, 'ignoring does not hide Bob in On mode');
+  assert.equal(friendRow(alice, sent).isOnline, true);
+  const received = bob.lines.length;
+  assert.equal(Manager.handlePrivateMessage(alice, 'Bob', 'blocked'), undefined);
+  assert.equal(bob.lines.length, received, 'ignored message was not delivered');
+  Manager.setChatFilters(bob, 0, 1, 0);
+  assert.equal(friendRow(alice, sent).world, 0, 'Friends hides Bob from a non-friend');
+  Manager.setChatFilters(bob, 0, 2, 0);
+  assert.equal(friendRow(alice, sent).world, 0, 'Off hides Bob');
+  Manager.setChatFilters(bob, 0, 0, 0);
+  Manager.handleAction(bob, { action: 'remove_ignore', name: 'Alice' });
+  assert.equal(friendRow(alice, sent).world, 1);
+  assert.ok(Manager.handlePrivateMessage(alice, 'Bob', 'after'));
+  Manager.setChatFilters(bob, 0, 1, 0);
+  assert.equal(friendRow(alice, sent).world, 0, 'Friends hides a non-friend after unignore');
+  Manager.handleAction(bob, { action: 'add_friend', name: 'Alice' });
+  assert.equal(friendRow(alice, sent).world, 1, 'Friends reveals Bob to a reciprocal friend');
+  assert.ok(Manager.handlePrivateMessage(alice, 'Bob', 'friends'));
+  DisplayNames.set('Bob', 'Zed', Date.now(), 35 * 86400000);
+  Manager.onDisplayNameChanged(bob);
+  assert.equal(friendRow(alice, sent).name, 'Zed');
+  assert.ok(Manager.handlePrivateMessage(alice, 'Zed', 'renamed'));
+}));
+
+test('ignoring does not broadcast either online player offline to other friends', () => {
+  const alice = player('Alice');
+  const bob = player('Bob');
+  const charlie = player('Charlie');
+  const updates = [];
+  for (const p of [alice, bob, charlie]) {
+    p.getPacketSender = () => new Proxy({}, { get: (_, key, sender) => key === 'sendFriend' ? (name, world) => { updates.push([p.getUsername(), name, world]); return sender; } : () => sender });
+  }
+  const originalLookup = World.getPlayerByName;
+  World.getPlayerByName = (name) => online.find(p => p.getUsername().toLowerCase() === name.toLowerCase());
+  try {
+    Manager.handleAction(alice, { action: 'add_friend', name: 'Bob' });
+    Manager.handleAction(charlie, { action: 'add_friend', name: 'Alice' });
+    updates.length = 0;
+    Manager.handleAction(bob, { action: 'add_ignore', name: 'Alice' });
+    const aliceViewsBob = updates.filter(([viewer, name]) => viewer === 'Alice' && name === bob.getLongUsername());
+    const charlieViewsAlice = updates.filter(([viewer, name]) => viewer === 'Charlie' && name === alice.getLongUsername());
+    assert.ok(aliceViewsBob.length > 0 && aliceViewsBob.every(([, , world]) => world === 1));
+    assert.ok(charlieViewsAlice.length > 0 && charlieViewsAlice.every(([, , world]) => world === 1));
+    Manager.setChatFilters(bob, 0, 2, 0);
+    updates.length = 0;
+    bob.getRelations().updateLists(true);
+    assert.deepEqual(updates.filter(([viewer, name]) => viewer === 'Alice' && name === bob.getLongUsername()).at(-1), ['Alice', bob.getLongUsername(), 0]);
+    bob.getRelations().setChatModes(0, 1, 0);
+    updates.length = 0;
+    bob.getRelations().updateLists(true);
+    assert.deepEqual(updates.filter(([viewer, name]) => viewer === 'Alice' && name === bob.getLongUsername()).at(-1), ['Alice', bob.getLongUsername(), 0], 'Friends hides Bob from non-friend Alice');
+    alice.getRelations().setChatModes(0, 1, 0);
+    updates.length = 0;
+    Manager.handleAction(bob, { action: 'remove_ignore', name: 'Alice' });
+    Manager.handleAction(bob, { action: 'add_ignore', name: 'Alice' });
+    const hiddenAlice = updates.filter(([viewer, name]) => viewer === 'Charlie' && name === alice.getLongUsername());
+    assert.ok(hiddenAlice.length > 0 && hiddenAlice.every(([, , world]) => world === 0), 'third-party updates respect Alice’s Friends mode');
+  } finally {
+    World.getPlayerByName = originalLookup;
+  }
+});
 
 test('friends and ignores show display names and the name given up, and refresh on a change', () => withDisplayNames(() => {
   const sent = [];
@@ -374,3 +572,113 @@ test('players who only ignore the renamed player are told of every rename, each 
   assert.match(lastSnapshot(watcher, sent), /Yew\0Zed\0/);
   assert.equal(snapshots(stranger), before.stranger);
 }));
+
+// Cache241 friends_panel drives toplevel_redraw907; use the real sender so
+// the shared chat_filter_assist bits, rather than just the packet shape, are checked.
+test('social list toggles synchronize the cache icon state without changing other chat bits', async () => {
+  const { CachePipeline } = require('../dist/game/cache/CachePipeline');
+  const { CacheDefinitions } = require('../dist/game/cache/CacheDefinitions');
+  const { PacketSender } = require('../dist/net/packet/PacketSender');
+  await CachePipeline.initialize(require('node:path').resolve(__dirname, '..'));
+  const p = player('Panel');
+  p.getFrameUpdater = () => ({ clearGroup() {} });
+  const sender = new PacketSender(p);
+  p.getPacketSender = () => sender;
+  const unrelated = 0x80020100 | 0;
+  const definition = CacheDefinitions.getVarbit(6516);
+  assert.equal(definition.baseVar, 1055);
+  assert.equal(definition.startBit, 30);
+  assert.equal(definition.endBit, 30);
+  sender.sendConfig(1055, unrelated);
+  const mounts = [];
+  const mount = sender.sendSubInterface.bind(sender);
+  sender.sendSubInterface = (...args) => { mounts.push(args); return mount(...args); };
+  for (let repeat = 0; repeat < 3; repeat++) {
+    assert.equal(Manager.handleWidgetAction(p, 429, 1, '', 1), true);
+    assert.equal(sender.getVarbit(6516), 1);
+    assert.equal(sender.getVarp(1055), unrelated | (1 << 30));
+    assert.deepEqual(mounts.at(-1), [(161 << 16) | 85, 432, 1]);
+    assert.equal(Manager.handleWidgetAction(p, 432, 1, '', 1), true);
+    assert.equal(sender.getVarbit(6516), 0);
+    assert.equal(sender.getVarp(1055), unrelated);
+    assert.deepEqual(mounts.at(-1), [(161 << 16) | 85, 429, 1]);
+  }
+  const before = mounts.length;
+  assert.equal(Manager.handleWidgetAction(p, 429, 2, '', 1), false);
+  assert.equal(Manager.handleWidgetAction(p, 432, 1, 'Not a list toggle', 1), false);
+  assert.equal(sender.getVarp(1055), unrelated);
+  assert.equal(mounts.length, before);
+  sender.sendVarbit(6516, 1);
+  Manager.onLogin(p);
+  assert.equal(sender.getVarbit(6516), 0, 'login matches the bootstrap mount of Friends429');
+  assert.equal(sender.getVarp(1055), unrelated);
+  assert.equal(mounts.length, before, 'login does not add a competing panel mount');
+});
+
+// rsprox_transcripts/227/00242.txt: a player who left on the ignore list logs in with friends_panel 1
+// and ignore (432) in side9, and gets it again when the gameframe is mounted after the welcome screen.
+test('the social tab logs in on the list last shown', async () => {
+  const { CachePipeline } = require('../dist/game/cache/CachePipeline');
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  await CachePipeline.initialize(require('node:path').resolve(__dirname, '..'));
+  const hooks = new Map();
+  const persisted = new Map();
+  const api = new Proxy({}, {
+    get: (_, name) => {
+      if (name === 'onCustomEvent') return (event, hook) => hooks.set(event, [...(hooks.get(event) ?? []), hook]);
+      if (name === 'persistAttribute') return (key, fallback) => persisted.set(key, fallback);
+      return () => {};
+    },
+  });
+  require('../plugins/interface/FriendsList.plugin.js').register(api);
+  const { FRIENDS_PANEL_ATTRIBUTE } = require('../plugins/interface/FriendsChatManager');
+  assert.equal(persisted.get(FRIENDS_PANEL_ATTRIBUTE), 0, 'the choice is saved with the character');
+  const fire = (event, payload) => (hooks.get(event) ?? []).forEach((hook) => hook(payload));
+
+  const p = new Player(null);
+  p.getSession = () => ({ sendClientPacket: () => true });
+  const sender = p.getPacketSender();
+  const mounts = [];
+  const mount = sender.sendSubInterface.bind(sender);
+  sender.sendSubInterface = (...args) => { mounts.push(args); return mount(...args); };
+  assert.equal(Manager.handleWidgetAction(p, 429, 1, 'View ignore list', 1), true);
+  assert.equal(p.getAttribute(FRIENDS_PANEL_ATTRIBUTE), 1);
+
+  for (const [event, payload] of [
+    ['player:bootstrap-complete', { player: p }],
+    ['gameframe:ready', { player: p }],
+    ['gameframe:tab-mounted', { player: p, group: 429 }],
+  ]) {
+    sender.sendVarbit(6516, 0);
+    mounts.length = 0;
+    fire(event, payload);
+    assert.equal(sender.getVarbit(6516), 1, `${event} restores the ignore list's icon`);
+    assert.deepEqual(mounts, [[(161 << 16) | 85, 432, 1]], `${event} mounts the ignore list over Friends429`);
+  }
+  mounts.length = 0;
+  fire('gameframe:tab-mounted', { player: p, group: 707 });
+  assert.deepEqual(mounts, [], 'another tab mounting leaves the social tab alone');
+
+  assert.equal(Manager.handleWidgetAction(p, 432, 1, 'View friends list', 1), true);
+  assert.equal(p.getAttribute(FRIENDS_PANEL_ATTRIBUTE), 0);
+  mounts.length = 0;
+  sender.sendVarbit(6516, 0);
+  fire('player:bootstrap-complete', { player: p });
+  fire('gameframe:ready', { player: p });
+  assert.deepEqual(mounts, [], 'a player who left on Friends keeps the bootstrap mount');
+  assert.equal(sender.getVarbit(6516), 0);
+});
+
+test('an offline owner channel is read from the character this world logs in (the league one on a league world)', (t) => {
+  const { MAIN_PROFILE, LEAGUE_PROFILE } = require('../dist/game/entity/impl/player/persistence/PlayerProfile');
+  const loads = [];
+  GameConstants.PLAYER_PERSISTENCE = { requestSave() {}, load: (name, profile) => { loads.push([name, profile]); return null; } };
+  const world = GameConstants.WORLD_PROFILE;
+  t.after(() => { GameConstants.WORLD_PROFILE = world; });
+  const owner = { key: 'owner', display: 'Owner' };
+  GameConstants.WORLD_PROFILE = LEAGUE_PROFILE;
+  assert.equal(Manager.loadOwnerProfile(owner), undefined);
+  GameConstants.WORLD_PROFILE = MAIN_PROFILE;
+  Manager.loadOwnerProfile(owner);
+  assert.deepEqual(loads, [['Owner', LEAGUE_PROFILE], ['Owner', MAIN_PROFILE]]);
+});

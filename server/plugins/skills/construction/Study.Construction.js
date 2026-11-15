@@ -69,18 +69,47 @@ function staffOn(event) {
   const staff = STAVES.find(entry => Object.values(entry.ids).includes(event.itemId));
   if (!staff) return say(player, "Only ordinary elemental staffs, elemental battlestaffs and elemental mystic staffs can be switched using the sphere.");
   if (staff.tier > ballTier) return say(player, BALL_REFUSALS[ballTier]);
-  api.sendMultiChatboxPrompt(player, "Select an element", ...ELEMENTS.flatMap(element => [element, () => changeStaff(player, event.itemId, staff, element)]));
+  api.sendMultiChatboxPrompt(player, "Select an element", ...ELEMENTS.flatMap(element => [element, () => changeStaff(player, event.itemId, staff, element, event.item)]));
 }
 
-function changeStaff(player, itemId, staff, element) {
+const restricted = (item) => !!item && (item.isPresetItem?.() === true || item.isUntradeable?.() === true || item.isUnbankable?.() === true);
+
+/** Plain copies of a rune (a container without slots, a test stand-in, holds no presets). */
+function plainRunes(player, runeId) {
+  const items = player.getInventory().getItems?.();
+  if (!items) return player.getInventory().getAmount(runeId);
+  return items.reduce((total, item) => (item?.getId() === runeId && !restricted(item) ? total + item.getAmount() : total), 0);
+}
+
+function takePlainRunes(player, runeId, amount) {
+  const inventory = player.getInventory();
+  if (!inventory.getItems) return void inventory.delete(runeId, amount);
+  let left = amount;
+  inventory.getItems().forEach((item, slot) => {
+    if (left <= 0 || item?.getId() !== runeId || restricted(item)) return;
+    const taken = Math.min(left, item.getAmount());
+    inventory.deleteAtSlot(slot, taken);
+    left -= taken;
+  });
+}
+
+/** `used` is the staff the player used on the ball; it changes when still held, else the first copy does. */
+function changeStaff(player, itemId, staff, element, used) {
   const into = staff.ids[element];
   if (into === itemId || !player.getInventory().contains(itemId)) return;
-  if (staff.cost && player.getInventory().getAmount(RUNES[element]) < staff.cost) {
-    return say(player, `You need ${staff.cost.toLocaleString("en-US")} ${element.toLowerCase()} runes to change that staff.`);
+  // Only plain runes pay: a preset (untradeable, unbankable) rune never pays for a tradeable staff's change.
+  if (staff.cost && plainRunes(player, RUNES[element]) < staff.cost) {
+    return say(player, player.getInventory().getAmount(RUNES[element]) >= staff.cost
+      ? "Preset items cannot be used for this."
+      : `You need ${staff.cost.toLocaleString("en-US")} ${element.toLowerCase()} runes to change that staff.`);
   }
-  if (staff.cost) player.getInventory().delete(RUNES[element], staff.cost);
-  player.getInventory().delete(itemId, 1);
-  player.getInventory().adds(into, 1);
+  if (staff.cost) takePlainRunes(player, RUNES[element], staff.cost);
+  // In place (setId keeps the staff's meta: a preset staff stays preset in its new element).
+  const items = player.getInventory().getItems?.();
+  const converted = used?.getId?.() === itemId && items?.includes(used) ? used : items?.find((item) => item?.getId() === itemId);
+  if (converted) converted.setId(into);
+  else { player.getInventory().deleteNumber(itemId, 1); player.getInventory().adds(into, 1); }
+  player.getInventory().refreshItems?.();
 }
 
 // Clocks: "It's Rune o'clock." (captures).

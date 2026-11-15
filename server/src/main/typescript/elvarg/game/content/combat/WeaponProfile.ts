@@ -12,8 +12,12 @@ import type { AttackTypeName } from "../../definition/ItemDefinition";
 const ATTACK_TYPE_NAMES: AttackTypeName[] = ["stab", "slash", "crush", "magic", "range"];
 
 export type HitDelayProfile = { base: number; distanceOffset: number; divisor: number };
-/** angle and progress are the packet's arc (16 and 64 unless set, see Projectile). */
-export type ProjectileProfile = { delay: number; speed?: number; startHeight: number; endHeight: number; lengthAdjustment?: number; stepMultiplier?: number; angle?: number; progress?: number };
+/**
+ * angle and progress are the packet's arc (16 and 64 unless set, see Projectile). landingOffset
+ * makes the projectile end with the hit it carries, whatever the distance: that many client
+ * cycles plus 30 (one tick) per tick of the hit's landing delay.
+ */
+export type ProjectileProfile = { delay: number; speed?: number; startHeight: number; endHeight: number; lengthAdjustment?: number; stepMultiplier?: number; angle?: number; progress?: number; landingOffset?: number };
 
 export interface WeaponCombatProfile {
     itemIds?: number[];
@@ -24,6 +28,11 @@ export interface WeaponCombatProfile {
     attackSpeed?: number;
     /** Tiles it reaches; ranged weapons take the cache's (ItemDefinition.ATTACK_RANGE_PARAM) first. */
     attackDistance?: number;
+    /**
+     * False for a weapon that reaches its melee distance but never swings: its wielder walks into
+     * reach, faces the target and waits (only a spell attacks with it).
+     */
+    meleeAllowed?: boolean;
     /** The style that adds 2 tiles (Longrange). */
     longRangeFightType?: FightType;
     hitDelays?: HitDelayProfile[];
@@ -35,13 +44,18 @@ export interface WeaponCombatProfile {
     startGraphic?: boolean;
     /** Fires two arrows: the ammunition's double launch graphic (double_<ammo>_arrow_launch). */
     doubleStartGraphic?: boolean;
-    attackSound?: Sound;
+    /** null: none sent, the attack animation carries its own (the cache's frame sounds). */
+    attackSound?: Sound | null;
     fireSound?: Sound;
+    /** The fire sound when a several-arrow weapon looses only one (the dark bow's darkbow_fire). */
+    singleFireSound?: Sound;
     ammoRequired?: number;
     boltEffects?: boolean;
     /** Scales the enchanted bolt effects' chance (the Ascension crossbows halve it). */
     boltEffectChanceMultiplier?: number;
     rangedDefenceType?: "light" | "standard" | "heavy";
+    /** Ranged accuracy/prayers/stance, with visible Strength and melee strength equipment. */
+    rangedDamageSource?: "melee_strength";
 }
 
 // OSRS projectile types (server projanim config): an arrow ends at delay + lengthAdjustment +
@@ -86,6 +100,12 @@ export class WeaponProfiles {
 
     public static ranged(player: Player): WeaponCombatProfile {
         return this.get(player) ?? DEFAULT_RANGED;
+    }
+
+    public static usesMeleeStrength(player: Player): boolean {
+        // Scripted ranged attackers (boat cannons) can expose an empty equipment list.
+        const weapon = player.getEquipment().getItems()[Equipment.WEAPON_SLOT];
+        return weapon != null && this.get(player)?.rangedDamageSource === "melee_strength";
     }
 
     /**
@@ -141,6 +161,11 @@ export class WeaponProfiles {
     /** Melee reach: a profile's (halberds), or `fallback`. */
     public static meleeAttackDistance(player: Player, fallback: number): number {
         return this.get(player)?.attackDistance ?? fallback;
+    }
+
+    /** Whether the wielded weapon may swing in melee (WeaponCombatProfile.meleeAllowed). */
+    public static meleeAllowed(player: Player): boolean {
+        return this.get(player)?.meleeAllowed !== false;
     }
 
     public static hitDelays(player: Player, distance: number): number[] {
@@ -275,6 +300,8 @@ export class WeaponProfiles {
             hitDelays: [STANDARD_HIT, { base: 1, distanceOffset: 2, divisor: 3 }],
             projectiles: [DEFAULT_PROJECTILE, { delay: 41, lengthAdjustment: 14, stepMultiplier: 10, startHeight: 48, endHeight: 31 }],
             fireSound: Sound.SHOOT_BOW_QUIET,
+            // rsprox 229/02760.txt:12022: one dark bow arrow plays darkbow_fire (3734) to the archer (Wiki sound list).
+            singleFireSound: Sound.DARK_BOW_FIRE,
             ammoRequired: 2,
             doubleStartGraphic: true,
         });

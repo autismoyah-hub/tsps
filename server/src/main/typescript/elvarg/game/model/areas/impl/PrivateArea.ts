@@ -43,19 +43,35 @@ export abstract class PrivateArea extends Area {
     }
 
     add(entity: Entity) {
-        if (!this.entities.includes(entity)) {
+        const entered = !this.entities.includes(entity);
+        if (entered) {
             this.entities.push(entity);
         }
         entity.setArea(this);
+        // "private-area:entered" { player, area }: a player has just joined this instance.
+        if (entered && (entity as any)?.isPlayer?.() === true) {
+            require("../../../../plugins/PluginManager").PluginManager.emitCustomEvent("private-area:entered", { player: entity, area: this });
+        }
     }
 
     public destroy() {
         if (this.destroyed) {
             return;
         }
-        for (let npc of this.getNpcs()) {
-            if (npc.isRegistered()) {
-                World.getRemoveNPCQueue().push(npc);
+        // NPCs that entered the area, and those attached with add() (a boss or minions spawned for the instance, which
+        // never pass through enter() while the area is unregistered): none outlives the instance, a pending spawn included.
+        const removeQueue = World.getRemoveNPCQueue();
+        const addQueue = World.getAddNPCQueue();
+        const npcs = new Set(this.getNpcs());
+        for (const entity of this.entities as any[]) {
+            if (entity?.isNpc?.() === true) npcs.add(entity.getAsNpc());
+        }
+        for (const npc of npcs) {
+            for (let index = addQueue.indexOf(npc); index !== -1; index = addQueue.indexOf(npc)) {
+                addQueue.splice(index, 1);
+            }
+            if (npc.isRegistered() && !removeQueue.includes(npc)) {
+                removeQueue.push(npc);
             }
         }
         for (let object of this.getObjects()) {
@@ -91,6 +107,21 @@ export abstract class PrivateArea extends Area {
      */
     public countsAsMainWorld(): boolean {
         return false;
+    }
+
+    /** Optional default lifetime for floor items in this instance, in game ticks. */
+    public groundItemDespawnDelay(): number | null {
+        return null;
+    }
+
+    /** Whether this area's scene is copied from cache template chunks instead of the normal map. */
+    public usesTemplateMap(): boolean {
+        return false;
+    }
+
+    /** Template-map scenery at a tile; ordinary private areas use the regular map instead. */
+    public getTemplateObjects(_location: Location): GameObject[] {
+        return [];
     }
 
     /** Allows an instance to validate client-only dynamic locs on demand. */

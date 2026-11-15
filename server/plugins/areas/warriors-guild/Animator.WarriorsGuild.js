@@ -32,8 +32,28 @@ function buildSets() {
   ]);
 }
 
+/** Not captured: the shared powered-staff wording for a preset copy. */
+const PRESET_TEXT = "Preset items cannot be used for this.";
+
+/** A preset copy (untradeable, unbankable) is never animated: Shanomi and the armour's drop hand back plain armour. */
+function restricted(item) {
+  return item.isPresetItem?.() === true || item.isUntradeable?.() === true || item.isUnbankable?.() === true;
+}
+
+/** The slots of one plain copy of each piece, or null. */
+function plainSet(player, set) {
+  const items = player.getInventory().getItems();
+  const slots = set.slice(0, 3).map((itemId) => items.findIndex((item) => item?.getId() === itemId && !restricted(item)));
+  return slots.every((slot) => slot >= 0) ? slots : null;
+}
+
 function hasSet(player, set) {
-  return set.slice(0, 3).every((itemId) => player.getInventory().contains(itemId));
+  return plainSet(player, set) !== null;
+}
+
+/** Every piece is held, but some only as preset copies. */
+function onlyPresetSet(player, set) {
+  return !hasSet(player, set) && set.slice(0, 3).every((itemId) => player.getInventory().contains(itemId));
 }
 
 function animate(player, set, animator) {
@@ -42,7 +62,9 @@ function animate(player, set, animator) {
     return;
   }
   const inventory = player.getInventory();
-  for (const itemId of set.slice(0, 3)) inventory.deleteNumber(itemId, 1);
+  const slots = plainSet(player, set);
+  if (!slots) return;
+  for (const slot of slots) inventory.deleteAtSlot(slot, 1);
   const state = { npc: null, set, ticks: 0 };
   animated.set(player, state);
   player.getMovementQueue().reset();
@@ -67,6 +89,10 @@ function animate(player, set, animator) {
 
 function useAnimator({ player, location }) {
   const set = SETS.find((candidate) => hasSet(player, candidate));
+  if (!set && SETS.some((candidate) => onlyPresetSet(player, candidate))) {
+    player.sendMessage(PRESET_TEXT);
+    return;
+  }
   if (!set) {
     Guild.talk(player, [{ statement: "You need a suitable platebody, legs and full helm of the same type to activate the armour animator." }]);
     return;
@@ -80,6 +106,10 @@ function useItemOnAnimator(event) {
   const set = SETS.find((candidate) => candidate.slice(0, 3).includes(event.itemId));
   if (!set) {
     Guild.playTranscript(api, event.player, Guild.NPCS.SHANOMI, SHANOMI_WRONG_ITEM_VARIANT);
+    return;
+  }
+  if (onlyPresetSet(event.player, set)) {
+    event.player.sendMessage(PRESET_TEXT);
     return;
   }
   if (!hasSet(event.player, set)) {
@@ -96,18 +126,47 @@ function lostSets(player) {
   return Array.isArray(sets) ? sets : [];
 }
 
-/** The armour goes back to Shanomi: it outlived its five minutes, or its owner died or left. */
-function abandon(player) {
+/**
+ * The armour goes back to Shanomi: it outlived its five minutes, or its owner died or left. Armour already dying drops
+ * its set instead, but only once its death finds a logged-in killer (NPCDeathTask, a tick on): Shanomi keeps nothing
+ * only when that drop is certain, or the set was both dropped and kept. `leaving` is the owner logging out: in the
+ * death's own cycle the task hasn't looked yet and won't find them, but from the next tick on it has already taken them
+ * as its killer, and drops the set whether they stay or not.
+ */
+function abandon(player, leaving = false) {
   const state = animated.get(player);
   if (!state) return;
   animated.delete(player);
+  const killer = state.npc?.isDyingFunction?.() === true ? state.killer : null;
+  const ownerLeftFirst = leaving && killer === player && state.deathCycle === Guild.core.World.getProcessCycle();
+  // The owner's own logout hook runs after they are unregistered (MobileList.remove), so their registration says
+  // nothing here: only whether the task has already taken them (ownerLeftFirst) does.
+  const killerCounts = (leaving && killer === player) || killer?.isRegistered?.() === true;
+  const dropCertain = killer != null && killerCounts && !ownerLeftFirst;
   if (state.npc) Guild.despawn(state.npc);
   player.getPacketSender().sendEntityHintRemoval(false);
-  player.setAttribute(LOST_ARMOUR_ATTRIBUTE, [...lostSets(player), state.set.slice(0, 3)]);
+  if (!dropCertain) player.setAttribute(LOST_ARMOUR_ATTRIBUTE, [...lostSets(player), state.set.slice(0, 3)]);
 }
 
 function abandonArmour({ player }) {
   abandon(player);
+}
+
+function logoutArmour({ player }) {
+  abandon(player, true);
+}
+
+/**
+ * The armour's killer, as its death will find it. With none (no player's damage counted), its death drops nothing and
+ * the set goes to Shanomi now, so the owner isn't held as "already summoned" for the rest of its five minutes.
+ */
+function armourDying({ npc }) {
+  const owner = npc?.getOwner?.();
+  const state = owner ? animated.get(owner) : null;
+  if (!state || state.npc !== npc) return;
+  state.killer = npc.getCombat?.()?.getKiller?.(false) ?? null;
+  state.deathCycle = Guild.core.World.getProcessCycle();
+  if (state.killer == null) abandon(owner);
 }
 
 function tickArmour({ player }) {
@@ -121,6 +180,16 @@ function armourKilled({ npc }) {
   if (!state || state.npc !== npc) return;
   animated.delete(owner);
   owner.getPacketSender().sendEntityHintRemoval(false);
+}
+
+/** Only tokens from the owner's own animated armour receive the achievement bonus. */
+function bonusArmourTokens({ player, npc, npcId, drops }) {
+  if (!player || npc?.getOwner?.() !== player || !SETS.some((set) => set[3] === npcId) || !Array.isArray(drops)) return;
+  const multiplier = Guild.tokenMultiplier(player);
+  if (multiplier === 1) return;
+  for (const drop of drops) {
+    if (drop.itemId === Guild.ITEMS.TOKEN) drop.amount *= multiplier;
+  }
 }
 
 function shanomiVariant({ player, npcId }) {
@@ -152,8 +221,10 @@ module.exports = function attachAnimator(pluginApi) {
   api.onItemOnObject(useItemOnAnimator);
   api.onPlayerProcess(tickArmour);
   api.onNpcDeath(armourKilled);
+  api.onCustomEvent("npc-drops:roll", bonusArmourTokens);
   api.onPlayerDeath(abandonArmour);
-  api.onPlayerLogout(abandonArmour);
+  api.onPlayerLogout(logoutArmour);
+  api.onNpcBeforeDeath(armourDying);
   api.onNpcDialogueVariant(shanomiVariant);
   api.onNpcDialogueCondition(shanomiCondition);
   api.onCustomEvent("npc-dialogue:action", returnLostArmour);

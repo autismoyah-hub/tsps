@@ -8,6 +8,9 @@
  *   first free slot, until the amount, the logs or the coins run out. Without logs: "You'll
  *   need to bring me some more logs."; coins running short: "Those planks cost 1500 coins. You
  *   don't have enough money for all of them.";
+ * - a sawmill coupon for the log's plank pays that plank's fee instead of the coins, one per log,
+ *   and is used before a voucher, which is then kept (Wiki, Sawmill coupon). The choice ends with
+ *   "You redeem 27 sawmill coupons to pay for some planks." (spam, as captured);
  * - a sawmill voucher carried, with room for the extra plank, doubles one log's planks (Wiki);
  * - a log used on an operator makes one plank straight away;
  * - a carried plank sack takes the planks before the inventory (Wiki, since 1 November 2023).
@@ -17,6 +20,7 @@ const fs = require("fs");
 const path = require("path");
 
 const LAST_AMOUNT_ATTRIBUTE = "sawmill:last-amount";
+const SAWDUST_LIFETIME = 200; // rsprox3225: public quantity1,199ticks left on its first tick.
 
 let api = null;
 let core = null;
@@ -49,7 +53,12 @@ function givePlank(player, plankId) {
   if (request.stored === 0) player.getInventory().adds(plankId, 1);
 }
 
-/** Plank by plank until the amount, the logs or the coins run out; the vouchers double a log. */
+/**
+ * Plank by plank until the amount, the logs or the coins and coupons run out. A log with its
+ * coupon carried spends the coupon instead of the coins and makes one plank, the voucher kept
+ * (Wiki: coupons can't be combined with a voucher and are used first); otherwise vouchers double
+ * a log.
+ */
 function convert(player, npcId, plank, amount) {
   const { coins, voucher, messages, diary } = data();
   const inventory = player.getInventory();
@@ -58,8 +67,17 @@ function convert(player, npcId, plank, amount) {
     return 0;
   }
   let made = 0;
+  let redeemed = 0;
   let shortOfCoins = false;
   for (let i = 0; i < amount && inventory.contains(plank.log); i++) {
+    if (plank.coupon && inventory.contains(plank.coupon)) {
+      inventory.delete(plank.coupon, 1);
+      inventory.delete(plank.log, 1);
+      givePlank(player, plank.plank);
+      made += 1;
+      redeemed += 1;
+      continue;
+    }
     if (inventory.getAmount(coins) < plank.cost) {
       shortOfCoins = true;
       break;
@@ -72,7 +90,20 @@ function convert(player, npcId, plank, amount) {
     if (doubled) givePlank(player, plank.plank);
     made += doubled ? 2 : 1;
   }
+  // rsprox 20261105T005429 tick 9698: one spam line for the whole choice, on its tick.
+  if (redeemed > 0) {
+    player.getPacketSender().sendTypedMessage(core.ChatType.SPAM, messages.couponsRedeemed.replace("{count}", String(redeemed)));
+  }
   if (shortOfCoins) say(player, npcId, messages.noCoins.replace("{cost}", String(plank.cost)));
+  if (made > 0) {
+    const floor = api.getItemOnGroundManager(), location = player.getLocation().clone(), area = player.getPrivateArea();
+    if (!floor.getGroundItem(null, core.ItemIdentifiers.SAWDUST, location, area)) {
+      const dust = new core.ItemOnGround(core.GroundItemState.SEEN_BY_EVERYONE, undefined, location,
+        new core.Item(core.ItemIdentifiers.SAWDUST, 1), false, -1, area);
+      dust.setDespawnDelay(SAWDUST_LIFETIME);
+      floor.register(dust);
+    }
+  }
   if (made > 0 && plank.plank === diary.anyPlank.plank) api.emitCustomEvent("diary:task", { player, diary: diary.anyPlank.diary, task: diary.anyPlank.task });
   if (plank.plank === diary.mahogany.plank && made >= diary.mahogany.count) {
     api.emitCustomEvent("diary:task", { player, diary: diary.mahogany.diary, task: diary.mahogany.task });
@@ -123,13 +154,15 @@ function plankMaking(event) {
   event.end = true;
   const { player } = event;
   const npcId = event.npc?.getId?.() ?? event.npcId;
+  // Walk-to resets cancel player-indexed tasks, including this deferred menu.
   core.TaskManager.submit(new (class extends core.Task {
     constructor() {
-      super(1, null, false);
+      super(1, player.getIndex(), false);
     }
     execute() {
       this.stop();
-      if (player.isRegistered()) openPlankMenu(player, npcId);
+      if (player.isRegistered() && !player.getDialogueManager().isActive()
+        && !player.getPacketSender().hasInterruptibleInterface()) openPlankMenu(player, npcId);
     }
   })());
 }
@@ -141,6 +174,7 @@ function start(pluginApi) {
 
 module.exports = {
   name: "Sawmill",
+  description: "Sawmill operators: Buy-plank turns logs and coins into planks, with the amount menu and the Wiki's refusal messages.",
   members: true,
   register(pluginApi) {
     pluginApi.onServerStartup(() => start(pluginApi));

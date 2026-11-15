@@ -5,6 +5,7 @@
  * lets the player pick a pair from the skill-multi menu and unlocks Stamp Foot; it can be
  * searched again for more boots (Wiki). A floor's reward counts as its completion.
  */
+const { Item } = require("../../../src/main/typescript/elvarg/game/model/Item");
 const { Skill } = require("../../../src/main/typescript/elvarg/game/model/Skill");
 const { Sound } = require("../../../src/main/typescript/elvarg/game/Sound");
 const { Sounds } = require("../../../src/main/typescript/elvarg/game/Sounds");
@@ -50,6 +51,14 @@ function openChest(player, floor) {
         player.getDialogueManager().advance();
         return;
       }
+      // Checked here, as room can change during the opening statement. Refusing is ours: the
+      // Wiki doesn't cover it, and the reward can only be had once.
+      if (player.getInventory().getAddableAmount(new Item(COINS, reward.coins)) < reward.coins) {
+        player.sendMessage("You don't have enough inventory space.");
+        player.getDialogueManager().reset();
+        player.getPacketSender().sendInterfaceRemoval();
+        return;
+      }
       Data.claim(player, floor);
       if (reward.restore) restoreAll(player);
       player.getInventory().adds(COINS, reward.coins);
@@ -84,6 +93,12 @@ function claimBoots(player, floor, itemId) {
   ));
 }
 
+/**
+ * The boots menu's verb, as recorded: script 2046 mode 23 (rsprox_transcripts/227/01723.txt, 234/03275.txt).
+ * Its amount is the free inventory space (10, 11 and 11 free slots in those and 241/900071.txt), starting at 1.
+ */
+const BOOTS_MENU_MODE = 23;
+
 function searchCradle(player, floor) {
   const [fancy, fighting, fancier] = Data.DATA.boots.map((entry) => entry.item);
   Sounds.sendSound(player, CRADLE_SOUND);
@@ -97,6 +112,7 @@ function searchCradle(player, floor) {
         "Select the boots you want.",
         [fancy, fighting, fancier],
         { execute: (itemId) => claimBoots(player, floor, itemId) },
+        { mode: BOOTS_MENU_MODE, maxAmount: player.getInventory().getFreeSlots(), lastAmount: 1 },
       ));
     } }),
   ));
@@ -110,4 +126,4 @@ function open(event) {
   return floor.reward.coins === undefined ? searchCradle(event.player, floor) : openChest(event.player, floor);
 }
 
-module.exports = { open, openChest, searchCradle, claimBoots, restoreAll };
+module.exports = { open, openChest, searchCradle, claimBoots, restoreAll, BOOTS_MENU_MODE };

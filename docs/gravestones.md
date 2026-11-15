@@ -41,7 +41,7 @@ custom events (listed in `gravestones/Events.Gravestones.js`). Core gives them t
 - **On the death's last tick:** `gravestone_creation_death_coord`, `gravestone_duration` 1500 and `gravestone_visible` are set.
 - **A tick later:** "Some of your dropped items are being held in a gravestone, near where you died."
 - **Hint arrow:** within 20 tiles, every grave tick resets the arrow and points it at the grave again (`current_hint_arrow` 9 → 0 → 9).
-- **Contents:** stacked like a bank (two of an unstackable in one slot), most valuable first by `ItemDefinition.getValue()`, at most 120 stacks.
+- **Contents:** stacked like a bank (two of an unstackable in one slot), at most 120 stacks. The server orders and retains them by the per-item fee value, sending the least valuable excess to the Office. This overflow priority is a server policy; live selection at capacity is unverified.
 - **Check** works from up to 7 tiles away. It sends, in order:
   1. the fee thresholds;
   2. the grave's inventory (inv 525);
@@ -79,7 +79,7 @@ custom events (listed in `gravestones/Events.Gravestones.js`). Core gives them t
   - through the first-death tutorial.
 - **At 0:** "<col=ef1020>Your gravestone has expired.</col> Items held there can now be reclaimed at <col=ef1020>Death's Office</col>, accessed from near the respawn points." The items go to the office.
 - **Clicking the HUD timer** (`toplevel*:gravestone`) prints where the items are, and "In 13 minutes, 55 seconds it will expire, …" (whole seconds of the ticks left).
-- **Logging in** with a grave, or with items in the office, prints the retrieval warning, unless setting 278 (`gravestone_disable_warning`) is on. The grave and its timer come back.
+- **Logging in** with a grave, or with items in the office, prints the retrieval warning, unless All Settings row 278 is turned off (varbit 14194 `option_item_retrieval_warning_disabled` at 1); it shows by default. The grave and its timer come back.
 - **`agent:advance-time`** moves the timer on.
 
 ## Death's Office (captured)
@@ -103,6 +103,17 @@ custom events (listed in `gravestones/Events.Gravestones.js`). Core gives them t
   - Take-All with nothing stored: "There's nothing here to take." With only free items it takes what fits.
   - Take-All with paid items closes the office and asks "Death will charge N coins." (every paid item) with "Pay Death's fee." / "Cancel". Paying takes what fits, charges for the paid items taken, plays Death's payment sound (2115, 10 cycles) and reopens the office.
 - **Capacity:** the office holds 120 stacks; more is deleted.
+- **For other plugins:**
+  - `deaths-office:enter` { player } puts a player in, arriving as a login inside does.
+  - `deaths-office:greet` { player, context, handled } lets a game mode give Death's words instead
+    of his usual ones. `context` is { talk }, { login } or { arrived }.
+  - `deaths-office:talk` { player, steps, then } has Death and the player say `steps` with the
+    office's chatheads.
+  - `deaths-office:collect` { player, handled } lets a game mode answer Collect instead of the
+    retrieval interface.
+  - `deaths-office:exit` { player, destination } can change where the portal leads, and
+    `deaths-office:left` { player, destination } follows once it has.
+  - Hardcore Worlds use all six ([hardcore-worlds.md](hardcore-worlds.md)).
 
 ## Death's Coffer (captured)
 - **Sacrifice** opens `death_coffer` (670) with `death_coffer_side` (671) over the inventory (`interface_inv_init`, "Select"), the display blank.
@@ -123,7 +134,7 @@ custom events (listed in `gravestones/Events.Gravestones.js`). Core gives them t
 - **Resuming:** talking to Death again or relogging resumes the tutorial ("I believe I was explaining gravestones to you."). Once all four topics are heard, he greets as usual, so the grave can be collected early. The Wiki has him offer a reminder ("Would you like me to remind you about gravestones?") until the player leaves; we skip that so Collect and early collection work straight away.
 
 ## Not like live
-- **Prices:** fees and Coffer credit use the cache's item value (as kept-on-death ranks items); live uses Grand Exchange prices.
+- **Prices:** grave and Office fees use the existing Grand Exchange quote snapshot for tradeable items where available and the cache item value otherwise. The snapshot uses the higher available high/low quote as an approximation of live guide prices; unquoted item fallback remains unverified. Coffer credit still uses the cache value.
 - **Death's Office order:** live seems to keep a collapsed grave's items in the order they were lost, while here they keep the grave's value order.
 - **"How does that work?":** live turns the camera to the Coffer. The client has no camera-move packet yet.
 - **"Can I change how I die?":** Death stops at "How would you like to... die?"; the death animation picker isn't built.

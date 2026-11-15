@@ -12,9 +12,11 @@ function allowRandomEvents(request) {
 
 module.exports = {
   name: "FeroxEnclave",
+  description: "Ferox Enclave: its barriers and safe ground, the Pools of Refreshment and the Clan Wars free-for-all arena behind the white portal.",
   register(api) {
     Ferox.init(api);
     api.onCustomEvent("random-events:eligibility", allowRandomEvents);
+    api.onCustomEvent("interface:closed", Ferox.chatboxClosed);
     require("./ferox/Barriers.FeroxEnclave")(api);
     require("./ferox/Pool.FeroxEnclave")(api);
     require("./ferox/FreeForAll.FeroxEnclave")(api);

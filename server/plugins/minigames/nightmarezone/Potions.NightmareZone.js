@@ -16,6 +16,11 @@
  * Not recorded: every line here but the empty barrel's, and the overload's hit timing.
  */
 const Common = require("./Common.NightmareZone");
+const { drinkTimerRefusal } = require("../../items/Potions.plugin");
+const { boostSkill } = require("../../items/ConsumableEffects");
+
+/** The tick each player last drank a quick dream potion (absorption, super magic, super ranging). */
+const lastQuickDose = new WeakMap();
 
 const ABSORB_ATTRIBUTE = "nightmare-zone:absorb";
 const OVERLOAD_ATTRIBUTE = "nightmare-zone:overload";
@@ -52,12 +57,9 @@ function maxLevel(player, skill) {
   return player.getSkillManager().getMaxLevel(Common.core.Skill[skill]);
 }
 
+/** 5 + 15% of base, added to the current level up to base + boost (the shared potion rule). */
 function boost(player, skills) {
-  for (const skill of skills) {
-    const base = maxLevel(player, skill);
-    const boosted = base + Math.floor((base * 15) / 100) + 5;
-    if (level(player, skill) < boosted) player.getSkillManager().setCurrentLevel(Common.core.Skill[skill], boosted, true);
-  }
+  for (const skill of skills) boostSkill(player, Common.core.Skill[skill], 5, 0.15);
 }
 
 // ---------------------------------------------------------------- drinking
@@ -69,13 +71,37 @@ function drink({ player, itemId }) {
     player.sendMessage(Common.message("onlyInDream"));
     return true;
   }
-  if (found.name === "overload" && player.getHitpoints() < potions().overload.minimumHitpoints) {
-    player.sendMessage(Common.message("overloadLowHp", { hp: potions().overload.minimumHitpoints }));
+  // Every dream potion: none while stunned, and none where drinking is barred (Potions.plugin's own checks and text).
+  const refusal = drinkTimerRefusal(player);
+  if (refusal?.kind === "stun") {
+    player.sendMessage(refusal.message);
     return true;
   }
-  if (found.name === "overload" && overloads.has(player)) {
-    player.sendMessage(Common.message("overloadActive"));
+  if (Common.api.emitCanDrink(player, itemId) === false) {
+    player.sendMessage("You cannot use potions here.");
     return true;
+  }
+  if (found.name === "overload") {
+    if (player.getHitpoints() < potions().overload.minimumHitpoints) {
+      player.sendMessage(Common.message("overloadLowHp", { hp: potions().overload.minimumHitpoints }));
+      return true;
+    }
+    if (overloads.has(player)) {
+      player.sendMessage(Common.message("overloadActive"));
+      return true;
+    }
+    // An overload keeps the normal potion delay: one dose per 3 ticks, and it delays eating as any potion does.
+    if (refusal?.kind === "potion") return true;
+    const { TimerKey } = Common.core;
+    player.getTimers().extendOrRegister(TimerKey.POTION, 3);
+    player.getTimers().extendOrRegister(TimerKey.FOOD, 3);
+  } else {
+    // Wiki (Nightmare Zone, Benefits): the other dream potions, "excluding overloads", can be drunk "extremely
+    // quickly" without delaying hits, at herb-cleaning speed and mixed with food: no potion or food delay, one dose a
+    // tick (several Drink clicks in one tick each took effect).
+    const tick = Common.core.World.getProcessCycle();
+    if (lastQuickDose.get(player) === tick) return true;
+    lastQuickDose.set(player, tick);
   }
   const inventory = player.getInventory();
   inventory.delete(itemId, 1);
@@ -202,7 +228,9 @@ function take({ player, object }) {
   player.setEnteredAmountAction?.({
     execute: (amount) => {
       const inventory = player.getInventory();
-      let wanted = Math.min(doses, Math.max(0, Math.floor(Number(amount) || 0)));
+      // Read again now: a Store while the prompt was open changed what the barrel holds.
+      const held = stored(player, barrel.potion);
+      let wanted = Math.min(held, Math.max(0, Math.floor(Number(amount) || 0)));
       let given = 0;
       while (wanted > 0 && inventory.getFreeSlots() > 0) {
         const size = Math.min(4, wanted);
@@ -211,7 +239,7 @@ function take({ player, object }) {
         given += size;
       }
       inventory.refreshItems?.();
-      setStored(player, barrel.potion, doses - given);
+      setStored(player, barrel.potion, held - given);
     },
   });
   player.getPacketSender().sendEnterAmountPrompt(Common.message("takePrompt", { potion: barrel.potion.barrelName.toLowerCase(), doses }));

@@ -3,7 +3,9 @@
  * close, played as live OSRS does (docs/loc-teleports.md):
  * - plugins/world/data/loc-teleports.json: where a loc placement takes the player
  *   (scripts/sync-loc-teleports.cjs writes it from the rsprox capture database);
- * - plugins/world/data/loc-swaps.json: trapdoors whose Open/Close swaps the loc for its other state.
+ * - plugins/world/data/loc-swaps.json: trapdoors whose Open/Close swaps the loc for its other state,
+ *   and (`toggles`) per-player multiloc trapdoors whose Open/Close sets the varbit showing the other
+ *   state, kept across logins (Evil Dave's cellar trapdoor).
  *
  * - A loc nobody else handles: the generic object hook takes the click when the clicked tile
  *   and option have an entry, or the loc and option have a swap.
@@ -11,16 +13,22 @@
  *   answers before Ladders guesses from the map.
  *
  * Gates (an entry's `requires`, decided in plugins/world/data/loc-teleport-sync.json) are checked in
- * order first: a total level, worn items (any one set), or an item used on the loc once before (a
- * rope tied to the Elid crevice). The first one the player lacks plays its captured refusal: a
+ * order first: a total level, worn items (any one set), an item used on the loc once before (a
+ * rope tied to the Elid crevice), a completed quest (`quest`: the Prifddinas gates, Dorgesh-Kaan's doors),
+ * a skill level or a Slayer task (`skill`, `slayerTask`: Araxxor's lair). The first one the player lacks plays its refusal: a
  * game message, a message box, or an NPC's line.
  *
  * A loc whose option asks first (`ask`: "Climb out of the window?") shows the game's question and
  * options; the options that lead on move the player, and a ladder direction the captures never
  * saw goes to Ladders (ladders:climbUp / ladders:climbDown), which finds it on the map.
  *
+ * A loc with a warning (`warn`: Cavey Davey at the Mos Le'Harmless cave) plays the captured
+ * conversation and its question until the player turns the warning off; its other option
+ * (`toggle`: Toggle-warning) asks first, then flips the warning, which is kept across logins.
+ *
  * Each plays its captured animation, sound and fade, and moves the player (or swaps the loc) on
- * the captured tick. Ticks in the data count from the player arriving at the loc; the click is
+ * the captured tick. An entry's `message` (with `messageType` "spam" for the filterable channel)
+ * is the game message live OSRS sends on a successful crossing, on the move's tick, before it. Ticks in the data count from the player arriving at the loc; the click is
  * handled on the tick after that, as Ladders' climbs are.
  *
  * Not members-only: free-to-play ladders are in the data too. On a free-to-play world,
@@ -37,6 +45,10 @@ const FADE_SCRIPT = 948;
 const FADE_CYCLES = 50;
 /** Locs a player has used an item on to pass (a rope tied to a crevice), by gameval name. */
 const TIED_ATTRIBUTE = "loc-teleports:tied";
+/** Warnings a player has turned off (Toggle-warning), by varbit name; the varbit is sent again at login. */
+const WARNINGS_OFF_ATTRIBUTE = "loc-teleports:warnings-off";
+/** Toggled trapdoor varbits a player has changed, by varbit name -> value; sent again at login. */
+const TOGGLED_ATTRIBUTE = "loc-teleports:toggled";
 /** The handler runs one tick after the arrival the captured ticks count from. */
 const HANDLER_TICK = 1;
 
@@ -46,6 +58,8 @@ let pluginApi = null;
 let entries = new Map();
 /** "id:op" -> trapdoor swap. */
 let swaps = new Map();
+/** "id:op" -> the varbit toggles of a per-player multiloc trapdoor for that option. */
+let toggles = new Map();
 
 const keyOf = (x, y, z, op) => `${x},${y},${z}:${op}`;
 /** A captured tick, counted from the click instead of the arrival. */
@@ -61,6 +75,15 @@ function loadEntries() {
 
 function loadSwaps() {
   return new Map(readDefinitions("loc-swaps.json").swaps.map((swap) => [`${swap.id}:${swap.op}`, swap]));
+}
+
+function loadToggles() {
+  const byKey = new Map();
+  for (const toggle of readDefinitions("loc-swaps.json").toggles ?? []) {
+    const key = `${toggle.id}:${toggle.op}`;
+    byKey.set(key, [...(byKey.get(key) ?? []), toggle]);
+  }
+  return byKey;
 }
 
 function entryFor(object, clickType) {
@@ -114,8 +137,10 @@ function runSteps(player, steps, holdUntil) {
     constructor() { super(1, player, false); }
     execute() {
       tick++;
-      const moved = tick <= holdUntil && !player.getLocation().equals(start);
-      if (!player.isRegistered() || player.getHitpoints() <= 0 || player.getPrivateArea() !== privateArea || moved) {
+      // Until the move: the player walked off, or something else moved them into or out of an instance.
+      // After it, leaving an instance (Araxxor's lair) is the move itself, and the fade back in still plays.
+      const moved = tick <= holdUntil && (!player.getLocation().equals(start) || player.getPrivateArea() !== privateArea);
+      if (!player.isRegistered() || player.getHitpoints() <= 0 || moved) {
         this.stop();
         return;
       }
@@ -133,6 +158,12 @@ function schedule() {
   const steps = new Map();
   const at = (tick, step) => steps.set(tick, [...(steps.get(tick) ?? []), step]);
   return { steps, at };
+}
+
+/** The game message of a successful crossing: a plain game message, or spam the chat filter hides. */
+function sayCrossed(player, { message, messageType }) {
+  if (messageType === "spam") player.getPacketSender().sendTypedMessage(core.ChatType.SPAM, message);
+  else player.sendMessage(message);
 }
 
 function animateAndSound(player, { anim, sound }) {
@@ -156,6 +187,7 @@ function travel(player, entry, destination, answer = null) {
     if (entry.mesbox) player.getDialogueManager().startDialogues(new core.DialogueChainBuilder().add(new core.StatementDialogue(0, entry.mesbox)));
   });
   if (entry.fade) at(animTick + 1, () => player.getPacketSender().sendVarbit(MINIMAP_STATE_VARBIT, MINIMAP_OFF));
+  if (entry.message) at(moveTick, () => sayCrossed(player, entry));
   at(moveTick, () => {
     const landing = new core.Location(destination[0], destination[1], destination[2]);
     player.moveTo(landing);
@@ -194,6 +226,41 @@ function swapLoc(player, object, swap) {
   runSteps(player, steps, swapTick);
 }
 
+function toggled(player) {
+  const value = player.getAttribute(TOGGLED_ATTRIBUTE);
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+/** The toggle this click plays: the option whose `from` state the player's varbit shows. */
+function toggleFor(player, object, clickType) {
+  const candidates = object ? toggles.get(`${object.getId()}:${clickType}`) : null;
+  if (!candidates) return null;
+  return candidates.find((toggle) => {
+    const id = varbitId(toggle.varbit);
+    return id != null && player.getPacketSender().getVarbit(id) === toggle.from;
+  }) ?? null;
+}
+
+/** A per-player trapdoor's Open or Close: the animation and sound, and the varbit, kept for the next login. */
+function toggleLoc(player, toggle) {
+  const { steps, at } = schedule();
+  const tick = fromClick(toggle.tick);
+  at(fromClick(toggle.animTick ?? toggle.tick), () => animateAndSound(player, toggle));
+  at(tick, () => {
+    player.getPacketSender().sendVarbit(varbitId(toggle.varbit), toggle.to);
+    player.setAttribute(TOGGLED_ATTRIBUTE, { ...toggled(player), [toggle.varbit]: toggle.to });
+  });
+  runSteps(player, steps, tick);
+}
+
+/** The client's copy of the toggled trapdoors, which a login starts without. */
+function restoreToggled(player) {
+  for (const [name, value] of Object.entries(toggled(player))) {
+    const id = varbitId(name);
+    if (id != null && Number.isInteger(value)) player.getPacketSender().sendVarbit(id, value);
+  }
+}
+
 function tied(player) {
   const value = player.getAttribute(TIED_ATTRIBUTE);
   return Array.isArray(value) ? value : [];
@@ -205,7 +272,25 @@ function meets(player, entry, requirement) {
   if (requirement.item !== undefined) return player.getInventory().contains(requirement.item);
   if (requirement.tied !== undefined) return tied(player).includes(entry.name);
   if (requirement.varbit !== undefined) return player.getPacketSender().getVarbit(requirement.varbit) >= (requirement.atLeast ?? 1);
+  if (requirement.quest !== undefined) return questComplete(player, requirement.quest);
+  if (requirement.skill !== undefined) return player.getSkillManager().getCurrentLevel(core.Skill[requirement.skill.toUpperCase()]) >= requirement.atLeast;
+  if (requirement.slayerTask !== undefined) return onSlayerTask(player, requirement.slayerTask);
   return true;
+}
+
+/** Whether the player's Slayer task is one of `names` (araxyte or spider), as the Slayer plugin answers. */
+function onSlayerTask(player, names) {
+  const query = { player, task: null };
+  pluginApi.emitCustomEvent("slayer:current-task", query);
+  const task = String(query.task?.name ?? "").toLowerCase();
+  return names.some((name) => task.includes(name));
+}
+
+/** A quest the loc needs done (`{ quest: key }`), answered by the quest system. */
+function questComplete(player, key) {
+  const query = { player, key, complete: false };
+  pluginApi.emitCustomEvent("quest:is-complete", query);
+  return query.complete === true;
 }
 
 /** The captured refusal: a game message, a message box, or an NPC's line. */
@@ -236,6 +321,54 @@ function ask(player, object, entry, destination) {
   pluginApi.sendMultiChatboxPrompt(player, entry.ask.prompt, ...entry.ask.options.flatMap((option) => [option.text, choose(option)]));
 }
 
+function varbitId(name) {
+  return core.CacheDefinitions.getVarbitId(name);
+}
+
+function warningsOff(player) {
+  const value = player.getAttribute(WARNINGS_OFF_ATTRIBUTE);
+  return Array.isArray(value) ? value : [];
+}
+
+/** Whether the player has turned this warning off. */
+function warningOff(player, name) {
+  return warningsOff(player).includes(name);
+}
+
+/** The client's copy of the warnings turned off and the toggled trapdoors, which a login starts without. */
+function restoreVarbits({ player }) {
+  restoreToggled(player);
+  for (const name of warningsOff(player)) {
+    const id = varbitId(name);
+    if (id != null) player.getPacketSender().sendVarbit(id, 1);
+  }
+}
+
+/** A loc's warning: the captured conversation, then the question that leads on or closes. */
+function warn(player, object, entry, destination) {
+  const { DialogueChainBuilder, NpcDialogue, PlayerDialogue, ActionDialogue } = core;
+  const chain = new DialogueChainBuilder();
+  const lines = entry.warn.dialogue;
+  lines.forEach((line, index) => chain.add(line.npc !== undefined
+    ? new NpcDialogue(index, line.npc, line.text, undefined, line.expression)
+    : new PlayerDialogue(index, line.text, line.expression)));
+  chain.add(new ActionDialogue(lines.length, { execute: () => ask(player, object, { ...entry, ask: entry.warn.ask }, destination) }));
+  player.getDialogueManager().startDialogues(chain);
+}
+
+/** Toggle-warning: asks, and on Yes turns the warning off, or back on. */
+function toggleWarning(player, toggle) {
+  const id = varbitId(toggle.varbit);
+  if (id == null) return;
+  const off = warningOff(player, toggle.varbit);
+  const flip = () => {
+    const others = warningsOff(player).filter((name) => name !== toggle.varbit);
+    player.setAttribute(WARNINGS_OFF_ATTRIBUTE, off ? others : [...others, toggle.varbit]);
+    player.getPacketSender().sendVarbit(id, off ? 0 : 1);
+  };
+  pluginApi.sendMultiChatboxPrompt(player, off ? toggle.enable : toggle.disable, "Yes.", flip, "No.", () => {});
+}
+
 /** The first gate the player doesn't pass, or null. */
 function failedGate(player, entry) {
   return (entry.requires ?? []).find((requirement) => !meets(player, entry, requirement)) ?? null;
@@ -243,13 +376,27 @@ function failedGate(player, entry) {
 
 /** Plays the entry or swap for this click, if there is one; true when it did. */
 function play(player, object, clickType) {
+  // A per-player trapdoor's closed Open and open Close; the open state's option 1 is its entry below.
+  const toggle = toggleFor(player, object, clickType);
+  if (toggle) {
+    toggleLoc(player, toggle);
+    return true;
+  }
   const entry = entryFor(object, clickType);
   if (entry) {
+    if (entry.toggle) {
+      toggleWarning(player, entry.toggle);
+      return true;
+    }
     const destination = destinationFor(entry, player.getLocation());
     if (!destination) return false;
     const gate = failedGate(player, entry);
     if (gate) {
       refuse(player, gate.refuse);
+      return true;
+    }
+    if (entry.warn && !warningOff(player, entry.warn.varbit)) {
+      warn(player, object, entry, destination);
       return true;
     }
     if (entry.ask) {
@@ -291,6 +438,11 @@ function claimLadder(request) {
   if (play(request.player, request.object, request.clickType)) request.handled = true;
 }
 
+/** "loc-teleports:captured" { object, clickType, captured }: whether a captured entry covers this placement. */
+function answerCaptured(request) {
+  if (request.object) request.captured = entryFor(request.object, request.clickType) != null;
+}
+
 /** Route to an explicit threshold when surrounding walls block ordinary loc reach. */
 function routeToLoc(event) {
   const approach = entryFor(event.object, event.clickType)?.approach;
@@ -305,17 +457,23 @@ function claimDoorToggle(request) {
 
 module.exports = {
   name: "LocTeleports",
-  _test: { entryFor, destinationFor, play, useItemOnLoc, claimDoorToggle, get entries() { return entries; }, get swaps() { return swaps; } },
+  description: "Handles ladders, stairs, caves and holes with no other handler from captured data, plus opening and closing trapdoors, with level, item and quest gates.",
+  _test: { entryFor, destinationFor, play, useItemOnLoc, claimDoorToggle, get entries() { return entries; }, get swaps() { return swaps; }, get toggles() { return toggles; }, TOGGLED_ATTRIBUTE },
   register(api) {
     core = api.core;
     pluginApi = api;
     entries = loadEntries();
     swaps = loadSwaps();
+    toggles = loadToggles();
     api.persistAttribute(TIED_ATTRIBUTE);
+    api.persistAttribute(WARNINGS_OFF_ATTRIBUTE);
+    api.persistAttribute(TOGGLED_ATTRIBUTE);
+    api.onPlayerLogin(restoreVarbits);
     api.onObjectInteraction(useLoc);
     api.onObjectRoute(routeToLoc);
     api.onItemOnObject(useItemOnLoc);
     api.onCustomEvent("ladders:climb", claimLadder);
+    api.onCustomEvent("loc-teleports:captured", answerCaptured);
     api.onCustomEvent("door:toggle", claimDoorToggle);
   },
 };

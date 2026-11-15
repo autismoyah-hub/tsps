@@ -11,10 +11,12 @@ const { Location } = require("../../../src/main/typescript/elvarg/game/model/Loc
 const { Task } = require("../../../src/main/typescript/elvarg/game/task/Task");
 const { TaskManager } = require("../../../src/main/typescript/elvarg/game/task/TaskManager");
 const { ChatType } = require("../../../src/main/typescript/elvarg/net/protocol/ClientProtocol");
+const StaticShips = require("./StaticShips.Sailing");
 
 const VARBIT = {
   // The Pandemonium is done (50): the boat customisation refuses every build below it (9022).
   SAILING_INTRO: 18314,
+  SIDE_PANEL_ONLY_ON_BOAT: 18131, // All Settings' "Sailing side panel" (454): 0 Always show, 1 Only show on boat
   LAST_PERSONAL_BOAT_BOARDED: 18554, // boat slot, from 1
   PLAYER_IS_ON_PLAYER_BOAT: 19104, // gangplank: Board / Disembark
   FACILITY_LOCKEDIN: 19105, // helm: Navigate / Stop-navigating (3)
@@ -33,6 +35,7 @@ const VARBIT = {
   SIDEPANEL_FACILITY_KEEL: 19167,
   SIDEPANEL_FACILITY_HULL: 19168,
   SIDEPANEL_FACILITY_TRIM: 19172,
+  SHIPYARD_MODE: 19173,
   SIDEPANEL_SAIL_BUTTON_TOGGLED: 19174,
   SIDEPANEL_BOAT_MOVE_MODE: 19175,
   SIDEPANEL_HELM_STATUS: 19176,
@@ -117,9 +120,15 @@ function boatType(type) {
   return content().boats.find((boat) => boat.type === type);
 }
 
+/** Authored sailing content for a registered physical ship, without a personal boat record. */
+function suppliedBoatProfile(boat) {
+  const ship = boat && StaticShips.get(boat.entityIndex);
+  return ship && ship.boat === boat ? ship.definition.sailing : undefined;
+}
+
 /** A boat's animations by name from boats.json `anims` (helm, sail, trim), if known. */
 function boatAnim(boat, name) {
-  return boatType(BoatManager.getSpec(boat)?.type)?.anims?.[name];
+  return (boatType(BoatManager.getSpec(boat)?.type) ?? suppliedBoatProfile(boat))?.anims?.[name];
 }
 
 /**
@@ -141,6 +150,22 @@ function dockNear(player, range) {
     }
   }
   return best;
+}
+
+/**
+ * A random unblocked tile within one of `origin` (`withOrigin` lets it be `origin` itself), or
+ * `origin` when every one is blocked. `regions` is the plugin api's region manager.
+ */
+function tileBeside(regions, origin, privateArea, withOrigin) {
+  const tiles = [];
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      if (dx === 0 && dy === 0 && !withOrigin) continue;
+      const tile = new Location(origin.getX() + dx, origin.getY() + dy, origin.getZ());
+      if (!regions?.blocked(tile, privateArea)) tiles.push(tile);
+    }
+  }
+  return tiles.length > 0 ? tiles[Math.floor(Math.random() * tiles.length)] : origin;
 }
 
 function dockById(id) {
@@ -192,13 +217,25 @@ function spam(player, text) {
 
 /** Plays a loc animation on the boat's deck for the player and everyone who sees them. */
 function animateDeckLocs(player, boat, isLoc, animId) {
-  const type = boatType(BoatManager.getSpec(boat)?.type);
-  for (const loc of type?.locs ?? []) {
+  const spec = BoatManager.getSpec(boat);
+  const locs = boatType(spec?.type)?.locs ?? (suppliedBoatProfile(boat) ? spec?.locs : undefined);
+  for (const loc of locs ?? []) {
     if (isLoc(loc)) animateDeckLoc(player, boat, loc, animId);
   }
 }
 
 /** Plays a loc animation on one deck loc, for the player and everyone who sees them. */
+/** Runs `action` once, `ticks` ticks from now, as a task of the player's. */
+function later(player, ticks, action) {
+  TaskManager.submit(new (class extends Task {
+    constructor() { super(ticks, player, false); }
+    execute() {
+      this.stop();
+      action();
+    }
+  })());
+}
+
 function animateDeckLoc(player, boat, loc, animId) {
   const viewers = [player, ...player.getLocalPlayers().filter((other) => other.getLocalPlayers().includes(player))];
   const drawn = {
@@ -287,6 +324,17 @@ function fade(player, out, cycles = FADE_CYCLES, { minimap = true } = {}) {
   if (minimap) setVarbit(player, VARBIT.MINIMAP_STATE, out ? 2 : 0);
 }
 
+/**
+ * Takes an NPC a plugin added to a boat's deck (`deck.enter`) off the deck, then out of the world.
+ * removeNpc leaves the NPC's area alone, so the deck would otherwise keep it among its NPCs.
+ */
+function removeDeckNpc(api, boat, npc) {
+  if (!npc) return;
+  const deck = BoatManager.getDeck(boat);
+  if (deck?.hasMember(npc)) deck.leave(npc, false);
+  api.removeNpc(npc);
+}
+
 module.exports = {
   dockNear,
   VARBIT,
@@ -306,8 +354,10 @@ module.exports = {
   SCRIPT_SIDEBUTTON_SWITCH,
   content,
   boatType,
+  suppliedBoatProfile,
   boatAnim,
   dockById,
+  tileBeside,
   boatName,
   randomBoatName,
   dockAtGangplank,
@@ -319,6 +369,8 @@ module.exports = {
   fade,
   animateDeckLocs,
   animateDeckLoc,
+  removeDeckNpc,
+  later,
   isHelm,
   isSail,
   isSailCloth,

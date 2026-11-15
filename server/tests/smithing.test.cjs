@@ -13,6 +13,7 @@ const Anvil = require("../plugins/skills/smithing/Anvil.Smithing");
 const Superheat = require("../plugins/skills/smithing/Superheat.Smithing");
 
 const buttons = new Map(), objects = new Map(), itemActions = new Map(), events = new Map(), tasks = [], players = [];
+const successEvents = [];
 let disconnect, itemOnObject, CacheDefinitions;
 const extraItemOnObject = [], startups = [];
 let denyAnvil = false;
@@ -23,6 +24,7 @@ function registerSmithing() {
     onPlayerDisconnect: handler => { disconnect = handler; },
     onCustomEvent: (name, handler) => events.set(name, [...(events.get(name) ?? []), handler]),
     emitCustomEvent(name, request) {
+      if (name === "smithing:success") successEvents.push(request);
       if (name === "smithing:anvil-access") request.denied = denyAnvil;
       if (name === "quest:is-complete") request.complete = request.player.quests?.has(request.key) ?? false;
       for (const handler of events.get(name) ?? []) handler(request);
@@ -59,6 +61,12 @@ function playerWith(barId = I.BRONZE_BAR, bars = 27) {
       getAmount: id => items.get(id) ?? 0,
       deleteNumber: (id, n) => items.set(id, items.get(id) - n),
       addItem: item => items.set(item.getId(), (items.get(item.getId()) ?? 0) + item.getAmount()),
+      // Plain stand-ins, one per held id, for the dragon shields' preset check (it reads slots).
+      getItems: () => [...items].filter(([, n]) => n > 0).map(([id, n]) => ({ getId: () => id, getAmount: () => n })),
+      deleteAtSlot(slot, amount = 1) {
+        const id = [...items].filter(([, n]) => n > 0)[slot]?.[0];
+        if (id !== undefined) items.set(id, items.get(id) - amount);
+      },
     }),
     getEquipment: () => ({
       get: slot => player.equipped.has(slot) ? { getId: () => player.equipped.get(slot) } : null,
@@ -78,6 +86,7 @@ function playerWith(barId = I.BRONZE_BAR, bars = 27) {
     setInterfaceId: id => { player.interfaceId = id; },
     setEnteredAmountAction: action => { player.amountAction = action; },
     getMovementQueue: () => ({ size: () => player.moving ? 1 : 0 }),
+    getLocation: () => new (PluginManager.getCoreApi().Location)(0, 0, 0),
     getForceMovement: () => null, isRegistered: () => true, getHitpoints: () => 99,
     performAnimation(animation) { player.animation = animation?.getId?.(); player.animationDelay = animation?.getDelay?.(); },
     sendMessage(message) { player.messages.push(message); },
@@ -97,7 +106,7 @@ function ticks(count = 140) {
 }
 const sent = (player, name) => player.sent.filter(([sentName]) => sentName === name).map(([, ...args]) => args);
 const lastMenu = player => sent(player, "sendCreationMenu").at(-1)?.[0];
-const statementText = player => player.statements.at(-1)?.getDialogues?.()?.[0]?.text ?? player.statements.at(-1)?.dialogues?.[0]?.text;
+const statementText = player => player.statements.at(-1)?.getDialogues().get(0)?.getText();
 
 for (const [label, component, quantity] of [["1", 3, 1], ["5", 4, 5], ["10", 5, 10], ["X", 6, 3], ["All", 7, 27]]) {
   test(`${label} remains selected after making items and reopening the anvil`, () => {
@@ -219,10 +228,13 @@ test("the rusted anvil only works bronze and ignores other items", () => {
   const iron = playerWith(I.IRON_BAR);
   objects.get("Rusted anvil").Smith({ player: iron });
   assert.equal(iron.interfaceId, -1);
+  // Wiki (Rusted anvil): Smith with no bronze bars, then another metal used on it.
+  assert.equal(iron.messages.at(-1), "You need a bronze bar to smith equipment on this anvil.");
   const ironOnAnvil = { player: iron, itemId: I.IRON_BAR, object: rusted };
   itemOnObject(ironOnAnvil);
   assert.equal(ironOnAnvil.handled, true);
   assert.equal(iron.interfaceId, -1);
+  assert.equal(iron.messages.at(-1), "You can only use bronze bars to smith on this anvil.");
   const hammerOnAnvil = { player: iron, itemId: I.HAMMER, object: rusted };
   itemOnObject(hammerOnAnvil);
   assert.equal(hammerOnAnvil.handled, undefined);
@@ -257,6 +269,19 @@ test("anvil timing, messages and the last-made varbits follow the captures", () 
   assert.equal(player.items.get(I.STEEL_DART_TIP), 10);
   ticks(1);
   assert.equal(player.items.get(I.STEEL_DART_TIP), 20);
+});
+
+test("anvil smithing succeeds without station provenance when the interaction has no object", () => {
+  const player = playerWith(I.BRONZE_BAR, 1);
+  const before = successEvents.length;
+  open(player);
+  click(player, 9);
+  ticks(4);
+  const event = successEvents.slice(before).find(candidate => candidate.player === player);
+  assert.ok(event);
+  assert.equal(event.itemId, I.BRONZE_DAGGER);
+  assert.equal(Object.hasOwn(event, "stationObjectId"), false);
+  assert.equal(Object.hasOwn(event, "location"), false);
 });
 
 // Captured (rsprox, rec 68): a product above the player's level closes the interface with a message
@@ -333,6 +358,7 @@ test("Smelt lists every bar, and smelts on the captured timing", () => {
   assert.equal(player.items.get(I.BRONZE_BAR), 2);
 });
 
+
 test("lead and cupronickel stay out of F2P furnace menus and direct starts", (t) => {
   t.mock.method(PluginManager.getCoreApi().WorldDefinition, "isMembersWorld", () => false);
   const player = furnaceWith([[I.LEAD_ORE, 2], [I.NICKEL_ORE, 1], [I.COPPER_ORE, 2]]);
@@ -376,12 +402,12 @@ test("too low a level is a message box; impure iron is lost", (t) => {
 });
 
 test("ore used on a furnace opens the Smelt menu; sand opens molten glass", () => {
-  const player = furnaceWith([[I.IRON_ORE, 1]]);
+  const player = furnaceWith([[I.IRON_ORE, 2]]);
   const event = { player, itemId: I.IRON_ORE, object: furnace };
   itemOnObject(event);
   assert.equal(event.handled, true);
   assert.equal(lastMenu(player).getTitle(), "What would you like to smelt?");
-  assert.equal(player.items.get(I.IRON_ORE), 1);
+  assert.equal(player.items.get(I.IRON_ORE), 2);
 
   const glass = furnaceWith([[I.BUCKET_OF_SAND, 1], [I.SODA_ASH, 1]]);
   itemOnObject({ player: glass, itemId: I.BUCKET_OF_SAND, object: furnace });
@@ -391,6 +417,151 @@ test("ore used on a furnace opens the Smelt menu; sand opens molten glass", () =
   assert.equal(glass.items.get(I.MOLTEN_GLASS), 1);
   assert.equal(glass.items.get(I.BUCKET), 1);
   assert.equal(glass.xpSkill, Skill.CRAFTING);
+});
+
+// Wiki Molten_glass: 2 ticks per glass and 20 Crafting XP. Recording 4283:
+// a single pair needs no menu; animation, sound and the exchange happen together.
+test("molten glass finishes at +2 and repeats every two ticks with one animation per glass", t => {
+  const player = furnaceWith([[I.BUCKET_OF_SAND, 3], [I.SODA_ASH, 3]]);
+  const animations = [];
+  const sound = t.mock.method(PluginManager.getCoreApi().Sounds, "sendSound", () => {});
+  player.performAnimation = animation => animations.push(animation.getId());
+  itemOnObject({ player, itemId: I.SODA_ASH, object: furnace });
+  lastMenu(player).execute(I.MOLTEN_GLASS, 3);
+  ticks(2); // offset 0 and +1
+  assert.equal(player.items.get(I.MOLTEN_GLASS) ?? 0, 0);
+  assert.equal(animations.length, 0);
+  assert.equal(sound.mock.callCount(), 0);
+  for (let count = 1; count <= 3; count++) {
+    ticks(1); // +2, +4, +6
+    assert.equal(player.items.get(I.MOLTEN_GLASS), count);
+    assert.equal(player.items.get(I.BUCKET), count);
+    assert.equal(player.xp, count * 20);
+    assert.equal(player.xpSkill, Skill.CRAFTING);
+    assert.equal(animations.length, count);
+    assert.equal(animations.at(-1), CacheDefinitions.getSeqId("human_furnace"));
+    assert.equal(sound.mock.callCount(), count);
+    assert.equal(sound.mock.calls.at(-1).arguments[1], PluginManager.getCoreApi().Sound.SMELTING);
+    assert.equal(player.spam.at(-1), "You heat the sand and soda ash in the furnace to make glass.");
+    if (count < 3) ticks(1);
+  }
+  assert.equal(player.items.get(I.BUCKET_OF_SAND), 0);
+  assert.equal(player.items.get(I.SODA_ASH), 0);
+  ticks(4);
+  assert.equal(player.items.get(I.MOLTEN_GLASS), 3);
+});
+
+test("Smelt offers glass with only its materials, makes one pair directly, and keeps ore priority", () => {
+  const single = furnaceWith([[I.BUCKET_OF_SAND, 1], [I.SODA_ASH, 1]]);
+  objects.get("Furnace").Smelt({ player: single });
+  assert.equal(single.statements.length, 0);
+  assert.equal(lastMenu(single), undefined);
+  ticks(3);
+  assert.equal(single.items.get(I.MOLTEN_GLASS), 1);
+  const multiple = furnaceWith([[I.BUCKET_OF_SAND, 3], [I.SODA_ASH, 2]]);
+  objects.get("Furnace").Smelt({ player: multiple });
+  assert.deepEqual(lastMenu(multiple).getItems(), [I.MOLTEN_GLASS]);
+  lastMenu(multiple).execute(I.MOLTEN_GLASS, 1);
+  ticks(8);
+  assert.equal(multiple.items.get(I.MOLTEN_GLASS), 1, "honour the requested quantity");
+  assert.equal(multiple.items.get(I.BUCKET_OF_SAND), 2);
+  assert.equal(multiple.items.get(I.SODA_ASH), 1);
+  const mixed = furnaceWith([[I.BUCKET_OF_SAND, 2], [I.SODA_ASH, 2], [I.IRON_ORE, 2]]);
+  objects.get("Furnace").Smelt({ player: mixed });
+  assert.ok(lastMenu(mixed).getItems().includes(I.IRON_BAR));
+  assert.ok(!lastMenu(mixed).getItems().includes(I.MOLTEN_GLASS));
+  for (const material of [I.BUCKET_OF_SAND, I.SODA_ASH]) {
+    const incomplete = furnaceWith([[material, 2]]);
+    objects.get("Furnace").Smelt({ player: incomplete });
+    assert.equal(lastMenu(incomplete), undefined);
+    assert.equal(statementText(incomplete), "You don't have any ore to smelt.");
+  }
+});
+
+test("molten glass cannot be made in F2P by Smelt, item use, or a stale recipe selection", t => {
+  t.mock.method(PluginManager.getCoreApi().WorldDefinition, "isMembersWorld", () => false);
+  const player = furnaceWith([[I.BUCKET_OF_SAND, 2], [I.SODA_ASH, 2]]);
+  const Smelting = require("../plugins/skills/smithing/Smelting.Smithing");
+  const Data = require("../plugins/skills/smithing/Data.Smithing");
+  objects.get("Furnace").Smelt({ player });
+  assert.equal(lastMenu(player), undefined);
+  for (const itemId of [I.BUCKET_OF_SAND, I.SODA_ASH]) {
+    itemOnObject({ player, itemId, object: furnace });
+    assert.equal(lastMenu(player), undefined);
+  }
+  assert.equal(Smelting.startSmelting(player, Data.SMELTING_RECIPES.find(r => r.barId === I.MOLTEN_GLASS), 2), false);
+  ticks(12);
+  assert.equal(player.items.get(I.BUCKET_OF_SAND), 2);
+  assert.equal(player.items.get(I.SODA_ASH), 2);
+  assert.equal(player.items.get(I.MOLTEN_GLASS) ?? 0, 0);
+  assert.equal(player.xp, 0);
+});
+
+test("molten glass stops on walking or missing ingredients without partial consumption", () => {
+  for (const interrupt of [p => { p.moving = true; }, p => p.items.delete(I.SODA_ASH)]) {
+    const player = furnaceWith([[I.BUCKET_OF_SAND, 2], [I.SODA_ASH, 2]]);
+    itemOnObject({ player, itemId: I.BUCKET_OF_SAND, object: furnace });
+    lastMenu(player).execute(I.MOLTEN_GLASS, 2);
+    ticks(3);
+    assert.equal(player.items.get(I.MOLTEN_GLASS), 1);
+    interrupt(player);
+    ticks(6);
+    assert.equal(player.items.get(I.MOLTEN_GLASS), 1);
+    assert.equal(player.items.get(I.BUCKET_OF_SAND), 1);
+    assert.equal(player.xp, 20);
+  }
+});
+
+test('using the only ore on a furnace smelts an unambiguous single bar without a quantity menu', t => {
+  t.mock.method(Math, 'random', () => 0);
+  for (const [ore, bar] of [[I.IRON_ORE, I.IRON_BAR], [I.SILVER_ORE, I.SILVER_BAR], [I.GOLD_ORE, I.GOLD_BAR]]) {
+    const player = furnaceWith([[ore, 1]]);
+    const event = { player, itemId: ore, object: furnace };
+    itemOnObject(event);
+    assert.equal(event.handled, true);
+    assert.equal(lastMenu(player), undefined);
+    assert.equal(player.items.get(ore), 1, 'the normal smelting delay is preserved');
+    ticks(6);
+    assert.equal(player.items.get(ore), 0);
+    assert.equal(player.items.get(bar), 1);
+    ticks(6);
+    assert.equal(player.items.get(bar), 1);
+  }
+});
+
+test('single-ore shortcuts preserve ordinary Smelt, mixed ores, coal bags and level requirements', () => {
+  const ordinary = furnaceWith([[I.IRON_ORE, 1]]);
+  objects.get('Furnace').Smelt({ player: ordinary });
+  assert.ok(lastMenu(ordinary), 'left-click Smelt retains its menu');
+  for (const ingredients of [[[I.IRON_ORE, 1], [I.COAL, 2]], [[I.GOLD_ORE, 1], [I.SILVER_ORE, 1]]]) {
+    const player = furnaceWith(ingredients);
+    itemOnObject({ player, itemId: ingredients[0][0], object: furnace });
+    assert.ok(lastMenu(player), 'multiple ores retain their menu');
+  }
+  const extras = furnaceWith([[I.IRON_ORE, 1], [I.STEEL_BAR, 1], [I.AMMO_MOULD, 1]]);
+  itemOnObject({ player: extras, itemId: I.IRON_ORE, object: furnace });
+  assert.ok(lastMenu(extras).getItems().includes(I.STEEL_CANNONBALL), 'other furnace products remain a choice');
+  const perfect = furnaceWith([[I.PERFECT_GOLD_ORE, 1]]);
+  itemOnObject({ player: perfect, itemId: I.PERFECT_GOLD_ORE, object: furnace });
+  assert.deepEqual(lastMenu(perfect).getItems(), [I.PERFECT_GOLD_BAR], 'quest-specific off-menu recipes retain their path');
+  const bag = furnaceWith([[I.IRON_ORE, 1]]);
+  const api = require('../plugins/skills/smithing/Core.Smithing').api;
+  const emit = api.emitCustomEvent;
+  api.emitCustomEvent = (name, event) => {
+    if (name === 'storage:amount' && event.itemId === I.COAL) event.amount = 2;
+    else emit(name, event);
+  };
+  try {
+    itemOnObject({ player: bag, itemId: I.IRON_ORE, object: furnace });
+    assert.ok(lastMenu(bag), 'stored coal keeps the iron/steel choice');
+  } finally { api.emitCustomEvent = emit; }
+  const low = furnaceWith([[I.GOLD_ORE, 1]]);
+  low.level = 1;
+  itemOnObject({ player: low, itemId: I.GOLD_ORE, object: furnace });
+  ticks(6);
+  assert.equal(low.items.get(I.GOLD_ORE), 1);
+  assert.equal(low.items.get(I.GOLD_BAR) ?? 0, 0);
+  assert.match(statementText(low), /Smithing level of 40/);
 });
 
 test("blurite needs The Knight's Sword", () => {
@@ -493,7 +664,9 @@ test("a ring of forging makes iron certain and melts after its charges", (t) => 
   assert.equal(player.equipped.has(12), false);
   assert.match(player.messages.join("\n"), /Ring of Forging has melted/);
   assert.equal(player.attributes["smithing:ring-of-forging-charges"], 140);
-  assert.equal(player.spam.at(-1), "The ore is too impure and you fail to refine it.");
+  // Wiki (Ring of forging): "the smelting will stop once the ring crumbles" - the third ore is not tried.
+  assert.equal(player.items.get(I.IRON_ORE), 1, "the last ore is kept");
+  assert.ok(!player.spam.includes("The ore is too impure and you fail to refine it."), "no unprotected attempt");
 });
 
 test("Varrock armour smelts two bars at the Edgeville furnace", (t) => {
@@ -720,4 +893,146 @@ test("Varrock armour's second bar takes the full coal once the catalysts are gon
   assert.equal(player.items.get(I.MITHRIL_BAR), 2);
   assert.equal(player.items.get(I.COAL), 0);
   assert.equal(player.xp, 60 + 30);
+});
+
+// Private append to the existing smithing.test.cjs; selected native phases, not full World.step.
+test("native furnace smelting admission and one-step cancellation", async t => {
+  process.env.DISABLE_PLAYER_BOTS = "1"; // excludes bot startup and dependent bot coverage
+  const { Player } = require("../dist/game/entity/impl/player/Player");
+  const { PlayerSession } = require("../dist/net/PlayerSession");
+  const { ClientConnection } = require("../dist/net/NetworkBuilder");
+  const Sessions = require("../plugins/skills/smithing/Sessions.Smithing");
+  const Smelting = require("../plugins/skills/smithing/Smelting.Smithing");
+  // This runs after the legacy registered-callback cases, whose captured tasks never enter TaskManager.
+  PluginManager.loadFromDirectory(path.resolve(__dirname, "../plugins"));
+  const core = PluginManager.getCoreApi();
+  core.RegionManager.init();
+  core.RegionManager.loadMapFiles(3222, 3218);
+  PluginManager.emitServerStartup({});
+  t.after(() => PluginManager.emitServerShutdown({}));
+  let index = 1710;
+  for (const mode of ["stationary", "approach", "interrupt", "ore-approach"]) await t.test(mode, async t => {
+    const channel = {kind:"test",remoteAddress:"127.0.0.1",isOpen:()=>true,send:()=>true,close(){},onData(){},onError(){},onClose(){}};
+    const p = new Player(new PlayerSession(channel));
+    p.setIndex(index++); p.setUsername("smithcancel" + index); p.setRegistered(true);
+    p.setLocation(new core.Location(mode === "approach" || mode === "ore-approach" ? 3219 : 3226, 3218, 0));
+    p.needsPlacement = false;
+    const c = new ClientConnection(channel); c.player = p;
+    t.after(() => {
+      PluginManager.emitPlayerDisconnect({player:p,username:p.getUsername()});
+      PluginManager.emitPlayerLogout({player:p,username:p.getUsername()});
+      p.setRegistered(false); core.TaskManager.cancelTasks(p.getIndex());
+      assert.equal(Sessions.typeOf(p), null, "native disconnect clears the private session");
+    });
+    assert.equal(p.getEquipment().getItems().some(i => i && i.getId() > 0), false);
+    for (const id of mode === "ore-approach" ? [I.SILVER_ORE] : [I.COPPER_ORE,I.TIN_ORE]) p.getInventory().add(new core.Item(id,1), false);
+    const recipe = Smithing.SMELTING_RECIPES.find(r => r.barId === I.BRONZE_BAR);
+    assert.deepEqual(recipe.ingredients, [[I.COPPER_ORE,1],[I.TIN_ORE,1]]);
+    assert.equal(recipe.xp, 6.2);
+    const furnaceId = [...Smelting.FURNACE_OBJECT_IDS].find(id => {
+      const d = core.ObjectDefinition.forPlayer(id,p);
+      return d?.getName() === "Furnace" && d.getActions()?.includes("Smelt");
+    });
+    assert.ok(Number.isInteger(furnaceId), "active cache supplies a Furnace with Smelt");
+    const furnace = new core.GameObject(furnaceId,new core.Location(3223,3218,0),10,0,null);
+    core.ObjectManager.register(furnace,true); t.after(() => core.ObjectManager.deregister(furnace,true));
+    const pos = () => [p.getLocation().getX(),p.getLocation().getY(),p.getLocation().getZ()];
+    const initial = pos();
+    const gains = [], snapshots = [];
+    const skills = p.getSkillManager(), add = skills.addExperiences.bind(skills);
+    t.mock.method(skills,"addExperiences",(skill,amount) => {
+      if(skill === core.Skill.SMITHING) gains.push(amount);
+      return add(skill,amount);
+    });
+    const total = id => p.getInventory().getAmount(id) + p.getEquipment().getAmount(id) +
+      core.World.getItems().filter(g => !g.isPendingRemoval() && g.getOwner() === p.getUsername() && g.getItem().getId() === id && g.getPrivateArea() === p.getPrivateArea()).reduce((n,g) => n+g.getItem().getAmount(),0);
+    let turns=0, openings=0;
+    const openingStates=[];
+    const animate=p.performAnimation.bind(p), furnaceAnimation=core.CacheDefinitions.getSeqId("human_furnace");
+    t.mock.method(p,"performAnimation",(...args) => {
+      const result=animate(...args);
+      if(args[0]?.getId()===furnaceAnimation) {
+        openings++; openingStates.push({turns,pos:pos(),accepted:p.getAnimation()?.getId()===furnaceAnimation,gains:[...gains],copper:total(I.COPPER_ORE),tin:total(I.TIN_ORE),bars:total(I.BRONZE_BAR)});
+      }
+      return result;
+    });
+    const snapshot = label => {
+      const q=p.getMovementQueue();
+      const row={label,mode,turns,epoch:core.World.getProcessCycle(),pos:pos(),queue:q.size(),moving:q.isMovings(),didMove:q.didMoveThisCycle(),session:Sessions.typeOf(p),copper:total(I.COPPER_ORE),tin:total(I.TIN_ORE),bars:total(I.BRONZE_BAR),gains:[...gains],openings};
+      snapshots.push(row); return row;
+    };
+    const turn=()=>{
+      assert.ok(++turns <= 24,"bounded native turns");
+      p.resetUpdating(); core.World.processCycle=(core.World.processCycle+1)&0x7fffffff;
+      core.TaskManager.process(); c.processTurnPackets();
+      const q=p.getMovementQueue(); q.beginCycle(); q.processEntityPursuit(); if(q.hasPendingWork())q.process();
+      core.TaskManager.processWalkTo(p.getIndex());
+    };
+    const untouched = () => { assert.equal(total(I.COPPER_ORE),1); assert.equal(total(I.TIN_ORE),1); assert.equal(total(I.BRONZE_BAR),0); assert.deepEqual(gains,[]); };
+    if(mode === "ore-approach") {
+      skills.setCurrentLevel(core.Skill.SMITHING, 99, false).setMaxLevels(core.Skill.SMITHING, 99, false);
+      const silver = Smithing.SMELTING_RECIPES.find(r => r.barId === I.SILVER_BAR);
+      assert.deepEqual(silver.ingredients, [[I.SILVER_ORE,1]]);
+      assert.equal(furnace.isWithinInteractionDistance(p.getLocation()),false);
+      const slot = p.getInventory().getSlotForItemId(I.SILVER_ORE);
+      assert.ok(slot >= 0);
+      await c.dispatch([{type:"item_on_object",objectId:furnaceId,x:3223,y:3218,itemId:I.SILVER_ORE,slot,widgetId:149<<16}]);
+      for(let i=0;i<10 && Sessions.typeOf(p)!=="smelt";i++)turn();
+      assert.notDeepEqual(pos(),initial,"real item-on-furnace interaction approached");
+      assert.equal(Sessions.typeOf(p),"smelt","lone ore automatically admits a session");
+      assert.equal(p.getCreationMenu(),null);
+      assert.equal(total(I.SILVER_ORE),1);
+      assert.equal(total(I.SILVER_BAR),0);
+      console.log("SMITHING_ORE_APPROACH_ADMISSION "+JSON.stringify(snapshot("ore-admission")));
+      for(let i=0;i<7;i++)turn();
+      assert.equal(total(I.SILVER_ORE),0);
+      assert.equal(total(I.SILVER_BAR),1);
+      assert.deepEqual(gains,[silver.xp]);
+      assert.equal(Sessions.typeOf(p),null);
+      return;
+    }
+    if(mode === "approach") assert.equal(furnace.isWithinInteractionDistance(p.getLocation()),false,"genuine approach begins outside reach");
+    await c.dispatch([{type:"object_option",id:furnaceId,x:3223,y:3218,action:"Smelt"}]);
+    for(let i=0;i<10 && !p.getCreationMenu();i++)turn();
+    const menu=p.getCreationMenu();
+    assert.ok(menu,"native furnace reach must open CreationMenu");
+    if(mode === "approach") assert.notDeepEqual(pos(),initial,"object interaction actually approached");
+    else assert.deepEqual(pos(),initial,"stationary control begins at the observed reachable furnace side");
+    const admission=pos();
+    assert.deepEqual(admission,[3226,3218,0],"anchor actual settled furnace admission, not original spawn");
+    console.log("SMITHING_CANCELLATION_PRECONDITION "+JSON.stringify(snapshot("admitted-menu")));
+    assert.ok(furnace.isWithinInteractionDistance(p.getLocation()));
+    assert.equal(p.getMovementQueue().size(),0);
+    untouched();
+    const slot=menu.getItems().indexOf(I.BRONZE_BAR); assert.ok(slot>=0);
+    // Native skillmulti producer/consumer constants: dialogue_continue, literal quantity 1.
+    const { CREATION_MENU_GROUP_ID, CREATION_MENU_FIRST_ITEM_COMPONENT } = require("../dist/net/packet/PacketSender");
+    assert.ok(Number.isInteger(CREATION_MENU_GROUP_ID)); assert.ok(Number.isInteger(CREATION_MENU_FIRST_ITEM_COMPONENT));
+    await c.dispatch([{type:"dialogue_continue",widgetId:(CREATION_MENU_GROUP_ID<<16)|(CREATION_MENU_FIRST_ITEM_COMPONENT+slot),childIndex:1}]);
+    turn();
+    assert.equal(Sessions.typeOf(p),"smelt","native selection admits pending smelt");
+    assert.equal(p.getCreationMenu(),null);
+    assert.equal(openings,0,"global task precedes queued menu input");
+    if(mode === "interrupt") await c.dispatch([{type:"move",worldX:3225,worldY:3217,modifierFlags:0,run:false}]);
+    turn(); // The pending cycle opens before this turn's actual walk.
+    assert.equal(openings,1); assert.equal(openingStates[0].accepted,true);
+    assert.deepEqual(openingStates[0].pos,admission,"cycle opens at the settled admission before native walk");
+    untouched();
+    console.log("SMITHING_CANCELLATION_PRECONDITION "+JSON.stringify(snapshot("pending-after-input")));
+    if(mode === "interrupt") {
+      assert.deepEqual(pos(),[3225,3217,0],"actual native one-step walk must reach destination");
+      assert.equal(p.getMovementQueue().size(),0,"route drains before next global task");
+      assert.equal(p.getMovementQueue().didMoveThisCycle(),true);
+      assert.equal(p.getMovementQueue().isMovings(),true);
+    }
+    for(let i=0;i<7;i++)turn();
+    const end=snapshot("completion-window");
+    console.log("SMITHING_CANCELLATION_OBSERVATION "+JSON.stringify({snapshots,openingStates}));
+    const cancelled=mode==="interrupt";
+    assert.deepEqual(gains,cancelled?[]:[6.2],"pending smelt XP cancellation: "+JSON.stringify(end));
+    assert.equal(total(I.COPPER_ORE),cancelled?1:0,"copper conservation");
+    assert.equal(total(I.TIN_ORE),cancelled?1:0,"tin conservation");
+    assert.equal(total(I.BRONZE_BAR),cancelled?0:1,"bronze conservation");
+    assert.equal(Sessions.typeOf(p),null);
+  });
 });

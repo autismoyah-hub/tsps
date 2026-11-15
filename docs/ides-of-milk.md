@@ -36,13 +36,50 @@ Recording 4153 contains no camera movement, look-at or shake packets during the 
 
 The north-east Release gate starts a private copy of the cow field. At two ticks, the player moves to (3262,3294), the pen and south-west exit leaves change locally, and Brutus 15626 appears at (3261,3287) with 58 Hitpoints and animation 13790. Controls unlock at four ticks. The local replacements hide the world's current leaves, including gates already swung open onto other tiles; leaving restores the current world state, including changes during the fight. Other players' gates, cows and fights are unaffected. The mapped pen bull is not a combat shortcut. Cassius and the mapped bull have canonical world spawns; their spawn anchors are inferred from the recording's roaming envelope.
 
-Melee uses animation 13783, five-tick recovery and a maximum hit of three. During the quest, melee cannot take the player below one Hitpoint. Specials use eight-tick recovery, the captured overheads, charge animation 13778 and stomp 13785. Delayed damage checks the player's new position. The recorded charge moves four tiles south; the implementation also handles the horizontal facing axis. Stomp graphic 3588 follows the selected three-tile row or five-tile corner. Consecutive stomps keep their original selected footprint, as observed when the player sidesteps in 4153. Special damage can kill.
+Melee uses animation 13783, five-tick recovery and a maximum hit of three. During the quest, melee cannot take the player below one Hitpoint. Specials use eight-tick recovery, the captured overheads, charge animation 13778 and stomp 13785. Delayed damage checks the player's new position. The recorded charge moves four tiles south; the implementation also handles the horizontal facing axis. Stomp graphic 3588 follows the selected three-tile row or five-tile corner. Each snort selects a fresh footprint from the bull and target's current positions, then holds it through that stomp's windup. In recording 4153, the third snort at tick 602 turns and impacts a different corner at tick 606. Special damage can kill.
+
+Recording 4153 sends an exact move at cycle 562, from four tiles north to the destination over 60 client cycles (two ticks), after its cycle-558 growl. A plain NPC teleport is excluded from the player's local list for its placement tick; Brutus now uses the existing exact-move path so the charge stays visible. Ordinary pursuit remains blocked until the glide finishes. The postquest three-tick windup remains the existing behavior; this recording covers the quest's four-tick windup.
+
+The boss temporarily owns coordinate facing through `combat:keep-facing`, clearing entity tracking during its telegraph. Live restores entity tracking at cycle 564 after that charge and six ticks after each recorded stomp (586 to 592, 594 to 600). Recovery releases the held heading and restores the same living encounter's current target; death, leaving, replacement or retargeting cannot reattach the old player. This also forces a fresh native entity-face update instead of leaving the proxy's coordinate-facing state until the next movement.
 
 Charges check the bull's swept 3x3 footprint against the cache's walls, including diagonal fences, and keep it inside its existing private field. The bull holds its position during the charge windup even if the player sidesteps. A blocked charge is rejected in full: adjacent players get a stomp, while a distant player brings ordinary melee pursuit back into range. Interior scenery remains passable during a charge, as the Wiki describes; the Plant at (3257,3289) is a regression control. The private field's southern boundary remains an instance constraint, not a claimed OSRS fence location.
 
-Quest kills suppress normal loot, return the player from the private field, and show the Brutus tag once as both game message and continued statement. Postquest kills retain the field and its loot; canonical respawn is 36 ticks and ringing the cowbell restarts the wait at 13 ticks. Cancelled timers cannot spawn duplicates after a subsequent kill. Brutus grants double normal combat XP. Leaving or logging out clears private actors, tasks and busy flags.
+Quest kills suppress normal loot, return the player from the private field, and show the Brutus tag once as both game message and continued statement. Postquest kills retain the field and its loot; canonical respawn is 36 ticks and ringing the cowbell restarts the wait at 13 ticks. Cancelled timers cannot spawn duplicates after a subsequent kill. The reported RuneLite respawn-overlay mismatch is tracked separately in [issue 2164](https://github.com/RSPSApp/tsps/issues/2164); retest after the charge visibility repair before assuming a separate integration defect. Brutus grants double normal combat XP. Leaving or logging out clears private actors, tasks and busy flags.
 
 Cowbell charging, worn actions, Ring sounds and milking are documented in [the Lumbridge/Vampyre evidence notes](f2p-lumbridge-vampyre.md#cowbell-amulet-follow-up).
+
+## Brutus after the quest (2026-11-11)
+
+The progress tracker's Brutus rows (4 November) listed the repeatable post-quest fight, the Demonic variant and the drop
+tables as not built. All three are on main (this page, `npc-drops.json`: `brutus` and `demonic_brutus`, the Wiki's tables),
+so those rows were stale. The Wiki names more, built in `plugins/bosses/Brutus.plugin.js` (its numbers and texts are in
+`plugins/bosses/data/brutus.json`) and the quest plugin's Demonic branches. Read on 2026-11-11 from the Wiki revisions
+[Brutus](https://oldschool.runescape.wiki/?title=Brutus&oldid=15396646),
+[Demonic Brutus](https://oldschool.runescape.wiki/?title=Demonic_Brutus&oldid=15384017),
+[Brutus/Strategies](https://oldschool.runescape.wiki/?title=Brutus/Strategies&oldid=15354867) and
+[Demonic Brutus/Strategies](https://oldschool.runescape.wiki/?title=Demonic_Brutus/Strategies&oldid=15354884).
+No rsprox capture of the post-quest or the Demonic fight was found (4153 is the quest route only), so these are the Wiki's
+numbers and texts:
+
+- Slayer experience on a Cows task is 116, twice his Hitpoints (the Slayer plugin gave 58): Brutus infobox "slayxp = 116",
+  and the generated `monsters-complete.json` has `slayer_xp` 116.0 for 15626 and 15627. Nothing says it differs during the
+  quest, so it is not gated on it.
+- An item used on Brutus says "Brutus doesn't want that." and an empty bucket "You do not want to do that." (Brutus,
+  Trivia); the abyssal potato stays the quest plugin's.
+- Killing Brutus or Demonic Brutus wearing Cow31337Killer's outfit (rune boots, rune platebody, rune plateskirt, Klank's
+  gauntlets, Dharok's helm, Dharok's greataxe; degraded forms included) says "You are but an imitation of a true legend."
+  (Brutus, Trivia).
+- Demonic Brutus: "Once Demonic Brutus' health reaches 0, it will exclaim moo moo! and heal itself for 487 health" (he
+  heals 487 and shouts when first brought to 0 Hitpoints), "Getting hit by any of the bulls will deal 45-56 damage each"
+  (each bull of his specials deals 45-56), his basic melee "can hit through Protect from Melee" (it does, and is not held to
+  the quest's cap of 3) and he "is immune to stat drains" (he is). The Strategies page gives his melee maximum as 4; the
+  infobox says 43, and so does `monsters-complete.json` (`max_hit` 43), which stands. With one bull per special, a Demonic
+  special is a single 45-56 hit, so he can kill a low-Hitpoints player in the private field in one or two hits.
+
+Not modelled: Demonic Brutus's three ghost bulls and their clockwise order, the faster specials at two thirds of his
+Hitpoints, the counter-clockwise order at one third, the phase-two orbs, his enchanted-bolt immunity (no immunity flag
+exists), the pushing of players away from obstacles, and Brutus's 15-tick anti-safespot behaviour. The Wiki gives no
+tick counts or positions for them.
 
 ## 2026-11-02 audit
 
@@ -72,6 +109,6 @@ From `server/`, after building:
 node --test tests/ides-of-milk-parity.test.cjs tests/cowbell-amulet-parity.test.cjs tests/npc-dialogues.test.cjs
 ```
 
-The worktree's own agent MCP verified the real Release interaction, transition into a private field containing just Brutus, captured bull identity/Hitpoints, four local gate replacements, the south-west Quick-escape, the canonical Cassius spawn, and the real Groats book interface. Focused tests cover progression, reaction timing, resumed dialogue, information flags, lamp validation, book layout, per-player combat state, frozen stomp tiles, vertical/horizontal charge dodges, postquest respawn timers and logout cleanup.
+The worktree's own agent MCP verified the real Release interaction, transition into a private field containing just Brutus, captured bull identity/Hitpoints, four local gate replacements, the south-west Quick-escape, the canonical Cassius spawn, and the real Groats book interface. Focused tests cover progression, reaction timing, resumed dialogue, information flags, lamp validation, book layout, per-player combat state, retargeted stomps with frozen windup tiles, vertical/horizontal charge dodges, postquest respawn timers and logout cleanup.
 
 The recording covers one quest route and one fight, not every dialogue branch, attack roll or postquest cycle. The Wiki's quest and strategy pages describe different special-selection intervals; the implementation uses three initial melee attacks and 1–6 between quest specials, then the strategy's 4–5 and alternating specials after completion. Exact random distributions, low-level special-damage rounding, diagonal charges and the 15-tick anti-safespot behavior still need targeted OSRS measurements. Special damage uses the documented approximate 30–40% Hitpoints range, capped at 19, rather than a proven formula. Some transient cow-scatter/fade presentation and unrecorded journal text remain approximate. These limits prevent a claim of complete packet, visual or combat parity. The charged amulet's exact teleport tile and timing are also unrecorded.

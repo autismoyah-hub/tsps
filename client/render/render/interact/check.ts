@@ -1,3 +1,4 @@
+import { isGroundItemOperationEnabled } from "../../../game/data/ground/GroundItemStore";
 import { buildPlayerActionEntries } from "./playerMenu";
 import Denque from "denque";
 import { mat4, vec2, vec3, vec4 } from "gl-matrix";
@@ -33,7 +34,7 @@ import { flushPackets } from "../../../network/packet";
 import { createTextureArray } from "../../../picogl/PicoTexture";
 import { RS_TO_RADIANS } from "../../../rs/MathConstants";
 import { CollisionFlag } from "../../../common/CollisionFlag";
-import { VARBIT_IN_WILDERNESS } from "../../../common/vars";
+import { VARBIT_IN_WILDERNESS, VARBIT_TRADE_OPTION_DISABLED } from "../../../common/vars";
 import {
     getWorldLocChanges,
     getWorldLocSpawns,
@@ -49,6 +50,8 @@ import { NpcDrawPriority, NpcType } from "../../../rs/config/npctype/NpcType";
 import { PlayerAppearance } from "../../../rs/config/player/PlayerAppearance";
 import { PlayerModelLoader } from "../../../rs/config/player/PlayerModelLoader";
 import { decodeInteractionIndex } from "../../../rs/interaction/InteractionIndex";
+import { npcExamineVisibleWhileHidden, npcOpsVisibility } from "../../../game/NpcOpsVisibility";
+import { groundObjExamineVisibleWhileHidden, groundObjOpsVisibility } from "../../../game/GroundObjOpsVisibility";
 import { getMapIndexFromTile, getMapPlaneId, getMapSquareId } from "../../../rs/map/MapFileIndex";
 import { Model } from "../../../rs/model/Model";
 import { ModelData } from "../../../rs/model/ModelData";
@@ -194,6 +197,7 @@ import {
 import { KNOWN_WATER_TEXTURE_IDS } from "../../water/WaterTextureIds";
 import type { WebGLOsrsRendererHost } from "../hostInterface";
 import { RENDER_CONSTANTS, formatPlayerCombatLabel } from "../constants";
+import { chatLineMenuEntriesAt } from "../../../game/widgets/interaction/chatLineMenu";
 
 /** What the last world interaction pass saw, per renderer host. */
 type InteractionPassInputs = {
@@ -629,6 +633,7 @@ export function checkInteractions(host: WebGLOsrsRendererHost, ): void {
                 menuEntries.push(...buildPlayerActionEntries({
                     sid, playerLabel, targetCombatLevel, localCombatLevel, targetTeam, localTeam,
                     targetIsClanMember, canAttackPlayers, localX, localY,
+                    showTradeOption: (host.osrsClient.varManager?.getVarbit(VARBIT_TRADE_OPTION_DISABLED) ?? 0) === 0,
                     actions: {
                         option: sendPlayerOption,
                         follow: (serverId) => {
@@ -698,6 +703,24 @@ export function checkInteractions(host: WebGLOsrsRendererHost, ): void {
                         mapX: localX,
                         mapY: localY,
                     });
+                }
+
+                // set_hide_npc_actions: no Use, Cast, actions or Attack; Examine stays unless a
+                // spell is selected or a low-priority follower already added it above.
+                if (npcOpsVisibility.hidden) {
+                    if (npcExamineVisibleWhileHidden(ClientState.isSpellSelected, isFollowerLowPriority)) {
+                        menuEntries.push({
+                            option: "Examine",
+                            targetId: npcType.id,
+                            targetType: MenuTargetType.NPC,
+                            npcServerId: sid | 0,
+                            targetName: npcType.name,
+                            targetLevel: npcType.combatLevel,
+                            mapX: localX,
+                            mapY: localY,
+                        });
+                    }
+                    return;
                 }
 
                 // Item selection: Use only (opcode 7), except follower examine above remains.
@@ -1021,6 +1044,28 @@ export function checkInteractions(host: WebGLOsrsRendererHost, ): void {
                     if (objIds.has(tileKey)) continue;
                     objIds.add(tileKey);
 
+                    // set_item_ops_disabled: no Use, Cast, ground actions or Take; Examine stays
+                    // unless a spell is selected (native adds it only in the no-selection branch).
+                    if (groundObjOpsVisibility.hidden) {
+                        if (groundObjExamineVisibleWhileHidden(ClientState.isSpellSelected)) {
+                            for (const stack of stacks) {
+                                const objType = host.osrsClient.objTypeLoader.load(stack.itemId);
+                                if (!objType || objType.name === "null") continue;
+                                const menuName = plugins.groundItemMenuName(stack, objType.name);
+                                menuEntries.push({
+                                    option: "Examine",
+                                    targetId: stack.itemId,
+                                    targetType: MenuTargetType.OBJ,
+                                    targetName: plugins.groundItemMenuTarget(stack, menuName),
+                                    targetLevel: -1,
+                                    mapX: localX,
+                                    mapY: localY,
+                                });
+                            }
+                        }
+                        continue;
+                    }
+
                     // Item selection: Use only (OSRS: opcode 16 per item, suppresses normal ops).
                     if (ClientState.isItemSelected === 1) {
                         const itemName =
@@ -1101,6 +1146,7 @@ export function checkInteractions(host: WebGLOsrsRendererHost, ): void {
 
                         const actions = objType.groundActions ?? [];
                         for (let actionIdx = 4; actionIdx >= 0; actionIdx--) {
+                            if (!isGroundItemOperationEnabled(stack, actionIdx)) continue;
                             const option = actions[actionIdx];
                             if (option) {
                                 const capturedStack = stack;
@@ -1152,9 +1198,8 @@ export function checkInteractions(host: WebGLOsrsRendererHost, ): void {
                         });
                     }
                 } else if (interactType === InteractType.NPC) {
-                    // SceneRaycaster encodes players as InteractType.NPC with a high interactId offset.
-                    const PLAYER_INTERACT_BASE = 0x8000;
-                    if (interactId >= PLAYER_INTERACT_BASE) {
+                    // Player hits carry their ECS index; custom NPC IDs can also exceed 0x8000.
+                    if (hit.playerEcsIndex != null) {
                         const ecsIndex = hit.playerEcsIndex;
                         if (ecsIndex == null) continue;
                         const firstNpcs: number[] = [];
@@ -1349,14 +1394,19 @@ export function checkInteractions(host: WebGLOsrsRendererHost, ): void {
             shouldLeftClickOpenMenu(simpleEntries, !!host.osrsClient.settings?.leftClickOpensMenu)
         );
         if (leftClickMenuToggle) {
+            const leftClickX = inputManager.leftClickX;
+            const leftClickY = inputManager.leftClickY;
+            // The press that opens the menu is spent, as a right click's is. Left in place, the
+            // Choose Option overlay reads it this same frame as a click at the menu's corner
+            // (its header) and closes the menu again.
+            inputManager.clickMode3 = ClickMode.NONE;
+            inputManager.saveClickX = -1;
+            inputManager.saveClickY = -1;
             host.osrsClient.menuOpen = true;
             host.osrsClient.menuOpenedFrame = frameCount;
-            host.osrsClient.menuX = inputManager.leftClickX;
-            host.osrsClient.menuY = inputManager.leftClickY;
-            const clickedFromLeft = host.computeTileAt(
-                inputManager.leftClickX,
-                inputManager.leftClickY,
-            );
+            host.osrsClient.menuX = leftClickX;
+            host.osrsClient.menuY = leftClickY;
+            const clickedFromLeft = host.computeTileAt(leftClickX, leftClickY);
             if (clickedFromLeft) {
                 host.osrsClient.menuTile = clickedFromLeft;
                 host.hoverTileX = clickedFromLeft.tileX;
@@ -1530,6 +1580,19 @@ export function checkInteractions(host: WebGLOsrsRendererHost, ): void {
             if (!pickOverUi) {
                 host.osrsClient.menuOpen = true;
                 host.osrsClient.menuOpenedFrame = frameCount;
+                // Over a click-through chatbox, the chat line's own options join this menu.
+                host.osrsClient.menuChatLineEntries = host.osrsClient.isChatboxClickThrough()
+                    ? {
+                          frame: frameCount,
+                          entries: chatLineMenuEntriesAt(
+                              host.osrsClient.widgetManager,
+                              (host.app.gl.canvas as any).__ui,
+                              pickX,
+                              pickY,
+                              !!host.osrsClient.debugId,
+                          ),
+                      }
+                    : undefined;
             }
         }
         // If a pick event happened, anchor menu to the true click position and compute exact tile at click
@@ -1640,9 +1703,14 @@ export function checkInteractions(host: WebGLOsrsRendererHost, ): void {
             ) {
                 return;
             }
-            const simpleList = host.osrsClient.menuActiveSimpleEntries.length
+            const worldList = host.osrsClient.menuActiveSimpleEntries.length
                 ? host.osrsClient.menuActiveSimpleEntries
                 : simpleEntries;
+            const chatLine = host.osrsClient.menuChatLineEntries;
+            const simpleList =
+                chatLine && chatLine.frame === host.osrsClient.menuOpenedFrame && chatLine.entries.length
+                    ? [...chatLine.entries, ...worldList]
+                    : worldList;
             // menuX/menuY are already in canvas coordinates from InputManager
             const mx = (host.osrsClient.menuX | 0) as number;
             const my = (host.osrsClient.menuY | 0) as number;

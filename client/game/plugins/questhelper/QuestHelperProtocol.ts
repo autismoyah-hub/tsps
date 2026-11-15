@@ -130,12 +130,25 @@ export type HelperTarget = {
     label?: string;
 };
 export type RequirementCheck = "pass" | "fail" | "partial" | "boost" | "neutral";
+/**
+ * The only origin a Quest Helper link may point at. Upstream builds these from item wiki terms, so
+ * any other value is a bug or a tampered bridge: it renders as plain text rather than a live link.
+ */
+export const WIKI_ORIGIN = "https://oldschool.runescape.wiki/";
+
+/** The URL when it points at the OSRS wiki, otherwise undefined. */
+export function wikiHref(url?: string): string | undefined {
+    return url !== undefined && url.startsWith(WIKI_ORIGIN) ? url : undefined;
+}
+
 export type RequirementState = {
     name: string;
     met: boolean;
     /** Upstream colour: passed, failed, in the bank, boostable, or not an actual item. */
     state?: RequirementCheck;
     tooltip?: string;
+    /** Requirement.getWikiUrl: an item's page, anchored at its "Item sources" section. */
+    wikiUrl?: string;
     ids?: number[];
     quantity?: number;
 };
@@ -270,6 +283,8 @@ export type HelperResponse = {
     diagnostics: HelperDiagnostic[];
     requests?: HelperStateRequest[];
     questProgress?: QuestProgress[];
+    /** Digests of the reusable snapshot sections the server holds for this session (QuestHelperReuse). */
+    cached?: Readonly<Record<string, string>>;
     overview?: HelperOverview;
     sections?: HelperSection[];
     overlayPanel?: OverlayLine[];
@@ -332,7 +347,7 @@ const finite = (v: unknown): v is number => typeof v === "number" && Number.isFi
 const list = (v: unknown, check: (v: unknown) => boolean, max = 4096): boolean => Array.isArray(v) && v.length <= max && v.every(check);
 const optional = (o: Obj, key: string, check: (v: unknown) => boolean): boolean => o[key] === undefined || check(o[key]);
 const bounds = (v: unknown): boolean => obj(v) && finite(v.x) && finite(v.y) && finite(v.width) && finite(v.height) && v.width >= 0 && v.height >= 0;
-const requirement = (v: unknown): boolean => obj(v) && str(v.name) && typeof v.met === "boolean" && optional(v, "state", v => ["pass", "fail", "partial", "boost", "neutral"].includes(v as string)) && optional(v, "tooltip", str) && optional(v, "ids", v => list(v, int)) && optional(v, "quantity", int);
+const requirement = (v: unknown): boolean => obj(v) && str(v.name) && typeof v.met === "boolean" && optional(v, "state", v => ["pass", "fail", "partial", "boost", "neutral"].includes(v as string)) && optional(v, "tooltip", str) && optional(v, "wikiUrl", str) && optional(v, "ids", v => list(v, int)) && optional(v, "quantity", int);
 const requirements = (v: unknown): boolean => list(v, requirement, 512);
 const choiceRule = (v: unknown): boolean => obj(v) && int(v.groupId) && int(v.childId) && typeof v.number === "boolean" && optional(v, "id", int) && ["text", "pattern", "replace"].every(k => optional(v, k, str)) && optional(v, "whole", x => typeof x === "boolean") && optional(v, "excludeGroupId", int) && optional(v, "excludeChildId", int) && optional(v, "excludes", x => list(x, str, 64));
 const strings = (v: unknown): boolean => list(v, str, 512);
@@ -365,6 +380,7 @@ const bankTab = (v: unknown): boolean =>
 export function parseHelperResponse(value: unknown): HelperResponse | null {
     if (obj(value) && !(optional(value, "pluginMessages", v => list(v, pluginMessage, 64)) && optional(value, "bankTab", bankTab))) return null;
     if (obj(value) && !optional(value,"questProgress",v=>list(v,progress,512))) return null;
+    if (obj(value) && !optional(value, "cached", v => obj(v) && Object.keys(v).length <= 16 && Object.values(v).every(d => typeof d === "string" && /^[0-9a-f]{1,64}$/.test(d)))) return null;
     if (obj(value) && !(optional(value, "overview", overview) && optional(value, "sections", v => list(v, x => section(x), 256)) && optional(value, "overlayPanel", v => list(v, overlayLine, 512)))) return null;
     if (!obj(value) || value.protocol !== 1 || !str(value.session) || !str(value.questKey) || !str(value.sourceCommit) || !int(value.sequence) || value.sequence < 1 || !["active", "complete", "unsupported", "unavailable"].includes(value.status as string) || !(value.activeStep === null || step(value.activeStep)) || !list(value.panels, v => obj(v) && str(v.title) && optional(v, "text", v => list(v, str)) && optional(v, "requirements", v => list(v, requirement))) || !list(value.diagnostics, diagnostic) || !optional(value, "requests", v => list(v, r => obj(r) && typeof r.kind === "string" && /^(geometry|varbit|varbitDefinition|itemDefinitions|objectDefinitions|npcDefinitions|widget|widgetBounds|questState|container)(\.[a-zA-Z][a-zA-Z0-9]{0,63})?$/.test(r.kind) && int(r.id) && r.id >= 0)))
         return null;

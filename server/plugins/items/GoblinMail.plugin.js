@@ -26,9 +26,12 @@ function repairHumanGoblinMail(core, { player }) {
 
 module.exports = {
   name: "GoblinMail",
+  description: "Stops goblin mail being worn unless the player is in the Land of the Goblins goblin form, and unequips it if they stop being one.",
   register(api) {
     api.onCanEquip(canWearGoblinMail);
     api.onCustomEvent("player:bootstrap-complete", repairHumanGoblinMail.bind(null, api.core));
     api.onCustomEvent("equipment:changed", repairHumanGoblinMail.bind(null, api.core));
+    // Wiki (Land of the Goblins): the mail comes off when the goblin form reverts, e.g. at the quest's end.
+    api.onCustomEvent("goblin-form:ended", repairHumanGoblinMail.bind(null, api.core));
   },
 };

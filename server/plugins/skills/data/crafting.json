@@ -283,6 +283,16 @@
       }
     ]
   },
+  "huntersPouches": {
+    "$comment": "The Hunters' Guild pouches a needle sews from fur (Leather.Crafting.js): `fur` of the fur, `from` the closed pouch an upgrade turns into `item`. Levels and XP: OSRS Wiki (each pouch's page). No menu: the needle on the fur makes one, the animation at once and the pouch 2 ticks later (rsprox captures pyre-fur-and-smallpouch-1/-2, rev 242).",
+    "recipes": [
+      { "fur": "FOX_FUR", "amount": 4, "item": "SMALL_MEAT_POUCH", "level": 35, "xp": 30, "members": true },
+      { "fur": "SUNLIGHT_ANTELOPE_FUR", "amount": 3, "from": "SMALL_MEAT_POUCH", "item": "LARGE_MEAT_POUCH", "level": 65, "xp": 60, "members": true },
+      { "fur": "LARUPIA_FUR", "amount": 4, "item": "SMALL_FUR_POUCH", "level": 35, "xp": 20, "members": true },
+      { "fur": "GRAAHK_FUR", "amount": 3, "from": "SMALL_FUR_POUCH", "item": "MEDIUM_FUR_POUCH", "level": 50, "xp": 40, "members": true },
+      { "fur": "KYATT_FUR", "amount": 3, "from": "MEDIUM_FUR_POUCH", "item": "LARGE_FUR_POUCH", "level": 65, "xp": 60, "members": true }
+    ]
+  },
   "combine": {
     "$comment": "One item used on another, both used up; `materials` used up too, `tools` kept. `ticks` per item (Wiki).",
     "recipes": [
@@ -741,6 +751,7 @@
         "item": "UNPOWERED_ORB",
         "label": "Unpowered staff orb",
         "name": "unpowered staff orb",
+        "made": "an orb",
         "level": 46,
         "xp": 52.5,
         "members": true
@@ -1031,7 +1042,7 @@
     ]
   },
   "gold": {
-    "$comment": "crafting_gold (446): `firstComponent` is each type's plain-gold button; product rows are [item, level, XP] in `gems` order (null: plain gold).",
+    "$comment": "crafting_gold (446): `components` are each type's buttons and product rows are [item, level, XP], both in `gems` order (null: plain gold). The rev 241 bracelet row skips 51 (its mould layer). `slayerRing` is the ring row's extra button (446:16, Wiki Slayer ring): the client offers the eternal ring when an eternal gem is carried (script crafting_gold_checkgem), and both need the Ring bling unlock.",
     "gems": [
       null,
       "SAPPHIRE",
@@ -1045,7 +1056,7 @@
     "types": [
       {
         "name": "ring",
-        "firstComponent": 8,
+        "components": [8, 9, 10, 11, 12, 13, 14, 15],
         "mould": "RING_MOULD",
         "products": [
           [
@@ -1092,7 +1103,7 @@
       },
       {
         "name": "necklace",
-        "firstComponent": 23,
+        "components": [23, 24, 25, 26, 27, 28, 29, 30],
         "mould": "NECKLACE_MOULD",
         "products": [
           [
@@ -1139,7 +1150,7 @@
       },
       {
         "name": "amulet",
-        "firstComponent": 37,
+        "components": [37, 38, 39, 40, 41, 42, 43, 44],
         "mould": "AMULET_MOULD",
         "products": [
           [
@@ -1186,7 +1197,7 @@
       },
       {
         "name": "bracelet",
-        "firstComponent": 50,
+        "components": [50, 52, 53, 54, 55, 56, 57, 58],
         "mould": "BRACELET_MOULD",
         "products": [
           [
@@ -1232,6 +1243,17 @@
         ]
       }
     ],
+    "slayerRing": {
+      "component": 16,
+      "mould": "RING_MOULD",
+      "level": 75,
+      "xp": 15,
+      "unlockVarbit": "slayer_ring_unlocked",
+      "products": [
+        ["ETERNAL_GEM", "SLAYER_RING_ETERNAL_"],
+        ["ENCHANTED_GEM", "SLAYER_RING_8_"]
+      ]
+    },
     "quantities": {
       "60": 1,
       "61": 5,
@@ -1492,9 +1514,19 @@
     ]
   },
   "strungAmulets": {
-    "$comment": "A ball of wool on the unstrung amulet, 4 XP (Wiki: amulet stringing).",
+    "$comment": "String material and unstrung jewellery, 4 XP (Wiki: ball of wool products and pre-nature amulet). The optional fourth field names the material; wool is the default.",
     "xp": 4,
     "pairs": [
+      [
+        "UNSTRUNG_SYMBOL",
+        "UNBLESSED_SYMBOL",
+        "symbol"
+      ],
+      [
+        "UNSTRUNG_EMBLEM",
+        "UNPOWERED_SYMBOL",
+        "symbol"
+      ],
       [
         "GOLD_AMULET_U_",
         "GOLD_AMULET"
@@ -1506,6 +1538,12 @@
       [
         "EMERALD_AMULET_U_",
         "EMERALD_AMULET"
+      ],
+      [
+        "EMERALD_AMULET_U_",
+        "PRE_NATURE_AMULET",
+        "amulet",
+        "MAGIC_STRING"
       ],
       [
         "RUBY_AMULET_U_",
@@ -1570,6 +1608,33 @@
         "level": 66,
         "xp": 137.5
       }
+    ]
+  },
+  "snelms": {
+    "$comment": "https://oldschool.runescape.wiki/w/Snelm - a chisel on a blamish snail shell, level 15 Crafting, 32.5 XP, 2 ticks. Round shells make round snelms; pointed shells (_3) make pointed snelms. There is no pointed bark shell or pointed broken bark snelm in the cache.",
+    "level": 15,
+    "xp": 32.5,
+    "ticks": 2,
+    "seq": 890,
+    "seqName": "human_opalcutting",
+    "recipes": [
+      {"shell": "BLAMISH_MYRE_SHELL", "item": "MYRE_SNELM"},
+      {"shell": "BLAMISH_RED_SHELL", "item": "BLOODNTAR_SNELM"},
+      {"shell": "BLAMISH_OCHRE_SHELL", "item": "OCHRE_SNELM"},
+      {"shell": "BLAMISH_BLUE_SHELL", "item": "BRUISE_BLUE_SNELM"},
+      {"shell": "BLAMISH_BARK_SHELL", "item": "BROKEN_BARK_SNELM"},
+      {"shell": "BLAMISH_MYRE_SHELL_3", "item": "POINTED_MYRE_SNELM"},
+      {"shell": "BLAMISH_RED_SHELL_3", "item": "POINTED_BLOODNTAR_SNELM"},
+      {"shell": "BLAMISH_OCHRE_SHELL_3", "item": "POINTED_OCHRE_SNELM"},
+      {"shell": "BLAMISH_BLUE_SHELL_3", "item": "POINTED_BRUISE_BLUE_SNELM"}
+    ]
+  },
+  "gemSickles": {
+    "$comment": "A gem on a silver sickle (b). XP: Wiki (Emerald/Ruby/Diamond sickle (b)). Prompt, message, the gem's cutting animation and sound: rsprox captures 102 and 1637 (ruby) and 4288 (diamond); the emerald follows them (no capture).",
+    "recipes": [
+      {"gemName": "Emerald", "name": "emerald", "article": "an", "product": "EMERALD_SICKLE_B_", "xp": 20, "seq": 889, "seqName": "human_emeraldcutting"},
+      {"gemName": "Ruby", "name": "ruby", "article": "a", "product": "RUBY_SICKLE_B_", "xp": 26, "seq": 887, "seqName": "human_rubycutting"},
+      {"gemName": "Diamond", "name": "diamond", "article": "a", "product": "DIAMOND_SICKLE_B_", "xp": 32, "seq": 886, "seqName": "human_diamondcutting"}
     ]
   }
 }

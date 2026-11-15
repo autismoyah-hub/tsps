@@ -1,5 +1,22 @@
 export type ShopCurrency = "COINS" | "BLOOD_MONEY" | "POINTS" | string;
 
+/**
+ * A shop's prices as the Wiki's StoreTableHead gives them, each per mille of the item's value
+ * (https://oldschool.runescape.wiki/w/Shop#Pricing). The names are the shop's side of the trade:
+ * `sellsAt` is what a player pays, `buysAt` what a player is paid.
+ */
+export interface ShopSalesPolicy {
+    generalStore?: boolean;
+    /** The shop buys nothing from players: every Wiki StoreLine's buy is N/A (Farming Supplies, the inns). */
+    buysNothing?: boolean;
+    /** "Sells at": the price of buying one from the shop at its normal stock. */
+    sellsAt?: number;
+    /** "Buys at": the price of selling one to the shop at its normal stock. */
+    buysAt?: number;
+    /** "Change per": how far either price moves for each item above or below the normal stock. */
+    changePer?: number;
+}
+
 export interface ShopStockDefinition {
     id: number;
     amount: number;
@@ -18,7 +35,8 @@ export class ShopDefinition {
         private readonly defaultRestockTicks: number,
         private readonly defaultDestockTicks: number,
         private readonly soldItemDestockTicks: number,
-        private readonly source: string
+        private readonly source: string,
+        private readonly salesPolicy: ShopSalesPolicy = {}
     ) {}
 
     public static replace(definitions: ShopDefinition[]): void {
@@ -26,6 +44,15 @@ export class ShopDefinition {
         for (const definition of definitions) {
             this.definitions.set(definition.getId(), definition);
         }
+    }
+
+    /** Adds one definition without replacing the rest (a plugin's shop for one player, see ShopManager.registerShop). */
+    public static register(definition: ShopDefinition): void {
+        this.definitions.set(definition.getId(), definition);
+    }
+
+    public static unregister(id: number): void {
+        this.definitions.delete(id);
     }
 
     public static forId(id: number): ShopDefinition | undefined {
@@ -66,5 +93,9 @@ export class ShopDefinition {
 
     public getSource(): string {
         return this.source;
+    }
+
+    public getSalesPolicy(): Readonly<ShopSalesPolicy> {
+        return this.salesPolicy;
     }
 }

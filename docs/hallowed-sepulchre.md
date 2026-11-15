@@ -11,7 +11,7 @@ It covers the lobby, the entry, the five floors with their obstacles and traps, 
 | `HallowedSepulchre.plugin.js` | Registers the parts and the saved attributes. |
 | `hallowedsepulchre/Common.HallowedSepulchre.js` | The data, the recorded fades (174 with scripts 948/951), the timer HUD (668), chat helpers, spam lines and weighted rolls. |
 | `hallowedsepulchre/Run.HallowedSepulchre.js` | The run: one `TemplatedInstanceArea` per floor and its layout, the timer, crediting a floor, leaving, logout and login recovery, and the floor 5 barriers. |
-| `hallowedsepulchre/Lobby.HallowedSepulchre.js` | The lobby stairs, the warning box and "don't ask again", the Mysterious Stranger's tutorial and shards, the crystal shard, the Hallowed token, and the obelisks and return stairs. |
+| `hallowedsepulchre/Lobby.HallowedSepulchre.js` | The Mausoleum Door in and the lobby's stairs out, the lobby stairs, the warning box and "don't ask again", the Mysterious Stranger's tutorial and shards, the crystal shard, the Hallowed token, and the obelisks and return stairs. |
 | `hallowedsepulchre/Obstacles.HallowedSepulchre.js` | Drops, middle stairs, platforms, the F4 gate, the F5 stepping stones, the F2 stones and the floor stairs. Also the route hook that walks to each obstacle's start tile. |
 | `hallowedsepulchre/Skills.HallowedSepulchre.js` | The grapple pillars, the bridge, the portal and the brazier. |
 | `hallowedsepulchre/Coffins.HallowedSepulchre.js` | The coffins and the Grand Hallowed Coffin, with the Wiki loot. |
@@ -19,6 +19,13 @@ It covers the lobby, the entry, the five floors with their obstacles and traps, 
 | `data/hallowed-sepulchre.json` | Floors and layouts, tiles, varbits, messages, XP and loot. Each value is noted as recorded, derived or Wiki. |
 
 The shop ("Mysterious Hallowed Goods", 1455) is generated data, and `Shopkeepers.plugin.js` already opens it from the Stranger's Trade.
+
+## Getting there (recorded)
+
+- **The Mausoleum Door (38574) in Darkmeyer, Enter** (rsprox.net 3050, rev 231): +2 the fade out, +4 the player is in the lobby at (2400, 5969) facing north, +5 the fade in with the lobby music, +7 the fade closes.
+- **The lobby's stairs up (38601), Climb-up** (rsprox.net 3050): +2 the fade out, +4 the player is back by the door at (3654, 3384) facing south, +6 the fade in with the Darkmeyer music, +8 the fade closes.
+- Neither checks Sins of the Father; the lobby stairs down do. Darkmeyer can be reached during the quest, so a player there hasn't necessarily finished it. No recording shows the door refusing anyone.
+- One task keyed to the player owns each passage, so logging out cancels it. Movement is held until the move. Ours: dying or being moved away before the move abandons it, and the lock is left to whatever moved or killed the player. A fade or overlay opened over the passage's own fade is neither overwritten nor closed.
 
 ## How a run goes (recorded)
 
@@ -56,7 +63,7 @@ The shop ("Mysterious Hallowed Goods", 1455) is generated data, and `Shopkeepers
 - **Coffins.**
   - +2 the picklock; +5 "You successfully disarm the trap on the coffin!" and 200 Thieving XP; +6 "You push the coffin lid aside."; +8 the loot, with one "received a drop" line per item.
   - The loot is the Wiki's: marks by floor, a low/mid/high tier, and the strange old lockpick.
-  - The Grand Hallowed Coffin needs 84 Thieving. Its loot is 8-10 marks, the high table, and Ring of endurance at 1/200.
+  - The [Jagex update](https://secure.runescape.com/m=news/summer-sweep-up---agility--chambers-of-xeric-changes?oldschool=1) gives the Grand Hallowed Coffin requirements as 84 Thieving or 92 Agility, boostable. Its loot is 8-10 marks, the high table, and Ring of endurance at 1/200.
 - **The floor 5 barriers.** `hallowed_final_chest_barrier` (39540) is a multiloc on the timer varbit. Both its variants are solid in the cache, so the floor lifts their collision until the timer runs out.
 
 ## Traps (recorded)
@@ -76,22 +83,24 @@ Each floor finds its traps among the cache map's locs in its own instance. Every
 - **Strange tiles.** A forward tile pushes the player on along their corridor, a backward one back, 3-7 tiles as far as walkable. A tile fires the tick after the player arrives, unless it is resting; then it waits for its next telegraph.
 - **Hits.**
   - Damage is 1-3, 2-4 or 3-5 by the trap's tier.
-  - +2: the death animation and the fade. +4: the player is at the checkpoint of the corridor they were hit in. +7: back in control.
+  - Without the ring, the recorded death animation and fade occur at +2, the checkpoint move at +4, and the HUD returns at +7. The HUD alone does not establish the exact movement-unlock tick.
   - The timer doesn't stop.
   - The checkpoints are the recordings' 23 corridor zones; elsewhere the floor's last landing is used.
   - On floor 3's layout B, the level-1 corridor uses the west drop's landing, as live (varbit 10395).
+  - An equipped Hallowed ring prevents environmental-trap damage and skips the ordinary death/fade recovery, returning to the existing modeled checkpoint. This faster return is a TSPS interpretation of the [ring's effect](https://oldschool.runescape.wiki/w/Hallowed_ring); exact ring timing and every ring-specific return tile have not been captured. A separate lightning stun still holds movement.
 
 ## Not yet
 
-- The Hallowed ring.
 - The tool storage interface (666).
 - Death handling beyond the run ending (no recording has a death inside).
 - The ambient NPCs.
 - The clue and Mysterious page tertiaries.
+- The `hallowed_pb_reset_1`-`7` varbits live sets to 1 as the Mausoleum Door fades (rsprox.net 3050); what they gate isn't known.
 
 ## Tests
 
 `server/tests/hallowed-sepulchre.test.cjs` builds real floor instances from the cache. It covers:
+- the Mausoleum Door in and the lobby stairs out, tick by tick, and the passage given up on a death, a teleport, a newer fade or a logout;
 - the entry and its menu; the layouts and the timer;
 - every obstacle kind;
 - the recorded pillar, bridge and portal crossings, and the drop face rule;

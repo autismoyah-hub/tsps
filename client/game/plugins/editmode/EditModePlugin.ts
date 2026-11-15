@@ -2,6 +2,7 @@ import type { Camera } from "../../Camera";
 import type { ObjectSpawn } from "./hostProtocol/objectSpawnsMessage";
 import { waterArea, generateIslandEdits } from "./IslandGenerator";
 import { buildPathCorners, createPathTiles } from "./PathGenerator";
+import { fillOverlay, MAX_FILL_TILES, type OverlayFillResult } from "./OverlayFill";
 import { generateBuildingEdits, type BuildingShape, type BuildingStyle } from "./BuildingGenerator";
 import { parseEditorLocation, regionBounds, regionIdOf } from "./EditorCoordinates";
 import { adjustHeightBytes, cornerVertex, heightToByte, type TileCorner } from "./TerrainHeight";
@@ -15,6 +16,7 @@ import {
     type EditModePluginConfig,
     type EditModePluginPersistence,
     type EditModePluginState,
+    type EditModeRegionOverlays,
     type EditModeSearchKind,
     type EditModeDefinitionSummary,
     type EditModeSelection,
@@ -58,6 +60,7 @@ const TOOLS: ReadonlySet<string> = new Set<EditModeTool>([
     "terrain",
     "path",
     "wall",
+    "fill",
 ]);
 /** Terrain data has room for this many overlay shapes (opcodes 2-49, four rotations each). */
 export const OVERLAY_SHAPE_COUNT = 12;
@@ -185,6 +188,10 @@ export class EditModePlugin {
     private searchToken = 0;
     private worldLoadToken = 0;
     private readonly spawnedNpcs = new Map<string, number>();
+    /** Decoded overlays per region, valid for one edit list; the fill preview reads them on every move. */
+    private regionOverlays = new Map<number, EditModeRegionOverlays | undefined>();
+    private regionOverlaysEdits?: readonly EditModeEdit[];
+    private noticeListener?: (message: string) => void;
     private version = 0;
 
     constructor(persistence?: EditModePluginPersistence) {
@@ -711,7 +718,9 @@ export class EditModePlugin {
             this.removeEdits(this.npcReplacementIndicesAt(selection));
         } else {
             this.undoGroup(() => {
-                this.removeEdits(this.npcEditIndicesAt(selection));
+                // Keep the removal markers already at this tile: each hides one of its stacked spawns, so
+                // this one is added beside them (the server drops one spawn per marker).
+                this.removeEdits(this.npcReplacementIndicesAt(selection));
                 const spawn = selection.npcSpawn ?? {
                     id: selection.locId,
                     tileX: selection.tileX,
@@ -726,7 +735,7 @@ export class EditModePlugin {
                     plane: spawn.plane,
                     shape: 0,
                     rotation: 0,
-                }]);
+                }], true, this.npcMarkerIndexAt(selection));
             });
         }
         this.selection = undefined;
@@ -756,6 +765,11 @@ export class EditModePlugin {
             );
             this.undoGroup(() => {
                 this.removeEdits(indices);
+                // Before the tile's removal markers: the server's loader reads [override, remove] as this spawn's
+                // wander plus one stacked spawn removed, but [remove, override] as a moved-back spawn filling the
+                // removed one's slot, which would load two spawns.
+                const firstMarker = this.npcEditIndicesAt(selection).find((index) =>
+                    this.config.edits[index].kind === "npcDelete");
                 this.commitEdits([{
                     kind: "npcWander",
                     locId: selection.locId,
@@ -768,15 +782,19 @@ export class EditModePlugin {
                     ...(selection.npcSpawn?.direction === undefined
                         ? {}
                         : { direction: selection.npcSpawn.direction }),
-                }]);
+                }], true, firstMarker);
             });
         }
         this.selection = { ...selection, npcWanderRadius: wanderRadius };
         this.commit();
     }
 
-    /** Index of the editor-placed NPC edit a selection points at, if any. */
+    /**
+     * Index of the editor-placed NPC edit a selection points at, if any. A selected game spawn never points
+     * at one, even when an editor-placed copy of that NPC shares its tile.
+     */
     private customNpcEditIndex(selection: EditModeSelection): number {
+        if (selection.npcSource === "spawn") return -1;
         return this.config.edits.findIndex((edit) =>
             edit.kind === "npc" &&
             edit.locId === selection.locId &&
@@ -806,8 +824,21 @@ export class EditModePlugin {
      * for, so removing the replacement has to leave it behind.
      */
     private npcReplacementIndicesAt(selection: EditModeSelection): number[] {
-        return this.npcEditIndicesAt(selection).filter((index) =>
-            this.config.edits[index].kind !== "npcDelete");
+        return this.npcEditIndicesAt(selection).filter((index) => {
+            const kind = this.config.edits[index].kind;
+            // A game spawn's own edit is its wander override; an editor-placed copy on its tile is not its.
+            return kind !== "npcDelete" && !(selection.npcSource === "spawn" && kind === "npc");
+        });
+    }
+
+    /**
+     * Where a game spawn's removal marker goes: before the first editor-placed copy of that NPC on its tile,
+     * so the saved patch reads [remove, add] (the copy stays) rather than the copy replacing the spawn and the
+     * marker then finding nothing to remove.
+     */
+    private npcMarkerIndexAt(selection: EditModeSelection): number {
+        const copy = this.npcEditIndicesAt(selection).find((index) => this.config.edits[index].kind === "npc");
+        return copy ?? this.config.edits.length;
     }
 
     private removeEdits(indices: readonly number[]): void {
@@ -997,6 +1028,42 @@ export class EditModePlugin {
     /** Told the tile under the pointer as it moves; too frequent for the state listeners. */
     setPointerTileListener(listener: ((tile: EditModeTile | undefined) => void) | undefined): void {
         this.pointerTileListener = listener;
+    }
+
+    /** Told why a click did nothing, e.g. a fill on a tile with no overlay. */
+    setNoticeListener(listener: ((message: string) => void) | undefined): void {
+        this.noticeListener = listener;
+    }
+
+    /** The fill tool's work at a tile: the overlay there and everything joined to it, repainted. */
+    private overlayFill(tile: EditModeTile): OverlayFillResult {
+        const host = this.host;
+        if (!host?.getRegionOverlays) return { error: "unloaded" };
+        if (this.regionOverlaysEdits !== this.config.edits) {
+            this.regionOverlays.clear();
+            this.regionOverlaysEdits = this.config.edits;
+        }
+        return fillOverlay(tile, this.config.overlayId, (regionId) => {
+            if (!this.regionOverlays.has(regionId)) {
+                this.regionOverlays.set(regionId, host.getRegionOverlays!(regionId, this.config.edits));
+            }
+            return this.regionOverlays.get(regionId);
+        });
+    }
+
+    private fillAt(tile: EditModeTile): void {
+        this.host?.clearTerrainPreview?.();
+        const fill = this.overlayFill(tile);
+        if ("edits" in fill) {
+            this.commitEdits(fill.edits);
+            return;
+        }
+        this.noticeListener?.({
+            "unloaded": "That tile's map region has not loaded",
+            "no-overlay": "Nothing to fill: this tile has no overlay",
+            "same-overlay": "This area already has the chosen overlay",
+            "too-large": `Too big to fill: the area is over ${MAX_FILL_TILES.toLocaleString()} tiles`,
+        }[fill.error]);
     }
 
     generateBuilding(style: BuildingStyle, floors: number, shape: BuildingShape): void {
@@ -1216,6 +1283,11 @@ export class EditModePlugin {
             return;
         }
 
+        if (this.config.tool === "fill") {
+            this.fillAt(tile);
+            return;
+        }
+
         const placingNpc = this.config.tool === "place" && this.config.placeKind === "npc";
         if (this.config.tool === "place") this.clearPlacementPreview();
         const edit: EditModeEdit = {
@@ -1237,19 +1309,16 @@ export class EditModePlugin {
             this.selection = undefined;
             host.clearSelectionHighlight?.();
             const customIndex = this.customNpcEditIndex(moving);
-            // Moving a replacement away leaves the canonical spawn's removal
-            // marker in place, exactly as deleting it does; otherwise the
-            // original returns beside the moved copy.
+            // Moving a spawn away leaves the tile's removal markers in place, exactly as deleting it does: a
+            // replacement's marker suppresses the canonical spawn (otherwise the original returns beside the
+            // moved copy), and a stacked sibling's marker keeps that one deleted.
             this.undoGroup(() => {
-                this.removeEdits(customIndex >= 0
-                    ? this.npcReplacementIndicesAt(moving)
-                    : this.npcEditIndicesAt(moving));
+                this.removeEdits(this.npcReplacementIndicesAt(moving));
                 if (moving.npcWanderRadius !== undefined) edit.wanderRadius = moving.npcWanderRadius;
                 if (moving.npcSpawn?.direction !== undefined) edit.direction = moving.npcSpawn.direction;
-                const edits: EditModeEdit[] = [];
                 if (customIndex < 0) {
                     if (moving.npcSource === "spawn") {
-                        edits.push({
+                        this.commitEdits([{
                             kind: "npcDelete",
                             locId: moving.locId,
                             tileX: moving.tileX,
@@ -1257,12 +1326,12 @@ export class EditModePlugin {
                             plane: moving.plane,
                             shape: 0,
                             rotation: 0,
-                        });
+                        }], true, this.npcMarkerIndexAt(moving));
                     } else if (moving.npcServerId !== undefined) {
                         this.host?.despawnNpc(moving.npcServerId);
                     }
                 }
-                this.commitEdits([...edits, edit]);
+                this.commitEdits([edit]);
             });
             this.setConfig({ tool: "select" });
         } else if (moving && edit.kind === "place") {
@@ -1443,14 +1512,15 @@ export class EditModePlugin {
         return [...vertices.values()];
     }
 
-    private commitEdits(edits: EditModeEdit[], applyImmediately = true): void {
+    /** `index`: where the edits go in the list (and so in the saved patch); the end by default. */
+    private commitEdits(edits: EditModeEdit[], applyImmediately = true, index = this.config.edits.length): void {
         if (edits.length === 0) return;
         if (applyImmediately) {
             for (const edit of edits) {
                 this.dispatch(edit);
             }
         }
-        const next = [...this.config.edits, ...edits];
+        const next = [...this.config.edits.slice(0, index), ...edits, ...this.config.edits.slice(index)];
         this.setConfig({ edits: next });
         if (!applyImmediately && this.undoGroupBase === undefined) {
             const entry = this.undoStack.at(-1);
@@ -1837,6 +1907,12 @@ export class EditModePlugin {
                 return;
             }
             host?.clearTerrainPreview?.();
+            return;
+        }
+        if (this.config.tool === "fill") {
+            const fill = this.handlesCanvasInput() && tile ? this.overlayFill(tile) : undefined;
+            if (fill && "edits" in fill) host?.setTerrainPreview?.(fill.edits);
+            else host?.clearTerrainPreview?.();
             return;
         }
         if (this.config.tool === "wall") {

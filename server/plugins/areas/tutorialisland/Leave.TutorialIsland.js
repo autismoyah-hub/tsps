@@ -41,7 +41,7 @@ function giveStarterKit(player) {
   const inv = player.getInventory();
   for (const item of [
     Items.BRONZE_AXE, Items.BRONZE_PICKAXE, Items.TINDERBOX, Items.SMALL_FISHING_NET, Items.SHRIMPS,
-    Items.BRONZE_DAGGER, Items.BRONZE_SWORD, Items.WOODEN_SHIELD, Items.SHORTBOW,
+    Items.BRONZE_DAGGER, Items.BRONZE_SHORTSWORD, Items.WOODEN_SHIELD, Items.SHORTBOW,
   ]) inv.adds(item, 1);
   inv.adds(Items.BRONZE_ARROW, 25);
   inv.adds(Items.AIR_RUNE, 25);
@@ -52,9 +52,7 @@ function giveStarterKit(player) {
   inv.adds(Items.WATER_RUNE, 6);
   inv.adds(Items.EARTH_RUNE, 4);
   inv.adds(Items.BODY_RUNE, 2);
-  const bank = player.getBank(0);
-  const coins = bank.getAmount(Items.COINS);
-  if (coins < 25) bank.adds(Items.COINS, 25 - coins);
+  T.giveBankCoins(player);
 }
 
 /**
@@ -80,7 +78,7 @@ function complete(player) {
 
 function onLogin(event) {
   const player = event.player;
-  if (!player || player.isPlayerBot?.() === true) return;
+  if (!player || player.isPlayerBot?.() === true || !T.appliesTo(player)) return;
   if (event.isNewAccount) {
     // Drawn on the first tick, once the gameframe and the character design are up.
     player.setAttribute(T.PROGRESS_ATTRIBUTE, STEP.PAST_EXPERIENCE);
@@ -228,6 +226,7 @@ module.exports = function attach(api) {
   core = api.core;
   Items = core.ItemIdentifiers;
   api.persistAttribute(T.PROGRESS_ATTRIBUTE);
+  api.persistAttribute(T.BANK_COINS_ATTRIBUTE);
   api.persistAttribute(T.LEGACY_STAGE_ATTRIBUTE);
   api.persistAttribute(T.EXPERIENCE_ATTRIBUTE);
   api.persistAttribute(SKIP_PENDING_ATTRIBUTE);

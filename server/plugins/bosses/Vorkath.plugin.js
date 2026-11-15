@@ -13,11 +13,14 @@ const Area = require("./vorkath/Area.Vorkath");
 const Hud = require("./vorkath/Hud.Vorkath");
 const CombatAchievements = require("./vorkath/CombatAchievements.Vorkath");
 const Retrieval = require("./vorkath/Retrieval.Vorkath");
+const { initDragonfireProtectionCoreAccess } = require("../combat/DragonfireProtection");
 
 module.exports = {
   name: "Vorkath",
+  description: "Vorkath after Dragon Slayer II: wake her on Ungael, fight her fireballs and acid, rapid-fire and freeze specials, with Torfinn returning items on death.",
   members: true,
   register(api) {
+    initDragonfireProtectionCoreAccess(api);
     Wake.attach(api);
     Combat.attach(api);
     Specials.attach(api);

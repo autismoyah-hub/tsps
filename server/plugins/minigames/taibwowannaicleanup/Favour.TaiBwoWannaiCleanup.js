@@ -45,6 +45,7 @@ function gain(player, amount, delay = 0) {
   setPoints(player, before + amount, delay > 0);
   if (delay > 0) Common.later(player, delay, report);
   else report();
+  Common.api.emitCustomEvent("tai-bwo-wannai-cleanup:favour-gained", { player, percentage: percentage(player) });
 }
 
 /** Spends `amount` points (a claim). */
@@ -99,6 +100,8 @@ function sendOnLogin({ player }) {
 function showAfterWelcome({ player }) {
   player.setAttribute(ATTR.OVERLAY, false);
   showOverlay(player);
+  // Play also restores other plugins' post-login interfaces.
+  return false;
 }
 
 function answerFavour(request) {

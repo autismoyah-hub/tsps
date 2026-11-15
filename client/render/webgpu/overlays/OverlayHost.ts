@@ -1,3 +1,4 @@
+import { sceneTileHeight } from "../../../game/scene/SceneGeometry";
 import { getClientCycle } from "../../../network/ServerConnection";
 import { hintArrow } from "../../../game/HintArrow";
 import { baseNpcTypeId } from "../../../custom/npcs/NpcModelOverrideRegistry";
@@ -279,7 +280,7 @@ export class OverlayHost {
                 plane: 0,
             });
         this.osrsClient.sceneGeometry = {
-            tileHeight: (x, y, plane) => this.getTileHeightAtPlane(x, y, plane),
+            tileHeight: (x, y, plane, anchorX, anchorY) => sceneTileHeight(this, x, y, plane, anchorX, anchorY),
             worldToScreen: (x, height, y) => {
                 const p = this.worldToScreen(x, height, y);
                 return p ? [p[0], p[1]] : undefined;
@@ -1357,7 +1358,7 @@ export class OverlayHost {
             }
         } catch {}
 
-        // Plugin text with the local player's overhead chat (the attack timer) (render.ts 1043-1052).
+        // Plugin text shares the local player's overhead chat stacking group.
         try {
             this.typedHost.osrsClient.clientPlugins.appendLocalPlayerOverheads(
                 this.typedHost,

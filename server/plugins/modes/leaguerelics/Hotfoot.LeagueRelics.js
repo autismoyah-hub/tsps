@@ -2,12 +2,17 @@
  * Hotfoot (https://oldschool.runescape.wiki/w/Demonic_Pacts_League/Relics), Demonic Pacts' tier 2
  * relic. With the Searing boots (from the cache's relic struct) worn, caught fish come cooked and
  * mined ore comes smelted into its own bar, with the Cooking or Smithing XP (ours: the Wiki gives
- * none; coal, and anything with no recipe of its own, stays as it is). Whatever the footwear,
+ * none; anything with no recipe of its own stays as it is). Iron ore comes as a steel bar with a
+ * steel bar's 17.5 XP (`oreBars`; 234/03285: 133 iron mined banked 133 steel bars, Smithing drops
+ * of 262/263 at 15x, mithril ore gave mithril bars and coal stayed coal). Whether coal is used up
+ * for the steel can't be seen there; we take none. Whatever the footwear,
  * Agility and Cooking never fail, a lap counts twice and pays 25% more experience, a mark of grace
  * on a rooftop course is a 33% chance a lap (`agility:mark-chance`, in place of the course's own
  * and its overlevel cut; the 3-minute mark cooldown still runs: ours), and a course mark picked up
- * finishes a lap of its course, paid as one, with 10,000 coins (`agility:mark-taken`). Prifddinas's
- * portal shards come tenfold (`agility:course-item`) and the Brimhaven Agility Arena's tickets and
+ * finishes a lap of its course, paid as one, with 10,000 coins (`agility:mark-taken`), and so do the
+ * Colossal Wyrm courses' termites scooped up (`agility:course-find-taken`, Wiki: "Picking up some
+ * termites or a mark of grace"). Prifddinas's portal shards come tenfold and the Wyrm courses'
+ * termites twofold (`agility:course-item`), and the Brimhaven Agility Arena's tickets and
  * vouchers twofold (`minigame:points`, after the tier passive's: the Wiki's 16 a pillar at 8x).
  *
  * The processing hears `storage:gather` twice: first (attached before the other gathering
@@ -19,15 +24,14 @@
  * nets less and doesn't count), before the league's rates; the base level, and the count kept
  * across stops, are ours ("roughly every 10 ticks"). A tick task per owner, from login or the
  * unlock, watches the tile.
- * Not here: termites finishing a lap or doubled (the Colossal
- * Wyrm courses give no termites: their spawn rate is unknown, the Wiki says, and its course page
- * is marked out of date).
  */
 const Common = require("./Common.LeagueRelics");
 
 let api;
 let core;
 let effect;
+/** Ores smelted into a bar other than their own (iron into steel): ore id -> bar id. */
+let oreBars;
 
 /** Gathers being processed: request -> the raw item it replaced. */
 const processing = new WeakMap();
@@ -48,7 +52,7 @@ function processed(skill, itemId) {
     return cooked.cookedId ? { itemId: cooked.cookedId, skill: core.Skill.COOKING, xp: cooked.xp } : null;
   }
   if (skill === core.Skill.MINING) {
-    const bar = { oreId: itemId, outputId: null, barId: null, xp: null };
+    const bar = { oreId: itemId, outputId: oreBars.get(itemId) ?? null, barId: null, xp: null };
     api.emitCustomEvent("smithing:bar-for-ore", bar);
     return bar.barId ? { itemId: bar.barId, skill: core.Skill.SMITHING, xp: bar.xp } : null;
   }
@@ -151,6 +155,7 @@ module.exports = function attach(pluginApi) {
   api = pluginApi;
   core = api.core;
   effect = Common.data.effects.hotfoot;
+  oreBars = new Map(Object.entries(effect.oreBars).map(([ore, bar]) => [core.ItemIdentifiers[ore], core.ItemIdentifiers[bar]]));
   api.onCustomEvent("storage:gather", process);
   api.onCustomEvent("agility:roll", succeeds);
   api.onCustomEvent("cooking:burn", neverBurns);

@@ -24,7 +24,9 @@
  * rsprox captures: the reward interface (539: component 5 the items; inventory 581), the
  *   completion, count, "Special loot:" and target time messages word for word, jingle 152, and
  *   varbit 5456 (raids_client_rewardindicator): 2 for a unique's finder (820, 843, 3282, 3285,
- *   3389), 1 for common loot (the two CM runs).
+ *   3389), 1 for common loot (the two CM runs). Varbit 5457 (raids_client_needsrewardbook) is
+ *   set as the chest opens and cleared as its interface closes (3389), not when loot is
+ *   claimed. The Challenge Timeboard's notice comes before the completion message (3389).
  * Not on the Wiki or in a capture: components 6 Bank-all, 8 Take-all, 10 Discard-all, the raid
  *   counts on the attributes.
  * Wiki-derived: a common amount is the table's maximum x points / 131,071 (at least 1).
@@ -32,6 +34,8 @@
 
 const Shared = require("./Shared.ChambersOfXeric");
 const Raid = require("./RaidState.ChambersOfXeric");
+const Timeboard = require("./Timeboard.ChambersOfXeric");
+const Storage = require("./Storage.ChambersOfXeric");
 
 const INTERFACE = { REWARDS: 539, ITEMS: 5, BANK_ALL: 6, TAKE_ALL: 8, DISCARD_ALL: 10 };
 const INVENTORY = 581;
@@ -123,14 +127,18 @@ function itemName(id) {
   return Shared.core().ItemDefinition.forId(id)?.getName?.() ?? `Item ${id}`;
 }
 
+/**
+ * Held in the inventory, worn, in any bank tab but the search tab (as the diary rewards check), or in the raids private
+ * storage (where unclaimed loot goes on leaving: an ancient tablet stored there never set the taken flag). This passed
+ * a bare id to Bank.contains, which wants an Item: it threw, the catch said no, and only the inventory ever counted,
+ * so a banked or worn Xeric's cape (or dark journal) was handed out again and again.
+ */
 function owns(player, id) {
-  if (player.getInventory().contains(id)) return true;
-  try {
-    const { Bank } = Shared.core();
-    return Bank.contains?.(player, id) ?? player.getBank?.(Bank.getTabForItem(player, id))?.contains?.(id) ?? false;
-  } catch {
-    return false;
-  }
+  const searchTab = Shared.core().Bank.BANK_SEARCH_TAB_INDEX;
+  return player.getInventory().contains(id)
+    || (player.getEquipment?.().contains?.(id) ?? false)
+    || (player.getBanks?.() ?? []).some((bank, tab) => tab !== searchTab && bank?.contains?.(id))
+    || Storage.privatelyHeld(player, id);
 }
 
 /** The noted form of an item, if it has one. */
@@ -158,10 +166,13 @@ function completed(raid) {
   const size = raid.scale;
   const inTime = raid.challenge && raid.duration <= targetTicks(size);
   for (const player of raiders) {
-    if (inTime) {
-      player.sendMessage("Your team beat the challenge target time and you earned an extra 5000 points.");
-      raid.addPoints(player, POINTS.TARGET_BONUS);
-    }
+    if (!inTime) continue;
+    player.sendMessage("Your team beat the challenge target time and you earned an extra 5000 points.");
+    raid.addPoints(player, POINTS.TARGET_BONUS);
+  }
+  // rsprox 3389: the Timeboard notice comes after the target-time message, before the completion one.
+  Timeboard.record(raid);
+  for (const player of raiders) {
     player.getPacketSender().sendJingle(COMPLETE_JINGLE, 0);
     // rsprox captures 843, 3389, 820 (a new best) and the two CM runs (not), word for word, closing tags included.
     const previous = recordBest(player, raid);
@@ -171,6 +182,7 @@ function completed(raid) {
     const count = (Number(player.getAttribute(attribute)) || 0) + 1;
     player.setAttribute(attribute, count);
     player.sendMessage(`Your completed Chambers of Xeric${raid.challenge ? " Challenge Mode" : ""} count is: <col=ff0000>${count}</col>.`);
+    Shared.api().emitCustomEvent("diary:task", { player, diary: "kourend", task: "complete-a-raid-in-the-chambers-of-xeric" });
   }
   generate(raid, inTime);
 }
@@ -182,6 +194,15 @@ function teamSize(size) {
   if (size <= 15) return "11-15 players";
   if (size <= 23) return "16-23 players";
   return "24+ players";
+}
+
+/**
+ * Cache script 2735: the shared category displays CM first (2048), then Normal (2941).
+ */
+function collectionLogCount(request) {
+  if (request?.category !== RAID_NAME) return;
+  request.count = Number(request.player.getAttribute(Shared.ATTR.CHALLENGE_KILLS)) || 0;
+  request.extraCounts = [Number(request.player.getAttribute(Shared.ATTR.KILLS)) || 0];
 }
 
 /**
@@ -267,7 +288,7 @@ function generate(raid, inTime) {
 
 // ---------------------------------------------------------------- the chest
 
-/** raids_client_needsrewardbook: set as the chest is searched. */
+/** raids_client_needsrewardbook: set as the chest is searched, cleared as the rewards close. */
 const VARBIT_NEEDS_REWARD_BOOK = 5457;
 
 /** Pet ownership/delivery belongs to Pets, never the chest's bank/inventory/ground paths. */
@@ -284,11 +305,29 @@ function claimPetLoot(player, raid) {
   }
 }
 
+/**
+ * The chest's loot reaches the collection log when it is opened, as the Tombs' and Theatre's do.
+ * The Olmlet is left to the pet delivery (`npc-drops:roll`), which already logs it, so it is not
+ * counted twice. `loggedAmount` is marked, so reopening a part-claimed chest adds nothing.
+ */
+function logRewards(player, raid) {
+  const items = rewardsOf(raid).get(player.getUsername()) ?? [];
+  for (const entry of items) {
+    const seen = Math.min(entry.amount, Number(entry.loggedAmount) || 0);
+    const amount = entry.amount - seen;
+    if (amount > 0 && entry.id !== ITEM.OLMLET) {
+      Shared.api().emitCustomEvent("collection-log:obtain", { player, itemId: entry.id, amount });
+    }
+    entry.loggedAmount = entry.amount;
+  }
+}
+
 function openChest(event) {
   const { player } = event;
   const raid = Raid.raidOf(player);
   if (!raid) return false;
   claimPetLoot(player, raid);
+  logRewards(player, raid);
   const items = rewardsOf(raid).get(player.getUsername()) ?? [];
   if (items.length === 0) {
     Shared.statement(player, "The chest is empty.");
@@ -302,6 +341,15 @@ function openChest(event) {
   sender.sendInterfaceFlagsRange((INTERFACE.REWARDS << 16) | INTERFACE.ITEMS, 0, Math.max(items.length - 1, 5),
     Shared.EVENT.OP1 | (1 << 10));
   return true;
+}
+
+/**
+ * rsprox 3389: raids_client_needsrewardbook goes back to 0 as the rewards close, a tick before
+ * the interface is taken down; claiming an item leaves it set (5083 keeps it at 1).
+ */
+function chestClosed(event) {
+  if (event.interfaceId !== INTERFACE.REWARDS) return;
+  event.player.getPacketSender().sendVarbit(VARBIT_NEEDS_REWARD_BOOK, 0);
 }
 
 function refreshChest(player, raid) {
@@ -319,16 +367,16 @@ function takeItem(player, raid, index) {
     claimPetLoot(player, raid);
     if (!items.includes(entry)) return true;
   }
-  const { Item, ItemDefinition } = Shared.core();
-  const stackable = ItemDefinition.forId(entry.id)?.isStackable?.() === true;
+  const { Item } = Shared.core();
   const inventory = player.getInventory();
-  const room = stackable ? inventory.contains(entry.id) || inventory.getFreeSlots() > 0 : inventory.getFreeSlots() >= entry.amount;
-  if (!room) {
+  const moved = inventory.getAddableAmount(new Item(entry.id, entry.amount));
+  if (moved <= 0) {
     player.sendMessage("You don't have enough inventory space.");
     return false;
   }
-  inventory.add(new Item(entry.id, entry.amount), true);
-  items.splice(index, 1);
+  inventory.add(new Item(entry.id, moved), true);
+  entry.amount -= moved;
+  if (entry.amount <= 0) items.splice(index, 1);
   if (entry.id === ITEM.TABLET) player.setAttribute(ATTR_TABLET, true);
   return true;
 }
@@ -367,10 +415,12 @@ function bankAll({ player }) {
   for (let index = items.length - 1; index >= 0; index--) {
     const entry = items[index];
     const bank = player.getBank(Bank.getTabForItem(player, entry.id));
-    if (bank.getFreeSlots() <= 0 && !bank.contains(entry.id)) continue;
-    bank.add(new Item(entry.id, entry.amount), false);
+    const banked = bank.getAddableAmount(new Item(entry.id, entry.amount));
+    if (banked <= 0) continue;
+    bank.add(new Item(entry.id, banked), false);
     if (entry.id === ITEM.TABLET) player.setAttribute(ATTR_TABLET, true);
-    items.splice(index, 1);
+    entry.amount -= banked;
+    if (entry.amount <= 0) items.splice(index, 1);
   }
   if (items.length) player.sendMessage("Not enough space in your bank.");
   refreshChest(player, raid);
@@ -391,19 +441,40 @@ function discardAll({ player }) {
   return true;
 }
 
-/** Wiki: unclaimed loot is placed on the ground on leaving (outside the raid). */
+/** The mountain's private storage unit: the most it holds (Storage's own view of it). */
+const MOUNTAIN_STORAGE_SIZE = 120;
+
+/**
+ * Wiki (Chambers of Xeric, 26 January 2017): "If you leave a raid before collecting your reward, they are now sent
+ * to your raids private storage", "providing there is space. If not they are still dropped on the floor". Logging
+ * out leaves the raid too, and the private storage is saved (logout saves after this hook), so nothing is lost when
+ * the raid closes behind the player. Ultimate Ironmen can't use the storage: theirs drop (27 July 2022).
+ */
 function unclaimedLoot(raid, player, logout) {
   if (!raid.rewards) return;
   claimPetLoot(player, raid);
-  if (logout) return;
   const items = raid.rewards.get(player.getUsername()) ?? [];
   if (items.length === 0) return;
   raid.rewards.delete(player.getUsername());
+  const dropped = [];
+  let stored = false;
+  const storage = Storage.isUltimateIronman(player) ? null : Storage.privateItems(player);
+  for (const entry of items) {
+    const kept = storage ? Storage.addTo(storage, MOUNTAIN_STORAGE_SIZE, entry.id, entry.amount) : 0;
+    if (kept > 0) stored = true;
+    if (kept < entry.amount) dropped.push({ id: entry.id, amount: entry.amount - kept });
+  }
+  if (stored) player.sendMessage("Your unclaimed loot from the chest has been placed in your private storage.");
+  if (dropped.length === 0) return;
   const { Item, ItemOnGroundManager } = Shared.core();
-  Shared.later(player, 3, () => {
-    for (const entry of items) ItemOnGroundManager.registerLocation(player, new Item(entry.id, entry.amount), player.getLocation().clone());
+  const drop = (at) => {
+    for (const entry of dropped) ItemOnGroundManager.registerLocation(player, new Item(entry.id, entry.amount), at);
     player.sendMessage("Your unclaimed loot from the chest has been placed on the ground.");
-  });
+  };
+  // A logout cancels the player's tasks and leaves them standing in the raid, which may close behind them: drop it
+  // now, outside, where login puts them. A normal exit drops it three ticks on, once they are out.
+  if (logout) drop(Shared.loc(Shared.OUTSIDE));
+  else Shared.later(player, 3, () => drop(player.getLocation().clone()));
 }
 
 // ---------------------------------------------------------------- Captain Rimor's capes
@@ -436,7 +507,9 @@ module.exports = function registerCoxRewards(api) {
   api.persistAttribute(ATTR_BEST);
   Raid.onComplete(completed);
   Raid.onLeave(unclaimedLoot);
+  api.onCustomEvent("collection-log:category-count", collectionLogCount);
   api.onObjectInteraction("Ancient chest", { Search: openChest });
+  api.onCustomEvent("interface:closed", chestClosed);
   api.onInterfaceActionButton((INTERFACE.REWARDS << 16) | INTERFACE.ITEMS, clickReward);
   api.onInterfaceActionButton((INTERFACE.REWARDS << 16) | INTERFACE.TAKE_ALL, takeAll);
   api.onInterfaceActionButton((INTERFACE.REWARDS << 16) | INTERFACE.BANK_ALL, bankAll);
@@ -444,4 +517,4 @@ module.exports = function registerCoxRewards(api) {
   api.onNpcInteraction("Captain Rimor", { "Claim-cape": claimCape });
 };
 
-Object.assign(module.exports, { uniqueRolls, commonLoot, targetTicks, teamSize, generate, completed, UNIQUES, COMMONS });
+Object.assign(module.exports, { uniqueRolls, commonLoot, targetTicks, teamSize, collectionLogCount, generate, completed, openChest, logRewards, chestClosed, clickReward, unclaimedLoot, claimCape, UNIQUES, COMMONS });

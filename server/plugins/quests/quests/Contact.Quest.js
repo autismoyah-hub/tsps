@@ -54,6 +54,8 @@
  * Source: https://oldschool.runescape.wiki/w/Contact! and
  * https://oldschool.runescape.wiki/w/Transcript:Contact!
  */
+const CameraShake = require("../../interface/CameraShake.plugin");
+
 module.exports = function registerContactQuest(api) {
   const {
     CountdownTask,
@@ -85,9 +87,16 @@ module.exports = function registerContactQuest(api) {
   const VARP_CONTACT_MASTER = 964; // "contact_master"
   const VARBIT_CONTACT = 3274; // "contact" bits 0-7
   const VARBIT_CONTACT_PEOPLE_VIS = 3275; // "contact_people_vis" bit 8
+  const VARBIT_CONTACT_BANKERS_VIS = 3276; // "contact_bankers_vis" bit 9
   const VARBIT_CONTACT_BEEN_DOWNSTAIRS = 3279; // "contact_been_downstairs" bit 13
   const VARBIT_CONTACT_MAISA_INVIS = 3284; // "contact_maisa_invis"
   const VARBIT_CONTACT_LAMP = 3287; // contact lamp wishes used (0..2)
+  const VARBIT_DISCUSSED_MENAPHOS = 13866;
+  const VARBIT_FOUND_KALEEF = 13867;
+  const VARBIT_MET_MAISA = 13868;
+  const VARBIT_OSMAN_TOLD = 13869;
+  const VARBIT_OSMAN_MET = 13870;
+  const VARBIT_TOLD_PRIEST = 13871;
 
   // ==========================================================================
   // Stages
@@ -124,6 +133,7 @@ module.exports = function registerContactQuest(api) {
   // west side. Keep this reach on her quiz stages only; range 1 stays the default.
   const MAISA_TALK_RANGE = 10;
   const OSMAN_NPC_ID = NpcIdentifiers.OSMAN_9; // 4286, resolved content id for handlers/chatheads
+  const OSMAN_GARDEN_HELP_OPTION = "i'd like to talk about sq'irks";
   // The dungeon actor spawns as the cache parent; at stage 110 varbit 3274
   // resolves 11568 contact_osman_cave_instance to 4286. The world rows use the
   // matching Al Kharid (6165) and Sophanem (6166) cache parents.
@@ -328,7 +338,7 @@ module.exports = function registerContactQuest(api) {
     if (shot.shake) {
       for (let i = 0; i < 5; i++) {
         Scenes.later(player, 38 + i * 4, () => {
-          if (cameraWatch.get(player) === token) player.getPacketSender().sendCameraShake(0, 5, 0, 0);
+          if (cameraWatch.get(player) === token) CameraShake.send(player.getPacketSender(), "atmospheric", 0, 5, 0, 0);
         });
       }
     }
@@ -404,7 +414,9 @@ module.exports = function registerContactQuest(api) {
 
   function syncMaisaVisibility(player) {
     const stage = quest.getStage(player);
-    const hidden = stage >= STAGE_BOSS_FIGHT && stage < STAGE_OSMAN_TALKED;
+    // Capture 101 sets 3284 at the boss (stage 100) and leaves it set through
+    // completion; she does not reappear when Osman takes over the conversation.
+    const hidden = stage >= STAGE_BOSS_FIGHT;
     player.getPacketSender().sendVarbit(VARBIT_CONTACT_MAISA_INVIS, hidden ? 1 : 0);
   }
 
@@ -648,6 +660,10 @@ module.exports = function registerContactQuest(api) {
     }
     if (npcId === OSMAN_NPC_ID) {
       const stage = quest.getStage(player);
+      if (stage >= STAGE_COMPLETE && value === OSMAN_GARDEN_HELP_OPTION) {
+        api.emitCustomEvent("sorceress-s-garden:osman-helped", { player });
+        return;
+      }
       if (value === "it could drive a wedge between the menaphite cities") {
         if (stage === STAGE_MAISA_CONVINCED) {
           quest.setStage(player, STAGE_OSMAN_AGREED);
@@ -722,7 +738,7 @@ module.exports = function registerContactQuest(api) {
         event.end = true;
         if (quest.getStage(player) === STAGE_CAVES) {
           quest.setStage(player, STAGE_BOSS_FIGHT);
-          player.getPacketSender().sendVarbit(VARBIT_CONTACT_MAISA_INVIS, 1);
+          syncMaisaVisibility(player);
           spawnGiantScarab(player);
         }
         return;
@@ -730,7 +746,7 @@ module.exports = function registerContactQuest(api) {
         removeTracked(player, "osman");
         if (quest.getStage(player) === STAGE_BOSS_DEAD) {
           quest.setStage(player, STAGE_OSMAN_TALKED);
-          player.getPacketSender().sendVarbit(VARBIT_CONTACT_MAISA_INVIS, 0);
+          syncMaisaVisibility(player);
         }
         return;
       case "Rc_Gnh": // Osman hands over the unclaimed Keris
@@ -976,7 +992,7 @@ module.exports = function registerContactQuest(api) {
     }
     const manager = player.getSkillManager();
     const before = manager.getExperience(skill);
-    manager.addExperience(skill, LAMP_XP, false);
+    manager.addExperience(skill, LAMP_XP, true);
     if (manager.getExperience(skill) === before) {
       lampSessions.delete(player);
       player.getPacketSender().sendInterfaceRemoval();
@@ -1040,13 +1056,30 @@ module.exports = function registerContactQuest(api) {
   // ==========================================================================
 
   function sendPeopleVisible(player) {
-    if (!quest.isComplete(player)) return;
-    player.getPacketSender().sendVarbit(VARBIT_CONTACT_PEOPLE_VIS, 1);
+    const stage = quest.getStage(player);
+    const sender = player.getPacketSender();
+    // Capture 101 sets 3275 when Osman sends the player back (stage 120),
+    // before the quest completes; the bankers follow at completion.
+    sender.sendVarbit(VARBIT_CONTACT_PEOPLE_VIS, stage >= STAGE_OSMAN_TALKED ? 1 : 0);
+    sender.sendVarbit(VARBIT_CONTACT_BANKERS_VIS, quest.isComplete(player) ? 1 : 0);
   }
 
   function syncContactVarps({ player }) {
     sendPeopleVisible(player);
     sendLampWishes(player);
+    syncContactProgress(player);
+  }
+
+  function syncContactProgress(player) {
+    const stage = quest.getStage(player);
+    const sender = player.getPacketSender();
+    sender.sendVarbit(VARBIT_CONTACT_BEEN_DOWNSTAIRS, stage >= STAGE_JEX_TOLD ? 1 : 0);
+    sender.sendVarbit(VARBIT_DISCUSSED_MENAPHOS, stage >= STAGE_CUTSCENE_1_DONE ? 1 : 0);
+    sender.sendVarbit(VARBIT_FOUND_KALEEF, stage >= STAGE_BODY_SEARCHED ? 1 : 0);
+    sender.sendVarbit(VARBIT_MET_MAISA, stage >= STAGE_MAISA_CONVINCED ? 1 : 0);
+    sender.sendVarbit(VARBIT_OSMAN_TOLD, stage >= STAGE_OSMAN_AGREED ? 1 : 0);
+    sender.sendVarbit(VARBIT_OSMAN_MET, stage >= STAGE_CAVES ? 1 : 0);
+    sender.sendVarbit(VARBIT_TOLD_PRIEST, stage >= STAGE_OSMAN_TALKED ? 1 : 0);
   }
 
   function handleLogin({ player }) {
@@ -1054,6 +1087,7 @@ module.exports = function registerContactQuest(api) {
     sendPeopleVisible(player);
     syncMaisaVisibility(player);
     sendLampWishes(player);
+    syncContactProgress(player);
     if (!inDungeonArea(player)) return;
     ensureMaisa(player);
     ensureDungeonOsman(player);

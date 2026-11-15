@@ -35,6 +35,8 @@ export interface ConfigItemDef<T = unknown> {
     enumLabels?: Record<string, string>;
     /** A Keybind (RuneLite's Keybind), stored as "keyCode:modifiers". */
     keybind?: boolean;
+    /** A FontType (RuneLite's FontType items), edited in its own Font panel. */
+    fontType?: boolean;
     default: T;
 }
 
@@ -42,14 +44,27 @@ export function ConfigItem<T>(options: ConfigItemDef<T>): ConfigItemDef<T> {
     return options;
 }
 
+/**
+ * Words the settings view shows around a group's items, for a plugin whose settings are in
+ * another language. Read each time the view draws; any left out stay English.
+ */
+export interface ConfigViewLabels {
+    back?: string;
+    reset?: string;
+    /** The question before resetting, given the plugin's name. */
+    resetConfirm?: (pluginName: string) => string;
+}
+
 export interface ConfigGroupOptions {
     sections?: Record<string, ConfigSectionDef>;
+    viewLabels?: () => ConfigViewLabels;
 }
 
 export interface ConfigGroupDescriptor {
     group: string;
     items: Record<string, ConfigItemDef<any>>;
     sections?: Record<string, ConfigSectionDef>;
+    viewLabels?: () => ConfigViewLabels;
 }
 
 export function ConfigGroup(
@@ -57,7 +72,7 @@ export function ConfigGroup(
     items: Record<string, ConfigItemDef<any>>,
     options?: ConfigGroupOptions,
 ): ConfigGroupDescriptor {
-    return { group, items, sections: options?.sections };
+    return { group, items, sections: options?.sections, ...(options?.viewLabels ? { viewLabels: options.viewLabels } : {}) };
 }
 
 export function isConfigGroupDescriptor(value: unknown): value is ConfigGroupDescriptor {

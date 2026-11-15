@@ -29,6 +29,8 @@ const { TEAM } = data;
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'castle-wars-scoreboard-'));
 const hooks = { objects: {}, custom: {}, persisted: new Map() };
 let game;
+let startTask;
+let cycle = 0;
 let index = 1;
 let INTERFACE, BOARD;
 
@@ -38,8 +40,8 @@ const registry = {
   getBonusManager: () => ({ update: () => {} }),
   getObjectManager: () => ({ register: () => {}, deregister: () => {}, existsLocation: () => false }),
   getRegionManager: () => RegionManager,
-  getTaskManager: () => ({ submit: () => {}, cancelTasks: () => {} }),
-  getWorld: () => World,
+  getTaskManager: () => ({ submit: (task) => { if (task.onComplete) startTask = task; }, cancelTasks: () => {} }),
+  getWorld: () => new Proxy(World, { get: (target, key) => key === "getProcessCycle" ? () => cycle : Reflect.get(target, key) }),
   persistAttribute: (key, value) => hooks.persisted.set(key, value),
   onObjectInteraction: (name, actions) => { (hooks.objects[name] ??= []).push(actions); },
   onCustomEvent: (name, handler) => { (hooks.custom[name] ??= []).push(handler); },
@@ -70,7 +72,8 @@ function realPlayer(t) {
   const p = new Player(null);
   p.setIndex(index++);
   p.setRegistered(true);
-  p.setLocation(new Location(2440, 3089, 0));
+  p.setLocation(new Location(2426, 3076, 1));
+  t.mock.method(p, "getArea", () => game.gameArea);
   t.mock.method(p, 'getSession', () => ({ sendClientPacket: () => true, write: () => true }));
   t.mock.method(p.getInventory(), 'refreshItems', () => {});
   t.mock.method(p, 'smartMove', () => {});
@@ -84,10 +87,16 @@ function realPlayer(t) {
 
 /** One game to its end through Game.CastleWars.js: `teams` maps each player to a team. */
 function playGame(teams, saradominScore, zamorakScore) {
+  // Bots the last game logged out are deregistered before this one: a player still queued for removal isn't waiting.
+  World.getRemovePlayerQueue().splice(0);
   game.waitingAreas[TEAM.SARADOMIN].players.push(...[...teams].filter(([, team]) => team === TEAM.SARADOMIN).map(([p]) => p));
   game.waitingAreas[TEAM.ZAMORAK].players.push(...[...teams].filter(([, team]) => team === TEAM.ZAMORAK).map(([p]) => p));
+  for (const [player, team] of teams) game.setTeamId(player, team);
   game.beginStartCountdown();
   assert.equal(game.getPhase(), game.PHASE.STARTING);
+  startTask.execute();
+  for (const [player] of teams) game.startParticipation(player);
+  cycle += 1500;
   for (const area of Object.values(game.waitingAreas)) area.players.length = 0;
   for (const [player, team] of teams) game.setTeamId(player, team);
   game.gameArea.players.splice(0, game.gameArea.players.length, ...teams.keys());
@@ -242,7 +251,10 @@ test("another loc's Scoreboard is left to its own handler", (t) => {
   assert.deepEqual(p.sent.interfaces, []);
 });
 
-test('both lobby boards are on the map and read from the lobby floor in front of them', () => {
+// The boards are straight wall decorations (shape 4), which are operated from their own tile
+// (the client's reach strategy; object-reach.test.cjs, #3928). The board's tile is open lobby floor,
+// so a player in front of it steps onto it and reads it there.
+test('both lobby boards are on the map and read from the open tile they hang on', () => {
   RegionManager.loadMapFiles(2437, 3086, true);
   for (const y of [3086, 3093]) {
     const board = MapObjects.get(BOARD, new Location(2437, y, 0), null);
@@ -250,7 +262,10 @@ test('both lobby boards are on the map and read from the lobby floor in front of
     assert.equal(board.getType(), 4);
     const stand = (x) => ({ getLocation: () => new Location(x, y, 0), getSize: () => 1, getPrivateArea: () => null });
     assert.equal(RegionManager.getClipping(2438, y, 0, null), 0, 'the lobby floor east of it is open');
-    assert.equal(PathFinder.reachedObject(stand(2438, y), 2437, y, 1, 1, board.getFace(), board.getType(), 0), true);
+    assert.equal(RegionManager.blocked(new Location(2437, y, 0), null), false, "the board's own tile is walkable");
+    assert.equal(RegionManager.blockedWest(new Location(2438, y, 0), null), false, 'and steps onto it from the lobby');
     assert.equal(PathFinder.reachedObject(stand(2437, y), 2437, y, 1, 1, board.getFace(), board.getType(), 0), true);
+    assert.equal(PathFinder.reachedObject(stand(2438, y), 2437, y, 1, 1, board.getFace(), board.getType(), 0), false,
+      'not from the tile in front');
   }
 });

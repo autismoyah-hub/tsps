@@ -30,11 +30,12 @@ const RiftGuardians = require('../plugins/minigames/guardiansoftherift/RiftGuard
 const Creatures = require('../plugins/minigames/guardiansoftherift/Creatures.GuardiansOfTheRift');
 const RewardsGuardian = require('../plugins/minigames/guardiansoftherift/RewardsGuardian.GuardiansOfTheRift');
 const Apprentices = require('../plugins/minigames/guardiansoftherift/Apprentices.GuardiansOfTheRift');
+const Amulet = require('../plugins/minigames/guardiansoftherift/Amulet.GuardiansOfTheRift');
 
 const hooks = {
   objects: {}, npcs: {}, items: {}, clicks: {}, custom: {}, login: [], logout: [], conditions: [], areas: [], prompts: [],
   dialogues: [], canBankItem: [], beforeObjects: [], itemOnObject: {}, itemOnItem: {}, itemOnNpc: [], drops: [], npcsSpawned: [], npcsRemoved: [],
-  persisted: new Set(), currencies: new Map(),
+  persisted: new Set(), currencies: new Map(), itemHandlers: [],
 };
 
 /** Enough of an NPC for barriers and guardians: hitpoints, transforms, a movement queue. */
@@ -50,9 +51,12 @@ function fakeNpc(definition) {
     heal: (amount) => { npc.hp = Math.min(npc.getMaxHitpoints(), npc.hp + amount); },
     setNpcTransformationId: (id) => { npc.transform = id; return npc; },
     getMovementQueue: () => ({ setBlockMovement() {}, reset() {}, size: () => 0, routes: npc.routes }),
-    performAnimation: (animation) => npc.animations.push(animation.getId?.() ?? animation.id),
+    performAnimation: (animation) => {
+      npc.animations.push(animation.getId?.() ?? animation.id);
+      npc.animationDelays.push(animation.getDelay?.() ?? animation.delay ?? 0);
+    },
     forceChat() {},
-    flags: new Set(), routes: [], animations: [], splats: [],
+    flags: new Set(), routes: [], animations: [], animationDelays: [], splats: [],
     setFlag: (flag) => npc.flags.add(flag),
     getSize: () => Shared.core().NpcDefinition.forId(npc.id).getSize?.() ?? 1,
     setPositionToFace() {},
@@ -92,7 +96,7 @@ function fakeApi() {
       for (const handler of hooks.custom[name] ?? []) handler(payload);
     },
     sendMultiChatboxPrompt: (player, title, ...args) => hooks.prompts.push({ player, title, args }),
-    onItemAction: (name, actions) => { hooks.items[name] = actions; },
+    onItemAction: (name, actions) => { if (typeof name === 'function') hooks.itemHandlers.push(name); else hooks.items[name] = actions; },
     onObjectClick: (ids, clickType, handler) => { hooks.clicks[`${ids}:${clickType}`] = handler; },
     onCanBankItem: (handler) => hooks.canBankItem.push(handler),
     onItemOnObject: (item, object, handler) => { hooks.itemOnObject[`${item}|${object}`] = handler; },
@@ -110,6 +114,7 @@ function container(size) {
   const self = {
     slots,
     add(id, amount = 1) {
+      if (typeof id === 'object') [id, amount] = [id.getId(), id.getAmount()];
       const stack = slots.find((slot) => slot?.id === id);
       if (stack) stack.amount += amount;
       else slots[slots.indexOf(null)] = { id, amount };
@@ -134,6 +139,16 @@ function container(size) {
     contains: (id) => slots.some((slot) => slot?.id === id),
     getAmount: (id) => slots.reduce((sum, slot) => sum + (slot?.id === id ? slot.amount : 0), 0),
     getFreeSlots: () => slots.filter((slot) => !slot).length,
+    getAddableAmount: (item) => (STACKABLE.has(item.getId()) || Shared.core().ItemDefinition.forId(item.getId())?.isStackable?.()
+      ? (self.contains(item.getId()) || slots.includes(null) ? item.getAmount() : 0)
+      : Math.min(item.getAmount(), slots.filter((slot) => !slot).length)),
+    getItems: () => slots.map((slot) => (slot ? { getId: () => slot.id, getAmount: () => slot.amount } : null)),
+    deleteAtSlot(index, amount = 1) {
+      if (!slots[index]) return self;
+      slots[index].amount -= amount;
+      if (slots[index].amount <= 0) slots[index] = null;
+      return self;
+    },
     getCopiedItems: () => slots.map((slot) => new (Shared.core().Item)(slot?.id ?? -1, slot?.amount ?? 0)),
     refreshItems() { return self; },
   };
@@ -147,7 +162,7 @@ function fakePlayer(name = 'Tester', { runecraft = 99, questDone = true, x = 361
   const attributes = new Map();
   let interfaceId = -1;
   const p = {
-    name, questDone, messages: [], statements: [], scripts: [], interfaces: [], animations: [], jingles: [],
+    name, questDone, messages: [], statements: [], scripts: [], postScripts: [], interfaces: [], animations: [], jingles: [],
     xpBySkill: {}, runEnergy: 50, special: 100, levels: {}, sounds: [],
     location: new Location(x, y, 0),
     inventory: container(28),
@@ -160,7 +175,8 @@ function fakePlayer(name = 'Tester', { runecraft = 99, questDone = true, x = 361
     getPrivateArea: () => null,
     getIndex: () => 1,
     moveTo(location) { p.location = location; },
-    getMovementQueue: () => ({ reset() {} }),
+    blocked: false,
+    getMovementQueue: () => ({ reset() {}, setBlockMovement: (blocked) => { p.blocked = blocked; } }),
     setPositionToFace() {},
     getAttribute: (key) => attributes.get(key),
     setAttribute: (key, value) => attributes.set(key, value),
@@ -168,7 +184,10 @@ function fakePlayer(name = 'Tester', { runecraft = 99, questDone = true, x = 361
     setInterfaceId: (id) => { interfaceId = id; return p; },
     sendMessage: (message) => p.messages.push(message),
     getEquipment: () => ({ contains: () => false }),
-    getBanks: () => [],
+    bank: container(800),
+    getBanks: () => [p.bank],
+    getBank: () => p.bank,
+    getCurrentBankTab: () => 0,
     getInventory: () => Object.assign(p.inventory, { full() { p.messages.push("You don't have enough inventory space."); } }),
     performAnimation: (animation) => p.animations.push(animation.getId?.() ?? animation.id),
     performGraphic() {},
@@ -190,7 +209,11 @@ function fakePlayer(name = 'Tester', { runecraft = 99, questDone = true, x = 361
         getVarbit: (id) => varbits.get(id) ?? 0,
         sendConfig: (id, value) => { varbits.set(`varp${id}`, value); return sender; },
         getVarp: (id) => varbits.get(`varp${id}`) ?? varbits.get(id) ?? 0,
-        sendSubInterface: (uid, id) => { p.interfaces.push(id); return sender; },
+        sendSubInterface: (uid, id, type, options) => {
+          p.interfaces.push(id);
+          for (const script of options?.postScripts ?? []) p.postScripts.push([script.scriptId, ...script.args]);
+          return sender;
+        },
         closeSubInterface: () => { p.interfaces.push(-1); return sender; },
         sendInterfaceFlagsRange: () => sender,
         sendInterfaceScript: (id, args) => { p.scripts.push([id, args]); return sender; },
@@ -282,6 +305,7 @@ before(() => {
   Creatures.attach(api);
   RewardsGuardian.attach(api);
   Apprentices.attach(api);
+  Amulet.attach(api);
   Shared.core().PathFinder.calculateWalkRoute = (npc, x, y) => { npc.routes?.push([x, y]); return true; };
   for (const name of Shared.GAME_ITEMS) if (Shared.core().ItemDefinition.forId(Shared.obj(name)).isStackable()) STACKABLE.add(Shared.obj(name));
 });
@@ -416,7 +440,6 @@ test('full power closes the rift 32 ticks later with the captured messages, poin
     'Elemental energy attuned: <col=ef1020>2</col>. Catalytic energy attuned: <col=ef1020>4</col>.',
     'Total elemental energy: <col=ef1020>5</col>. Total catalytic energy:  <col=ef1020>7</col>.',
     "You've been awarded 4,455 bonus Runecraft XP for closing the rift.",
-    'You have been awarded 5 abyssal pearls.',
     'The Portal Guardians will keep their rifts open for another 30 seconds.',
   ]);
   assert.equal(player.varp(Shared.VARP.RIFTS_CLOSED), 1);
@@ -435,132 +458,106 @@ test('full power closes the rift 32 ticks later with the captured messages, poin
   assert.equal(Game._game.timer, 53, 'the next game opens 104 ticks after the close');
 });
 
-test('contributions only count while the rift is running; the lobby and the grace pay nothing', () => {
+test('a close pays no pearls (they come from the Rewards Guardian), and pays its points and XP once', () => {
   const player = fakePlayer();
-  barrier(player, 'Quick-pass');
-  assert.equal(Game.addContribution(player, 100), false, 'the lobby is not a game');
-  Game._game.phase = Game.PHASE.ATTACK;
-  assert.equal(Game.addContribution(player, 100), true);
-  assert.equal(Game.stateOf(player).contribution, 100);
-  Game._game.phase = Game.PHASE.CLOSING;
-  assert.equal(Game.addContribution(player, 100), false, 'the closing grace is over');
-  assert.equal(Game.stateOf(player).contribution, 100);
-});
-
-test('a closed game pays pearls for contribution, and an idle spectator earns none', () => {
-  const worker = fakePlayer('Worker');
-  openGame(worker);
-  assert.equal(Game.addContribution(worker, 250), true, 'during the game');
+  openGame(player);
+  Game.stateOf(player).elemental = 300;
   Game.setPower(100);
   ticks(32);
-  assert.equal(Records.pearls(worker), 2, '250 performance / 100');
-
-  // The close event being delivered again pays nothing more: pearls, points and XP are once.
-  const state = Game.stateOf(worker);
-  const points = Records.points(worker);
-  const xp = worker.xpBySkill.Runecrafting;
-  Rewards.closed({ player: worker, state });
-  assert.equal(Records.pearls(worker), 2);
-  assert.deepEqual(Records.points(worker), points);
-  assert.equal(worker.xpBySkill.Runecrafting, xp);
-
-  resetGame();
-  const idle = fakePlayer('Idle');
-  openGame(idle);
-  Game.setPower(100);
-  ticks(32);
-  assert.equal(Records.pearls(idle), 0, 'standing in the game is not a contribution');
-  assert.ok(!idle.messages.some((message) => message.includes('abyssal pearl')));
+  assert.equal(Records.pearls(player), 0);
+  assert.ok(!player.messages.some((message) => message.includes('abyssal pearl')));
+  const state = Game.stateOf(player);
+  const points = Records.points(player);
+  const xp = player.xpBySkill.Runecrafting;
+  Rewards.closed({ player, state });
+  assert.deepEqual(Records.points(player), points);
+  assert.equal(player.xpBySkill.Runecrafting, xp);
 });
 
-test('the pearl balance is, and stays, a saved attribute across a relog', () => {
-  assert.ok(hooks.persisted.has(Records.PEARLS_ATTRIBUTE));
-  const player = realPlayer();
-  Records.setPearls(player, 37);
-  const save = PlayerSave.fromPlayer(player);
-  const loaded = realPlayer();
-  save.applyToPlayer(loaded);
-  assert.equal(Records.pearls(loaded), 37);
-});
-
-test('legacy abyssal pearl items become the saved balance once, on load, in one save', () => {
+test('pearls are the abyssal pearl item; a balance saved before the revert comes back as pearls once', () => {
   const pearl = Shared.obj(Shared.ITEM.PEARL);
-  const legacy = realPlayer();
-  legacy.getInventory().adds(pearl, 400);
-  legacy.getBank(0).adds(pearl, 100);
-  const save = PlayerSave.fromPlayer(legacy);
-
-  const loaded = realPlayer();
-  save.applyToPlayer(loaded);
-  assert.equal(loaded.getInventory().getAmount(pearl), 400);
-  assert.equal(loaded.getBank(0).getAmount(pearl), 100);
-
+  assert.ok(hooks.persisted.has(Records.PEARLS_ATTRIBUTE), 'the old balance still loads, to be given back');
+  const player = fakePlayer('Saver');
+  player.setAttribute(Records.PEARLS_ATTRIBUTE, 500);
   const saves = [];
   const listener = (event) => saves.push(event);
   (hooks.custom['persistence:save'] ??= []).push(listener);
   try {
-    Records.login({ player: loaded });
+    Records.login({ player });
+    Records.login({ player });
   } finally {
     hooks.custom['persistence:save'] = hooks.custom['persistence:save'].filter((handler) => handler !== listener);
   }
-  assert.equal(Records.pearls(loaded), 500);
-  assert.equal(loaded.getInventory().getAmount(pearl), 0, 'the inventory stack is removed');
-  assert.equal(loaded.getBank(0).getAmount(pearl), 0, 'the bank stack is removed');
-  assert.equal(saves.at(-1)?.reason, 'guardians-of-the-rift-pearl-migration');
+  assert.equal(player.inventory.getAmount(pearl), 500);
+  assert.equal(Records.pearls(player), 500);
+  assert.equal(player.getAttribute(Records.PEARLS_ATTRIBUTE), 0);
+  assert.equal(saves.length, 1, 'a second login gives nothing more');
+  assert.match(player.messages.at(-1), /500 abyssal pearls have been returned to your inventory/);
 
-  const resaved = PlayerSave.fromPlayer(loaded);
-  assert.equal(resaved.attributes[Records.PEARLS_ATTRIBUTE], 500);
-  const reloaded = realPlayer();
-  resaved.applyToPlayer(reloaded);
-  assert.equal(Records.pearls(reloaded), 500, 'the saved balance survives');
-  assert.equal(reloaded.getInventory().getAmount(pearl), 0);
-  assert.equal(reloaded.getBank(0).getAmount(pearl), 0);
-  Records.login({ player: reloaded });
-  assert.equal(Records.pearls(reloaded), 500, 'a second login cannot recredit');
+  const full = fakePlayer('Full');
+  for (let i = 0; i < 28; i++) full.inventory.slots[i] = { id: 1, amount: 1 };
+  full.setAttribute(Records.PEARLS_ATTRIBUTE, 40);
+  Records.login({ player: full });
+  assert.equal(full.bank.getAmount(pearl), 40, 'no room: the bank');
+  assert.equal(hooks.currencies.has('ABYSSAL PEARLS'), false, 'no saved-balance currency any more');
 });
 
-test('a purchase path also converts legacy pearl items before reading the balance', () => {
+test('a saved pearl balance with no room in the inventory or bank stays saved until the next login', () => {
+  const { Item } = PluginManager.getCoreApi();
   const pearl = Shared.obj(Shared.ITEM.PEARL);
-  const player = realPlayer();
-  player.getInventory().adds(pearl, 400);
-  const request = {
-    player, shop: 'gotr_reward_shop_all',
-    currency: Shared.core().CacheDefinitions.getDbRowId('omnishop_currency_abyssal_pearl'),
-    balance: null, set: null,
+  const AXE = 1351;
+  /** The real containers: the bank's refusal when it's full is what lost the pearls. */
+  const nativePlayer = (saved) => {
+    const player = new Player(null);
+    const messages = [];
+    const sender = new Proxy({ sendMessage: (text) => (messages.push(text), sender) }, { get: (target, key) => target[key] ?? (() => sender) });
+    player.getPacketSender = () => sender;
+    player.setAttribute(Records.PEARLS_ATTRIBUTE, saved);
+    return { player, messages };
   };
-  Apprentices.currency(request);
-  assert.equal(request.balance, 400);
-  assert.equal(player.getInventory().getAmount(pearl), 0);
-  request.set(request.balance - 25);
-  assert.equal(Records.pearls(player), 375);
+  const fill = (player, inventorySlots) => {
+    for (let i = 0; i < inventorySlots; i++) player.getInventory().add(new Item(AXE, 1), false);
+    const bank = player.getBank(0);
+    for (let id = 1; bank.getFreeSlots() > 0; id++) if (id !== pearl) bank.add(new Item(id, 1), false);
+  };
+  const saves = [];
+  const listener = (event) => saves.push(event);
+  (hooks.custom['persistence:save'] ??= []).push(listener);
+  try {
+    const full = nativePlayer(500);
+    fill(full.player, 28);
+    assert.equal(full.player.getInventory().getFreeSlots(), 0);
+    assert.equal(full.player.getBank(0).getFreeSlots(), 0);
+    Records.login({ player: full.player });
+    assert.equal(full.player.getInventory().getAmount(pearl) + full.player.getBank(0).getAmount(pearl), 0);
+    assert.equal(full.player.getAttribute(Records.PEARLS_ATTRIBUTE), 500, 'nothing delivered, nothing cleared');
+    assert.equal(saves.length, 0, 'no save of a cleared balance');
+    assert.ok(full.messages.includes('500 abyssal pearls are waiting for you: make room in your inventory or bank and log in again.'));
+    assert.ok(!full.messages.some((message) => message.includes('returned')));
+
+    // The next login, with one inventory slot free, delivers them.
+    const next = nativePlayer(full.player.getAttribute(Records.PEARLS_ATTRIBUTE));
+    fill(next.player, 27);
+    Records.login({ player: next.player });
+    assert.equal(next.player.getInventory().getAmount(pearl), 500);
+    assert.equal(next.player.getAttribute(Records.PEARLS_ATTRIBUTE), 0);
+    assert.equal(saves.length, 1);
+    assert.ok(next.messages.includes('Your 500 abyssal pearls have been returned to your inventory.'));
+  } finally {
+    hooks.custom['persistence:save'] = hooks.custom['persistence:save'].filter((handler) => handler !== listener);
+  }
 });
 
-test('the GotR shop currency spends the saved balance once and refuses a short price', () => {
+test('spending pearls takes the item, and a short price changes nothing', () => {
   const player = fakePlayer();
-  Records.setPearls(player, 500);
-  const request = {
-    player, shop: 'gotr_reward_shop_all',
-    currency: Shared.core().CacheDefinitions.getDbRowId('omnishop_currency_abyssal_pearl'),
-    balance: null, set: null,
-  };
-  Apprentices.currency(request);
-  assert.equal(request.balance, 500);
-  request.set(request.balance - 400);
-  assert.equal(Records.pearls(player), 100, 'Hat of the Eye: 400 pearls');
-  request.set(100);
-  assert.equal(Records.pearls(player), 100, 'setting the same target is not a second debit');
-  assert.equal(Records.spendPearls(player, 400), false, 'a refused purchase changes nothing');
+  Records.addPearls(player, 500);
+  assert.equal(Records.spendPearls(player, 400), true);
   assert.equal(Records.pearls(player), 100);
-
-  const handler = hooks.currencies.get(Records.PEARL_CURRENCY);
-  assert.ok(handler, 'registered with ShopManager');
-  handler.add(player, 25);
-  assert.equal(handler.amount(player), 125);
-  handler.remove(player, 25);
-  assert.equal(handler.amount(player), 100);
+  assert.equal(Records.spendPearls(player, 400), false);
+  assert.equal(Records.pearls(player), 100);
 });
 
-test("Felix's real Omnishop purchase takes the saved pearls once", () => {
+test("Felix's real Omnishop purchase takes the pearl items once", () => {
   const events = {};
   const buttons = new Map();
   const api = {
@@ -570,10 +567,9 @@ test("Felix's real Omnishop purchase takes the saved pearls once", () => {
     onInterfaceActionButton: (ids, handler) => [ids].flat().forEach((id) => buttons.set(id, handler)),
   };
   require('../plugins/interface/Omnishop.plugin').register(api);
-  api.onCustomEvent('omnishop:currency', Apprentices.currency);
 
   const player = fakePlayer('Shopper');
-  Records.setPearls(player, 1000);
+  Records.addPearls(player, 1000);
   api.emitCustomEvent('omnishop:open', { player, shop: 'gotr_reward_shop_all', handled: false });
   const click = (name, fields) => buttons.get(Shared.core().CacheDefinitions.getComponentId(name))({
     player, buttonId: Shared.core().CacheDefinitions.getComponentId(name), handled: false, ...fields,
@@ -589,26 +585,48 @@ test("Felix's real Omnishop purchase takes the saved pearls once", () => {
   assert.equal(player.messages.at(-1), "You don't have enough Abyssal pearls.");
 });
 
-test('25 pearls buy a search when the player has no points, and a dry balance is refused', () => {
+test('Search spends only points, never pearls (issue 2698): the loot pearls stay', () => {
   const player = fakePlayer();
-  Records.setPearls(player, 25);
+  Records.setPoints(player, 1, 1);
+  Records.addPearls(player, 60);
   const random = Math.random;
   Math.random = () => 0;
   try {
     rift(player, 'Search');
-    ticks(4);
+    ticks(10);
   } finally {
     Math.random = random;
   }
-  assert.equal(Records.searches(player), 1);
-  assert.equal(Records.pearls(player), 0);
-  rift(player, 'Search');
+  assert.equal(Records.searches(player), 1, 'one point of each type is one search');
+  assert.equal(Records.pearls(player), 60, 'the pearls are untouched');
+  assert.match(statementText(player), /There doesn't seem to be anything else in the rift for you\./);
+  rift(player, 'Big-search');
   assert.match(statementText(player), /There doesn't seem to be anything in the rift for you\./);
+  assert.equal(Records.pearls(player), 60);
 });
 
-test('a pearl roll credits the saved balance without needing an inventory slot', () => {
+test('25 pearls used on the Rewards Guardian buy one roll; fewer are refused (Wiki)', () => {
   const player = fakePlayer();
-  for (let i = 0; i < 28; i++) player.inventory.slots[i] = { id: 1, amount: 1 };
+  Records.addPearls(player, 30);
+  const pearlsOnRift = hooks.itemOnObject['Abyssal pearls|<col=ffff00>Rewards Guardian</col>'];
+  const random = Math.random;
+  Math.random = () => 0;
+  try {
+    pearlsOnRift({ player, objectId: Shared.loc('gotr_reward_rift'), itemId: Shared.obj(Shared.ITEM.PEARL) });
+    ticks(10);
+  } finally {
+    Math.random = random;
+  }
+  assert.equal(Records.searches(player), 1, 'a single roll');
+  assert.equal(Records.pearls(player), 5);
+  pearlsOnRift({ player, objectId: Shared.loc('gotr_reward_rift'), itemId: Shared.obj(Shared.ITEM.PEARL) });
+  ticks(10);
+  assert.equal(Records.searches(player), 1);
+  assert.equal(player.messages.at(-1), 'You need 25 abyssal pearls to search the rift with them.');
+});
+
+test('a pearl roll puts the pearls in the inventory', () => {
+  const player = fakePlayer();
   Records.setPoints(player, 1, 1);
   const random = Math.random;
   Math.random = () => 0.85; // the main table's pearl entry (weight 18 of 140)
@@ -618,9 +636,9 @@ test('a pearl roll credits the saved balance without needing an inventory slot',
   } finally {
     Math.random = random;
   }
-  assert.equal(Records.pearls(player), 16);
+  assert.equal(player.inventory.getAmount(Shared.obj(Shared.ITEM.PEARL)), 16);
   assert.deepEqual(Records.points(player), { elemental: 0, catalytic: 0 });
-  assert.equal(player.inventory.getFreeSlots(), 0, 'the full inventory is untouched');
+  assert.ok(player.messages.includes('You found some loot: 16 x Abyssal pearls'));
 });
 
 test('energy stops at 1,000 of a type and 1,200 in all', () => {
@@ -721,6 +739,20 @@ test('the pickaxe interval comes from the Mining plugin, so a dragon pickaxe som
   }
 });
 
+// As Mining re-asks each tick: a pickaxe dropped or banked mid-swing ends the mining.
+test('mining stops once the pickaxe is gone, rather than mining on with it', () => {
+  const player = fakePlayer('Miner');
+  player.pickaxe = DRAGON_PICKAXE;
+  openGame(player);
+  mine(player, 'gotr_essence_tier_2');
+  ticks(2);
+  assert.equal(player.xpBySkill.Mining, 5);
+  player.pickaxe = null;
+  ticks(9);
+  assert.equal(player.xpBySkill.Mining, 5, 'nothing more without a pickaxe');
+  Shared.stopAction(player);
+});
+
 test('huge remains give 4-6 essence until the inventory is full', () => {
   const player = fakePlayer('Miner');
   player.pickaxe = DRAGON_PICKAXE;
@@ -783,6 +815,37 @@ function pouch(player, option, name = 'Colossal pouch') {
   const id = Shared.core().CacheDefinitions.getObjId({ 'Colossal pouch': 'rcu_pouch_colossal', 'Giant pouch': 'rcu_pouch_giant', 'Small pouch': 'rcu_pouch_small' }[name]);
   return hooks.items[name][option]({ player, itemId: id });
 }
+
+test('the native bank inventory Fill op fills and empties an essence pouch without banking it', t => {
+  const core = PluginManager.getCoreApi(), { Bank } = core;
+  const player = new Player(null);
+  player.setUsername('bankpouch');
+  t.mock.method(player, 'getSession', () => ({ sendClientPacket: () => true }));
+  t.mock.method(PluginManager, 'emitCustomEvent', (name, event) => {
+    for (const handler of hooks.custom[name] ?? []) handler(event);
+  });
+  player.getSkillManager().setMaxLevels(core.Skill.RUNECRAFTING, 99, false);
+  const id = core.CacheDefinitions.getObjId('rcu_pouch_small');
+  const essence = core.CacheDefinitions.getObjId('blankrune_high');
+  assert.equal(core.CacheDefinitions.getItem(id).params.get(595), 'Fill', 'native cache bank action');
+  player.getInventory().adds(id, 1).adds(essence, 3);
+  player.setStatus(core.PlayerStatus.BANKING);
+  player.setInterfaceId(Bank.MAIN_INTERFACE_ID);
+  const op = () => Bank.handleWidgetAction(player, { groupId: Bank.SIDE_INTERFACE_ID,
+    childId: Bank.SIDE_ITEMS_CHILD, slot: 0, itemId: id, buttonNum: 9 });
+  assert.equal(op(), true);
+  assert.equal(player.getInventory().getAmount(essence), 0);
+  assert.equal(player.getAttribute(Pouches.POUCHES_ATTRIBUTE).small.amount, 3);
+  assert.equal(player.getInventory().getAmount(id), 1);
+  assert.equal(player.getBank(0).getAmount(id), 0);
+  assert.equal(Bank.isOpen(player), true);
+  assert.equal(op(), true);
+  assert.equal(player.getInventory().getAmount(essence), 3, 'the existing full-pouch action empties it');
+  assert.equal(player.getAttribute(Pouches.POUCHES_ATTRIBUTE).small.amount, 0);
+  player.setStatus(core.PlayerStatus.NONE);
+  assert.equal(op(), false, 'the bank-only action cannot run after closing');
+  assert.equal(player.getInventory().getAmount(essence), 3);
+});
 
 test('pouches hold one kind of essence, shown on their varbits; Fill empties a full pouch', () => {
   const player = fakePlayer('Pouch', { runecraft: 85 });
@@ -928,6 +991,101 @@ test('an active Guardian takes the player to its altar and stays in the game; th
   assert.equal(Game.isPlaying(player), false, 'teleporting away from the altar leaves the game');
 });
 
+/** What a Guardian's rift shows: the interfaces opened and the scripts run, from the step in to the arrival. */
+function riftEffect(setup) {
+  const player = fakePlayer();
+  attackPhase(player);
+  setup(player);
+  player.interfaces.length = 0;
+  player.postScripts.length = 0;
+  player.scripts.length = 0;
+  enter(player, EARTH);
+  ticks(3);
+  return {
+    interfaces: player.interfaces,
+    postScripts: player.postScripts,
+    scripts: player.scripts.filter((script) => script[0] !== Shared.SCRIPT.HUD_UPDATE),
+  };
+}
+
+const COLOURFUL_FADE_SETTING = () => Shared.core().CacheDefinitions.getVarbitId('settings_colourful_fade_disabled');
+const FADE_OVERLAY = () => Shared.iface('fade_overlay');
+const GOTR_OVERLAY = () => Shared.iface('gotr_overlay');
+
+test("a Guardian's rift shows the altar's colours, cleared on arrival (script 5984, then 5985)", () => {
+  const shown = riftEffect(() => {});
+  assert.ok(shown.interfaces.includes(GOTR_OVERLAY()));
+  assert.ok(!shown.interfaces.includes(FADE_OVERLAY()));
+  assert.deepEqual(shown.postScripts, [[Shared.SCRIPT.OVERLAY_PORTAL, ...EARTH.overlay]]);
+  assert.deepEqual(shown.scripts, [[Shared.SCRIPT.REMOVE_PORTAL]]);
+});
+
+test('with "Disable colourful fade effects" on, the rift fades to black and back instead', () => {
+  const shown = riftEffect((player) => player.getPacketSender().sendVarbit(COLOURFUL_FADE_SETTING(), 1));
+  assert.ok(!shown.interfaces.includes(GOTR_OVERLAY()), 'no colourful overlay');
+  assert.equal(shown.interfaces.filter((id) => id === FADE_OVERLAY()).length, 2);
+  assert.deepEqual(shown.postScripts, [[Shared.SCRIPT.FADE, 0, 255, 0, 0, 15], [Shared.SCRIPT.FADE, 0, 0, 0, 255, 15]]);
+  assert.deepEqual(shown.scripts, [], 'no 5985');
+  assert.ok(shown.interfaces.lastIndexOf(-1) > shown.interfaces.lastIndexOf(FADE_OVERLAY()), 'the fade closes with the overlay');
+});
+
+test("the barrier's Visual-effects off still shows nothing, whatever the setting", () => {
+  const shown = riftEffect((player) => {
+    Records.setSetting(player, 'gotr_colourful_fade_disabled', 1);
+    player.getPacketSender().sendVarbit(COLOURFUL_FADE_SETTING(), 1);
+  });
+  assert.ok(!shown.interfaces.includes(GOTR_OVERLAY()));
+  assert.ok(!shown.interfaces.includes(FADE_OVERLAY()));
+  assert.deepEqual(shown.postScripts, []);
+  assert.deepEqual(shown.scripts, []);
+});
+
+test('the huge-remains portal fades to black with "Disable colourful fade effects" on', () => {
+  const player = fakePlayer();
+  openGame(player);
+  Game._game.phase = Game.PHASE.ATTACK;
+  Game._game.portal.opensIn = 1;
+  ticks(1);
+  player.getPacketSender().sendVarbit(COLOURFUL_FADE_SETTING(), 1);
+  player.interfaces.length = 0;
+  player.postScripts.length = 0;
+  player.scripts.length = 0;
+  hooks.objects.Portal.Enter({ player, objectId: Shared.loc('gotr_agility_portal_top') });
+  ticks(3);
+  assert.ok(!player.interfaces.includes(GOTR_OVERLAY()), 'no colourful overlay');
+  assert.deepEqual(player.postScripts, [[Shared.SCRIPT.FADE, 0, 255, 0, 0, 15], [Shared.SCRIPT.FADE, 0, 0, 0, 255, 15]]);
+  assert.ok(!player.scripts.some((script) => script[0] === Shared.SCRIPT.REMOVE_PORTAL));
+  assert.equal(player.messages.at(-1), 'You step through the portal and find yourself in another part of the temple.');
+});
+
+test('a relog at the altar of a trip goes back to the lobby, not out through the ruins (issue 2698)', () => {
+  const player = fakePlayer();
+  attackPhase(player);
+  enter(player, EARTH);
+  ticks(2);
+  assert.equal(player.getAttribute(Altars.TRIP_ATTRIBUTE), 'earth', 'the trip is saved');
+  for (const handler of hooks.logout) handler({ player });
+  assert.equal(Game.isPlaying(player), false, 'a logout ends the game');
+  player.__gotrTrip = undefined; // a new session doesn't have the trip
+  for (const handler of hooks.login) handler({ player });
+  assert.deepEqual([player.location.getX(), player.location.getY()], [Shared.LOBBY_TILE.x, Shared.LOBBY_TILE.y]);
+  assert.equal(player.getAttribute(Altars.TRIP_ATTRIBUTE), '');
+
+  // Runecrafting there without the minigame keeps its login where it is.
+  const crafter = fakePlayer('Crafter', { x: EARTH.arrival[0], y: EARTH.arrival[1] });
+  for (const handler of hooks.login) handler({ player: crafter });
+  assert.deepEqual([crafter.location.getX(), crafter.location.getY()], EARTH.arrival);
+
+  // A trip that came back is forgotten.
+  const returned = fakePlayer('Returned');
+  attackPhase(returned);
+  enter(returned, EARTH);
+  ticks(2);
+  assert.equal(claimed(returned, Shared.loc(EARTH.exit), 'Use'), true);
+  ticks(2);
+  assert.equal(returned.getAttribute(Altars.TRIP_ATTRIBUTE), '');
+});
+
 test('crafting guardian essence makes runes, a stone each, the XP and charges one cell to the altar tier', () => {
   const player = fakePlayer();
   attackPhase(player);
@@ -956,7 +1114,13 @@ test('crafting guardian essence makes runes, a stone each, the XP and charges on
   const pure = fakePlayer('Pure');
   attackPhase(pure);
   pure.__gotrTrip = EARTH;
-  assert.equal(claimed(pure, Shared.loc(EARTH.altar), 'Craft-rune'), false, 'without guardian essence Runecrafting crafts');
+  pure.inventory.add(Shared.obj('blankrune_high'), 5);
+  assert.equal(claimed(pure, Shared.loc(EARTH.altar), 'Craft-rune'), false, 'pure essence: Runecrafting crafts');
+  const empty = fakePlayer('Empty');
+  attackPhase(empty);
+  empty.__gotrTrip = EARTH;
+  assert.equal(claimed(empty, Shared.loc(EARTH.altar), 'Craft-rune'), true);
+  assert.equal(empty.messages.at(-1), 'You do not have any guardian essence to bind here.', 'no essence at all (capture)');
 });
 
 test('a portal talisman opens its dormant Guardian and shatters; Toggle-talisman flips its varbit', () => {
@@ -1128,7 +1292,7 @@ test('the surge hits every barrier for 50; a broken tile takes 12 fragments to r
   assert.equal(player.varbit(Shared.VARBIT.ELEMENTAL_EARNED), before + 25);
 });
 
-test('assembling a guardian: the captured steps, the pile energy, and nothing past ten', () => {
+test('assembling a guardian: the captured steps, the pile energy, and the limit', () => {
   const player = fakePlayer();
   openGame(player);
   const pile = { player, objectId: Shared.loc('gotr_guardian_spawn_east') };
@@ -1151,12 +1315,35 @@ test('assembling a guardian: the captured steps, the pile energy, and nothing pa
   assert.equal(player.xpBySkill.Runecrafting, 250);
   assert.equal(player.inventory.getAmount(CELL(4)), 0);
 
-  for (let i = 0; i < 9; i++) RiftGuardians.guardians.add(fakeNpc({ id: Shared.npc('gotr_guardian_air'), x: 0, y: 0 }));
+  // The limit reached while assembling: the cell is spent and the energy comes, but no guardian.
   player.inventory.add(CELL(1), 1);
   hooks.objects['Essence pile (elemental)'].Assemble(pile);
+  RiftGuardians.guardians.add(fakeNpc({ id: Shared.npc('gotr_guardian_air'), x: 0, y: 0 }));
   ticks(5);
   assert.equal(player.messages.at(-1), 'The powers of the cell extend into the essence, but no guardian forms.');
   assert.equal(Game.stateOf(player).elemental, 45 + 6, 'the energy still comes');
+
+  // At the limit already (solo capture: 2): refused at the pile, nothing taken.
+  player.inventory.add(CELL(1), 1);
+  const xp = player.xpBySkill.Crafting;
+  hooks.objects['Essence pile (elemental)'].Assemble(pile);
+  assert.equal(player.messages.at(-1), 'There are already enough rift guardians in the room.');
+  ticks(5);
+  assert.equal(player.inventory.getAmount(CELL(1)), 1, 'the cell is kept');
+  assert.equal(player.xpBySkill.Crafting, xp, 'no XP');
+});
+
+test('the rift guardian limit: 2 solo (capture), one more a player, 10 at most (Wiki)', () => {
+  const player = fakePlayer();
+  openGame(player);
+  assert.equal(Game.riftGuardianCap(), 2);
+  assert.equal(player.lastHud()[8], 2, 'the HUD shows the limit');
+  const others = Array.from({ length: 30 }, (_, i) => fakePlayer(`Other ${i}`));
+  for (const other of others.slice(0, 3)) Game._game.players.set(other, Game.stateOf(player));
+  assert.equal(Game.riftGuardianCap(), 5);
+  for (const other of others) Game._game.players.set(other, Game.stateOf(player));
+  assert.equal(Game.riftGuardianCap(), 10);
+  for (const other of others) Game._game.players.delete(other);
 });
 
 test('at full power every rift guardian goes, and the close resets the tiles', () => {
@@ -1173,13 +1360,19 @@ test('at full power every rift guardian goes, and the close resets the tiles', (
 
 // ------------------------------------------------------------------ phase 5: creatures
 
-test('creature batches: two on a quiet world, up to 22 as on the captured busy world; mostly leeches', () => {
-  assert.equal(Creatures.batchSize(1), 2);
-  assert.equal(Creatures.batchSize(450), 17);
-  assert.equal(Creatures.batchSize(2000), 22);
-  assert.equal(Creatures.pickKind({ leech: 0.7, walker: 0.2, guardian: 0.1 }, 0.5), 'leech');
-  assert.equal(Creatures.pickKind({ leech: 0.7, walker: 0.2, guardian: 0.1 }, 0.85), 'walker');
-  assert.equal(Creatures.pickKind({ leech: 0.7, walker: 0.2, guardian: 0.1 }, 0.95), 'guardian');
+test('creature batches grow through the game, as captured solo and on a busy world', () => {
+  // Captured solo: 1, 2, 2, 2, 3, 4, 4, 4; a world of hundreds: 15, 16, 19, 20, 18, 20, 22, 24, 26.
+  assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7].map((wave) => Creatures.batchSize(1, wave)), [1, 1, 2, 2, 3, 3, 4, 4]);
+  assert.deepEqual([0, 4, 8].map((wave) => Creatures.batchSize(353, wave)), [15, 20, 25]);
+  assert.equal(Creatures.batchSize(2000, 40), 30, 'at most 30');
+  const count = (kinds, kind) => kinds.filter((k) => k === kind).length;
+  assert.deepEqual(Creatures.batchKinds(1, 0, false), ['leech']);
+  assert.equal(count(Creatures.batchKinds(1, 3, false), 'guardian'), 0, 'solo: no abyssal guardians before the fifth wave');
+  assert.equal(count(Creatures.batchKinds(1, 4, false), 'guardian'), 1);
+  const busy = Creatures.batchKinds(353, 0, false);
+  assert.equal(count(busy, 'walker'), 2, 'a busy first batch has two walkers');
+  assert.equal(count(busy, 'leech'), 13, 'mostly leeches');
+  assert.ok(count(Creatures.batchKinds(353, 2, false), 'guardian') >= 1, 'busy: guardians from the third');
   assert.equal(Creatures.gap({ x: 3604, y: 9505 }, 1, { x: 3605, y: 9502 }, 3), 1, 'touching a 3x3 barrier');
   assert.equal(Creatures.gap({ x: 3615, y: 9522 }, 1, { x: 3613, y: 9501 }, 5), 17);
 });
@@ -1191,13 +1384,15 @@ test('the attack sends a batch out of the rift, and one every 76 ticks after', (
   const before = hooks.npcsSpawned.length;
   ticks(1);
   const first = hooks.npcsSpawned.slice(before);
-  assert.equal(first.length, 2);
+  assert.equal(first.length, 1, 'solo: one leech first');
   assert.ok(first.every((npc) => npc.flags.has('combat:no-regen')));
   assert.ok(first.every((npc) => npc.y >= 9522 && npc.y <= 9525), 'out of the rift');
   ticks(75);
-  assert.equal(hooks.npcsSpawned.length - before, 2);
+  assert.equal(hooks.npcsSpawned.length - before, 1);
   ticks(1);
-  assert.equal(hooks.npcsSpawned.length - before, 4);
+  assert.equal(hooks.npcsSpawned.length - before, 2);
+  ticks(76);
+  assert.equal(hooks.npcsSpawned.length - before, 4, 'the third batch is two');
 });
 
 test('a creature beside a barrier hits it; with none standing it drains the Great Guardian', () => {
@@ -1226,7 +1421,7 @@ test('a creature beside a barrier hits it; with none standing it drains the Grea
     walker.x = 3615; walker.y = 9506;
     Game._game.power = 100;
     ticks(4);
-    assert.equal(Game._game.power, 98, 'a walker drains 2');
+    assert.equal(Game._game.power, 97, 'a walker drains 3 (solo captures: splat 5-6)');
   } finally {
     Math.random = random;
   }
@@ -1269,6 +1464,68 @@ test('elemental rift guardians only fight beside a creature (capture 1840)', () 
   assert.equal(leech.getHitpoints(), 5);
 });
 
+test('a rift guardian goes after a creature across the temple, not only within 10 tiles (issue 2698)', t => {
+  const player = fakePlayer();
+  openGame(player);
+  Game._game.phase = Game.PHASE.ATTACK;
+  const guardian = fakeNpc({ id: Shared.npc('gotr_guardian_fire'), x: 3626, y: 9516 });
+  guardian.__gotrTier = 4;
+  guardian.__gotrNextAttack = 0;
+  RiftGuardians.guardians.add(guardian);
+  const leech = fakeNpc({ id: Shared.npc('gotr_abyssal_leech'), x: 3606, y: 9503 });
+  Creatures.creatures.set(leech, { kind: 'leech', nextAttack: Infinity, attacker: null });
+  const routes = [];
+  t.mock.method(Shared.core().PathFinder, 'calculateWalkRoute', (npc, x, y) => routes.push([npc, x, y]));
+  ticks(1);
+  assert.ok(routes.some(([npc, x, y]) => npc === guardian && x === 3606 && y === 9503), 'walks at the far leech');
+});
+
+test('a new rift guardian rises for 4 ticks, then its first step ends the spawn sequence (issue 3837)', () => {
+  const player = fakePlayer();
+  openGame(player);
+  Game._game.phase = Game.PHASE.ATTACK;
+  const leech = fakeNpc({ id: Shared.npc('gotr_abyssal_leech'), x: 3611, y: 9517 });
+  Creatures.creatures.set(leech, { kind: 'leech', nextAttack: Infinity, attacker: null });
+  player.inventory.add(Shared.obj('chisel'), 1);
+  player.inventory.add(CELL(1), 1);
+  hooks.objects['Essence pile (elemental)'].Assemble({ player, objectId: Shared.loc('gotr_guardian_spawn_east') });
+  ticks(5);
+  const guardian = hooks.npcsSpawned.find((npc) => npc.id === Shared.npc('gotr_guardian_air'));
+  assert.ok(guardian, 'the guardian comes to life');
+  const spawn = Shared.seq('rift_guardian_spawn');
+  const reset = Shared.core().Animation.DEFAULT_RESET_ANIMATION.getId();
+  assert.deepEqual(guardian.animations, [spawn]);
+  ticks(3);
+  assert.deepEqual(guardian.routes, [], 'still rising: no step, even with a leech to fight');
+  assert.deepEqual(guardian.animations, [spawn]);
+  ticks(1);
+  // Capture 20261020T162558: the first step carries sequence -1, delay 95. The spawn sequence loops
+  // at priority 10, so left on, the client froze the guardian and dropped its attacks.
+  assert.deepEqual(guardian.animations, [spawn, reset]);
+  assert.equal(guardian.animationDelays.at(-1), 95);
+  assert.equal(guardian.routes.length, 1, 'walks out to its post');
+  ticks(1);
+  assert.deepEqual(guardian.routes.at(-1), [3611, 9517], 'then goes for the leech');
+});
+
+test('a rift guardian killed while rising keeps its death: no reset animation or walk out', () => {
+  const player = fakePlayer();
+  openGame(player);
+  Game._game.phase = Game.PHASE.ATTACK;
+  player.inventory.add(Shared.obj('chisel'), 1);
+  player.inventory.add(CELL(1), 1);
+  hooks.objects['Essence pile (elemental)'].Assemble({ player, objectId: Shared.loc('gotr_guardian_spawn_east') });
+  ticks(5);
+  const guardian = hooks.npcsSpawned.findLast((npc) => npc.id === Shared.npc('gotr_guardian_air'));
+  assert.ok(guardian, 'the guardian comes to life');
+  ticks(2);
+  Game.setPower(100);
+  assert.equal(guardian.getHitpoints(), 0, 'full power kills the rising guardian');
+  ticks(2);
+  assert.deepEqual(guardian.animations, [Shared.seq('rift_guardian_spawn')]);
+  assert.deepEqual(guardian.routes, []);
+});
+
 test('full power kills every creature', () => {
   const player = fakePlayer();
   openGame(player);
@@ -1286,18 +1543,25 @@ function rift(player, option) {
   return hooks.objects['<col=ffff00>Rewards Guardian</col>'][option]({ player, objectId: Shared.loc('gotr_reward_rift') });
 }
 
-test('points need 300 energy in the game, like the XP', () => {
+test('below 300 energy the close says so, with no points, no XP and no rift counted (capture)', () => {
   const player = fakePlayer();
   openGame(player);
   Game.stateOf(player).elemental = 150;
   Game.stateOf(player).catalytic = 140;
+  const rifts = Records.riftsClosed(player);
   Game.setPower(100);
   ticks(32);
-  assert.ok(player.messages.includes('Elemental energy attuned: <col=ef1020>0</col>. Catalytic energy attuned: <col=ef1020>0</col>.'));
+  const close = player.messages.slice(player.messages.findIndex((m) => m.includes('successfully closed the rift')));
+  assert.deepEqual(close.slice(1), [
+    'You did not contribute enough to attune any elemental or catalytic energy.',
+    'The Portal Guardians will keep their rifts open for another 30 seconds.',
+  ]);
+  assert.equal(Records.riftsClosed(player), rifts);
   assert.ok(!player.messages.some((message) => message.includes('bonus Runecraft XP')));
 });
 
-test('Check counts the points and searches; Search takes one reward every 3 ticks until they run out', () => {
+test('Check counts the points and searches; Search takes one reward every 3 ticks until they run out', t => {
+  t.mock.method(Math, 'random', () => 0.5);
   const player = fakePlayer();
   Records.setPoints(player, 2, 3);
   Records.addSearches(player, 4001);
@@ -1377,7 +1641,7 @@ test("Felix's shop row follows the player's quests; Cordelia unlocks repairs for
   assert.equal(hooks.dialogues.at(-1), 'initial-dialogue');
   const answer = (stepId) => hooks.conditions.map((handler) => handler({ npcId: cordelia, player, stepId })).find((value) => value !== null);
   assert.equal(answer('ppW0Jx'), true, 'no pearls yet');
-  Records.setPearls(player, 30);
+  Records.addPearls(player, 30);
   assert.equal(answer('3bGUch'), true);
   for (const handler of hooks.custom['npc-dialogue:action']) handler({ npcId: cordelia, player, stepId: 'Q4yVuM' });
   assert.equal(Records.pearls(player), 5);
@@ -1442,7 +1706,7 @@ test('a search that would not fit gives nothing and keeps its points', () => {
   Records.setPoints(player, 3, 3);
   for (let i = 0; i < 28; i++) player.inventory.slots[i] = { id: 1, amount: 1 };
   const random = Math.random;
-  Math.random = () => 0; // a rare/main roll that needs slot(s), never the slotless pearl roll
+  Math.random = () => 0; // a rare/main roll that needs a slot
   try {
     rift(player, 'Search');
     ticks(5);
@@ -1451,4 +1715,349 @@ test('a search that would not fit gives nothing and keeps its points', () => {
   }
   assert.deepEqual(Records.points(player), { elemental: 3, catalytic: 3 });
   assert.ok(!player.messages.some((message) => message.startsWith('You found some loot')));
+});
+
+// ------------------------------------------------------------------ issue 1986
+
+test('Craft-rune with no essence still charges an uncharged cell, and upgrades a weaker one', () => {
+  const player = fakePlayer();
+  attackPhase(player);
+  player.__gotrTrip = EARTH;
+  player.inventory.add(UNCHARGED(), 2);
+  assert.equal(claimed(player, Shared.loc(EARTH.altar), 'Craft-rune'), true);
+  assert.equal(player.inventory.getAmount(CELL(3)), 1);
+  assert.equal(player.inventory.getAmount(UNCHARGED()), 1);
+  assert.ok(player.messages.includes('Your cell absorbs a high amount of excess energy.'));
+  assert.equal(claimed(player, Shared.loc(EARTH.altar), 'Craft-rune'), true, 'a strong cell held: nothing to charge');
+  assert.equal(player.messages.at(-1), 'You do not have any guardian essence to bind here.', 'as captured at the nature altar');
+  assert.equal(player.inventory.getAmount(UNCHARGED()), 1, 'the uncharged cell stays');
+
+  const weak = fakePlayer('Weak');
+  attackPhase(weak);
+  weak.__gotrTrip = EARTH;
+  weak.inventory.add(UNCHARGED(), 1);
+  weak.inventory.add(CELL(1), 1);
+  claimed(weak, Shared.loc(EARTH.altar), 'Craft-rune');
+  assert.equal(weak.inventory.getAmount(CELL(1)), 0, 'the weak cell is replaced');
+  assert.equal(weak.inventory.getAmount(CELL(3)), 1);
+});
+
+test('Enter on a dormant Guardian uses its held talisman; a Guardian that closes during the step turns the player back', () => {
+  const player = fakePlayer();
+  attackPhase(player);
+  const air = Altars.ALTARS.find((altar) => altar.key === 'air');
+  player.inventory.add(Shared.obj(air.talisman), 1);
+  enter(player, air);
+  assert.equal(player.inventory.getAmount(Shared.obj(air.talisman)), 0);
+  ticks(2);
+  assert.deepEqual([player.location.getX(), player.location.getY()], [2841, 4829]);
+
+  const late = fakePlayer('Late');
+  attackPhase(late);
+  const start = [late.location.getX(), late.location.getY()];
+  enter(late, EARTH);
+  Game._game.altars = { elemental: 1, catalytic: BLOOD.index, changesIn: 33 };
+  ticks(2);
+  assert.deepEqual([late.location.getX(), late.location.getY()], start, 'still in the temple');
+  assert.equal(late.__gotrTrip, null);
+  assert.match(statementText(late), /The Guardian is dormant/);
+});
+
+test('assembling holds the player: clicking elsewhere cannot cancel it', () => {
+  const player = fakePlayer();
+  openGame(player);
+  player.inventory.add(Shared.obj('chisel'), 1);
+  player.inventory.add(CELL(1), 1);
+  const pile = { player, objectId: Shared.loc('gotr_guardian_spawn_east') };
+  hooks.objects['Essence pile (elemental)'].Assemble(pile);
+  assert.equal(player.blocked, true);
+  Shared.stopAction(player);
+  hooks.objects['Essence pile (elemental)'].Assemble(pile);
+  ticks(5);
+  assert.equal(player.messages.at(-1), 'The powers of the weak cell extend into the essence. A Guardian comes to life.');
+  assert.equal(player.blocked, false);
+});
+
+test('dropping guardian essence destroys the one dropped', () => {
+  const player = fakePlayer();
+  openGame(player);
+  player.inventory.adds(Shared.obj(Shared.ITEM.ESSENCE), 3);
+  const slot = player.inventory.slots.findIndex((item) => item?.id === Shared.obj(Shared.ITEM.ESSENCE));
+  const drop = { player, itemId: Shared.obj(Shared.ITEM.ESSENCE), slot, handled: false };
+  for (const handler of hooks.drops) handler(drop);
+  assert.equal(drop.handled, true);
+  assert.equal(player.inventory.getAmount(Shared.obj(Shared.ITEM.ESSENCE)), 2);
+  assert.equal(player.messages.at(-1), 'The Guardian essence is destroyed as you drop it.');
+});
+
+test('leaving and rejoining keeps the mining count, so the 250 still stops the XP', () => {
+  const player = fakePlayer();
+  openGame(player);
+  Game.stateOf(player).mined = 250;
+  barrier(player, 'Quick-pass');
+  barrier(player, 'Quick-pass');
+  assert.equal(Game.stateOf(player).mined, 250);
+  assert.equal(player.varbit(Shared.VARBIT.MINING_COUNT), 250);
+});
+
+test("a hit on the Great Guardian drains the same share of a bigger game's power", () => {
+  const player = fakePlayer();
+  openGame(player);
+  assert.equal(Creatures.drainOf(Creatures.KINDS.leech), 1, 'solo: 1 of 250');
+  assert.equal(Creatures.drainOf(Creatures.KINDS.walker), 3, 'solo: 3 of 250');
+  Game._game.maxPower = Game.maxPowerFor(10);
+  assert.equal(Creatures.drainOf(Creatures.KINDS.walker), 30, 'ten players: 30 of 2,500');
+});
+
+test('recharging a barrier shows a heal splat, so its health bar shows', () => {
+  const player = fakePlayer();
+  openGame(player);
+  const tile = Cells.tiles[1];
+  player.inventory.add(CELL(1), 1);
+  place(player, tile);
+  tile.npc.hp -= 20;
+  player.inventory.add(CELL(1), 1);
+  place(player, tile);
+  assert.equal(tile.npc.splats.at(-1), 10, 'a weak cell heals 10');
+});
+
+test('the Great Guardian sleeps after the close and wakes as the rift opens', () => {
+  const player = fakePlayer();
+  openGame(player);
+  const guardian = fakeNpc({ id: Shared.npc(Shared.NPC.GREAT_GUARDIAN), x: 3613, y: 9501 });
+  const { World } = Shared.core();
+  const getNpcs = World.getNpcs;
+  World.getNpcs = () => [guardian];
+  try {
+    Game.setPower(100);
+    const closedRift = () => player.messages.some((m) => m.includes('successfully closed the rift'));
+    for (let i = 0; i < 40 && !closedRift(); i++) ticks(1);
+    assert.ok(closedRift());
+    assert.ok(!guardian.animations.includes(Shared.seq('portal_guardian_sleep')), 'not on the close itself');
+    // Live: 3 ticks after the close. ticks() runs Game.tick outside the task loop, so a
+    // Shared.later(3) from it lands on the second tick here (the server's tick is itself a task).
+    ticks(1);
+    assert.ok(!guardian.animations.includes(Shared.seq('portal_guardian_sleep')));
+    ticks(1);
+    assert.equal(guardian.animations.at(-1), Shared.seq('portal_guardian_sleep'), 'later(3) after the close');
+    ticks(1);
+    assert.equal(guardian.animations.at(-1), Shared.seq('portal_guardian_sleep_loop'), 'then the loop every tick');
+    const loops = guardian.animations.length;
+    ticks(3);
+    assert.equal(guardian.animations.length, loops + 3);
+    Game.skip();
+    ticks(60);
+    Game.skip();
+    ticks(1);
+    assert.ok(guardian.animations.includes(Shared.seq('portal_guardian_wakeup')));
+  } finally {
+    World.getNpcs = getNpcs;
+  }
+});
+
+test('Felix buys dyes and lanterns the player holds, and sells a lantern for 1,500 pearls', () => {
+  const player = fakePlayer();
+  const felix = Shared.npc('gotr_reward_trader');
+  const answer = (stepId) => hooks.conditions.map((handler) => handler({ npcId: felix, player, stepId })).find((value) => value !== null);
+  const act = (stepId) => {
+    const request = { npcId: felix, player, stepId, handled: false };
+    for (const handler of hooks.custom['npc-dialogue:action']) handler(request);
+    return request;
+  };
+  assert.equal(answer(Apprentices.FELIX.HOLDING_DYE_OR_LANTERN), false);
+  assert.equal(answer(Apprentices.FELIX.HAS_LANTERN), false);
+  assert.equal(act(Apprentices.FELIX.SOLD_LANTERN).handled, true, 'no lantern: no sale and no line');
+  assert.equal(Records.pearls(player), 0);
+
+  player.inventory.add(Shared.obj('abyssal_lantern_yew'), 1);
+  player.inventory.add(Shared.obj('abyssal_red_dye'), 1);
+  assert.equal(answer(Apprentices.FELIX.HAS_LANTERN), true);
+  assert.equal(answer('qggrYW'), true, 'red dye held');
+  assert.equal(answer('qkLWJl'), false, 'no green dye');
+  act(Apprentices.FELIX.SOLD_LANTERN);
+  act('XJI400');
+  assert.equal(Records.pearls(player), 150);
+  assert.equal(player.inventory.getAmount(Shared.obj('abyssal_lantern_yew')), 0);
+
+  assert.equal(answer(Apprentices.FELIX.ENOUGH_FOR_LANTERN), false);
+  Records.addPearls(player, 1350);
+  assert.equal(answer(Apprentices.FELIX.ENOUGH_FOR_LANTERN), true);
+  act(Apprentices.FELIX.BUY_LANTERN);
+  assert.equal(player.inventory.getAmount(Shared.obj('abyssal_lantern')), 1);
+  assert.equal(Records.pearls(player), 0);
+});
+
+test("the intricate pouch's box shows what was inside; Atlax's diary has a Read option", () => {
+  const player = fakePlayer();
+  player.inventory.add(Shared.obj('gotr_intricate_pouch'), 1);
+  hooks.items['Intricate pouch'].Open({ player });
+  const box = [...player.statements.at(-1).dialogues.values()][0];
+  assert.notEqual(box.itemId, Shared.obj('gotr_intricate_pouch'));
+  assert.equal(typeof hooks.items["Atlax's diary"]?.Read, 'function');
+});
+
+// ------------------------------------------------------------------ issue 1986: the live captures
+
+test("Atlax's diary: the captured 24 pages in indexed_book (680), with a contents page that jumps", () => {
+  const Diary = require('../plugins/minigames/data/atlax-diary');
+  const QuestRuntime = require('../plugins/quests/QuestRuntime');
+  assert.equal(Diary.spreads.length, 12, '24 pages');
+  assert.equal(Diary.spreads[0][1][2], 'We arrived at the site today.');
+  assert.equal(Diary.spreadOf('Bennath 15th'), 0);
+  assert.equal(Diary.spreadOf('Bennath 23rd'), 10);
+
+  const buttons = new Map();
+  const api = new Proxy({ core: PluginManager.getCoreApi() }, {
+    get: (target, key) => (key in target ? target[key]
+      : key === 'onInterfaceActionButton' ? (ids, handler) => ids.forEach((id) => buttons.set(id, handler))
+        : () => {}),
+  });
+  QuestRuntime.registerQuestWidgets(api);
+  const strings = new Map();
+  const hidden = new Map();
+  const player = fakePlayer();
+  const packet = {
+    sendInterface: (id) => { player.interfaces.push(id); return packet; },
+    sendString: (text, uid) => { strings.set(uid & 0xffff, text); return packet; },
+    sendInterfaceDisplayState: (uid, hide) => { hidden.set(uid & 0xffff, hide); return packet; },
+    sendInterfaceScript: () => packet,
+    sendConfig: (id, value) => { configs.set(id, value); return packet; },
+  };
+  const configs = new Map();
+  player.getPacketSender = () => packet;
+  hooks.items["Atlax's diary"].Read({ player });
+  assert.equal(configs.get(334), 0, "pagepos: the left page of the spread");
+  assert.equal(player.interfaces.at(-1), 680);
+  assert.ok(player.animations.includes(Shared.seq('human_readbook')));
+  assert.equal(strings.get(6), "Atlax's Diary");
+  assert.equal(strings.get(45), '<u>Entries</u>');
+  assert.equal(strings.get(79), 'Bennath 15th', 'a contents entry in its index component');
+  assert.equal(hidden.get(79), false);
+  assert.equal(hidden.get(77), true, 'no entry on the first line');
+  assert.equal(strings.get(63), 'We arrived at the site today.');
+  assert.equal(hidden.get(108), true, 'no previous page on the first spread');
+  assert.equal(hidden.get(9), true, 'no index button on the contents');
+
+  const click = (child) => buttons.get((680 << 16) | child)({ player, buttonId: (680 << 16) | child });
+  const opens = player.interfaces.length;
+  click(110);
+  assert.equal(strings.get(10), '3');
+  assert.equal(configs.get(334), 2);
+  assert.equal(player.interfaces.length, opens + 1, 'each spread is sent and then opened again, as live does');
+  assert.equal(strings.get(45), "battle, but now there's just a");
+  assert.equal(hidden.get(9), false, 'the index button past the contents');
+  click(9);
+  assert.equal(strings.get(10), '1');
+  click(87);
+  assert.equal(strings.get(61), '<u>Bennath 23rd</u>', 'the last entry opens its spread');
+  assert.equal(strings.get(10), '21');
+});
+
+test('a loss: the captured lines, then the Great Guardian sleeps a tick later', () => {
+  const player = fakePlayer();
+  openGame(player);
+  const guardian = fakeNpc({ id: Shared.npc(Shared.NPC.GREAT_GUARDIAN), x: 3613, y: 9501 });
+  const { World } = Shared.core();
+  const getNpcs = World.getNpcs;
+  World.getNpcs = () => [guardian];
+  try {
+    Game._game.phase = Game.PHASE.ATTACK;
+    Game.addPower(-Game._game.power);
+    assert.deepEqual(player.messages.slice(-2), [
+      '<col=ef1020>The Great Guardian was defeated!</col>',
+      'The Portal Guardians will keep their rifts open for another 30 seconds.',
+    ]);
+    assert.ok(!guardian.animations.includes(Shared.seq('portal_guardian_sleep')));
+    ticks(1);
+    assert.equal(guardian.animations.at(-1), Shared.seq('portal_guardian_sleep'), 'no death animation, just sleep');
+  } finally {
+    World.getNpcs = getNpcs;
+  }
+});
+
+test('a creature hitting the Great Guardian shows splat 17 without a health bar', () => {
+  const player = fakePlayer();
+  openGame(player);
+  const guardian = fakeNpc({ id: Shared.npc(Shared.NPC.GREAT_GUARDIAN), x: 3613, y: 9501 });
+  const shown = [];
+  guardian.showHitsplat = (damage, splat, health) => shown.push({ damage, splat, health });
+  const { World } = Shared.core();
+  const getNpcs = World.getNpcs;
+  World.getNpcs = () => [guardian];
+  try {
+    Game._game.phase = Game.PHASE.ATTACK;
+    Game._game.power = 100;
+    const leech = fakeNpc({ id: Shared.npc('gotr_abyssal_leech'), x: 3615, y: 9506 });
+    Creatures.creatures.set(leech, { kind: 'leech', nextAttack: 0, attacker: null });
+    ticks(1);
+    assert.equal(Game._game.power, 99);
+    assert.ok([1, 2].includes(shown.at(-1).damage), 'a leech shows 1-2');
+    assert.deepEqual(shown.at(-1).splat, { mine: 17, others: 17 });
+    assert.equal(shown.at(-1).health, false);
+  } finally {
+    World.getNpcs = getNpcs;
+    Creatures.clear();
+  }
+});
+
+test('repairing a broken tile: the captured refusal and success lines', () => {
+  const player = fakePlayer();
+  openGame(player);
+  const tile = Cells.tiles[2];
+  tile.broken = true;
+  const repair = () => hooks.objects['Cell tile (broken)'].Repair({ player, objectId: Shared.loc('gotr_cell_tile_broken_repairable'), location: { x: tile.x, y: tile.y } });
+  repair();
+  assert.match(statementText(player), /It looks like you'll need 12 guardian fragments to repair this\./);
+  player.inventory.add(Shared.obj(Shared.ITEM.FRAGMENTS), 13);
+  repair();
+  assert.equal(player.messages.at(-1), 'The magical power of the guardian essence restores the cell tile. It can now fit a charged cell again.');
+  assert.equal(player.inventory.getAmount(Shared.obj(Shared.ITEM.FRAGMENTS)), 1);
+  assert.equal(tile.broken, false);
+});
+
+test('the Amulet of the Eye teleports to the Temple of the Eye from the inventory and, in any colour, from the worn tab', () => {
+  const { TeleportHandler, Equipment, Item } = Shared.core();
+  const arrivals = [];
+  const { checkReqs, teleport } = TeleportHandler;
+  TeleportHandler.checkReqs = () => true;
+  TeleportHandler.teleport = (player, target) => arrivals.push([target.getX(), target.getY()]);
+  try {
+    const player = fakePlayer('Eye', { x: 3222, y: 3218 });
+    const click = (name, extra) => hooks.itemHandlers.forEach((handler) => handler({ player, itemId: Shared.obj(name), item: new Item(Shared.obj(name), 1), ...extra }));
+    click('gotr_amulet_of_the_eye', { option: 'Teleport', interfaceId: 3214 });
+    // Wiki (Amulet of the Eye): just south of the portal, TeleportLocationLine 3615,9460.
+    assert.deepEqual(arrivals.splice(0), [[3615, 9460]], 'the inventory Teleport lands south of the portal');
+    click('gotr_amulet_of_the_eye', { option: 'Wear', interfaceId: 3214 });
+    assert.deepEqual(arrivals, [], 'Wear does not teleport');
+    for (const colour of ['red', 'green', 'blue']) {
+      click(`gotr_amulet_of_the_eye_${colour}`, { interfaceId: Equipment.INVENTORY_INTERFACE_ID, clickType: 2 });
+      assert.equal(arrivals.length, 1, `the worn ${colour} amulet's Teleport (cache param 451) teleports`);
+      arrivals.length = 0;
+    }
+  } finally {
+    TeleportHandler.checkReqs = checkReqs;
+    TeleportHandler.teleport = teleport;
+  }
+});
+
+test('the Amulet of the Eye teleport made during a game leaves the game on arrival', () => {
+  const { TeleportHandler, Item } = Shared.core();
+  const { checkReqs, teleport } = TeleportHandler;
+  let arrive = null;
+  TeleportHandler.checkReqs = () => true;
+  TeleportHandler.teleport = (player, target, type, warn, onArrival) => { arrive = onArrival; };
+  try {
+    const player = fakePlayer('EyeGame');
+    openGame(player);
+    assert.ok(Game.isPlaying(player));
+    const id = Shared.obj('gotr_amulet_of_the_eye');
+    hooks.itemHandlers.forEach((handler) => handler({ player, itemId: id, item: new Item(id, 1), option: 'Teleport', interfaceId: 3214 }));
+    assert.ok(Game.isPlaying(player), 'still in the game until the teleport lands');
+    arrive();
+    assert.equal(Game.isPlaying(player), false, 'arriving in the temple leaves the game');
+  } finally {
+    TeleportHandler.checkReqs = checkReqs;
+    TeleportHandler.teleport = teleport;
+    resetGame();
+  }
 });

@@ -81,6 +81,8 @@ function defineArena() {
       player.setAttribute(IN_FFA_ATTRIBUTE, false);
       showOverlays(player, false);
       Ferox.restore(player, { prayersOff: false });
+      // "free-for-all-portal:used" { player }: through the free-for-all (white) portal (the imbued heart's reset).
+      Ferox.api?.emitCustomEvent?.("free-for-all-portal:used", { player });
     }
 
     /** Any two players past the line, at any level; no other rules apply here. */
@@ -108,6 +110,7 @@ function firstPlayerInside() {
 function enter({ player }) {
   Ferox.later(player, 1, () => {
     Ferox.restore(player, { prayersOff: false });
+    Ferox.api?.emitCustomEvent?.("free-for-all-portal:used", { player });
     player.moveTo(LANDING.clone());
   });
 }
@@ -130,25 +133,25 @@ function statement(player, text) {
   const { DialogueChainBuilder, StatementDialogue, ActionDialogue } = Ferox.core;
   player.getDialogueManager().startDialogues(new DialogueChainBuilder().add(
     new StatementDialogue(0, text),
-    new ActionDialogue(1, { execute: () => player.getPacketSender().sendVarbit(Ferox.BUSY_VARBIT, 0) }),
+    new ActionDialogue(1, { execute: () => Ferox.clearBusy(player) }),
   ));
 }
 
 /** "Disable-XP": a Yes/No question, then the setting and a message (as captured). */
 function toggleXp({ player }) {
   const disabled = player.getAttribute(XP_DISABLE_ATTRIBUTE) === true;
-  player.getPacketSender().sendVarbit(Ferox.BUSY_VARBIT, 1);
+  Ferox.holdBusy(player);
   Ferox.api.sendMultiChatboxPrompt(player, disabled ? "Enable XP gains in Clan Wars?" : "Disable XP gains in Clan Wars?",
     "Yes.", () => {
       player.setAttribute(XP_DISABLE_ATTRIBUTE, !disabled);
       player.getPacketSender().sendVarbit(XP_DISABLE_VARBIT, disabled ? 0 : 1);
       statement(player, disabled ? "You will now gain XP in Clan Wars." : "You will no longer gain XP in Clan Wars.");
     },
-    "No.", () => player.getPacketSender().sendVarbit(Ferox.BUSY_VARBIT, 0));
+    "No.", () => Ferox.clearBusy(player));
 }
 
 function mysteriousPortal({ player }) {
-  player.getPacketSender().sendVarbit(Ferox.BUSY_VARBIT, 1);
+  Ferox.holdBusy(player);
   statement(player, "This portal is unavailable on this world.");
   return true;
 }
@@ -191,6 +194,13 @@ function sendXpSetting({ player }) {
   if (player.getAttribute(XP_DISABLE_ATTRIBUTE) === true) player.getPacketSender().sendVarbit(XP_DISABLE_VARBIT, 1);
 }
 
+/** Shared purple/white-portal preference; callers do not own or duplicate its saved key. */
+function xpSetting(event) {
+  if (!event?.player) return;
+  if (event.toggle === true) toggleXp(event);
+  event.disabled = event.player.getAttribute(XP_DISABLE_ATTRIBUTE) === true;
+}
+
 // ---------------------------------------------------------------- meteors
 
 const between = (min, max) => min + Math.floor(Math.random() * (max - min + 1));
@@ -225,6 +235,7 @@ module.exports = function attachFreeForAll(api) {
   api.onShouldDropItemsOnDeath(keepItems);
   api.onPlayerDeath(respawn);
   api.onPlayerLogin(sendXpSetting);
+  api.onCustomEvent("clan-wars:xp-setting", xpSetting);
 };
 
 Object.assign(module.exports, {

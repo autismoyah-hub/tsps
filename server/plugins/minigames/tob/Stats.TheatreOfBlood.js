@@ -30,6 +30,9 @@ const ATTR_COMPLETIONS = { entry: "tob:entry-completions", normal: "tob:completi
 const COUNT_NAME = { entry: "Theatre of Blood: Entry Mode", normal: "Theatre of Blood", hard: "Theatre of Blood: Hard Mode" };
 const TAB_MODES = ["normal", "entry", "hard"];
 const SCOREBOARD = 363;
+/** toplevel_mainmodal_open (-1, -1), run before the board as live does (rsprox_transcripts/231/00409.txt):
+ * a modal before it (the bank's -2) can leave the main modal stretched, which misplaces the board. */
+const SCRIPT_MAINMODAL_OPEN = 2524;
 const TAB_VARBIT = 12270;
 const TAB_FIRST = 4;
 const GRID_FIRST = 41;
@@ -139,6 +142,16 @@ function hasCompletion(request) {
   if (Object.keys(ATTR_COMPLETIONS).some((mode) => completionsOf(player, mode) > 0)) request.complete = true;
 }
 
+/**
+ * The cache's collection log has one Theatre of Blood category ("Theatre of Blood", struct
+ * 506) holding all 17 items, so its kill count is the player's completions in every mode
+ * (the cache has no separate Entry/Normal/Hard log entries to split it into).
+ */
+function collectionLogCount(request) {
+  if (request?.category !== "Theatre of Blood") return;
+  request.count = Object.keys(ATTR_COMPLETIONS).reduce((sum, mode) => sum + completionsOf(request.player, mode), 0);
+}
+
 // ---------------------------------------------------------------- Sinhaza shrouds
 
 const shroudIds = () => SHROUD_NAMES.map((name) => Shared.core().ItemIdentifiers[name]);
@@ -236,7 +249,7 @@ function sendScoreboard(player) {
 function openScoreboard(event) {
   const { player } = event;
   if (!Shared.inVerSinhaza(player.getLocation())) return false;
-  player.getPacketSender().sendInterface(SCOREBOARD);
+  player.getPacketSender().sendInterfaceScript(SCRIPT_MAINMODAL_OPEN, [-1, -1]).sendInterface(SCOREBOARD);
   sendScoreboard(player);
   return true;
 }
@@ -254,6 +267,7 @@ module.exports = function registerTheatreStats(api) {
   api.onCustomEvent("tob:player-died", playerDied);
   api.onCustomEvent("tob:raid-won", raidWon);
   api.onCustomEvent("tob:has-completion", hasCompletion);
+  api.onCustomEvent("collection-log:category-count", collectionLogCount);
   api.onNpcDialogueCondition(shroudCondition);
   api.onCustomEvent("npc-dialogue:choice", shroudChoice);
   api.onCustomEvent("npc-dialogue:action", shroudHanded);
@@ -264,4 +278,4 @@ module.exports = function registerTheatreStats(api) {
   }
 };
 
-Object.assign(module.exports, { shroudTiers, shroudCondition, shroudChoice, shroudHanded, changeShroud, SHROUD_COMPLETIONS, ATTR_STATS, ATTR_COMPLETIONS, statsOf, completionsOf, canPlayHard, countCompletion, raidWon, raidEntered, playerDied, hasCompletion, gridOf, bestSuffix, openScoreboard, clickTab });
+Object.assign(module.exports, { shroudTiers, shroudCondition, shroudChoice, shroudHanded, changeShroud, SHROUD_COMPLETIONS, ATTR_STATS, ATTR_COMPLETIONS, statsOf, completionsOf, canPlayHard, countCompletion, raidWon, raidEntered, playerDied, hasCompletion, collectionLogCount, gridOf, bestSuffix, openScoreboard, clickTab });

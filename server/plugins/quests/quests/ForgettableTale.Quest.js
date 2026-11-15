@@ -5,6 +5,9 @@
  * variant selectors, the prose-condition answers, the Kelda hops patch and Keldagrim brewery
  * brewing, the Red Axe tunnel sequence, the memory-wipe cutscene and the reward.
  *
+ * The stage numbers below are durable plugin stages. nativeProgress maps them to
+ * the native cache phases; see docs/quests/native-quest-state-a.md.
+ *
  * Stage varbit: 822 "forget_quest" (varp 521, bits 0-7). The value order below is this
  * plugin's own; no cache consumer of 822 exists beyond the quest list. The sibling bits of
  * varp 521 are driven the way the cache expects:
@@ -38,6 +41,7 @@
  *  - Kelda hops grow and the stout ferments in 15 minutes; agent:advance-time moves it.
  */
 module.exports = function registerForgettableTaleQuest(api) {
+  const { giveReward } = require("../QuestRuntime");
   const {
     Equipment,
     ItemIdentifiers,
@@ -378,7 +382,7 @@ module.exports = function registerForgettableTaleQuest(api) {
   function addSeed(player, bit) {
     if (hasSeed(player, bit)) return false;
     player.setAttribute(SEEDS_ATTRIBUTE, seeds(player) | bit);
-    player.getInventory().adds(KELDA_SEED, 1);
+    giveReward(player, KELDA_SEED, 1);
     const sender = player.getPacketSender();
     sender.sendVarbit(VARBIT_SEED2_GIVEN, hasSeed(player, SEED_ROWDY) ? 1 : 0);
     sender.sendVarbit(VARBIT_SEED3_GIVEN, hasSeed(player, SEED_GAUSS) ? 1 : 0);
@@ -853,7 +857,7 @@ module.exports = function registerForgettableTaleQuest(api) {
 
     if (npcId === RIND && raw.startsWith("That's a little clumsy")) {
       if (!held(player, LETTER) && letterState(player) === LETTER_OFFERED) {
-        player.getInventory().adds(LETTER, 1);
+        giveReward(player, LETTER, 1);
       }
       return;
     }
@@ -880,6 +884,7 @@ module.exports = function registerForgettableTaleQuest(api) {
     }
     if (option === "Ask about closed off tunnel." && CONDUCTOR_IDS.has(npcId)) {
       player.setAttribute(CONDUCTOR_ATTRIBUTE, true);
+      player.getPacketSender().sendVarbit(VARBIT_STAGE, nativeProgress(stageOf(player), player));
       return;
     }
     if (option === "Can you help me with a boarded up tunnel?" && DIRECTOR_IDS.has(npcId)) {
@@ -957,7 +962,7 @@ module.exports = function registerForgettableTaleQuest(api) {
         return;
       case "5-Cvcz":
         event.handled = true;
-        player.getInventory().adds(KELDA_SEED, 1);
+        giveReward(player, KELDA_SEED, 1);
         return;
       case "CNN_hK": {
         event.handled = true;
@@ -984,7 +989,7 @@ module.exports = function registerForgettableTaleQuest(api) {
         return;
       case "Xk9onS":
         event.handled = true;
-        if (!held(player, LETTER)) player.getInventory().adds(LETTER, 1);
+        if (!held(player, LETTER)) giveReward(player, LETTER, 1);
         setLetterState(player, LETTER_OFFERED);
         return;
       case "9EYwOK":
@@ -999,17 +1004,17 @@ module.exports = function registerForgettableTaleQuest(api) {
         return;
       case "QDUHsY":
         event.handled = true;
-        player.getInventory().adds(MARRENTILL_SEED, 2);
+        giveReward(player, MARRENTILL_SEED, 2);
         setLetterState(player, LETTER_REWARDED);
         return;
       case "oKT26B":
         event.handled = true;
-        player.getInventory().adds(KELDA_HOPS, 1);
+        giveReward(player, KELDA_HOPS, 1);
         if (stageOf(player) < STAGE_HOPS_HARVESTED) quest.setStage(player, STAGE_HOPS_HARVESTED);
         return;
       case "Z9bb9f":
         event.handled = true;
-        player.getInventory().adds(KELDA_STOUT, 1);
+        giveReward(player, KELDA_STOUT, 1);
         player.setAttribute(STOUT_ATTRIBUTE, true);
         if (stageOf(player) < STAGE_STOUT_COLLECTED) quest.setStage(player, STAGE_STOUT_COLLECTED);
         return;
@@ -1072,17 +1077,18 @@ module.exports = function registerForgettableTaleQuest(api) {
     play(player, npcId, "exploring-the-closed-tunnel-before-entering-the-tunnel-talking-to-the-company-director");
   }
 
+  // Named Talk-to hooks count as handled unless they return false: anything else here is the NPC's own talk.
   function talkBarmaid(event) {
     const { player, npcId } = event;
-    if (npcId !== BARMAID || stageOf(player) !== STAGE_STOUT_COLLECTED) return;
+    if (npcId !== BARMAID || stageOf(player) !== STAGE_STOUT_COLLECTED) return false;
     event.handled = true;
     play(player, npcId, "brewing-talking-to-the-laughing-miner-barmaid-after-brewing-kelda-stout");
   }
 
   function talkKhorvak(event) {
     const { player, npcId } = event;
-    if (npcId !== KHORVAK) return;
-    if (khorvakVariant(player) === null) return;
+    if (npcId !== KHORVAK) return false;
+    if (khorvakVariant(player) === null) return false;
     event.handled = true;
     play(player, npcId, "getting-the-seeds-talking-to-khorvak");
   }
@@ -1134,12 +1140,26 @@ module.exports = function registerForgettableTaleQuest(api) {
     play(player, RED_AXE_DIRECTOR_CUTSCENE, "exploring-the-closed-tunnel-room-1-attempting-to-control-the-dwarven-machinery-without-any-square-stones");
   }
 
+  /**
+   * Room for every [itemId, amount] together (`adds` drops what has none, and the box moves the puzzle on as it
+   * gives): a stack needs one slot unless held, anything else a slot each. Without it, the inventory's own message.
+   */
+  function roomFor(player, items) {
+    const inventory = player.getInventory();
+    const slots = items.reduce((total, [itemId, amount]) => total
+      + (ItemDefinition.forId(itemId)?.isStackable?.() ? (inventory.contains(itemId) ? 0 : 1) : amount), 0);
+    if ((inventory.getFreeSlots?.() ?? slots) >= slots) return true;
+    inventory.full?.();
+    return false;
+  }
+
   function roomBoxInteraction(event) {
     const { player } = event;
     event.handled = true;
     if (stageOf(player) < STAGE_TUNNEL_ENTERED || quest.isComplete(player)) return;
     const phase = puzzle(player);
     if (phase === 0) {
+      if (!roomFor(player, [[SQUARE_STONE_GREEN, 1], [SQUARE_STONE_YELLOW, 1]])) return;
       player.getInventory().adds(SQUARE_STONE_GREEN, 1);
       player.getInventory().adds(SQUARE_STONE_YELLOW, 1);
       setPuzzle(player, PUZZLE_ROOM1_STONES);
@@ -1147,6 +1167,7 @@ module.exports = function registerForgettableTaleQuest(api) {
       return;
     }
     if (phase === PUZZLE_FINAL_SEARCH) {
+      if (!roomFor(player, [[SQUARE_STONE_GREEN, 2], [SQUARE_STONE_YELLOW, 2]])) return;
       player.getInventory().adds(SQUARE_STONE_GREEN, 2);
       player.getInventory().adds(SQUARE_STONE_YELLOW, 2);
       setPuzzle(player, PUZZLE_FINAL_STONES);
@@ -1288,6 +1309,7 @@ module.exports = function registerForgettableTaleQuest(api) {
     }
     if (option === "Harvest") {
       if (value === 8) {
+        if (!roomFor(player, [[KELDA_HOPS, 1]])) return;
         setFarming(player, 3);
         player.getInventory().adds(KELDA_HOPS, 1);
         refreshPatch(player);
@@ -1675,7 +1697,7 @@ module.exports = function registerForgettableTaleQuest(api) {
   function grantReward(player) {
     player.getSkillManager().addExperiences(Skill.COOKING, 5000);
     player.getSkillManager().addExperiences(Skill.FARMING, 5000);
-    player.getInventory().adds(DWARVEN_STOUT_M, 1); // registerQuest adds the first
+    giveReward(player, DWARVEN_STOUT_M, 1); // registerQuest adds the first
   }
 
   // ==========================================================================
@@ -1699,11 +1721,21 @@ module.exports = function registerForgettableTaleQuest(api) {
   api.persistAttribute(STOUT_ATTRIBUTE);
   api.persistAttribute(CONDUCTOR_ATTRIBUTE);
 
+  // QH 06da90's forget_quest brewing/tunnel/memory phases; cache DB completes at 140.
+  // The authored compact stages and existing side-varbit saves remain unchanged.
+  function nativeProgress(stage, player) {
+    stage |= 0;
+    if (stage === STAGE_VELDABAN_BRIEFED && player.getAttribute(CONDUCTOR_ATTRIBUTE)) return 80;
+    const phases = [0, 10, 20, 30, 30, 40, 40, 50, 50, 60, 70, 70, 100, 100, 105, 118, 120, 130, 140];
+    return phases[Math.max(0, Math.min(stage, STAGE_COMPLETE))];
+  }
+
   quest = registerQuest(api, {
     key: "forgettable_tale",
     name: "Forgettable Tale...",
     varpId: VARP_FORGET,
     varbitId: VARBIT_STAGE,
+    varbitValue: nativeProgress,
     startedValue: STAGE_STARTED,
     completionValue: STAGE_COMPLETE,
     questPoints: 2,

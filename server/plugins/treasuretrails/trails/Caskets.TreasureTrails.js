@@ -1,5 +1,7 @@
 "use strict";
 
+const RewardScreen = require("../CasketRewardScreen.plugin");
+
 // Opens easy-to-master reward caskets from the exporter's clue-caskets.json tables.
 const Rolls = require("../Rolls.RewardCaskets");
 const Runtime = require("./Runtime.TreasureTrails");
@@ -47,12 +49,24 @@ function roll(tier, { entrana = false, random = Math.random, rolls = null, playe
   return drops;
 }
 
+/** Whether the player still has an item: carried, worn, banked (not the search tab) or on an unclosed reward screen. */
+function owns(player, itemId) {
+  const tabs = Array.from({ length: core.Bank.TOTAL_BANK_TABS }, (_, tab) => tab === core.Bank.BANK_SEARCH_TAB_INDEX ? null : player.getBank?.(tab));
+  // A placeholder (amount 0) is not the item.
+  const held = [player.getInventory(), player.getEquipment?.(), ...tabs]
+    .some(container => (container?.getItems?.() ?? []).some(item => item?.getId?.() === itemId && item.getAmount() > 0));
+  return held || (player.getAttribute(RewardScreen.PENDING_ATTRIBUTE) ?? []).some(entry => entry?.id === itemId);
+}
+
 /**
  * Milestone items that are not scroll cases (the easy Large spade at 500). ClueCapacity owns
- * the cases and their recovery; anything else is given on the completion that reaches it.
+ * the cases and their recovery; anything else is given on the completion that reaches it, and
+ * again on any later completion of that tier while the player no longer has it (Wiki: Large spade,
+ * Clueless scroll, Heavy casket, Scroll sack: "If lost, it can be re-obtained by completing another ... clue scroll").
  */
 function itemMilestones(player, tier, completed) {
-  return (TABLES[tier.name]?.milestones ?? []).filter(row => Number.isSafeInteger(row.item_id) && row.completed === completed).filter(row => {
+  return (TABLES[tier.name]?.milestones ?? []).filter(row => Number.isSafeInteger(row.item_id)
+    && (row.completed === completed || (row.completed < completed && !owns(player, row.item_id)))).filter(row => {
     const request = { player, itemId: row.item_id, eligible: null };
     api.emitCustomEvent("treasure-trails:case-eligible", request);
     return request.eligible === null;
@@ -87,16 +101,32 @@ function prepareDrops(drops, tier) {
   });
 }
 
-function give(player, drops) {
+function give(player, drops, defer = false) {
+  if (defer) RewardScreen.queue(player, drops);
   const credited = new Map();
   for (const drop of drops) {
     const { creditId: id, stackable } = drop;
-    for (let i = 0; i < (stackable ? 1 : drop.amount); i++) player.getInventory().forceAdd(player, new core.Item(id, stackable ? drop.amount : 1));
+    for (let i = 0; !defer && i < (stackable ? 1 : drop.amount); i++) player.getInventory().forceAdd(player, new core.Item(id, stackable ? drop.amount : 1));
     credited.set(id, (credited.get(id) || 0) + drop.amount);
     api.emitCustomEvent("collection-log:obtain", { player, itemId: drop.itemId, amount: drop.amount });
   }
   player.getInventory().refreshItems();
   return [...credited].map(([itemId, quantity], slot) => ({ itemId, quantity, slot }));
+}
+
+/**
+ * Wiki "Bloodhound": the master casket's 1/1,000 pet becomes a follower, or goes into the
+ * backpack, or to Probita, as every pet does ("pets:award"), not into the reward screen.
+ */
+function splitPets(drops) {
+  const request = { pets: null };
+  api.emitCustomEvent("pets:definitions", request);
+  const petItems = new Set((request.pets ?? []).map(pet => pet.itemId));
+  return { pets: drops.filter(drop => petItems.has(drop.itemId)), drops: drops.filter(drop => !petItems.has(drop.itemId)) };
+}
+
+function awardPets(player, pets) {
+  for (const pet of pets) api.emitCustomEvent("pets:award", { player, itemId: pet.itemId, source: "treasure-trails:casket", awarded: false });
 }
 
 /**
@@ -114,7 +144,7 @@ function mimicCasket(player, tier, rolls, opened, random = Math.random) {
 
 /** The completion's milestone rewards on their own, for a casket that became the Mimic. */
 function milestoneDrops(player, tier, count) {
-  const request = { player, completed: count, milestones: TABLES[tier.name]?.milestones ?? [], drops: [], handled: false, error: null };
+  const request = { player, tier: tier.name, completed: count, milestones: TABLES[tier.name]?.milestones ?? [], drops: [], handled: false, error: null };
   api.emitCustomEvent("treasure-trails:milestone-rewards", request);
   if (!request.handled || request.error) throw request.error ?? new Error("Treasure Trails milestone service unavailable");
   const drops = [...request.drops, ...itemMilestones(player, tier, count)];
@@ -144,7 +174,7 @@ function open(event) {
   if (player.getAttribute(OPENING_ATTRIBUTE)) return true;
   player.setAttribute(OPENING_ATTRIBUTE, true);
   try {
-    let drops, count, mimic;
+    let drops, count, mimic, pets = [];
     try {
       const completed = Number(player.getAttribute(Runtime.completedAttribute(tier)) ?? 0);
       if (!Number.isSafeInteger(completed) || completed < 0 || completed >= Number.MAX_SAFE_INTEGER) throw new Error(`Invalid ${tier.name} completion count`);
@@ -160,10 +190,11 @@ function open(event) {
       mimic = mimicCasket(player, tier, rolls, count);
       if (mimic) drops = milestoneDrops(player, tier, count);
       else {
-        const request = { player, completed: count, milestones: TABLES[tier.name]?.milestones ?? [], drops: roll(tier, { entrana: onEntrana(player), rolls, player }), handled: false, error: null };
+        const request = { player, tier: tier.name, completed: count, milestones: TABLES[tier.name]?.milestones ?? [], drops: roll(tier, { entrana: onEntrana(player), rolls, player }), handled: false, error: null };
         api.emitCustomEvent("treasure-trails:milestone-rewards", request);
         if (!request.handled || request.error) throw request.error ?? new Error("Treasure Trails milestone service unavailable");
         drops = prepareDrops(clueRewards(player, [...request.drops, ...itemMilestones(player, tier, count)]), tier);
+        ({ pets, drops } = splitPets(drops));
       }
     } catch (error) {
       event.error = error;
@@ -173,8 +204,15 @@ function open(event) {
     // A preparation callback may have moved or replaced the clicked stack.
     if (inventory.getItems()[slot] !== item || item.getAmount() < 1) return true;
     if (mimic) {
-      // The trail is complete; the Mimic's own chest holds its rewards.
-      inventory.setItem(slot, mimic);
+      // The trail is complete; the Mimic's own chest holds its rewards. Only the opened casket
+      // becomes the Mimic: a lone casket's slot takes it, a stack loses one and keeps the rest.
+      if (item.getAmount() === 1) inventory.setItem(slot, mimic);
+      else {
+        inventory.deleteAtSlot(slot, 1);
+        // Ours: no source says where the Mimic goes from a stack in a full backpack; like any
+        // casket reward that doesn't fit, it lands on the floor (Wiki "Mimic": a dropped Mimic is fine).
+        inventory.forceAdd(player, mimic);
+      }
       player.setAttribute(Runtime.completedAttribute(tier), count);
       give(player, drops);
       Runtime.restore({ player });
@@ -186,7 +224,8 @@ function open(event) {
     player.setAttribute(Runtime.completedAttribute(tier), count);
     player.sendMessage(COMPLETED);
     player.sendMessage(completedCount(count, tier));
-    const slots = give(player, drops);
+    const slots = give(player, drops, true);
+    awardPets(player, pets);
     Runtime.restore({ player });
     const sender = player.getPacketSender();
     const group = Runtime.data(tier).rewardInterface;
@@ -209,4 +248,4 @@ module.exports = function attachCaskets(pluginApi) {
   for (const tier of TIERS) api.onItemAction(`Reward casket (${tier.name})`, { Open: open });
 };
 
-Object.assign(module.exports, { roll, entranaTable, itemMilestones, clueRewards, prepareDrops, give, open, onEntrana, tierOfCasket });
+Object.assign(module.exports, { roll, entranaTable, itemMilestones, clueRewards, prepareDrops, splitPets, give, open, onEntrana, tierOfCasket });

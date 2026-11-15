@@ -16,10 +16,12 @@ const DATA = require("./data/gnome-restaurant-orders.json");
 const PREMADE_IDS = new Set(DATA.premadeIds);
 const DISH_IDS = new Set([...DATA.items.hard.map((item) => item.id), ...PREMADE_IDS]);
 
+let api;
 let core;
 let COINS_ID;
 
 function init(pluginApi) {
+  api = pluginApi;
   core = pluginApi.core;
   COINS_ID = core.ItemIdentifiers.COINS;
 }
@@ -59,12 +61,17 @@ function giveTip(player, session) {
   const inventory = player.getInventory();
   if (session.tier === "easy") {
     const coins = rollEasyTip();
-    inventory.adds(COINS_ID, coins);
+    // A coin stack near the cap keeps what fits; the rest lands under the player.
+    inventory.forceAdd(player, new core.Item(COINS_ID, coins));
     player.sendMessage(`You are given ${coins} coins as a tip.`);
     return;
   }
   const reward = rollHardReward(session.npcName);
-  for (const item of reward.items) inventory.adds(item.id, item.amount);
+  for (const item of reward.items) {
+    // Several rows are unnoted and many (pure essence is 51-97): what has no slot lands under the player.
+    inventory.forceAdd(player, new core.Item(item.id, item.amount));
+    api.emitCustomEvent("collection-log:obtain", { player, itemId: item.id, amount: item.amount });
+  }
   player.sendMessage("You are given a tip for your delivery.");
 }
 
@@ -103,6 +110,7 @@ function deliver(event) {
   event.player.sendMessage(`You hand over your delivery of ${session.itemName} to ${session.npcName}.`);
   giveTip(event.player, session);
   if (tokens > 0) event.player.sendMessage("You've earned a reward token for your deliveries!");
+  api.emitCustomEvent?.("gnome-restaurant:delivered", { player: event.player, tier: session.tier });
 }
 
 function attach(pluginApi) {
@@ -117,6 +125,7 @@ Object.assign(module.exports, {
     deliver,
     rollEasyTip,
     rollHardReward,
+    giveTip,
     eligibleRewards,
     npcNameOf,
   },

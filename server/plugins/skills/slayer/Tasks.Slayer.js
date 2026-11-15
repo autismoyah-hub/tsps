@@ -15,6 +15,8 @@
  *   task's areas (varp slayer_area).
  * - A kill counts when the NPC counts for the task (Data.npcCountsFor); Konar's must be in her
  *   area, Krystilia's in the Wilderness. Slayer XP is the monster's hitpoints.
+ * - Content may offer a choice of tasks with a kill count the player picks (Offer.Slayer.js,
+ *   "slayer:task-offer": a league relic); the pick comes here (assignPicked).
  * - Mortimer offers a choice of tasks instead (Choice.Slayer.js); the chosen one comes here
  *   (assignChosen) with its modifier (varbits slayer_modifier_id, _value, _negative): Slayer
  *   points on completion, a longer or shorter task, more clue scrolls, more superior uniques
@@ -27,6 +29,8 @@
 const Data = require("./Data.Slayer");
 const State = require("./State.Slayer");
 const SlaughterBracelet = require("./SlaughterBracelet.Slayer");
+const ExpeditiousBracelet = require("./ExpeditiousBracelet.Slayer");
+const MorytaniaDiary = require("./MorytaniaDiary.Slayer");
 
 const COMPLETE = "<col=ef1020>You have completed your task! You killed</col> {amount} {name}<col=ef1020>. You gained</col> {xp} xp<col=ef1020>.";
 const FREE_TASK = "<col=ef1020>You've completed </col>{streak} {tasks}<col=ef1020> and will need </col>{more} more<col=ef1020> before you start receiving Slayer points; return to a Slayer master.</col>";
@@ -121,6 +125,24 @@ function hasUnlock(player, unlockRow) {
   return unlock ? hasUnlockBit(player, unlock.bit) : false;
 }
 
+/**
+ * Bought unlocks the Rewards screen can switch off again (script 414), by unlock bit, with the varbit that holds
+ * "off": Bigger and Badder's superiors, Stop the Wyvern's fossil wyvern block, and the longer revenant tasks.
+ */
+const TOGGLES = new Map([
+  [35, "slayer_toggleoff_superiormobs"],
+  [43, "slayer_toggleoff_fossilwyvernblock"],
+  [53, "slayer_toggleoff_longerrevenants"],
+]);
+
+/** Bought and not switched off: the unlock's effect applies to assignment. */
+function unlockActive(player, unlockRow) {
+  const unlock = Data.get().unlocks.get(unlockRow);
+  if (!unlock || !hasUnlockBit(player, unlock.bit)) return false;
+  const toggle = TOGGLES.get(unlock.bit);
+  return !toggle || State.varbit(player, toggle) !== 1;
+}
+
 /** Unlock bits 0-31, 32-63, 64-95 are slayer_rewards_unlocks, ...1, ...2. */
 function hasUnlockBit(player, bit) {
   const varp = ["slayer_rewards_unlocks", "slayer_rewards_unlocks1", "slayer_rewards_unlocks2"][bit >> 5];
@@ -161,9 +183,9 @@ function hasSlayerCape(player, inventory) {
 function eligible(player, master, entry, blocked) {
   const task = entry.task;
   if (entry.unlockRow != null && !hasUnlock(player, entry.unlockRow)) return false;
-  if (task.blockedByUnlockRow != null && hasUnlock(player, task.blockedByUnlockRow)) return false;
+  if (task.blockedByUnlockRow != null && unlockActive(player, task.blockedByUnlockRow)) return false;
   if (blocked.has(task.id)) return false;
-  if (task.id === Data.BOSS_TASK_ID) return bossChoices(player).length > 0;
+  if (task.id === Data.BOSS_TASK_ID) return bossChoices(player, master).length > 0;
   if (player.getSkillManager().getMaxLevel(core.Skill.SLAYER) < Data.taskLevel(task.id)) return false;
   if (checksCombat(player, master) && player.getSkillManager().getCombatLevel() < task.minCombat) return false;
   return meetsStats(player, task) && meetsQuests(player, task.id);
@@ -187,9 +209,13 @@ function meetsQuests(player, taskId) {
   return answers.every((answer) => answer == null);
 }
 
-/** The boss tasks the player has the levels for (their Slayer levels are stat requirements). */
-function bossChoices(player) {
-  return [...Data.get().bosses.entries()].filter(([, task]) => meetsStats(player, task));
+/**
+ * The boss tasks the player has the levels for (their Slayer levels are stat requirements), and
+ * only the master's own when it has a list (slayer-masters.json `bosses`: Krystilia's Wilderness bosses).
+ */
+function bossChoices(player, master = null) {
+  const own = Array.isArray(master?.bosses) ? new Set(master.bosses) : null;
+  return [...Data.get().bosses.entries()].filter(([bossId, task]) => (!own || own.has(bossId)) && meetsStats(player, task));
 }
 
 /** Whether a player may get tasks from this master at all (the master's own levels). */
@@ -224,19 +250,31 @@ function assign(player, master, random = Math.random) {
   const previous = choices.find((entry) => entry.task.id === player.getAttribute(PREVIOUS_TASK_ATTRIBUTE));
   const repeat = previous && hasSlayerCape(player, true) && random() < CAPE_REPEAT_CHANCE;
   const entry = repeat ? previous : weightedPick(choices, random);
-  const bossId = entry.task.id === Data.BOSS_TASK_ID ? rollBoss(player, random) : 0;
-  const area = master.locations ? pickArea(entry, random) : null;
-  const { task, amount } = setTask(player, master, entry, bossId, area, null, random);
-  const name = task.displayName;
-  const line = area
-    ? `You are to bring balance to ${amount} ${name} ${area.text}.`
-    : `Your new task is to kill ${amount} ${name}.`;
-  return { line };
+  const bossId = entry.task.id === Data.BOSS_TASK_ID ? rollBoss(player, random, null, master) : 0;
+  return { line: assignLine(player, master, entry, bossId, null, random) };
 }
 
-/** One of the boss tasks the player qualifies for, by boss id. */
-function rollBoss(player, random = Math.random) {
-  const bosses = bossChoices(player);
+/**
+ * Sets the task (Konar's with one of its areas) and returns the master's line for it. `amount`
+ * is a kill count the player chose (Offer.Slayer.js); without it the count is rolled.
+ */
+function assignLine(player, master, entry, bossId, amount, random) {
+  const area = master.locations ? pickArea(entry, random) : null;
+  const set = setTask(player, master, entry, bossId, area, null, random, amount);
+  const name = set.task.displayName;
+  return area
+    ? `You are to bring balance to ${set.amount} ${name} ${area.text}.`
+    : `Your new task is to kill ${set.amount} ${name}.`;
+}
+
+/** A task the player picked from an offer (Offer.Slayer.js), with the kill count they chose; returns the master's line. */
+function assignPicked(player, master, entry, bossId, amount, random = Math.random) {
+  return assignLine(player, master, entry, bossId, amount, random);
+}
+
+/** One of the boss tasks the player qualifies for from this master (and `allowed` lets through), by boss id. */
+function rollBoss(player, random = Math.random, allowed = null, master = null) {
+  const bosses = bossChoices(player, master).filter(([, task]) => !allowed || allowed(task));
   return bosses.length ? bosses[Math.floor(random() * bosses.length)][0] : 0;
 }
 
@@ -244,7 +282,7 @@ function rollBoss(player, random = Math.random) {
 function rollAmount(player, entry, bossId, random) {
   if (bossId) return between(BOSS_AMOUNT.min, BOSS_AMOUNT.max, random);
   const extension = entry.task.extension;
-  const extended = extension && hasUnlock(player, extension.unlockRow);
+  const extended = extension && unlockActive(player, extension.unlockRow);
   if (extended && !extension.additive) return between(extension.min, extension.max, random);
   return between(entry.min, entry.max, random) + (extended ? between(extension.min, extension.max, random) : 0);
 }
@@ -254,10 +292,10 @@ function rollAmount(player, entry, bossId, random) {
  * the base roll set (live sends the base count, then the changed one; the original count stays
  * the base roll).
  */
-function setTask(player, master, entry, bossId, area, chosenModifier, random) {
+function setTask(player, master, entry, bossId, area, chosenModifier, random, chosenAmount = null) {
   player.setAttribute(PREVIOUS_TASK_ATTRIBUTE, entry.task.id);
   const task = bossId ? Data.get().bosses.get(bossId) ?? entry.task : entry.task;
-  const base = rollAmount(player, entry, bossId, random);
+  const base = Number.isInteger(chosenAmount) && chosenAmount > 0 ? chosenAmount : rollAmount(player, entry, bossId, random);
   if (chosenModifier) {
     State.update(player, {
       slayer_modifier_id: chosenModifier.id,
@@ -272,6 +310,11 @@ function setTask(player, master, entry, bossId, area, chosenModifier, random) {
   if (chosenModifier?.id === MODIFIER.QUANTITY) {
     amount = Math.max(1, base + (chosenModifier.negative ? -chosenModifier.value : chosenModifier.value));
     State.setVarp(player, "slayer_count", amount);
+  }
+  // Ours (no capture sets it): her first Wilderness task, given after its warning, unlocks Krystilia's NPC Contact
+  // entry (cs2 9733 reads wilderness_master_warning; Wiki, Astral Contact: after the first Wilderness assignment).
+  if (master.id === KRYSTILIA && State.varbit(player, "wilderness_master_warning") === 0) {
+    State.setVarbit(player, "wilderness_master_warning", 1);
   }
   api.emitCustomEvent("slayer:task-assigned", { player, master: master.id, task: task.name, taskId: entry.task.id });
   return { task, amount };
@@ -320,18 +363,33 @@ function countsFor(task, npc, player = null) {
   const query = { player, npc, eligible: true };
   api.emitCustomEvent("slayer:target-eligible", query);
   if (query.eligible === false) return false;
-  return countsForTarget(task, { id: npc.getId(), name: npcName(npc), location: npc.getLocation() });
+  return countsForTarget(task, { id: npc.getId(), name: npcName(npc), location: npc.getLocation(), npc, player });
+}
+
+/**
+ * `slayer:task-area-match` { player, npc, area, location, allowed }: a specific encounter may
+ * admit its actual NPC for the selected area after task matching and Wilderness checks. The
+ * default is false; id-only or alternate-location queries keep the ordinary area result.
+ */
+function matchesTaskArea(task, { id, location, npc, player }) {
+  if (!task.area || Data.inArea(task.area, location)) return true;
+  if (!npc || npc.getId() !== id || !location) return false;
+  const actual = npc.getLocation();
+  if (!actual || actual.getX() !== location.getX() || actual.getY() !== location.getY() || actual.getZ() !== location.getZ()) return false;
+  const request = { player, npc, area: task.area, location, allowed: false };
+  api.emitCustomEvent("slayer:task-area-match", request);
+  return request.allowed === true;
 }
 
 /** The same check from an NPC's id, name and where it is. */
-function countsForTarget(task, { id, name, location }) {
+function countsForTarget(task, { id, name, location, npc = null, player = null }) {
   if (!task) return false;
   const matches = task.taskId === Data.BOSS_TASK_ID
     ? Data.isBossNpc(task.bossId, name)
     : Data.npcCountsFor(task.taskId, id, name);
   if (!matches) return false;
   if (task.masterId === KRYSTILIA && !core.Wilderness.isInLocation(location)) return false;
-  if (task.area && !Data.inArea(task.area, location)) return false;
+  if (!matchesTaskArea(task, { id, location, npc, player })) return false;
   return true;
 }
 
@@ -363,7 +421,7 @@ function onTaskEvent(request) {
   if (Number.isInteger(request.npcId)) {
     const name = core.NpcDefinition.forId(request.npcId)?.getName?.() ?? "";
     const location = request.location ?? request.npc?.getLocation?.();
-    request.onTask = countsForTarget(task, { id: request.npcId, name, location }) || alwaysOnTask(request.player, request.npc ?? null, request.npcId, name);
+    request.onTask = countsForTarget(task, { id: request.npcId, name, location, npc: request.npc ?? null, player: request.player }) || alwaysOnTask(request.player, request.npc ?? null, request.npcId, name);
     return;
   }
   request.onTask = countsFor(task, request.npc, request.player)
@@ -383,13 +441,15 @@ function npcKilled({ killer, npc }) {
   const kill = { player, npc, xp: hitpoints };
   api.emitCustomEvent("slayer:task-kill", kill);
   // Mortimer's Slayer XP modifier counts superiors too (Wiki).
-  const boost = modifierBoost(task, MODIFIER.XP);
+  // The Morytania Diary adds to a kill in the Slayer Tower (MorytaniaDiary.Slayer.js).
+  const boost = modifierBoost(task, MODIFIER.XP) * MorytaniaDiary.boost(player, npc);
   const xp = kill.xp * boost;
   if (xp > 0) player.getSkillManager().addExperiences(core.Skill.SLAYER, xp);
   player.setAttribute(TASK_XP_ATTRIBUTE, (Number(player.getAttribute(TASK_XP_ATTRIBUTE)) || 0) + (kill.taskXp ?? kill.xp) * boost);
   if (task.modifier) killModifiers.set(npc, { player, modifier: task.modifier });
   if (SlaughterBracelet.preventsDecrement(player, npc)) return;
-  const remaining = task.count - 1;
+  // An expeditious bracelet credits a second kill; a task cannot go below zero.
+  const remaining = Math.max(0, task.count - 1 - ExpeditiousBracelet.extraKills(player, npc));
   State.setVarp(player, "slayer_count", remaining);
   if (remaining > 0) return;
   complete(player, task);
@@ -401,7 +461,9 @@ function offTaskKill(player, npc) {
   const hitpoints = (npc.getCurrentDefinition?.() ?? npc.getDefinition()).getHitpoints();
   const kill = { player, npc, xp: hitpoints, offTask: true };
   api.emitCustomEvent("slayer:task-kill", kill);
-  if (kill.xp > 0) player.getSkillManager().addExperiences(core.Skill.SLAYER, kill.xp);
+  // The Morytania Diary counts it too (not Mortimer's modifier: there is no task).
+  const xp = kill.xp * MorytaniaDiary.boost(player, npc);
+  if (xp > 0) player.getSkillManager().addExperiences(core.Skill.SLAYER, xp);
 }
 
 function complete(player, task) {
@@ -424,9 +486,8 @@ function complete(player, task) {
     return;
   }
   const reward = taskReward(player, task.masterId);
-  const totalTasks = State.varbit(player, "slayer_tasks_completed") + State.varbit(player, "slayer_wilderness_tasks_completed");
-  if (totalTasks <= reward.freeTasks) {
-    player.sendMessage(fill(FREE_TASK, { streak, tasks: streak === 1 ? "task" : "tasks", more: reward.freeTasks + 1 - totalTasks }));
+  if (streak <= reward.freeTasks) {
+    player.sendMessage(fill(FREE_TASK, { streak, tasks: streak === 1 ? "task" : "tasks", more: reward.freeTasks + 1 - streak }));
     return;
   }
   // Whole points, as the message shows them: a multiplier may be fractional (a league fragment's +10%).
@@ -482,10 +543,11 @@ function grantPoints(player, points) {
 const POINTS_CAP = (1 << 17) - 1;
 
 /**
- * "slayer:current-task" { player, task: null }: fills task with { master, taskId, name, count,
+ * "slayer:current-task" { player, task: null, points: 0 }: fills points and task with { master, taskId, name, count,
  * area } (name lowercase, as "kalphites"; area the slayer_area row's text) or leaves it null.
  */
 function currentTaskEvent(request) {
+  request.points = request.player ? State.varbit(request.player, "slayer_points") : 0;
   const task = request?.player ? current(request.player) : null;
   if (!task) return;
   request.task = { master: task.masterId, taskId: task.taskId, name: taskName(task.task), count: task.count, area: task.area?.text ?? null };
@@ -544,6 +606,9 @@ function attach(pluginApi) {
 }
 
 module.exports = {
+  TASK_XP_ATTRIBUTE,
+  TOGGLES,
+  unlockActive,
   init,
   attach,
   current,
@@ -552,9 +617,12 @@ module.exports = {
   killBoost,
   assign,
   assignChosen,
+  assignPicked,
+  bossChoices,
   eligible,
   blockedTaskIds,
   weightedPick,
+  rollAmount,
   rollBoss,
   stillHunting,
   clear,

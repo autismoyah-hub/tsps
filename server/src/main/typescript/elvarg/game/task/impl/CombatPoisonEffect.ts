@@ -6,6 +6,8 @@ import { Item } from "../../model/Item";
 import { HitDamage } from "../../content/combat/hit/HitDamage";
 import { HitMask } from "../../content/combat/hit/HitMask";
 import { TaskManager } from "../TaskManager";
+import { PoisonClock } from "../../content/combat/PoisonClock";
+import type { Player } from "../../entity/impl/player/Player";
 
 export class CombatPoisonEffect extends Task {
   private static readonly active = new WeakMap<Mobile, CombatPoisonEffect>();
@@ -24,7 +26,8 @@ export class CombatPoisonEffect extends Task {
   /** Resume saved affliction without reapplying or changing its damage. */
   public static resume(entity: Mobile): void {
     if (!entity.isRegistered() || entity.getHitpoints() <= 0) return;
-    if (!entity.isPoisoned() && !(entity.isPlayer() && entity.getCombat().getPoisonClock().hasCounter())) return;
+    if (!entity.isPoisoned() && !(entity.isPlayer() && (entity.getCombat().getPoisonClock().hasCounter()
+        || entity.getCombat().getPoisonClock().hasPendingReduction()))) return;
     if (this.active.get(entity)?.isRunning()) return;
     TaskManager.submit(new CombatPoisonEffect(entity));
   }
@@ -55,7 +58,14 @@ export class CombatPoisonEffect extends Task {
     const player = this.entity.isPlayer() ? this.entity.getAsPlayer() : null;
     const clock = player?.getCombat().getPoisonClock();
     const afflicted = this.entity.isPoisoned();
-    if (!afflicted && !clock?.hasCounter()) {
+    const modal = !!player && (player.getInterfaceId() > 0 || player.getPacketSender().hasInterruptibleInterface());
+    if (clock && (!modal || afflicted)) {
+      const reduction = clock.takeReduction();
+      if (reduction && !afflicted && player) {
+        CombatPoisonEffect.sendReductionLines(player, reduction.before, reduction.after);
+      }
+    }
+    if (!afflicted && !clock?.hasCounter() && !clock?.hasPendingReduction()) {
       this.entity.setVenomed(false);
       this.stop();
       return;
@@ -64,13 +74,15 @@ export class CombatPoisonEffect extends Task {
     // Immunity prevents new afflictions in CombatFactory.poisonEntity; it does
     // not cure an existing one (for example when equipping a serpentine helm).
     // Explicit cures clear the affliction fields, handled by isPoisoned above.
-    const modal = !!player && (player.getInterfaceId() > 0 || player.getPacketSender().hasInterruptibleInterface());
     if (clock) {
-      if (!clock.tickPulse(modal)) return;
-      if (!afflicted) {
-        if (!clock.hasCounter()) this.stop();
-        return;
+      const before = clock.getCounter();
+      const pulse = clock.tickPulse(modal);
+      // Explicit duration reductions can put protection transitions between status pulses.
+      if (!afflicted && player && before > clock.getCounter()) {
+        CombatPoisonEffect.sendResistanceLine(player, clock.getCounter());
       }
+      if (!afflicted && !clock.hasCounter() && !clock.hasPendingReduction()) this.stop();
+      if (!pulse || !afflicted) return;
     }
 
     if (!clock && --this.ticksUntilHit > 0) {
@@ -156,6 +168,31 @@ export class CombatPoisonEffect extends Task {
       return -Math.ceil(immunity / CombatPoisonEffect.ORB_IMMUNITY_STEP_SECONDS);
     }
     return 0;
+  }
+
+  /**
+   * The resistance lines, one pulse (30 ticks) before and at each end (rsprox_transcripts/223/00014.txt ticks
+   * 1748/1778 for poison, 224/01443.txt ticks 151/181 for venom): purple, as recorded.
+   */
+  private static sendResistanceLine(player: Player, counter: number): void {
+    const line = counter === 1 ? "Your poison resistance is about to wear off."
+      : counter === 0 ? "Your poison resistance has worn off."
+      : counter === PoisonClock.VENOM_CUTOFF + 1 ? "Your venom resistance is about to wear off."
+      : counter === PoisonClock.VENOM_CUTOFF ? "Your venom resistance has worn off, but you are still resistant to poison."
+      : null;
+    if (line) player.sendMessage(`<col=7f007f>${line}</col>`);
+  }
+
+  private static sendReductionLines(player: Player, before: number, after: number): void {
+    // An exhausted tier gets its end line even when subtraction skipped its counter.
+    // A warning only describes a tier that still exists at the warning boundary.
+    if (before > PoisonClock.VENOM_CUTOFF && after <= PoisonClock.VENOM_CUTOFF) {
+      CombatPoisonEffect.sendResistanceLine(player, PoisonClock.VENOM_CUTOFF);
+    } else if (before > PoisonClock.VENOM_CUTOFF + 1 && after === PoisonClock.VENOM_CUTOFF + 1) {
+      CombatPoisonEffect.sendResistanceLine(player, after);
+    }
+    if (before > 0 && after === 0) CombatPoisonEffect.sendResistanceLine(player, 0);
+    else if (before > 1 && after === 1) CombatPoisonEffect.sendResistanceLine(player, 1);
   }
 
   public static damageFromSeverity(severity: number): number {
@@ -366,6 +403,59 @@ export class CombatPoisonData {
     CombatPoisonData.types.set(ItemIdentifiers.ABYSSAL_DAGGER_P_, PoisonType.MILD);
     CombatPoisonData.types.set(ItemIdentifiers.ABYSSAL_DAGGER_P_PLUS_, PoisonType.EXTRA);
     CombatPoisonData.types.set(ItemIdentifiers.ABYSSAL_DAGGER_P_PLUS_PLUS_, PoisonType.SUPER);
+    // Wiki (Poison, Karambwan paste): the dragon knife and hasta, the abyssal dagger (bh) and every (kp)
+    // spear and hasta, at their tiers; (kp) equals (p++), "the same damage as poison(++)".
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_KNIFE_P_, PoisonType.VERY_WEAK);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_KNIFE_P__2, PoisonType.VERY_WEAK);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_KNIFE_P_PLUS_, PoisonType.WEAK);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_KNIFE_P_PLUS__2, PoisonType.WEAK);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_KNIFE_P_PLUS_PLUS_, PoisonType.MILD);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_KNIFE_P_PLUS_PLUS__2, PoisonType.MILD);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_HASTA_P_, PoisonType.MILD);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_HASTA_P__2, PoisonType.MILD);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_HASTA_P__3, PoisonType.MILD);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_HASTA_P_PLUS_, PoisonType.EXTRA);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_HASTA_P_PLUS__2, PoisonType.EXTRA);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_HASTA_P_PLUS__3, PoisonType.EXTRA);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_HASTA_P_PLUS_PLUS_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_HASTA_P_PLUS_PLUS__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_HASTA_P_PLUS_PLUS__3, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.ABYSSAL_DAGGER_BH_P_, PoisonType.MILD);
+    CombatPoisonData.types.set(ItemIdentifiers.ABYSSAL_DAGGER_BH_P__2, PoisonType.MILD);
+    CombatPoisonData.types.set(ItemIdentifiers.ABYSSAL_DAGGER_BH_P_PLUS_, PoisonType.EXTRA);
+    CombatPoisonData.types.set(ItemIdentifiers.ABYSSAL_DAGGER_BH_P_PLUS__2, PoisonType.EXTRA);
+    CombatPoisonData.types.set(ItemIdentifiers.ABYSSAL_DAGGER_BH_P_PLUS_PLUS_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.ABYSSAL_DAGGER_BH_P_PLUS_PLUS__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.BRONZE_SPEAR_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.IRON_SPEAR_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.STEEL_SPEAR_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.MITHRIL_SPEAR_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.ADAMANT_SPEAR_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.RUNE_SPEAR_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_SPEAR_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.BLACK_SPEAR_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.BRONZE_SPEAR_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.IRON_SPEAR_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.STEEL_SPEAR_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.MITHRIL_SPEAR_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.ADAMANT_SPEAR_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.RUNE_SPEAR_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_SPEAR_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.BLACK_SPEAR_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.BRONZE_HASTA_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.IRON_HASTA_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.STEEL_HASTA_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.MITHRIL_HASTA_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.ADAMANT_HASTA_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.RUNE_HASTA_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_HASTA_KP_, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.BRONZE_HASTA_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.IRON_HASTA_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.STEEL_HASTA_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.MITHRIL_HASTA_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.ADAMANT_HASTA_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.RUNE_HASTA_KP__2, PoisonType.SUPER);
+    CombatPoisonData.types.set(ItemIdentifiers.DRAGON_HASTA_KP__2, PoisonType.SUPER);
     CombatPoisonData.types.set(ItemIdentifiers.DRAGON_JAVELIN_P_, PoisonType.VERY_WEAK);
     CombatPoisonData.types.set(ItemIdentifiers.DRAGON_JAVELIN_P_PLUS_, PoisonType.WEAK);
     CombatPoisonData.types.set(ItemIdentifiers.DRAGON_JAVELIN_P_PLUS_PLUS_, PoisonType.MILD);
@@ -383,7 +473,17 @@ export class CombatPoisonData {
     CombatPoisonData.types.set(ItemIdentifiers.AMETHYST_DART_P_PLUS_PLUS_, PoisonType.MILD);
 
     CombatPoisonData.types.set(ItemIdentifiers.TOXIC_BLOWPIPE, PoisonType.VENOM);
+    // Wiki (Noxious halberd, Venom): melee attacks envenom 33% of the time. The wieldable halberd and
+    // its br_ copy; 29797/29798 are its note and placeholder.
+    CombatPoisonData.types.set(ItemIdentifiers.NOXIOUS_HALBERD, PoisonType.VENOM);
+    CombatPoisonData.types.set(ItemIdentifiers.NOXIOUS_HALBERD_4, PoisonType.VENOM);
     // Note: Abyssal tentacle has no poison/venom effect in OSRS - do not add it here.
+  }
+
+  /** Melee hits poison on Misc.getRandom(range) === 0: 1 in 4, or 1 in 3 for the noxious halberd. */
+  public static getMeleeRollRange(item?: Item): number {
+    const id = item?.getId();
+    return id === ItemIdentifiers.NOXIOUS_HALBERD || id === ItemIdentifiers.NOXIOUS_HALBERD_4 ? 2 : 3;
   }
 
   public static getPoisonType(item?: Item): PoisonType | undefined {

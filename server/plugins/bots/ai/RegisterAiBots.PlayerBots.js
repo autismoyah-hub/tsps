@@ -71,6 +71,46 @@ function createLog(botApi) {
   };
 }
 
+/**
+ * A bot an administrator drives (::botcontrol) or has set to manual (::bh <bot> manual). Its model doesn't act (no
+ * walks, speech, defence or trade answers), and Presence doesn't log it out from under them: a logout of the driven bot
+ * would close the admin's own connection.
+ */
+function heldByAdmin(runtime, bot) {
+  const entry = [...(runtime?.entriesByUsername?.values?.() ?? [])].find((candidate) => candidate.player === bot);
+  return entry?.manuallyControlled === true || entry?.behaviorPaused === true;
+}
+
+/** Presence's logout of an AI bot (parking, idle): never one an administrator holds. */
+function logOutAiBot(runtime, bot) {
+  if (heldByAdmin(runtime, bot)) return false;
+  bot.getForcedLogoutTimer?.().start?.(0);
+  bot.requestLogout?.();
+  return true;
+}
+
+/** Each tick, every AI bot's mind acts, but not one an administrator holds. */
+function tickMinds(minds, runtime, nowMs, log = () => {}) {
+  for (const mind of minds.values()) {
+    if (heldByAdmin(runtime, mind.bot)) continue;
+    try {
+      mind.tick(nowMs);
+    } catch (error) {
+      log("ai_bot_tick_failed", { bot: mind.name, error: String(error?.message ?? error) });
+    }
+  }
+}
+
+/**
+ * Whether a bot may not take `name`: the roster has it, someone online uses it, or any character
+ * (the league one too, docs/leagues.md) is saved under it, so a bot would share a player's login name.
+ */
+function nameHeld(core, roster, name) {
+  const persistence = core.GameConstants.PLAYER_PERSISTENCE;
+  return roster.has(name) || core.PLAYER_PROFILES.some((profile) => persistence?.exists?.(name, profile) === true)
+    || !!core.World.getPlayerByName(name);
+}
+
 function registerAiBots({ api, botApi, runtime, registry, world, resetMovementState }) {
   const config = readAiBotConfig(api.getPluginConfig(CONFIG_KEY));
   if (config.enabled !== true) {
@@ -111,7 +151,7 @@ function registerAiBots({ api, botApi, runtime, registry, world, resetMovementSt
   const tiers = JSON.parse(fs.readFileSync(ACTIVITIES_FILE, "utf8")).tiers ?? {};
 
   function nameTaken(name) {
-    return roster.has(name) || core.GameConstants.PLAYER_PERSISTENCE?.exists?.(name) === true || !!core.World.getPlayerByName(name);
+    return nameHeld(core, roster, name);
   }
 
   function profileFor(index) {
@@ -202,10 +242,7 @@ function registerAiBots({ api, botApi, runtime, registry, world, resetMovementSt
     return "spawned";
   }
 
-  function logOut(bot) {
-    bot.getForcedLogoutTimer?.().start?.(0);
-    bot.requestLogout?.();
-  }
+  const logOut = (bot) => logOutAiBot(runtime, bot);
 
   const presence = new AiBotPresence({ core, config, minds, spawn: spawnAiBot, logOut, log });
 
@@ -270,13 +307,7 @@ function registerAiBots({ api, botApi, runtime, registry, world, resetMovementSt
     execute() {
       const nowMs = Date.now();
       presence.tick(nowMs);
-      for (const mind of minds.values()) {
-        try {
-          mind.tick(nowMs);
-        } catch (error) {
-          log("ai_bot_tick_failed", { bot: mind.name, error: String(error?.message ?? error) });
-        }
-      }
+      tickMinds(minds, runtime, nowMs, log);
     }
   }
 
@@ -295,4 +326,4 @@ function registerAiBots({ api, botApi, runtime, registry, world, resetMovementSt
   return { minds, roster };
 }
 
-module.exports = { registerAiBots, buildCatalog };
+module.exports = { registerAiBots, buildCatalog, heldByAdmin, logOutAiBot, tickMinds, nameHeld };

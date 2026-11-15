@@ -23,7 +23,10 @@ const Decay = require("../plugins/items/dwarfcannon/Decay.DwarfCannon");
 const Nulodion = require("../plugins/items/dwarfcannon/Nulodion.DwarfCannon");
 const Ornament = require("../plugins/items/dwarfcannon/Ornament.DwarfCannon");
 const Restrictions = require("../plugins/items/dwarfcannon/Restrictions.DwarfCannon");
+const SlayerEquipment = require("../plugins/skills/slayer/Equipment.Slayer");
 
+/** A cache floor decoration (type 22) that blocks walking: the TzHaar sulphur vent. */
+const SULPHUR_VENT = 11851;
 let core;
 let Items;
 /** Open ground with a wall row five tiles south (the line-of-sight test uses it). */
@@ -39,6 +42,10 @@ before(async () => {
   core.RegionManager.loadMapFiles(3165, 3490);
   CENTRE = new core.Location(3260, 3260, 0);
   Cannon.init({ core, emitCustomEvent: () => {} });
+  const api = PluginManager.createApi("DwarfCannonTest");
+  api.onCombatHitResolved(Firing.payExperience);
+  SlayerEquipment.init(api);
+  api.onNpcHitModify(SlayerEquipment.npcHit);
 });
 
 afterEach(() => {
@@ -130,6 +137,8 @@ test("setting up: the captured ticks, messages, sounds, locs and vars, then 30 b
     assert.ok(at(2).includes("varbit 12393=0") && at(2).includes("spam You place the cannon base on the ground."));
     assert.ok(at(2).includes("anim 827") && at(2).includes("sound 2876"));
     assert.ok(at(2).includes(`varp 4=${Cannon.packCoord(sw)}`) && at(2).includes("varp 2=1"));
+    // The buff bar shows the cannon's ammo only while mcannon_world is the client's world (301) modulo 128.
+    assert.ok(at(2).includes("varbit 1968=45"), "mcannon_world matches the client's world");
     assert.deepEqual([p.getLocation().getX(), p.getLocation().getY()], [sw.getX(), sw.getY() - 1]);
     assert.ok(at(4).includes("spam You add the stand.") && at(4).includes("varp 2=2"), "the stand 2 ticks later");
     assert.ok(at(7).includes("spam You add the barrels."), "the barrels 3 ticks later");
@@ -159,6 +168,22 @@ test("setting up is refused: a second cannon, missing or mixed parts, no room, a
   const exchange = gunner({ at: new core.Location(3165, 3490, 0) });
   Setup.setUp({ player: exchange, itemId: Items.CANNON_BASE });
   assert.ok(exchange.ticks[0].includes("The Grand Exchange staff prefer not to have heavy artillery operated around their premises."));
+});
+
+test("setting up is refused when a blocking floor decoration fills a footprint tile, as it blocks walking", () => {
+  const vent = new core.GameObject(SULPHUR_VENT, CENTRE.transform(1, 1), 22, 0, null);
+  assert.equal(core.RegionManager.getClipping(CENTRE.getX() + 1, CENTRE.getY() + 1, 0, null), 0, "open ground before");
+  core.RegionManager.addObjectClipping(vent);
+  try {
+    assert.equal(core.RegionManager.getClipping(CENTRE.getX() + 1, CENTRE.getY() + 1, 0, null), 0x40000, "only the floor decoration");
+    assert.equal(core.RegionManager.blocked(vent.getLocation(), null), true, "core movement can't step there");
+    const p = gunner();
+    Setup.setUp({ player: p, itemId: Items.CANNON_BASE });
+    assert.deepEqual(p.ticks[0], [Setup.MESSAGE.SPACE]);
+  } finally {
+    core.RegionManager.removeObjectClipping(vent);
+  }
+  assert.equal(Setup.refusal(gunner(), "plain"), null, "the same spot is fine once the decoration is gone");
 });
 
 test("firing: the flag the next tick, then a turn a tick; a target is shot before the turn, the hit lands next tick", () => {
@@ -198,6 +223,33 @@ test("firing: the flag the next tick, then a turn a tick; a target is shot befor
   }
 });
 
+// Wiki (Harpie Bug Swarm): a lit bug lantern must be worn to damage them, so the cannon's 0 hit pays no Ranged XP;
+// the XP follows the damage that lands, not the roll.
+test("a cannonball zeroed on landing (a harpie bug swarm, no lantern) pays no Ranged XP", () => {
+  const p = gunner();
+  const cannon = built(p);
+  const swarm = spawnNpc(core.NpcIdentifiers.HARPIE_BUG_SWARM, 3260, 3262);
+  const bat = spawnNpc(core.NpcIdentifiers.GIANT_BAT, 3262, 3262);
+  const { rollAccuracy } = core.AccuracyFormulasDpsCalc;
+  const random = Math.random;
+  core.AccuracyFormulasDpsCalc.rollAccuracy = () => true;
+  Math.random = () => 0.5;
+  try {
+    const hitpoints = swarm.getHitpoints();
+    Firing.shoot(cannon, p, swarm);
+    assert.equal(p.getSkillManager().getExperience(core.Skill.RANGED), 0, "nothing paid on the roll");
+    runTicks(p, 2);
+    assert.equal(swarm.getHitpoints(), hitpoints, "no damage without a lit bug lantern");
+    assert.equal(p.getSkillManager().getExperience(core.Skill.RANGED), 0, "no XP for the zeroed hit");
+    Firing.shoot(cannon, p, bat);
+    runTicks(p, 2);
+    assert.equal(p.getSkillManager().getExperience(core.Skill.RANGED), 15 * Data.RANGED_XP_PER_DAMAGE, "the bat's 15 still pays");
+  } finally {
+    core.AccuracyFormulasDpsCalc.rollAccuracy = rollAccuracy;
+    Math.random = random;
+  }
+});
+
 test("targeting: singles only what fights you; never through walls or at cannon-immune monsters", () => {
   const p = gunner();
   const cannon = built(p);
@@ -214,6 +266,52 @@ test("targeting: singles only what fights you; never through walls or at cannon-
   assert.notEqual(Firing.targetFor(cannon, p), behindWall, "the wall row blocks the shot");
   const kurask = core.NpcDefinition.forId(core.NpcIdentifiers.KURASK);
   assert.ok(Data.NO_CANNON_NPCS.includes(kurask.getName()), "Kurask by its cache name");
+});
+
+test("the Mage Arena's battle mages and Kolodion are never targeted (Wiki)", () => {
+  const p = gunner();
+  const cannon = built(p);
+  for (const [id, x, y] of [[core.NpcIdentifiers.BATTLE_MAGE, 3260, 3262], [core.NpcIdentifiers.BATTLE_MAGE_3, 3261, 3262], [core.NpcIdentifiers.KOLODION_7, 3259, 3262]]) {
+    const npc = spawnNpc(id, x, y);
+    assert.equal(Firing.canTarget(p, npc), false, `${npc.getDefinition().getName()} ${id}`);
+  }
+  assert.equal(Firing.targetFor(cannon, p), null);
+});
+
+test("accuracy: a powered staff uses whichever of Ranged and melee is higher; other magic stays melee (Wiki)", () => {
+  const p = gunner();
+  built(p);
+  const bat = spawnNpc(core.NpcIdentifiers.GIANT_BAT, 3260, 3262);
+  const { getMethod } = core.CombatFactory;
+  const { specialRolls, rollAccuracy } = core.AccuracyFormulasDpsCalc;
+  const rolls = { [core.CombatType.MELEE]: 100, [core.CombatType.RANGED]: 100 };
+  let used = null;
+  core.AccuracyFormulasDpsCalc.specialRolls = (_a, _t, style) => ({ attack: rolls[style], defence: 1 });
+  core.AccuracyFormulasDpsCalc.rollAccuracy = (_a, _t, style) => ((used = style), true);
+  const styleWith = (method) => {
+    core.CombatFactory.getMethod = () => method;
+    used = null;
+    Firing.shoot(Cannon.cannonOf(p), p, bat);
+    return used;
+  };
+  const powered = { type: () => core.CombatType.MAGIC, poweredStaff: true };
+  const autocast = { type: () => core.CombatType.MAGIC };
+  try {
+    rolls[core.CombatType.MELEE] = 100;
+    rolls[core.CombatType.RANGED] = 9000;
+    assert.equal(styleWith(powered), core.CombatType.RANGED, "powered staff, Ranged higher");
+    rolls[core.CombatType.MELEE] = 9000;
+    rolls[core.CombatType.RANGED] = 100;
+    assert.equal(styleWith(powered), core.CombatType.MELEE, "powered staff, melee higher");
+    rolls[core.CombatType.MELEE] = 100;
+    rolls[core.CombatType.RANGED] = 9000;
+    assert.equal(styleWith(autocast), core.CombatType.MELEE, "any other magic staff counts as melee");
+    assert.equal(styleWith({ type: () => core.CombatType.RANGED }), core.CombatType.RANGED, "a ranged weapon");
+  } finally {
+    core.CombatFactory.getMethod = getMethod;
+    core.AccuracyFormulasDpsCalc.specialRolls = specialRolls;
+    core.AccuracyFormulasDpsCalc.rollAccuracy = rollAccuracy;
+  }
 });
 
 test("the captured shots fall in their directions' zones (at the NPC's south-west tile)", () => {
@@ -565,4 +663,186 @@ test("cache-derived room restrictions match closed walkable components and canno
       assert.ok(Setup.footprint(new core.Location(x - 1, y - 1, z)).some((tile) => core.RegionManager.blocked(tile, null)), `${name}: no unrelated valid cannon centre at ${x},${y}`);
     }
   }
+});
+
+// Exercise pickup through the canonical handler with real setup and inventory state.
+for (const headroom of [null, 30, 1, 0]) {
+  test(`owner pickup conserves loaded ammo at stack headroom ${headroom}`, (t) => {
+    const MAX = 0x7fffffff, p = gunner({steel: 30}), cannon = built(p), inv = p.getInventory();
+    const def = core.ItemDefinition.forId(Items.STEEL_CANNONBALL);
+    assert.equal(Items.STEEL_CANNONBALL, 2); assert.equal(def.getId(), 2);
+    assert.equal(def.getName(), 'Steel cannonball'); assert.equal(def.isStackable(), true);
+    assert.ok(cannon && cannon.stage === 4 && cannon.steel === 30 && cannon.granite === 0, 'real setup/loading producer');
+    assert.equal(inv.getAmount(Items.STEEL_CANNONBALL), 0);
+    const held = headroom === null ? 0 : MAX - headroom;
+    if (held) inv.add(new core.Item(Items.STEEL_CANNONBALL, held), false);
+    assert.equal(inv.getAmount(Items.STEEL_CANNONBALL), held);
+    assert.ok(inv.getFreeSlots() >= 5, 'parts and fresh ammo slot fit; target is stack headroom');
+    const ground = (id) => core.ItemOnGroundManager.ownedBy(p.getUsername()).filter(g =>
+      g.getItem().getId() === id).reduce((n, g) => n + g.getItem().getAmount(), 0);
+    const ids = [...Cannon.KINDS.plain.parts, Items.STEEL_CANNONBALL];
+    t.after(() => { for (const g of core.ItemOnGroundManager.ownedBy(p.getUsername())) core.ItemOnGroundManager.deregister(g); });
+    const before = ids.map(id => inv.getAmount(id) + ground(id) +
+      (id === Items.STEEL_CANNONBALL ? cannon.steel : 1));
+    const savedBefore = JSON.stringify(p.getAttribute(Cannon.STATE_ATTRIBUTE));
+    Decay.pickUp({player: p, object: cannon.object});
+    const live = Cannon.cannonOf(p);
+    const after = ids.map(id => inv.getAmount(id) + ground(id) +
+      (live ? (id === Items.STEEL_CANNONBALL ? live.steel : 1) : 0));
+    assert.deepEqual(after, before, 'inventory + owned floor + active world cannon preserve every part and ammo');
+    if (live) {
+      assert.equal(live, cannon); assert.equal(live.steel, 30); assert.equal(live.granite, 0);
+      assert.equal(JSON.stringify(p.getAttribute(Cannon.STATE_ATTRIBUTE)), savedBefore, 'refusal preserves saved cannon');
+    } else {
+      assert.equal(p.getAttribute(Cannon.STATE_ATTRIBUTE), null);
+      for (const part of Cannon.KINDS.plain.parts) assert.equal(inv.getAmount(part) + ground(part), 1);
+    }
+    if (headroom === null || headroom >= 30) assert.equal(live, null, 'room controls complete pickup');
+  });
+}
+
+test('owner pickup with no part slots refuses and preserves cannon and inventory', () => {
+  const p = gunner({steel: 30}), cannon = built(p), inv = p.getInventory();
+  while (inv.getFreeSlots() > 0) inv.add(new core.Item(Items.BRONZE_AXE, 1), false);
+  const before = inv.getCopiedItems().map(i => [i.getId(), i.getAmount()]);
+  Decay.pickUp({player: p, object: cannon.object});
+  assert.equal(Cannon.cannonOf(p), cannon); assert.equal(cannon.steel, 30);
+  assert.deepEqual(inv.getCopiedItems().map(i => [i.getId(), i.getAmount()]), before);
+});
+
+for (const freeSlots of [5, 6]) {
+  test(`pickup accounts for parts and both ammunition stacks with ${freeSlots} free slots`, () => {
+    const p = gunner({steel: 20}), cannon = built(p), inv = p.getInventory();
+    assert.equal(cannon.steel, 20);
+    inv.add(new core.Item(Items.GRANITE_CANNONBALL, 10), false);
+    assert.equal(Ammo.loadFromInventory(cannon, 10), 10);
+    assert.deepEqual([cannon.stage, cannon.steel, cannon.granite], [4, 20, 10]);
+    while (inv.getFreeSlots() > freeSlots) inv.add(new core.Item(Items.BRONZE_AXE, 1), false);
+    const before = inv.getCopiedItems().map(i => [i.getId(), i.getAmount()]);
+    const saved = JSON.stringify(p.getAttribute(Cannon.STATE_ATTRIBUTE));
+    Decay.pickUp({player: p, object: cannon.object});
+    if (freeSlots === 5) {
+      assert.equal(Cannon.cannonOf(p), cannon);
+      assert.deepEqual([cannon.steel, cannon.granite], [20, 10]);
+      assert.equal(JSON.stringify(p.getAttribute(Cannon.STATE_ATTRIBUTE)), saved);
+      assert.deepEqual(inv.getCopiedItems().map(i => [i.getId(), i.getAmount()]), before);
+    } else {
+      assert.equal(Cannon.cannonOf(p), null);
+      assert.equal(inv.getAmount(Items.STEEL_CANNONBALL), 20);
+      assert.equal(inv.getAmount(Items.GRANITE_CANNONBALL), 10);
+      for (const part of Cannon.KINDS.plain.parts) assert.equal(inv.getAmount(part), 1);
+    }
+  });
+}
+
+// Empty uses the owner's existing cannon; the tests account for every loaded ball.
+for (const headroom of [null, 30, 1, 0]) {
+  test(`owner Empty conserves loaded steel at stack headroom ${headroom}`, (t) => {
+    const MAX = 0x7fffffff, p = gunner({steel: 30}), cannon = built(p), inv = p.getInventory();
+    const id = Items.STEEL_CANNONBALL, def = core.ItemDefinition.forId(id);
+    assert.equal(id, 2); assert.equal(def.getId(), 2); assert.equal(def.getName(), 'Steel cannonball');
+    assert.equal(def.isStackable(), true);
+    assert.ok(cannon && cannon.stage === 4 && cannon.steel === 30 && cannon.granite === 0, 'real setup and load');
+    assert.equal(inv.getAmount(id), 0);
+    const held = headroom === null ? 0 : MAX - headroom;
+    if (held) inv.add(new core.Item(id, held), false);
+    assert.equal(inv.getAmount(id), held); assert.ok(inv.getFreeSlots() > 0);
+    const ground = () => core.ItemOnGroundManager.ownedBy(p.getUsername()).filter(g => g.getItem().getId() === id)
+      .reduce((sum, g) => sum + g.getItem().getAmount(), 0);
+    t.after(() => { for (const g of core.ItemOnGroundManager.ownedBy(p.getUsername())) core.ItemOnGroundManager.deregister(g); });
+    const before = inv.getAmount(id) + ground() + cannon.steel;
+    const saved = JSON.stringify(p.getAttribute(Cannon.STATE_ATTRIBUTE));
+    cannon.firing = true;
+    assert.equal(Ammo.empty({player: p, object: cannon.object}), true);
+    assert.equal(Cannon.cannonOf(p), cannon);
+    assert.equal(inv.getAmount(id) + ground() + cannon.steel, before, 'inventory + owner floor + cannon conserve steel');
+    if (headroom === null || headroom >= 30) {
+      assert.equal(cannon.steel, 0); assert.equal(inv.getAmount(id), held + 30);
+      assert.equal(cannon.firing, false, 'successful unload stops firing');
+    } else if (cannon.steel === 30) {
+      assert.equal(JSON.stringify(p.getAttribute(Cannon.STATE_ATTRIBUTE)), saved, 'refusal retains saved contents');
+      assert.equal(cannon.firing, true, 'refusal leaves firing unchanged');
+    }
+  });
+}
+
+test('Empty with no ammo slot refuses without changing the cannon or inventory', () => {
+  const p = gunner({steel: 30}), cannon = built(p), inv = p.getInventory();
+  assert.equal(cannon.steel, 30); assert.equal(inv.getAmount(Items.STEEL_CANNONBALL), 0);
+  while (inv.getFreeSlots() > 0) inv.add(new core.Item(Items.BRONZE_AXE, 1), false);
+  const before = inv.getCopiedItems().map(i => [i.getId(), i.getAmount()]);
+  const saved = JSON.stringify(p.getAttribute(Cannon.STATE_ATTRIBUTE));
+  cannon.firing = true;
+  assert.equal(Ammo.empty({player: p, object: cannon.object}), true);
+  assert.equal(Cannon.cannonOf(p), cannon); assert.equal(cannon.steel, 30); assert.equal(cannon.firing, true);
+  assert.equal(JSON.stringify(p.getAttribute(Cannon.STATE_ATTRIBUTE)), saved);
+  assert.deepEqual(inv.getCopiedItems().map(i => [i.getId(), i.getAmount()]), before);
+});
+
+test('Empty rejects a different player without changing the owner cannon', () => {
+  const owner = gunner({steel: 30}), cannon = built(owner);
+  const visitor = gunner({parts: [], steel: 0});
+  const saved = JSON.stringify(owner.getAttribute(Cannon.STATE_ATTRIBUTE));
+  assert.equal(cannon.steel, 30);
+  assert.equal(Ammo.empty({player: visitor, object: cannon.object}), true);
+  assert.equal(Cannon.cannonOf(owner), cannon); assert.equal(cannon.steel, 30);
+  assert.equal(visitor.getInventory().getAmount(Items.STEEL_CANNONBALL), 0);
+  assert.equal(JSON.stringify(owner.getAttribute(Cannon.STATE_ATTRIBUTE)), saved);
+  assert.ok(visitor.ticks.flat().includes(Ammo.MESSAGE.NOT_YOURS));
+});
+
+for (const steelHeadroom of [1, 20]) {
+  test(`Empty handles both ammunition types atomically at steel headroom ${steelHeadroom}`, () => {
+    const p = gunner({steel: 20}), cannon = built(p), inv = p.getInventory();
+    assert.equal(cannon.steel, 20);
+    inv.add(new core.Item(Items.GRANITE_CANNONBALL, 10), false);
+    assert.equal(Ammo.loadFromInventory(cannon, 10), 10);
+    assert.deepEqual([cannon.steel, cannon.granite], [20, 10]);
+    const held = 0x7fffffff - steelHeadroom;
+    inv.add(new core.Item(Items.STEEL_CANNONBALL, held), false);
+    assert.equal(inv.getAmount(Items.STEEL_CANNONBALL), held);
+    assert.equal(inv.getAmount(Items.GRANITE_CANNONBALL), 0);
+    assert.ok(inv.getFreeSlots() > 0);
+    const saved = JSON.stringify(p.getAttribute(Cannon.STATE_ATTRIBUTE));
+    Ammo.empty({player: p, object: cannon.object});
+    assert.equal(Cannon.cannonOf(p), cannon);
+    if (steelHeadroom === 1) {
+      assert.deepEqual([cannon.steel, cannon.granite], [20, 10]);
+      assert.equal(inv.getAmount(Items.STEEL_CANNONBALL), held);
+      assert.equal(inv.getAmount(Items.GRANITE_CANNONBALL), 0);
+      assert.equal(JSON.stringify(p.getAttribute(Cannon.STATE_ATTRIBUTE)), saved);
+    } else {
+      assert.deepEqual([cannon.steel, cannon.granite], [0, 0]);
+      assert.equal(inv.getAmount(Items.STEEL_CANNONBALL), held + 20);
+      assert.equal(inv.getAmount(Items.GRANITE_CANNONBALL), 10);
+    }
+  });
+}
+
+// Wiki (Turoth): "the dwarf multicannon is ineffective"; (Vyrewatch Sentinel): Cannons "Immune". The cannon targeted
+// both, and on Turoth its cannonballs could even land with the owner's broad ammo worn.
+test("a Turoth, a Vyrewatch Sentinel and the leafy superiors are never targeted (Wiki)", () => {
+  const p = gunner();
+  built(p);
+  for (const [id, x, y] of [
+    [core.NpcIdentifiers.TUROTH, 3260, 3262], [core.NpcIdentifiers.VYREWATCH_SENTINEL, 3261, 3262],
+    // The superiors are "leafy" like Turoth and Kurask (Wiki: Spiked Turoth, King kurask).
+    [core.NpcIdentifiers.SPIKED_TUROTH, 3258, 3262], [core.NpcIdentifiers.KING_KURASK, 3262, 3264],
+  ]) {
+    const npc = spawnNpc(id, x, y);
+    npc.getCombat().setUnderAttack(p);
+    assert.equal(Firing.canTarget(p, npc), false, `${npc.getDefinition().getName()} ${id}`);
+  }
+});
+
+// Wiki (Dwarf multicannon, 18 March 2026): "The dwarf multicannon no longer fires at sea creatures." The cannon
+// shot any of them in its zones that had an Attack option.
+test("sea creatures are never targeted (Wiki)", () => {
+  const p = gunner();
+  const cannon = built(p);
+  const shark = spawnNpc(core.NpcIdentifiers.BULL_SHARK, 3260, 3262);
+  shark.getCombat().setUnderAttack(p);
+  assert.ok(shark.getDefinition().getActions().includes("Attack"), "a sea creature has Attack");
+  assert.equal(Firing.canTarget(p, shark), false);
+  assert.equal(Firing.targetFor(cannon, p), null);
 });

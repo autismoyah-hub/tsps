@@ -233,8 +233,14 @@ function roomComplete(raid) {
     if(raid.bmrIndex===BMR_ENCOUNTERS.length-1)api.emitCustomEvent("tob:bmr-completed",{player:raid.player});
   }
 }
+/** The bandages are the Theatre's own supplies (Wiki: neither tradeable nor bankable): they stay behind. */
+function removeBandages(player) {
+  const bandages=player.getInventory().getAmount(core.ItemIdentifiers.BANDAGES_4);
+  if(bandages>0)player.getInventory().delete(core.ItemIdentifiers.BANDAGES_4,bandages);
+}
 function leave(raid, teleport=true) {
   RAIDS.delete(raid.player);
+  removeBandages(raid.player);
   clearRoom(raid);
   raid.player.getMovementQueue().setBlockMovement(false);
   raid.player.getArea()?.leave(raid.player,false);
@@ -583,7 +589,7 @@ function createArea() {
       return null;
     }
     canTeleport(){return false;}
-    postLeave(mobile,logout){if(mobile.isPlayer?.()){const raid=RAIDS.get(mobile.getAsPlayer());if(raid){RAIDS.delete(raid.player);clearRoom(raid);raid.player.getMovementQueue().setBlockMovement(false);}}super.postLeave(mobile,logout);}
+    postLeave(mobile,logout){if(mobile.isPlayer?.()){const raid=RAIDS.get(mobile.getAsPlayer());if(raid){RAIDS.delete(raid.player);clearRoom(raid);raid.player.getMovementQueue().setBlockMovement(false);removeBandages(raid.player);}}super.postLeave(mobile,logout);}
   })();
 }
 function enter({player,objectId}) {
@@ -774,4 +780,6 @@ module.exports=function registerEntryTheatreOfBlood(pluginApi) {
   api.onItemAction(item);
   api.onPlayerLogin(login);
 };
+/** The player has a solo raid here: a completed one restored at login keeps them in its reward room. */
+module.exports.hasRaid=player=>RAIDS.has(player);
 module.exports._test={ROOMS,NYLO_WAVES,BMR_ENCOUNTERS,BMR_WAVE,TREASURE_ENTRANCE_TILE,TREASURE_ROOM_ENTRY_TILE,REWARD_CHEST_TILE,readNyloSpec,firstNyloWaveAt,soloNyloPillarHitpoints,activeNylocas,updateNyloExpiry,typeIndex,quadrant,behindBloatPillar,bloatHands,dealtDamage,modifyVerzikHit,verzikBeforeDeath,npcDeath,spawnVerzikAdds,NPC_RAIDS,startMaze,maiden,roomComplete,nextWave,process,createArea,restoreCompletedRaid,RAIDS,xarpus,splitNylocas,approachNylocas,attackNylocas,allowDawnbringer,item,choosePillar,pillarTarget,startBmr,startRoom,passage,ensureEscapeCrystal};

@@ -47,12 +47,10 @@
  *  - The Sisters' sniff and the mansion are not instanced; the mansion trellis is
  *    climbed with a quest handler (the shared Ladders plugin has no "Trellis").
  *  - Lighting a pot of weeds uses a short functional message, not transcript text.
- *  - Felkrash names the cat and turns it wily in OSRS; no wily-cat item exists here,
- *    so completion only checks for an overgrown cat.
  */
 module.exports = function registerRatcatchersQuest(api) {
   const { Equipment, ItemIdentifiers, Location, NpcIdentifiers, ObjectIdentifiers, Skill } = api.core;
-  const { registerQuest, refreshQuestList, startTranscript } = require("../QuestRuntime");
+  const { registerQuest, refreshQuestList, startTranscript, giveReward } = require("../QuestRuntime");
 
   const PAGE = "Ratcatchers";
   const START_HOOK = "quest:ratcatchers:start";
@@ -97,10 +95,12 @@ module.exports = function registerRatcatchersQuest(api) {
   const MANSION_RAT_NW_NPC_ID = 6224;
   const MANSION_RAT_SE_1_NPC_ID = 6226;
   const MANSION_RAT_SE_2_NPC_ID = 6225;
+  // Each bit is the varbit that hides that rat's multinpc (osrs-dumps dump.npc): vc_partyrat_multi2 (6225) uses
+  // vc_raton_off2 (1425) and vc_partyrat_multi3 (6226) uses vc_raton_off3 (1426).
   const MANOR_UPPER_RAT_FLAGS = new Map([
     [MANSION_RAT_NW_NPC_ID, 1 << 0], // (2832,5098,1), north-west room
-    [MANSION_RAT_SE_1_NPC_ID, 1 << 1], // (2858,5087,1), south-east room
-    [MANSION_RAT_SE_2_NPC_ID, 1 << 2], // (2861,5093,1), south-east room
+    [MANSION_RAT_SE_2_NPC_ID, 1 << 1], // 6225 (2861,5093,1), south-east room
+    [MANSION_RAT_SE_1_NPC_ID, 1 << 2], // 6226 (2858,5087,1), south-east room
   ]);
 
   const STAGE_STARTED = 1;
@@ -247,6 +247,10 @@ module.exports = function registerRatcatchersQuest(api) {
     "Overgrown hellcat",
     "Kitten",
     "Hell-kitten",
+    "Wily cat",
+    "Wily hellcat",
+    "Lazy cat",
+    "Lazy hellcat",
   ]);
 
   // Warehouse rat holes upstairs (cast of ids 10346-10349 at 3265-3273,3377-3384).
@@ -269,6 +273,13 @@ module.exports = function registerRatcatchersQuest(api) {
   const PORT_SARIM_ZONE = { minX: 2995, maxX: 3050, minY: 3190, maxY: 3245 };
   const MANSION_ARRIVAL = { x: 2848, y: 5108, z: 0 };
   const ARDOUGNE_ARRIVAL = { x: 2562, y: 3321, z: 0 };
+  // Wiki (Rat Pits): the pits need partial completion of Ratcatchers, each opening during the quest. The
+  // Port Sarim manhole (Varrock's pit shares the loc id, so match the tile) opens once Smokin' Joe sends
+  // the player to The Face (17), since the quest then has them climb down to Felkrash (Ratcatchers/Quick guide).
+  const PORT_SARIM_MANHOLE = { id: ObjectIdentifiers.MANHOLE_5, x: 3018, y: 3232, z: 0 };
+  const FACE_PAGE = "The Face";
+  // Transcript:The Face lists this line under historical dialogue; the Wiki gives no current refusal.
+  const FACE_MANHOLE_REFUSAL = "historical-dialogue-attempting-to-enter-the-manhole-before-smokin-joe-tells-the-player-about-the-face-in-ratcatchers";
 
   // Transcript step ids the plugin acts on.
   const SNIFF_ACTION_ID = "y8ZblR";
@@ -280,12 +291,21 @@ module.exports = function registerRatcatchersQuest(api) {
   const APOTHECARY_MIXES_ACTION_ID = "MJKZu1";
   const HAND_IN_ANTIPOISON_ACTION_ID = "RCYv7q";
   const CAT_GROWS_ACTION_ID = "3-zmem";
+  // Felkrash's post-quest "Can you train my cat for me?": the training line and its three
+  // sibling conditions (an overgrown cat; a wily cat already; neither).
+  const WILY_TRAINING_ACTION_ID = "_ltgrJ";
+  const TRAIN_OVERGROWN_CONDITION_ID = "zwP5KS";
+  const TRAIN_HAS_WILY_CONDITION_ID = "y2nrAo";
+  const TRAIN_NO_CAT_CONDITION_ID = "MaGFY6";
   const QUEST_COMPLETE_ACTION_ID = "LHwBkP";
 
   let quest;
 
   const held = (player, itemId, amount = 1) => player.getInventory().getAmount(itemId) >= amount;
   const heldAny = (player, itemIds) => [...itemIds].some((itemId) => held(player, itemId));
+  /** Carried or banked (bank tabs only: the search tab repeats them, placeholders hold 0). */
+  const owned = (player, itemId) => held(player, itemId) || player.getBanks().some((bank, tab) =>
+    tab !== api.core.Bank.BANK_SEARCH_TAB_INDEX && Number(bank?.getAmount(itemId) ?? 0) > 0);
 
   function ratcatchers(variant) {
     return { page: PAGE, variant };
@@ -413,6 +433,17 @@ module.exports = function registerRatcatchersQuest(api) {
     const names = followerCatNames(player);
     for (const name of GROWN_CAT_NPC_NAMES) if (names.has(name)) return true;
     return false;
+  }
+
+  /** The Pets plugin's answer: an overgrown cat to train, and an existing wily or lazy cat. */
+  function wilyCatStatus(player) {
+    const request = { player, overgrown: false, wily: false };
+    api.emitCustomEvent("pets:wily-cat-status", request);
+    return request;
+  }
+
+  function trainWilyCat(player) {
+    api.emitCustomEvent("pets:train-wily-cat", { player, trained: false });
   }
 
   function hasOvergrownCat(player) {
@@ -604,7 +635,7 @@ module.exports = function registerRatcatchersQuest(api) {
         return ratcatchers("learning-to-charm-animals-using-a-coin-on-the-snake-charmer-s-money-pot");
       }
       if (stage === STAGE_HAS_CHARM) {
-        if (held(player, SNAKE_CHARM_ITEM_ID) && held(player, MUSIC_SCROLL_ITEM_ID)) {
+        if (owned(player, SNAKE_CHARM_ITEM_ID) && owned(player, MUSIC_SCROLL_ITEM_ID)) {
           return ratcatchers("learning-to-charm-animals-talking-to-the-snake-charmer-again");
         }
         return ratcatchers("learning-to-charm-animals-reclaiming-the-snake-charm-if-lost");
@@ -688,11 +719,21 @@ module.exports = function registerRatcatchersQuest(api) {
       case "hsahNP":
         return held(player, SNAKE_CHARM_ITEM_ID);
       case "SpbdeZ":
-        return !held(player, SNAKE_CHARM_ITEM_ID);
+        return !owned(player, SNAKE_CHARM_ITEM_ID);
       case "NqCxPD":
-        return !held(player, MUSIC_SCROLL_ITEM_ID);
+        return !owned(player, MUSIC_SCROLL_ITEM_ID);
       case "nqrJQU":
-        return !held(player, SNAKE_CHARM_ITEM_ID) && !held(player, MUSIC_SCROLL_ITEM_ID);
+        return !owned(player, SNAKE_CHARM_ITEM_ID) && !owned(player, MUSIC_SCROLL_ITEM_ID);
+      case TRAIN_OVERGROWN_CONDITION_ID: {
+        const cats = wilyCatStatus(player);
+        return cats.overgrown && !cats.wily;
+      }
+      case TRAIN_HAS_WILY_CONDITION_ID:
+        return wilyCatStatus(player).wily;
+      case TRAIN_NO_CAT_CONDITION_ID: {
+        const cats = wilyCatStatus(player);
+        return !cats.overgrown && !cats.wily;
+      }
       case "xdcQte":
         return !hasOvergrownCat(player);
       case "FUEPJO":
@@ -805,7 +846,11 @@ module.exports = function registerRatcatchersQuest(api) {
           !quest.isComplete(player)
         ) {
           quest.complete(player);
+          trainWilyCat(player);
         }
+        return;
+      case WILY_TRAINING_ACTION_ID:
+        if (quest.isComplete(player)) trainWilyCat(player);
         return;
       case QUEST_COMPLETE_ACTION_ID:
         // Kept as a fallback for a transcript replay that reaches the marker.
@@ -844,9 +889,15 @@ module.exports = function registerRatcatchersQuest(api) {
       player.sendMessage(`You need ${cost} coins to pay the snake charmer.`);
       return;
     }
+    // Room for what he hands over first: the coins were taken and a full inventory lost the charm and scroll.
+    const wanted = [SNAKE_CHARM_ITEM_ID, MUSIC_SCROLL_ITEM_ID].filter((id) => !held(player, id));
+    const freed = inventory.getAmount(COINS_ITEM_ID) === cost ? 1 : 0;
+    if (inventory.getFreeSlots() + freed < wanted.length) {
+      player.sendMessage("You don't have enough inventory space.");
+      return;
+    }
     inventory.deleteNumber(COINS_ITEM_ID, cost);
-    if (!held(player, SNAKE_CHARM_ITEM_ID)) inventory.adds(SNAKE_CHARM_ITEM_ID, 1);
-    if (!held(player, MUSIC_SCROLL_ITEM_ID)) inventory.adds(MUSIC_SCROLL_ITEM_ID, 1);
+    for (const id of wanted) inventory.adds(id, 1);
     setStage(player, STAGE_HAS_CHARM);
   }
 
@@ -909,9 +960,9 @@ module.exports = function registerRatcatchersQuest(api) {
         return;
       }
       if (stage === STAGE_HAS_CHARM && text.includes("There you go. Now if you don't mind")) {
-        const inventory = player.getInventory();
-        if (!held(player, SNAKE_CHARM_ITEM_ID)) inventory.adds(SNAKE_CHARM_ITEM_ID, 1);
-        if (!held(player, MUSIC_SCROLL_ITEM_ID)) inventory.adds(MUSIC_SCROLL_ITEM_ID, 1);
+        // A banked charm or scroll is not handed out again; what he gives that does not fit goes to the floor.
+        if (!owned(player, SNAKE_CHARM_ITEM_ID)) giveReward(player, SNAKE_CHARM_ITEM_ID, 1);
+        if (!owned(player, MUSIC_SCROLL_ITEM_ID)) giveReward(player, MUSIC_SCROLL_ITEM_ID, 1);
       }
     }
   }
@@ -1129,6 +1180,17 @@ module.exports = function registerRatcatchersQuest(api) {
     if (!player || !location) return;
     event.handled = true;
     player.moveTo(new Location(location.x, location.y - 1, 1));
+  }
+
+  /** Ladders' "ladders:climb" claim: before stage 17 The Face turns the player away from the Port Sarim manhole. */
+  function guardPortSarimManhole(request) {
+    const { player, object, objectId } = request;
+    if (!quest || !player || objectId !== PORT_SARIM_MANHOLE.id) return;
+    const at = object?.getLocation?.();
+    if (!at || at.getX() !== PORT_SARIM_MANHOLE.x || at.getY() !== PORT_SARIM_MANHOLE.y || at.getZ() !== PORT_SARIM_MANHOLE.z) return;
+    if (quest.getStage(player) >= STAGE_JOE_TOLD) return;
+    request.handled = true;
+    startTranscript(api, player, FACE_NPC_ID, FACE_PAGE, FACE_MANHOLE_REFUSAL);
   }
 
   function handleNpcDeath(event) {
@@ -1365,6 +1427,9 @@ module.exports = function registerRatcatchersQuest(api) {
   api.onItemOnItem(handleItemOnItem);
   api.onItemOnObject(handleItemOnObject);
   api.onObjectInteraction(handleObjectInteraction);
+  api.onCustomEvent("ladders:climb", guardPortSarimManhole);
   api.onNpcDeath(handleNpcDeath);
   api.onPlayerLogin(handleLogin);
+  require("../ratcatchers/CatNaming.Ratcatchers")(api, {quest, felkrashId: FELKRASH_NPC_ID,
+    understandsCats: player => wearingCatspeakAmulet(player) || questComplete(player, "dragon_slayer_ii")});
 };

@@ -10,9 +10,7 @@
 const FoodPlugin = require("../../items/Food.plugin");
 const { createBotPlayer } = require("../../bots/behaviours/spawn/PlayerFactory.PlayerBots");
 const { ATTR_SKIP_PERSISTENCE } = require("../../bots/runtime/PersistenceConstants.PlayerBots");
-const { ShopManager } = require("../../../src/main/typescript/elvarg/game/model/container/shop/ShopManager");
-
-const CASTLE_WARS_TICKET_EXCHANGE_SHOP = 1432;
+const RewardShop = require("./RewardShop.CastleWars");
 const SEED_BOTS_CONFIG_KEY = "CastleWars:seedBots";
 const BOT_ROLE_ATTRIBUTE = "castlewars:bot-role";
 const BOT_TIER_ATTRIBUTE = "castlewars:bot-tier";
@@ -77,7 +75,7 @@ function castleWarsBotUsername(teamId, index) {
 
 function populateCastleWarsBots(teamId, tier, maxed = false) {
   const opposingTeam = game.opposingTeam(teamId);
-  const settings = game.settings ?? { teamSize: BOTS_PER_TEAM, opponent: "mixed" };
+  const settings = game.practice === true && game.settings ? game.settings : { teamSize: BOTS_PER_TEAM, opponent: "mixed" };
   if (settings.opponent === "none") return;
   const ownRole = settings.opponent === "scorer" ? "defender" : settings.opponent === "defender" ? "scorer" : null;
   for (let index = 0; index < settings.teamSize; index++) {
@@ -110,7 +108,6 @@ function chooseTeam(sizes, requestedTeam) {
   return sizes[requestedTeam] > sizes[other(requestedTeam)] ? null : requestedTeam;
 }
 
-const MESBOX_CHAT = 115;
 const ENTRY_REFUSED = "Some items are stopping you from entering the Castle Wars waiting area. See the chat for details.";
 
 /**
@@ -119,11 +116,10 @@ const ENTRY_REFUSED = "Some items are stopping you from entering the Castle Wars
  */
 function refuseEntry(player, reason) {
   player.sendMessage(reason);
-  player.getPacketSender().sendTypedMessage(MESBOX_CHAT, ENTRY_REFUSED);
   player.getDialogueManager().startDialogues(new core.DialogueChainBuilder().add(new core.StatementDialogue(0, ENTRY_REFUSED)));
 }
 
-function joinWaitingRoom(player, requestedTeam, botTier = undefined, portalGod = requestedTeam ?? "guthix", maxed = false) {
+function joinWaitingRoom(player, requestedTeam, botTier = undefined, portalGod = requestedTeam ?? "guthix", maxed = false, practice = false) {
   const phase = game.getPhase();
   if (phase === game.PHASE.ACTIVE || phase === game.PHASE.ENDING) {
     player.sendMessage("There's already a Castle Wars game running. Please wait.");
@@ -140,6 +136,9 @@ function joinWaitingRoom(player, requestedTeam, botTier = undefined, portalGod =
   }
 
   const counts = game.queueCounts();
+  // Lanthus' practice settings belong to the match "Join practice" started: a join into an empty lobby starts a new
+  // match, practice only when it came from that option.
+  if (counts[data.TEAM.SARADOMIN] === 0 && counts[data.TEAM.ZAMORAK] === 0 && player.isPlayerBot() !== true) game.practice = practice === true;
   const teamId = chooseTeam(counts, requestedTeam);
   if (!teamId) {
     const team = game.getTeamData(requestedTeam).name;
@@ -147,7 +146,8 @@ function joinWaitingRoom(player, requestedTeam, botTier = undefined, portalGod =
     player.sendMessage(`The ${team} team is full, try ${other}.`);
     return;
   }
-  if (counts[teamId] >= (game.settings?.teamSize ?? Infinity)) {
+  // A team-size cap is a practice setting; public games have none (Wiki: Castle Wars).
+  if (game.practice === true && counts[teamId] >= (game.settings?.teamSize ?? Infinity)) {
     player.sendMessage("That Castle Wars team is full.");
     return;
   }
@@ -224,6 +224,18 @@ function useCastleWarsPortal(event) {
   }
 }
 
+/** The cache keeps its Disable-XP label; this prompt also restores previously disabled gains. */
+function toggleCombatExperience({ player }) {
+  const disabled = player.getAttribute(data.COMBAT_XP_DISABLED_ATTRIBUTE) === true;
+  api.sendMultiChatboxPrompt(player, `${disabled ? "Enable" : "Disable"} combat XP during Castle Wars?`,
+    "Yes", () => {
+      if ((player.getAttribute(data.COMBAT_XP_DISABLED_ATTRIBUTE) === true) !== disabled) return;
+      player.setAttribute(data.COMBAT_XP_DISABLED_ATTRIBUTE, !disabled);
+      player.sendMessage(`Combat XP is now ${disabled ? "enabled" : "disabled"} during Castle Wars.`);
+    },
+    "Cancel", () => {});
+}
+
 module.exports = function attachCastleWarsLobby(registry, castleWars) {
   api = registry;
   game = castleWars;
@@ -234,7 +246,8 @@ module.exports = function attachCastleWarsLobby(registry, castleWars) {
   game.PRACTICE_MAXED_KEY = PRACTICE_MAXED_ATTRIBUTE;
   game.joinFromLobby = joinWaitingRoom;
   registry.onObjectInteraction(useCastleWarsPortal);
-  registry.onNpcInteraction("Lanthus", { Trade: ({ player }) => ShopManager.open(player, CASTLE_WARS_TICKET_EXCHANGE_SHOP) });
+  registry.persistAttribute?.(data.COMBAT_XP_DISABLED_ATTRIBUTE, false);
+  registry.onNpcInteraction("Lanthus", { Trade: RewardShop.open, "Disable-XP": toggleCombatExperience });
 };
 
 module.exports._test = { chooseTeam, seedsBots, SEED_BOTS_CONFIG_KEY, BOT_TIER_OPTIONS };

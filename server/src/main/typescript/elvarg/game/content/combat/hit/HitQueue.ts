@@ -1,7 +1,9 @@
 import { CombatFactory } from "../CombatFactory";
+import { PluginManager } from "../../../../plugins/PluginManager";
 import type { Mobile } from "../../../entity/impl/Mobile";
 import { World } from "../../../World";
 import { HitDamage } from "./HitDamage";
+import { HitMask } from "./HitMask";
 import { PendingHit } from "./PendingHit";
 
 type ScheduledHit = { hit: PendingHit; revealCycle: number };
@@ -13,6 +15,8 @@ export class HitQueue {
     private readonly pendingDamage: HitDamage[] = [];
     private lastProcessedCycle = -1;
     private lastAppliedHit: HitDamage | null = null;
+    private poisonSplats = 0;
+    private incomingGeneration = 0;
 
     constructor(private readonly character: Mobile) {}
 
@@ -43,6 +47,10 @@ export class HitQueue {
             HitQueue.active.delete(this);
             return;
         }
+
+        // NPC attacks queued before this turn read the protection prayer now, after this tick's
+        // clicks (CombatFactory.addPendingHit), whenever they land; held or not.
+        for (const { hit } of this.pendingHits) CombatFactory.applyProtectionPrayer(hit);
 
         // Wiki: Animation stall. A full stall queues hits up on the player and delivers them only
         // once the action completes. The hold is read here, at impact, rather than when the hit was
@@ -84,6 +92,7 @@ export class HitQueue {
         // tick of self-damage every time a proc queued up behind a delayed special. The held
         // entries are put back as a block, so the chain keeps the order the client shows it in.
         const held: HitDamage[] = [];
+        const generation = this.incomingGeneration;
         while (this.pendingDamage.length > 0) {
             const damage = this.pendingDamage.shift()!;
             if (stalled && HitQueue.incomingFromOther(damage, character)) {
@@ -92,7 +101,9 @@ export class HitQueue {
             }
             character.addTickHit(this.applyDamage(damage));
         }
-        if (held.length > 0) {
+        // clearIncoming ran while the drain was going (a phoenix necklace fired): the held hits were
+        // incoming too, so they go with it.
+        if (held.length > 0 && generation === this.incomingGeneration) {
             this.pendingDamage.unshift(...held);
         }
         if (!this.hasPendingWork()) HitQueue.active.delete(this);
@@ -104,13 +115,30 @@ export class HitQueue {
         return source != null && source !== owner;
     }
 
+    /** Whether the owner's queue has already been drained this cycle (its turn has passed). */
+    hasProcessed(cycle: number): boolean {
+        return this.lastProcessedCycle === cycle;
+    }
+
     /** Takes a hit off the owner's hitpoints, then runs effects that react to the result. */
     private applyDamage(hit: HitDamage): HitDamage {
         const applied = this.character.decrementHealth(hit);
         if (applied.getDamage() > 0 || this.character.getHitpoints() > 0) this.lastAppliedHit = applied;
+        if (applied.getHitmask() === HitMask.GREEN && applied.getDamage() > 0) this.poisonSplats++;
         hit.notifyApplied(applied.getHealthLost());
+        if (hit.isReflected() && applied.getHealthLost() > 0) {
+            // "combat:reflected-damage" { target, source, hit, taken }: a rebound (recoil, Vengeance, Retribution)
+            // that cost its target health. Reflections skip the resolved-hit hooks, so this is where they land.
+            PluginManager.emitCustomEvent("combat:reflected-damage",
+                { target: this.character, source: hit.getSource(), hit: applied, taken: applied.getHealthLost() });
+        }
         CombatFactory.handleRedemption(this.character);
         return applied;
+    }
+
+    /** How many poison-type (green) splats with damage have landed; it only grows. */
+    getPoisonSplatCount(): number {
+        return this.poisonSplats;
     }
 
     /** The last hit taken; after a death it is the killing blow. */
@@ -138,8 +166,51 @@ export class HitQueue {
         HitQueue.active.delete(this);
     }
 
+    /**
+     * Drops what is still on its way in from other combatants - delayed hits, the rest of a
+     * multi-hit special - and keeps the owner's own pending damage (poison, recoil).
+     */
+    clearIncoming(): void {
+        this.incomingGeneration++;
+        this.pendingHits.length = 0;
+        for (let i = this.pendingDamage.length - 1; i >= 0; i--) {
+            if (HitQueue.incomingFromOther(this.pendingDamage[i], this.character)) this.pendingDamage.splice(i, 1);
+        }
+        if (!this.hasPendingWork()) HitQueue.active.delete(this);
+    }
+
+    /** Changes every time clearIncoming runs; deferred hits compare it to know they were cancelled. */
+    getIncomingGeneration(): number {
+        return this.incomingGeneration;
+    }
+
+    /**
+     * Drops the hits `attacker` still has on their way to anyone. Called when it dies: process()
+     * already drops them while it is dead, so this keeps a hit launched before the death from
+     * landing - and crediting - after a respawn of the same object.
+     */
+    static dropHitsFrom(attacker: Mobile): void {
+        for (const queue of [...this.active]) {
+            const hits = queue.pendingHits;
+            for (let i = hits.length - 1; i >= 0; i--) {
+                if (hits[i].hit.getAttacker() === attacker) hits.splice(i, 1);
+            }
+            if (!queue.hasPendingWork()) this.active.delete(queue);
+        }
+    }
+
     hasPendingWork(): boolean {
         return this.pendingHits.length > 0 || this.pendingDamage.length > 0;
+    }
+
+    /** Whether another player's hit is on its way to the owner: queued, not landed yet. */
+    hasIncomingPlayerHit(): boolean {
+        return this.pendingHits.some(({ hit }) => hit.getAttacker()?.isPlayer?.() === true && hit.getAttacker() !== this.character);
+    }
+
+    /** Whether this exact hit is still queued, independent of other hits from its attacker. */
+    hasPendingHit(hit: PendingHit): boolean {
+        return this.pendingHits.some((entry) => entry.hit === hit);
     }
 
     hasPendingHitFrom(attacker: Mobile): boolean {

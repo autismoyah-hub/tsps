@@ -1,5 +1,5 @@
 // Run with: node --test server/tests/araxxor-combat.test.cjs
-// Pure Araxxor combat math: no server boot needed.
+// Araxxor combat math; the enrage test loads the cache and the real NPC (after yarn build).
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const Shared = require("../plugins/bosses/araxxor/Shared.Araxxor");
@@ -16,6 +16,35 @@ test("lair bounds cover the arena but not the tunnel approach", () => {
   assert.equal(Area.insideLair(at(3680, 9830)), false, "the webbed-tunnel approach");
   assert.equal(Area.insideLair(at(3633, 9821, 1)), false, "wrong plane");
   assert.equal(Area.insideLair(null), false);
+});
+
+test("Araxxor access requires boosted Slayer 92, Priest in Peril and an araxyte or spider task", () => {
+  class CoreArea {}
+  class PrivateArea {}
+  class Boundary {}
+  const events = [];
+  const core = { Area: CoreArea, PrivateArea, Boundary, Skill: { SLAYER: 18 } };
+  Area.attach({
+    core,
+    registerArea() {},
+    emitCustomEvent(name, request) {
+      events.push(name);
+      if (name === "quest:is-complete") request.complete = request.player.priestInPeril;
+      if (name === "slayer:current-task") request.task = request.player.task;
+    },
+  });
+  const player = (level, priestInPeril, task) => ({
+    priestInPeril,
+    task,
+    getSkillManager: () => ({ getCurrentLevel: skill => skill === core.Skill.SLAYER ? level : 1 }),
+  });
+  assert.match(Area._test.entryReason(player(91, true, { name: "Araxytes" })), /92/);
+  assert.match(Area._test.entryReason(player(92, false, { name: "Araxytes" })), /Priest in Peril/);
+  assert.match(Area._test.entryReason(player(92, true, { name: "Vampyres" })), /araxyte|spider/i);
+  assert.equal(Area._test.entryReason(player(92, true, { name: "Spiders" })), null);
+  assert.equal(Area._test.entryReason(player(92, true, { name: "Araxytes" })), null);
+  assert.equal(events.filter(name => name === "slayer:current-task").length, 3,
+    "the Slayer task is queried only after level and quest checks pass");
 });
 
 test("edge distance measures to the 7x7 body, not its corner", () => {
@@ -413,3 +442,190 @@ test("Araxxor cleanup leaves incoming hits alone for players without a lair", ()
   assert.equal(cleared, 1, "cleanup ends with the actual instance");
 });
 
+test("the harvest pet roll and the destroyed corpse's Nid roll are loot, not extra kills", () => {
+  const Corpse = require("../plugins/bosses/araxxor/Corpse.Araxxor");
+  const events = [];
+  const core = {
+    Animation: class {},
+    Item: class {},
+    ItemDefinition: { forId: () => ({ getNoteId: () => -1, isNoted: () => false, isStackable: () => false }) },
+    World: { getRemoveNPCQueue: () => ({ push() {} }), getProcessCycle: () => 0 },
+    Task: class { stop() {} },
+    TaskManager: { submit: (task) => task.execute() },
+  };
+  const api = {
+    core,
+    persistAttribute() {},
+    onNpcDeath() {},
+    onCustomEvent() {},
+    onNpcInteraction() {},
+    emitCustomEvent(name, payload) { events.push([name, payload]); },
+    getItemOnGroundManager: () => ({ registerLocation() {} }),
+  };
+  Corpse.attach(api);
+  const corpse = (session) => ({
+    getId: () => Shared.CORPSE_ID,
+    getAttribute: () => session,
+    isRegistered: () => true,
+    getLocation: () => ({}),
+    performAnimation() {},
+  });
+  const player = { performAnimation() {} };
+  const originalRandom = Math.random;
+  Math.random = () => 0; // roll Nid (1/1500) on destroy
+  try {
+    const harvested = corpse({ pendingPet: [{ itemId: Shared.NID_ITEM_ID, amount: 1 }], stash: [] });
+    harvested.__session = { corpse: harvested, pendingPet: [{ itemId: Shared.NID_ITEM_ID, amount: 1 }], stash: [] };
+    harvested.getAttribute = () => harvested.__session;
+    Corpse.harvest({ player, npc: harvested });
+    const destroyed = corpse(null);
+    destroyed.__session = { corpse: destroyed, stash: [] };
+    destroyed.getAttribute = () => destroyed.__session;
+    Corpse.destroyConfirmed({ player, npc: destroyed });
+    const rolls = events.filter(([name]) => name === "npc-drops:roll").map(([, payload]) => payload);
+    assert.equal(rolls.length, 2, "the pet and the destroy Nid roll each emit once");
+    for (const roll of rolls) assert.equal(roll.countKill, false, "neither re-roll tallies another kill");
+    assert.deepEqual(rolls.map((roll) => roll.drops[0].itemId), [Shared.NID_ITEM_ID, Shared.NID_ITEM_ID]);
+  } finally {
+    Math.random = originalRandom;
+  }
+});
+
+test("a Nid from the death roll or from Destroy reaches the listeners after the corpse's own stash hook", () => {
+  const Corpse = require("../plugins/bosses/araxxor/Corpse.Araxxor");
+  const handlers = new Map();
+  const core = {
+    Animation: class {},
+    Item: class {},
+    ItemDefinition: { forId: () => ({ getNoteId: () => -1, isNoted: () => false, isStackable: () => false }) },
+    World: { getRemoveNPCQueue: () => ({ push() {} }), getProcessCycle: () => 0 },
+    Task: class { stop() {} },
+    TaskManager: { submit: (task) => task.execute() },
+  };
+  // A synchronous bus: Corpse attaches first (bosses/ loads before npcs/Pets.plugin.js), the pet listener after it.
+  const api = {
+    core, persistAttribute() {}, onNpcDeath() {}, onNpcInteraction() {},
+    onCustomEvent(name, handler) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+    emitCustomEvent(name, payload) { for (const handler of handlers.get(name) ?? []) handler(payload); },
+    getItemOnGroundManager: () => ({ registerLocation() {} }),
+  };
+  Corpse.attach(api);
+  const pets = [];
+  api.onCustomEvent("npc-drops:roll", (event) => {
+    for (const drop of event.drops) if (drop.itemId === Shared.NID_ITEM_ID) pets.push(event.countKill);
+  });
+  const corpse = () => {
+    const npc = { getId: () => Shared.CORPSE_ID, isRegistered: () => true, getLocation: () => ({}), performAnimation() {} };
+    const session = { corpse: npc, stash: [], pendingPet: [] };
+    npc.getAttribute = () => session;
+    return npc;
+  };
+  const player = { performAnimation() {} };
+
+  const harvested = corpse();
+  api.emitCustomEvent("npc-drops:roll", { npc: harvested, npcId: Shared.BOSS_ID, drops: [{ itemId: Shared.NID_ITEM_ID, amount: 1 }] });
+  assert.deepEqual(pets, [], "the death roll holds Nid back until the corpse is used");
+  Corpse.harvest({ player, npc: harvested });
+  assert.deepEqual(pets, [false], "Harvest hands the held Nid over, once");
+
+  pets.length = 0;
+  const originalRandom = Math.random;
+  Math.random = () => 0; // roll Nid (1/1500) on destroy
+  try {
+    Corpse.destroyConfirmed({ player, npc: corpse() });
+  } finally {
+    Math.random = originalRandom;
+  }
+  assert.deepEqual(pets, [false], "Destroy's own Nid roll is handed over");
+});
+
+// The collection log, the clan loot broadcast and the loot notifications all read "npc-drops:roll" a microtask later,
+// so the harvested loot is sent as its own roll (the death roll is emptied); a Destroy logs only the clue it keeps.
+test("the harvest's loot goes out as one npc-drops:roll (log, clan broadcast), a Destroy logs only its clue", () => {
+  const Corpse = require("../plugins/bosses/araxxor/Corpse.Araxxor");
+  const events = [];
+  const core = {
+    Animation: class {},
+    Item: class {},
+    ItemDefinition: { forId: () => ({ getNoteId: () => -1, isNoted: () => false, isStackable: () => false }) },
+    World: { getRemoveNPCQueue: () => ({ push() {} }), getProcessCycle: () => 0 },
+    Task: class { stop() {} },
+    TaskManager: { submit: (task) => task.execute() },
+  };
+  Corpse.attach({
+    core, persistAttribute() {}, onNpcDeath() {}, onCustomEvent() {}, onNpcInteraction() {},
+    emitCustomEvent(name, payload) { events.push([name, payload]); },
+    getItemOnGroundManager: () => ({ registerLocation() {} }),
+  });
+  const WHIP = 4151;
+  const corpseWith = () => {
+    const npc = { getId: () => Shared.CORPSE_ID, isRegistered: () => true, getLocation: () => ({}), performAnimation() {} };
+    const session = { corpse: npc, stash: [] };
+    npc.getAttribute = () => session;
+    // The death roll, as NpcDrops hands it over: stashed, and emptied so nothing is logged at the death.
+    const death = { npc, npcId: Shared.BOSS_ID, drops: [{ itemId: WHIP, amount: 1 }, { itemId: Shared.ELITE_CLUE_ITEM_ID, amount: 1 }] };
+    Corpse.stashGenerated(death);
+    assert.deepEqual(death.drops, [], "the death roll logs nothing");
+    return npc;
+  };
+  const logged = () => events.filter(([name]) => name === "collection-log:obtain").map(([, request]) => request.itemId);
+  const rolls = () => events.filter(([name]) => name === "npc-drops:roll").map(([, request]) => request);
+  const player = { performAnimation() {} };
+  Corpse.harvest({ player, npc: corpseWith() });
+  assert.equal(rolls().length, 1, "harvested: one roll");
+  assert.deepEqual(rolls()[0].drops.map((drop) => drop.itemId), [WHIP, Shared.ELITE_CLUE_ITEM_ID], "all of it");
+  assert.equal(rolls()[0].countKill, false, "the death roll counted the kill");
+  assert.equal(rolls()[0].player, player);
+  assert.deepEqual(logged(), [], "logged through the roll, not twice");
+  events.length = 0;
+  const originalRandom = Math.random;
+  Math.random = () => 0.99; // no Nid
+  try {
+    Corpse.destroyConfirmed({ player, npc: corpseWith() });
+  } finally {
+    Math.random = originalRandom;
+  }
+  assert.deepEqual(logged(), [Shared.ELITE_CLUE_ITEM_ID], "destroyed: only the clue it keeps");
+});
+
+// Wiki (Araxxor/Strategies): the enrage "will additionally increase his Defence level by 35, Magic by 28 and Ranged by 31".
+test("the enrage raises Defence by 35, Magic by 28 and Ranged by 31 on the real NPC, and nowhere else", async () => {
+  const path = require("node:path");
+  require("../dist/Server").Server.installProductionPathResolver();
+  const { CachePipeline } = require("../dist/game/cache/CachePipeline");
+  const { NpcDefinitionLoader } = require("../dist/game/definition/loader/impl/NpcDefinitionLoader");
+  const { NPC } = require("../dist/game/entity/impl/npc/NPC");
+  const { PluginManager } = require("../dist/plugins/PluginManager");
+  await CachePipeline.initialize(path.resolve(__dirname, ".."));
+  new NpcDefinitionLoader().load();
+  const core = PluginManager.getCoreApi();
+  const Combat = require("../plugins/bosses/araxxor/Combat.Araxxor");
+  Combat.attach(new Proxy({ core, getPrayerHandler: () => ({}) }, { get: (t, k) => (k in t ? t[k] : () => {}) }));
+  const { DEFENCE, MAGIC, RANGED } = core.Skill;
+  const spawn = () => {
+    const npc = new NPC(Shared.BOSS_ID, new core.Location(Shared.SPAWN_TILE[0], Shared.SPAWN_TILE[1], Shared.SPAWN_TILE[2]));
+    npc.setRegistered(true);
+    npc.setHitpoints(Math.floor(Shared.MAX_HITPOINTS * Shared.ENRAGE_THRESHOLD));
+    return npc;
+  };
+  const levels = (npc) => [DEFENCE, MAGIC, RANGED].map((skill) => npc.getCurrentLevel(skill));
+  const npc = spawn();
+  const other = spawn();
+  assert.deepEqual(levels(npc), [135, 190, 210], "the definition's levels");
+  npc.setCurrentLevels(MAGIC, 150); // drained before the enrage
+  try {
+    Combat.checkEnrage(npc, 1);
+    assert.equal(npc.getAttribute(Shared.ATTR_ENRAGED), true);
+    assert.deepEqual(levels(npc), [170, 178, 241], "raised; the drained Magic comes up by the same 28");
+    assert.deepEqual([DEFENCE, MAGIC, RANGED].map((skill) => npc.getMaxLevel(skill)), [170, 218, 241]);
+    Combat.checkEnrage(npc, 1);
+    assert.equal(npc.getCurrentLevel(DEFENCE), 170, "only once");
+    npc.setCurrentLevels(DEFENCE, 200);
+    assert.equal(npc.getCurrentLevel(DEFENCE), 170, "nothing goes past the raised level");
+    npc.setCurrentLevels(DEFENCE, 120);
+    assert.equal(npc.getCurrentLevel(DEFENCE), 120, "drains still work after the enrage");
+    assert.deepEqual(levels(other), [135, 190, 210], "another Araxxor keeps the definition's levels");
+  } finally {
+    core.TaskManager.cancelTasks(npc);
+  }
+});

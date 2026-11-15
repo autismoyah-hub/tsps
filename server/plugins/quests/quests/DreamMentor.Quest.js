@@ -9,10 +9,11 @@
  * dream fight.
  *
  * Stage varbit 3618 "dream_prog" (varp 1003, bits 0-5; lookup-gameval.ts
- * dream_prog). Values are chosen so the cache's own NPC transforms work:
+ * dream_prog). Durable stages below are translated by nativeProgress; native 24
+ * includes the fight, native 26 awaits the reward, and native 28 is complete:
  *   0 not started, 2 helping the fallen man, 6 his name is Cyrisus (both first
  *   thresholds met), 16 armour requested ('Bird's-Eye' Jack appears at the
- *   Lunar bank: NPC 6126 transforms to 3472 at even dream_prog 16-30), 18
+ *   Lunar bank: NPC 6126 transforms to 3472 at even dream_prog 16-28), 18
  *   dressed, 20 fear revealed / meet the Oneiromancer, 22 plan agreed + dream
  *   vial given, 24 dream potion made, 26 inside the dream, 28 the fears are
  *   conquered, 30 complete. Odd values are unused.
@@ -48,7 +49,7 @@
  *    variants are not played, and the arena's one static Inadequacy
  *    (1823,5149,2) is removed on entry and respawned on leaving.
  *  - "Our lives" has no Read text, the vial/potion handovers use plain game
- *    messages, and the dreamy lamp cannot be rubbed.
+ *    messages.
  */
 module.exports = function registerDreamMentorQuest(api) {
   const {
@@ -1093,8 +1094,14 @@ module.exports = function registerDreamMentorQuest(api) {
     if (pair.has(HAMMER_ITEM_ID) && pair.has(ASTRAL_RUNE_ITEM_ID)) {
       event.handled = true;
       if (!held(player, ASTRAL_RUNE_ITEM_ID)) return true;
-      player.getInventory().deleteNumber(ASTRAL_RUNE_ITEM_ID, 1);
-      player.getInventory().adds(ASTRAL_SHARDS_ITEM_ID, 1);
+      // A rune taken from a larger stack frees no slot, and `adds` drops what has no room.
+      const inventory = player.getInventory();
+      if (inventory.getAddableAmount(new api.core.Item(ASTRAL_SHARDS_ITEM_ID, 1)) < 1 && inventory.getAmount(ASTRAL_RUNE_ITEM_ID) > 1) {
+        inventory.full();
+        return true;
+      }
+      inventory.deleteNumber(ASTRAL_RUNE_ITEM_ID, 1);
+      inventory.adds(ASTRAL_SHARDS_ITEM_ID, 1);
       player.sendMessage("You hammer the astral rune into shards.");
       return true;
     }
@@ -1136,6 +1143,37 @@ module.exports = function registerDreamMentorQuest(api) {
     player.setAttribute(BRAZIER_ATTRIBUTE, true);
     player.getPacketSender().sendVarbit(VARBIT_BRAZIER_LIT, 1);
     player.sendMessage("You light the ceremonial brazier.");
+  }
+
+  // Wiki (Dreamy lamp): one wish of 15,000 XP in Strength, Ranged, Magic, Hitpoints or Defence.
+  const DREAMY_LAMP_XP = 15000;
+  const DREAMY_LAMP_SKILLS = [Skill.STRENGTH, Skill.RANGED, Skill.MAGIC, Skill.HITPOINTS, Skill.DEFENCE];
+
+  function rubDreamyLamp(event) {
+    const { player, slot } = event;
+    if (event.itemId !== DREAMY_LAMP_ITEM_ID) return false;
+    event.handled = true;
+    api.emitCustomEvent("xpreward:open", {
+      player,
+      skills: DREAMY_LAMP_SKILLS,
+      title: "Choose the stat you wish to be advanced!",
+      onConfirm: (skill, name) => {
+        const inventory = player.getInventory();
+        // The lamp the wish was opened with, still in its slot (not dropped or moved meanwhile).
+        if (inventory.get(slot)?.getId() !== DREAMY_LAMP_ITEM_ID) return null;
+        // XP can be refused (an XP lock, a minigame, max XP): the lamp is kept, as A Kingdom Divided's lamps do.
+        const skills = player.getSkillManager();
+        const before = skills.getExperience(skill);
+        skills.addExperience(skill, DREAMY_LAMP_XP, true);
+        if (skills.getExperience(skill) === before) {
+          player.sendMessage("You cannot gain experience in that skill right now.");
+          return null;
+        }
+        inventory.deleteAtSlot(slot, 1);
+        return `Your wish has been granted! You have been awarded 15,000 ${name} experience!`;
+      },
+    });
+    return true;
   }
 
   function lookInChest(event) {
@@ -1263,11 +1301,23 @@ module.exports = function registerDreamMentorQuest(api) {
 
   persistDreamAttributes();
 
+  // QH 06da90: native 4 is feeding, 24 includes the potion and all dream fights,
+  // 26 returns to the Oneiromancer, and cache DB 28 completes. Saved 26/28/30 keep
+  // their encounter/reward meanings; no native completion is published before reward.
+  function nativeProgress(stage) {
+    stage |= 0;
+    if (stage >= STAGE_COMPLETE) return 28;
+    if (stage >= STAGE_DEFEATED) return 26;
+    if (stage >= STAGE_POTION) return 24;
+    return stage === STAGE_STARTED ? 4 : stage;
+  }
+
   quest = registerQuest(api, {
     key: "dream_mentor",
     name: "Dream Mentor",
     varpId: 1003,
     varbitId: VARBIT_STAGE,
+    varbitValue: nativeProgress,
     startedValue: STAGE_STARTED,
     completionValue: STAGE_COMPLETE,
     questPoints: 2,
@@ -1299,6 +1349,7 @@ module.exports = function registerDreamMentorQuest(api) {
   api.onItemOnItem(handleItemOnItem, { noted: false });
   api.onItemOnObject(handleItemOnObject, { noted: false });
   api.onItemAction("Cyrisus's chest", { "Look-in": lookInChest });
+  api.onItemAction("Dreamy lamp", { Rub: rubDreamyLamp });
   api.onObjectInteraction("Our lives", { Leave: leaveLectern });
   api.onNpcDeath(handleNpcDeath);
   api.onPlayerLogin(handleLogin);

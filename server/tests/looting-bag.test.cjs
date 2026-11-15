@@ -42,7 +42,7 @@ before(() => {
       BANK_SEARCH_TAB_INDEX: real.Bank.BANK_SEARCH_TAB_INDEX,
       actionAmount: real.Bank.actionAmount,
       isOpen: (player) => player.bankOpen === true,
-      getTabForItem: () => 0,
+      getTabForItem: (player, id) => player.realBanks ? real.Bank.getTabForItem(player, id) : 0,
     },
   };
   const { ItemOnGroundManager } = require("../dist/game/entity/impl/grounditem/ItemOnGroundManager");
@@ -59,8 +59,10 @@ before(() => {
     onItemAction: (name, actions) => { hooks.actions = actions; },
     onItemDropPolicy: (fn) => { hooks.dropPolicy = fn; },
     onInterfaceActionClick: (fn) => hooks.clicks.push(fn),
+    onShouldKeepItemOnDeath: (fn) => { hooks.keep = fn; },
     onPlayerDeathItemDrop: (fn) => { hooks.death = fn; },
     onPlayerDefeated: (fn) => { hooks.defeated = fn; },
+    onPlayerLogin: (fn) => { hooks.login = fn; },
     sendMultiChatboxPrompt: (player, title, ...pairs) => {
       player.prompt = { title, options: pairs.filter((_, i) => i % 2 === 0), pairs };
       return true;
@@ -95,14 +97,11 @@ function inventory(items) {
 }
 
 function bankTab() {
-  const held = new Map();
-  return {
-    held,
-    getAddableAmount: (item) => item.getAmount(),
-    add: (item) => held.set(item.getId(), (held.get(item.getId()) ?? 0) + item.getAmount()),
-    full() {},
-    refreshItems() {},
-  };
+  const tab = new (PluginManager.getCoreApi().Bank)(null);
+  tab.refreshItems = () => tab;
+  tab.full = () => tab;
+  Object.defineProperty(tab, "held", { get: () => new Map(tab.getValidItems().map(item => [item.getId(), tab.getAmount(item.getId())])) });
+  return tab;
 }
 
 function player({ at = WILDERNESS, items = [] } = {}) {
@@ -112,6 +111,7 @@ function player({ at = WILDERNESS, items = [] } = {}) {
     messages: [], spam: [], packets: [], prompt: null, amountAction: null, amountPrompt: null,
     bankOpen: false, bankQuantity: 0,
     location: new Location(at[0], at[1], 0),
+    getUsername: () => "bagfixture",
     getLocation: () => p.location,
     getInventory: () => p.inv,
     getAttribute: (key) => attributes.get(key),
@@ -130,6 +130,7 @@ function player({ at = WILDERNESS, items = [] } = {}) {
   const sender = new Proxy({}, {
     get: (_, name) => {
       if (name === "getVarbit") return (id) => varbits.get(id) ?? 0;
+      if (name === "isSubInterfaceOpen") return (id) => p.packets.some(([packet, , group]) => packet === "sendSubInterface" && group === id);
       return (...args) => {
         p.packets.push([name, ...args]);
         if (name === "sendVarbit") varbits.set(args[0], args[1]);
@@ -380,7 +381,8 @@ test("the bank's looting bag view: View, Deposit-1/5/10/X/All, Deposit loot, Dis
   op(0, 7);
   assert.equal(bankTabs.held.get(FIRE_RUNE), 13, "Deposit-All");
   click({ player: p, groupId: 15, childId: bankside("lootingbag_bankall"), handled: false });
-  assert.equal(bankTabs.held.get(MITHRIL_PLATELEGS_NOTE), 1, "Deposit loot");
+  assert.equal(bankTabs.held.get(core.ItemDefinition.forId(MITHRIL_PLATELEGS_NOTE).unNote()), 1, "Deposit loot unnotes");
+  assert.equal(bankTabs.held.has(MITHRIL_PLATELEGS_NOTE), false);
   assert.equal(stored(bag).length, 0);
   click({ player: p, groupId: 15, childId: bankside("lootingbag_dismiss"), handled: false });
   assert.equal(p.varbits.get(core.Bank.VIEW_CONTAINER_VARBIT), 0);
@@ -409,6 +411,7 @@ test("the shared destroy prompt shows the lines the bag gives it, and its own fo
   let policy;
   delete require.cache[require.resolve("../plugins/interface/DestroyItem.plugin")];
   require("../plugins/interface/DestroyItem.plugin").register({
+    onCustomEvent() {},
     core, registerCustomInterface() {}, onInterfaceActionButton() {},
     onItemDropPolicy: (fn) => { policy = fn; },
     emitCustomEvent: (name, event) => hooks.events[name]?.(event),
@@ -422,6 +425,59 @@ test("the shared destroy prompt shows the lines the bag gives it, and its own fo
   untradeable.isDropable = () => false;
   policy({ player: p, item: untradeable, itemId: UNIDENTIFIED_MINERALS, slot: 1, dropToGround: true, handled: false });
   assert.deepEqual(scripts.at(-1).slice(-2), ["Are you sure you want to destroy this item?", "This item will be destroyed permanently."]);
+});
+
+test("confirmed destruction plays the captured sound once; cancellation, stale items and vetoes stay silent", (t) => {
+  let policy, confirm, veto = false;
+  const events = [];
+  const emitItemDropPolicy = (event) => {
+    policy(event);
+    if (veto) event.handled = true;
+    else hooks.dropPolicy(event);
+    return event.handled;
+  };
+  t.mock.method(core.PluginManager, "emitItemDropPolicy", emitItemDropPolicy);
+  delete require.cache[require.resolve("../plugins/interface/DestroyItem.plugin")];
+  require("../plugins/interface/DestroyItem.plugin").register({
+    onCustomEvent() {},
+    core,
+    onItemDropPolicy: (handler) => { policy = handler; },
+    onInterfaceActionButton: (_uid, handler) => { confirm = handler; },
+    emitCustomEvent: (name, event) => { events.push(name); hooks.events[name]?.(event); },
+  });
+  const prompt = (bag = false) => {
+    const held = bag ? bagWith(OPEN_BAG) : item(UNIDENTIFIED_MINERALS);
+    held.isDropable = () => false;
+    const p = player({ items: [held] });
+    p.getHitpoints = () => 99;
+    p.getRights = () => null;
+    p.getUsername = () => 'destroyqa';
+    p.isPlayerBot = () => false;
+    p.busy = () => false;
+    p.getSkillManager = () => ({ stopSkillable() {} });
+    const { DropItemPacketListener } = require('../dist/net/packet/impl/DropItemPacketListener');
+    DropItemPacketListener.drop(p, held.getId(), core.Inventory.INTERFACE_ID, 0);
+    assert.deepEqual(packets(p, "sendSound"), [], 'opening the prompt is silent');
+    assert.deepEqual(packets(p, "sendSoundEffect"), [], 'the drop listener does not play a drop effect for the prompt');
+    return p;
+  };
+  for (const bag of [false, true]) {
+    const p = prompt(bag);
+    confirm({ player: p, action: 1 });
+    confirm({ player: p, action: 1 });
+    assert.equal(p.inv.getItems()[0], null, 'generic and item-owned destruction both remove the item');
+    assert.deepEqual(packets(p, "sendSound"), [["sendSound", 2381, 100, 0]]);
+  }
+  for (const refusal of ['cancel', 'stale', 'veto']) {
+    const p = prompt();
+    if (refusal === 'stale') p.inv.getItems()[0] = item(COINS);
+    veto = refusal === 'veto';
+    const before = events.length;
+    confirm({ player: p, action: refusal === 'cancel' ? 0 : 1 });
+    assert.ok(p.inv.getItems()[0], refusal);
+    assert.deepEqual(packets(p, "sendSound"), [], refusal);
+    assert.equal(events.length, before, 'no destruction event on refusal');
+  }
 });
 
 test("a confirmed Destroy in the Wilderness drops coins and noted items, not food or vials of water; elsewhere all is lost (Wiki)", () => {
@@ -451,4 +507,238 @@ test("on death the killer gets everything but food and potions (Wiki)", () => {
   const before = dropped.length;
   hooks.defeated({ killer: player(), victim });
   assert.deepEqual(dropped.slice(before).map((entry) => entry.getId()), [COINS]);
+});
+
+test("a Deposit panel closed by walking leaves no deposit mode behind for a late Store click", async (t) => {
+  const { ClientConnection } = require("../dist/net/NetworkBuilder");
+  const { HeadlessBinaryChannel } = require("../dist/net/BinaryChannel");
+  const { Player } = require("../dist/game/entity/impl/player/Player");
+  const { PlayerSession } = require("../dist/net/PlayerSession");
+  t.mock.method(PluginManager, "emitInterfaceActionClick", (event) => click(event).handled);
+  const channel = new HeadlessBinaryChannel();
+  channel.send = () => {};
+  const session = new PlayerSession(channel);
+  const p = new Player(session, new Location(...WILDERNESS, 0));
+  session.setPlayer(p);
+  const bag = bagWith(OPEN_BAG);
+  p.getInventory().setItem(0, bag);
+  p.getInventory().setItem(1, item(FIRE_RUNE, 13));
+  const connection = new ClientConnection(channel);
+  connection.player = p;
+  const storeAll = () => connection.dispatch([{ type: "widget_action", widgetId: (81 << 16) | 5, groupId: 81, childId: 5,
+    slot: 1, itemId: FIRE_RUNE, buttonNum: 3 }], true);
+  assert.equal(hooks.actions.Deposit({ player: p, item: bag }), true);
+  assert.equal(p.getPacketSender().isSubInterfaceOpen(81), true);
+  p.getPacketSender().closeInterruptibleInterfaces();
+  assert.equal(p.getPacketSender().isSubInterfaceOpen(81), false, "walking closes the side panel");
+  await storeAll();
+  assert.deepEqual(stored(bag), [], "no Store op once the panel is gone");
+  assert.equal(p.getInventory().getAmount(FIRE_RUNE), 13);
+  hooks.actions.Deposit({ player: p, item: bag });
+  await storeAll();
+  assert.deepEqual(stored(bag), [{ id: FIRE_RUNE, amount: 13, meta: null }], "reopened, Store-All works again");
+});
+
+// Source-only diagnostic: normal decoded widget/amount dispatch, without a saved callback call.
+test("bank Deposit-X keeps its selected item across another bag operation", async (t) => {
+  const { ClientConnection } = require("../dist/net/NetworkBuilder");
+  const { HeadlessBinaryChannel } = require("../dist/net/BinaryChannel");
+  const { Player } = require("../dist/game/entity/impl/player/Player");
+  const { PlayerSession } = require("../dist/net/PlayerSession");
+  const { PlayerStatus } = require("../dist/game/model/PlayerStatus");
+  const real = PluginManager.getCoreApi();
+  // Reuse the listeners registered by this fixture; the router and bank/widget handlers stay real.
+  t.mock.method(PluginManager, "emitInterfaceActionClick", (event) => click(event).handled);
+  t.mock.method(PluginManager, "emitCustomEvent", (name, event) => hooks.events[name]?.(event));
+
+  function actor(entries = [{ id: FIRE_RUNE, amount: 13 }, { id: COINS, amount: 7 }]) {
+    bankTabs = bankTab();
+    const channel = new HeadlessBinaryChannel();
+    const sent = [];
+    channel.send = (frame) => { sent.push(Buffer.from(frame)); };
+    const session = new PlayerSession(channel);
+    const p = new Player(session, new Location(...LUMBRIDGE, 0));
+    session.setPlayer(p);
+    p.setStatus(PlayerStatus.BANKING);
+    p.setInterfaceId(real.Bank.MAIN_INTERFACE_ID);
+    p.bankOpen = true; // The existing plugin fixture's bank-open adapter.
+    p.getBank = () => bankTabs;
+    const bag = bagWith(OPEN_BAG, entries);
+    p.getInventory().setItem(0, bag);
+    hooks.events[core.Bank.INVENTORY_OP_EVENT]({ player: p, item: bag, slot: 0, op: 1, handled: false });
+    const connection = new ClientConnection(channel);
+    assert.ok(sent.some((frame) => frame.length > 0), "the real constructor sends its welcome on an open transport");
+    connection.player = p;
+    // Await the real turn-dispatch promise so setup/router failures cannot disappear in a logged catch.
+    const send = (packet) => connection.dispatch([packet], true);
+    const op = (action) => send({ type: "widget_action", widgetId: (15 << 16) | bankside("lootingbag_items"),
+      groupId: 15, childId: bankside("lootingbag_items"), slot: 0, itemId: FIRE_RUNE,
+      buttonNum: action });
+    return { p, bag, op, send };
+  }
+
+  await t.test("original item accepts a normal amount submission", async () => {
+    const { p, bag, op, send } = actor();
+    await op(6);
+    assert.equal(typeof p.getEnteredAmountAction()?.execute, "function");
+    await send({ type: "dialogue_amount", amount: 3 });
+    assert.equal(p.getEnteredAmountAction(), null);
+    assert.equal(bankTabs.held.get(FIRE_RUNE), 3);
+    assert.deepEqual(stored(bag).map(({ id, amount }) => [id, amount]), [[FIRE_RUNE, 10], [COINS, 7]]);
+  });
+
+  await t.test("closed banks, replacement bags and full banks preserve contents", async () => {
+    for (const control of ["closed", "replacement", "full"]) {
+      const { p, bag, op, send } = actor();
+      await op(6);
+      if (control === "closed") {
+        p.bankOpen = false;
+        p.setStatus(PlayerStatus.NONE);
+      }
+      if (control === "replacement") p.getInventory().setItem(0, bagWith(OPEN_BAG));
+      if (control === "full") bankTabs.getAddableAmount = () => 0;
+      await send({ type: "dialogue_amount", amount: 3 });
+      assert.equal(p.getEnteredAmountAction(), null, control);
+      assert.equal(bankTabs.held.size, 0, control);
+      assert.deepEqual(stored(bag).map(({ id, amount }) => [id, amount]), [[FIRE_RUNE, 13], [COINS, 7]], control);
+    }
+  });
+
+  await t.test("a partial deposit keeps the pending rune target valid", async () => {
+    const { p, bag, op, send } = actor();
+    await op(6);
+    const pending = p.getEnteredAmountAction();
+    await op(3); // Deposit-5 clones the bag metadata, but leaves the same semantic target.
+    assert.equal(p.getEnteredAmountAction(), pending);
+    assert.equal(bankTabs.held.get(FIRE_RUNE), 5);
+    assert.deepEqual(stored(bag).map(({ id, amount }) => [id, amount]), [[FIRE_RUNE, 8], [COINS, 7]]);
+    await send({ type: "dialogue_amount", amount: 3 });
+    assert.equal(p.getEnteredAmountAction(), null);
+    assert.equal(bankTabs.held.get(FIRE_RUNE), 8);
+    assert.deepEqual(stored(bag).map(({ id, amount }) => [id, amount]), [[FIRE_RUNE, 5], [COINS, 7]]);
+  });
+
+  await t.test("a compacted rune stack with different metadata is a different target", async () => {
+    const selected = { id: FIRE_RUNE, amount: 13, meta: { diagnostic: "selected" } };
+    const other = { id: FIRE_RUNE, amount: 7, meta: { diagnostic: "other" } };
+    const { p, bag, op, send } = actor([selected, other]);
+    await op(6);
+    const pending = p.getEnteredAmountAction();
+    assert.equal(typeof pending?.execute, "function", "the metadata target has an armed amount callback");
+    await op(7);
+    assert.equal(bankTabs.held.get(FIRE_RUNE), 13);
+    assert.deepEqual(stored(bag), [other], "the other metadata stack compacts into the selected slot");
+    assert.equal(p.getEnteredAmountAction(), pending);
+    await send({ type: "dialogue_amount", amount: 3 });
+    assert.equal(p.getEnteredAmountAction(), null);
+    assert.deepEqual(stored(bag), [other], "the original prompt must leave the different metadata stack intact");
+    assert.equal(bankTabs.held.get(FIRE_RUNE), 13, "the ID-coalescing fixture tab receives no additional runes");
+  });
+
+  await t.test("a compacted slot cannot redirect the pending amount to coins", async () => {
+    const { p, bag, op, send } = actor();
+    await op(6);
+    const pending = p.getEnteredAmountAction();
+    assert.equal(typeof pending?.execute, "function");
+    await op(7); // Real registered Deposit-All removes runes and compacts coins into slot zero.
+    assert.equal(bankTabs.held.get(FIRE_RUNE), 13);
+    assert.deepEqual(stored(bag).map(({ id, amount }) => [id, amount]), [[COINS, 7]]);
+    assert.equal(p.getEnteredAmountAction(), pending, "the intervening bank operation leaves this prompt armed");
+    await send({ type: "dialogue_amount", amount: 3 });
+    assert.equal(p.getEnteredAmountAction(), null, "normal amount dispatch consumes the callback");
+    assert.equal(bankTabs.held.get(COINS) ?? 0, 0, "a rune prompt must not bank coins");
+    assert.deepEqual(stored(bag).map(({ id, amount }) => [id, amount]), [[COINS, 7]]);
+  });
+});
+
+test('native bank container button and bag Deposit loot preserve notes, metadata and failed remainders', async t => {
+  const real = PluginManager.getCoreApi();
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { ClientConnection } = require('../dist/net/NetworkBuilder');
+  const { HeadlessBinaryChannel } = require('../dist/net/BinaryChannel');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  t.mock.method(PluginManager, 'emitInterfaceActionClick', event => click(event).handled);
+  const emitted = [];
+  t.mock.method(PluginManager, 'emitCustomEvent', (name, event) => { emitted.push(name); hooks.events[name]?.(event); });
+  function actor(entries, bagId = OPEN_BAG) {
+    const channel = new HeadlessBinaryChannel(), session = new PlayerSession(channel);
+    const p = new Player(session);
+    session.setPlayer(p);
+    const connection = new ClientConnection(channel);
+    connection.player = p;
+    p.realBanks = true; p.bankOpen = true;
+    p.setStatus(real.PlayerStatus.BANKING).setInterfaceId(real.Bank.MAIN_INTERFACE_ID);
+    p.setCurrentBankTab(0);
+    const bag = bagWith(bagId, entries);
+    p.getInventory().setItem(0, bag);
+    hooks.events[real.Bank.INVENTORY_OP_EVENT]({ player: p, item: bag, slot: 0, op: 1 });
+    const send = name => {
+      const id = real.CacheDefinitions.getComponentId(name);
+      assert.ok(Number.isInteger(id), name);
+      return connection.dispatch([{ type: 'widget_action', widgetId: id, groupId: id >>> 16,
+        childId: id & 65535, buttonNum: 1 }], true);
+    };
+    return { p, bag, send };
+  }
+  const base = core.ItemDefinition.forId(MITHRIL_PLATELEGS_NOTE).unNote();
+  for (const button of ['bankside:lootingbag_bankall', 'bankmain:depositcontainers']) {
+    await t.test(button + ': mixed noted/unnoted contents merge into an existing base stack', async () => {
+      const f = actor([{ id: MITHRIL_PLATELEGS_NOTE, amount: 3 }, { id: base, amount: 1 }]);
+      f.p.getBank(0).add(item(base, 2), false);
+      const packets = [];
+      const sender = f.p.getPacketSender(), original = sender.sendItemContainer;
+      sender.sendItemContainer = function(container, ...args) { packets.push(container); return original.call(this, container, ...args); };
+      await f.send(button);
+      assert.equal(f.p.getBank(0).getAmount(base), 6);
+      assert.equal(f.p.getBank(0).getAmount(MITHRIL_PLATELEGS_NOTE), 0);
+      assert.deepEqual(stored(f.bag), []);
+      assert.equal(f.p.getInventory().forSlot(0), f.bag);
+      assert.ok(packets.every(container => !(container instanceof core.Inventory) || container === f.p.getInventory()), 'no staging inventory packet');
+    });
+  }
+  await t.test('partial stack headroom, metadata and existing tab are preserved', async () => {
+    const meta = { diagnostic: 'selected' }, other = { diagnostic: 'other' };
+    const f = actor([{ id: MITHRIL_PLATELEGS_NOTE, amount: 7, meta }]);
+    f.p.getBank(0).add(item(COINS, 1), false);
+    f.p.getBank(1).add(new core.Item(base, 2147483644, meta), false);
+    f.p.getBank(1).add(new core.Item(base, 4, other), false);
+    await f.send('bankmain:depositcontainers');
+    assert.deepEqual(stored(f.bag), [{ id: MITHRIL_PLATELEGS_NOTE, amount: 4, meta }]);
+    assert.deepEqual(f.p.getBank(1).getValidItems().map(i => [i.getAmount(), i.getMeta()]), [[2147483647, meta], [4, other]]);
+    await f.send('bankmain:depositcontainers');
+    assert.equal(stored(f.bag)[0].amount, 4, 'repeated failure cannot remove more');
+    f.p.getBank(1).getItems()[0].setAmount(2147483643);
+    await f.send('bankmain:depositcontainers');
+    assert.deepEqual(stored(f.bag), []);
+    assert.equal(f.p.getBank(1).getItems()[0].getAmount(), 2147483647);
+  });
+  await t.test('full bank and bank-policy veto leave contents and bag intact', async () => {
+    const f = actor([{ id: MITHRIL_PLATELEGS_NOTE, amount: 3 }], CLOSED_BAG);
+    t.mock.method(real.Bank, 'freeSlots', () => 0);
+    await f.send('bankmain:depositcontainers');
+    assert.equal(stored(f.bag)[0].amount, 3);
+    assert.equal(f.p.getBank(0).getAmount(base), 0);
+    assert.equal(f.p.getInventory().forSlot(0), f.bag);
+    real.Bank.freeSlots.mock.restore();
+    t.mock.method(PluginManager, 'emitCanBankItem', (_p, entry) => entry.getId() !== MITHRIL_PLATELEGS_NOTE);
+    await f.send('bankside:lootingbag_bankall');
+    assert.equal(stored(f.bag)[0].amount, 3);
+    assert.equal(f.p.getBank(0).getAmount(base), 0);
+    PluginManager.emitCanBankItem.mock.restore();
+  });
+  await t.test('ordinary items, closed banks and non-container bank actions do not empty a bag', async () => {
+    const f = actor([{ id: MITHRIL_PLATELEGS_NOTE, amount: 3 }]);
+    f.p.getInventory().setItem(1, item(COINS, 25));
+    emitted.length = 0;
+    await f.send('bankmain:depositcontainers');
+    assert.equal(emitted.includes(real.Bank.INVENTORY_OP_EVENT), false, 'bulk Empty must not invoke per-item Fill operations');
+    assert.equal(f.p.getInventory().getAmount(COINS), 25);
+    assert.equal(f.p.getBank(0).getAmount(COINS), 0);
+    const closed = actor([{ id: MITHRIL_PLATELEGS_NOTE, amount: 3 }]);
+    closed.p.bankOpen = false;
+    closed.p.setStatus(real.PlayerStatus.NONE).setInterfaceId(-1);
+    await closed.send('bankmain:depositcontainers');
+    assert.equal(stored(closed.bag)[0].amount, 3);
+    assert.equal(closed.p.getBank(0).getAmount(base), 0);
+  });
 });

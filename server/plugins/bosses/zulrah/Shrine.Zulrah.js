@@ -23,15 +23,31 @@ const Access = require("./Access.Zulrah");
 const CombatAchievements = require("./CombatAchievements.Zulrah");
 const Fight = require("./Fight.Zulrah");
 const { MeleeSnakeling, MagicSnakeling } = require("./Hazards.Zulrah");
+const { sendBossKillCount } = require("../../interface/BossKillCount.plugin");
+const { examineItem } = require("../../../src/main/typescript/elvarg/game/content/ExaminePrice");
 
 const DAMAGE_CAP = 50;
+const ZUL_ANDRA_SCROLL = "Zul-andra teleport";
 const BOSS_NAME = "Zulrah";
 const HALBERD_REACH = 2;
 const CAPPED_DAMAGE = [45, 50];
 const FREE_RETRIEVALS = 50;
 const RETRIEVAL_FEE = 100000;
 const COINS = 995;
+const OWNER = "zulrah";
+const RETRIEVAL_INVENTORY = 525;
+const RETRIEVAL_SLOTS = 120;
+const RETRIEVAL_IF1 = { unpaid: 5, paid: 6, empty: -1 };
+const RETRIEVAL_PAID_SCRIPT = 3478;
+const RETRIEVAL_MODAL_SCRIPT = 2524;
+const RETRIEVAL_MODAL = 0;
+const RETRIEVAL_TAKE_OP = 2;
+const RETRIEVAL_EXAMINE_OP = 10;
+const RETRIEVAL_EVENTS = (1 << 2) | (1 << 9) | (1 << 10);
 const BOAT_TEXT = "The priestess rows you to Zulrah's shrine,<br>then hurriedly paddles away.";
+
+const RETRIEVAL_COMPONENT = {};
+const RETRIEVAL_VARP = {};
 
 
 /** Logged in on the shrine with no fight left (it ended at logout): back by the boat. */
@@ -123,11 +139,36 @@ function readTeleport(event) {
   Shared.options(player, "Leave Zulrah's shrine?", "Yes.", () => toZulAndra(player), "No.", () => {});
 }
 
-/** The Zul-andra teleport scrolls in Zulrah's loot (Wiki: teleport to Zul-Andra). */
+/**
+ * A Zul-andra teleport scroll read (Wiki: teleport to Zul-Andra), from the inventory or stored in
+ * the Master scroll book: asked first where a warning applies (the boat at sea), spent on the yes.
+ */
+function readFrom(player, source) {
+  const { TeleportHandler } = Shared.core();
+  const destination = Shared.loc(Shared.ZUL_ANDRA);
+  if (!source.has() || !TeleportHandler.checkReqs(player, destination)) return;
+  TeleportHandler.confirm(player, destination, () => {
+    if (!source.spend()) return;
+    TeleportHandler.teleport(player, destination, scrollType(), false);
+  }, 20, { item: source.item });
+}
+
+/** The Zul-andra teleport scrolls in Zulrah's loot. */
 function readScroll({ player, itemId }) {
-  if (!player.getInventory().contains(itemId)) return true;
-  if (toZulAndra(player)) player.getInventory().delete(itemId, 1);
+  const inventory = player.getInventory();
+  readFrom(player, {
+    item: itemId,
+    has: () => inventory.contains(itemId),
+    spend: () => inventory.contains(itemId) && (inventory.delete(itemId, 1), true),
+  });
   return true;
+}
+
+/** "teleport-scroll:read": a stored Zul-andra teleport (the Master scroll book) reads like the inventory one. */
+function readStoredScroll(request) {
+  if (request.handled || Shared.core().ItemDefinition.forId(request.itemId)?.getName?.() !== ZUL_ANDRA_SCROLL) return;
+  request.handled = true;
+  readFrom(request.player, request.source);
 }
 
 /** On a free tile beside the player, north-east first; under them if none is free. */
@@ -138,7 +179,7 @@ function placeTeleport(fight) {
   for (let y = at.getY() + 1; y >= at.getY() - 1 && !tile; y--) {
     for (let x = at.getX() + 1; x >= at.getX() - 1; x--) {
       if (x === at.getX() && y === at.getY()) continue;
-      if ((RegionManager.getClipping(x, y, 0, fight.area) & 0x1280100) === 0) {
+      if ((RegionManager.getClipping(x, y, 0, fight.area) & RegionManager.BLOCKED_MASK) === 0) {
         tile = new Location(x, y, 0);
         break;
       }
@@ -166,7 +207,7 @@ function onZulrahDeath({ npc }) {
   const ticks = fight.duration();
   CombatAchievements.killed(player, fight, kills, ticks);
   const best = Number(player.getAttribute(Shared.ATTR.BEST_TIME)) || 0;
-  player.sendMessage(`Your Zulrah kill count is: <col=ff0000>${kills}</col>.`);
+  sendBossKillCount(player, `Your Zulrah kill count is: <col=ff0000>${kills}</col>.`);
   if (!best || ticks < best) {
     player.setAttribute(Shared.ATTR.BEST_TIME, ticks);
     Shared.api().emitCustomEvent("boss:personal-best", { player, boss: BOSS_NAME, ticks });
@@ -228,6 +269,9 @@ function onlyWhenSurfaced(event) {
  * A death at the shrine: what would drop is held by Zul-Gwenwynig. A later unsafe death
  * anywhere else, before collecting, loses what she holds.
  */
+/** The game cycle of each player's death whose items she is taking, so one death's items gather and a new one starts over. */
+const heldDeathCycle = new WeakMap();
+
 function holdForPriestess(event) {
   const { player, item } = event;
   const atShrine = Fight.fightOf(player) != null || Shared.inShrine(player.getLocation());
@@ -238,27 +282,169 @@ function holdForPriestess(event) {
     return;
   }
   if (!event.dropEligible) return;
-  const held = heldItems(player) ?? { items: [], paid: false };
+  // A new death here (Zulrah's deaths are unsafe): what she held from the last one is lost (Wiki, Zulrah: "permanently
+  // lost if the player dies an unsafe death before reclaiming them"), as Nex's chest does. The items came on top of it.
+  const cycle = Shared.core().World.getProcessCycle();
+  const newDeath = heldDeathCycle.get(player) !== cycle;
+  heldDeathCycle.set(player, cycle);
+  const held = (!newDeath && heldItems(player)) || { items: [], paid: false };
   held.items.push([item.getId(), item.getAmount()]);
   player.setAttribute(Shared.ATTR.RETRIEVAL, held);
   event.handled = true;
 }
 
+/** Whether what she holds came from the death being handled now (its items were taken this cycle). */
+function heldFromThisDeath(player) {
+  return heldItems(player) != null && heldDeathCycle.get(player) === Shared.core().World.getProcessCycle();
+}
+
+/**
+ * Any unsafe death that gave her nothing new loses what she held: one with nothing to drop never reaches
+ * holdForPriestess, which only sees items. "player:died" reaches every observer, after the drops.
+ */
+function loseUnclaimed({ player, itemsLost }) {
+  if (itemsLost && heldItems(player) && !heldFromThisDeath(player)) player.setAttribute(Shared.ATTR.RETRIEVAL, null);
+}
+
 function announceHeld({ player }) {
   if (!Shared.inShrine(player.getLocation()) && !Fight.fightOf(player)) return;
-  if (heldItems(player)) player.sendMessage("Priestess Zul-Gwenwynig has retrieved some of your items. You can collect them from her at the pier in Zul-Andra.");
+  if (heldFromThisDeath(player)) player.sendMessage("Priestess Zul-Gwenwynig has retrieved some of your items. You can collect them from her at the pier in Zul-Andra.");
 }
 
 /** The fee: free for the first 50 kills, then 100,000 coins once per death (Wiki). */
 function payFee(player, held) {
-  if (held.paid || (Number(player.getAttribute(Shared.ATTR.KILLS)) || 0) < FREE_RETRIEVALS) return true;
+  if (held.paid) return true;
+  if (isUltimateIronman(player) || (Number(player.getAttribute(Shared.ATTR.KILLS)) || 0) < FREE_RETRIEVALS) {
+    held.paid = true;
+    player.setAttribute(Shared.ATTR.RETRIEVAL, held);
+    if (isRetrievalOpen(player)) player.getPacketSender().sendConfig(RETRIEVAL_VARP.if1, RETRIEVAL_IF1.paid);
+    return true;
+  }
   const inventory = player.getInventory();
   if (inventory.getAmount(COINS) < RETRIEVAL_FEE) {
-    Shared.npcSay(player, Shared.NPC.PRIESTESS, "I'll need 100,000 coins before I give you back your things.");
+    player.sendMessage("You need 100,000 coins in your inventory to reclaim your items.");
     return false;
   }
   inventory.delete(COINS, RETRIEVAL_FEE);
   held.paid = true;
+  player.setAttribute(Shared.ATTR.RETRIEVAL, held);
+  if (isRetrievalOpen(player)) {
+    const sender = player.getPacketSender();
+    sender.sendConfig(RETRIEVAL_VARP.if1, RETRIEVAL_IF1.paid);
+    sender.sendInterfaceScript(RETRIEVAL_PAID_SCRIPT, [RETRIEVAL_FEE, 0]);
+  }
+  return true;
+}
+
+function isUltimateIronman(player) {
+  const request = { player, mode: "none" };
+  Shared.api().emitCustomEvent("ironman:mode", request);
+  return request.mode === "ultimate";
+}
+
+function retrievalEntries(held) {
+  return held.items.map(([id, amount]) => ({ id, amount }));
+}
+
+function isRetrievalOpen(player) {
+  const sender = player.getPacketSender();
+  return typeof sender.isSubInterfaceOpen === "function"
+    && sender.isSubInterfaceOpen(RETRIEVAL_COMPONENT.items >>> 16);
+}
+
+function canOpenRetrieval(player) {
+  const sender = player.getPacketSender();
+  return ["sendInventory", "sendString", "sendInterfaceScript", "sendSubInterface", "sendInterfaceFlagsRange"]
+    .every((method) => typeof sender[method] === "function");
+}
+
+function retrievalSummary(entries) {
+  const value = entries.reduce((sum, { id, amount }) => {
+    const guide = Shared.core().ItemDefinition.forId(id).getGrandExchangeValue?.() ?? 0;
+    return sum + Math.max(0, guide) * amount;
+  }, 0);
+  return `Stack count: <col=ffffff>${entries.length}</col><br>Guide value: <col=ffffff>${value.toLocaleString("en-GB")}</col> (approximately)`;
+}
+
+function sendRetrievalContents(player, held) {
+  const entries = retrievalEntries(held);
+  const sender = player.getPacketSender();
+  sender.sendInventory(RETRIEVAL_INVENTORY, RETRIEVAL_SLOTS, entries);
+  sender.sendString(retrievalSummary(entries), RETRIEVAL_COMPONENT.discard);
+}
+
+function openRetrieval(player, held) {
+  const paid = held.paid || (Number(player.getAttribute(Shared.ATTR.KILLS)) || 0) < FREE_RETRIEVALS;
+  if (paid !== held.paid) {
+    held.paid = paid;
+    player.setAttribute(Shared.ATTR.RETRIEVAL, held);
+  }
+  player.__retrievalOwner = OWNER;
+  const sender = player.getPacketSender();
+  sender.sendInterfaceRemoval();
+  sender.sendConfig(RETRIEVAL_VARP.if2, 0);
+  sender.sendConfig(RETRIEVAL_VARP.if1, paid ? RETRIEVAL_IF1.paid : RETRIEVAL_IF1.unpaid);
+  sendRetrievalContents(player, held);
+  sender.sendInterfaceScript(RETRIEVAL_MODAL_SCRIPT, [-1, -1]);
+  sender.sendSubInterface(RETRIEVAL_COMPONENT.mainModal, RETRIEVAL_COMPONENT.items >>> 16, RETRIEVAL_MODAL);
+  sender.sendInterfaceFlagsRange(RETRIEVAL_COMPONENT.items, 0, RETRIEVAL_SLOTS - 1, RETRIEVAL_EVENTS);
+}
+
+function takeRetrievalEntry(player, entry) {
+  const [id, amount] = entry;
+  const { Item } = Shared.core();
+  const inventory = player.getInventory();
+  const item = new Item(id, amount);
+  const moved = Math.min(amount, inventory.getAddableAmount(item));
+  if (moved <= 0) return false;
+  inventory.add(new Item(id, moved), false);
+  entry[1] -= moved;
+  return true;
+}
+
+function finishRetrieval(player, held, refreshInterface = true, warnIfRemaining = true) {
+  player.getInventory().refreshItems?.();
+  held.items = held.items.filter(([, amount]) => amount > 0);
+  player.setAttribute(Shared.ATTR.RETRIEVAL, held.items.length > 0 ? held : null);
+  if (held.items.length > 0) {
+    if (warnIfRemaining) player.sendMessage("You don't have enough inventory space to collect all of your items.");
+  } else if (refreshInterface) player.getPacketSender().sendConfig(RETRIEVAL_VARP.if1, RETRIEVAL_IF1.empty);
+  else player.sendMessage("You collect your items from the priestess.");
+  if (refreshInterface) sendRetrievalContents(player, held);
+  return true;
+}
+
+function takeAllRetrieval(player, held, refreshInterface = true) {
+  for (const entry of held.items) takeRetrievalEntry(player, entry);
+  return finishRetrieval(player, held, refreshInterface);
+}
+
+function retrievalButton({ player }) {
+  if (player.__retrievalOwner !== OWNER || !isRetrievalOpen(player)) return false;
+  const held = heldItems(player);
+  if (!held) return false;
+  if (!held.paid) payFee(player, held);
+  else takeAllRetrieval(player, held);
+  return true;
+}
+
+function retrievalItemAction(event) {
+  const { player } = event;
+  if (player.__retrievalOwner !== OWNER || !isRetrievalOpen(player)) return false;
+  const held = heldItems(player);
+  const entry = held?.items[event.slot];
+  if (!entry) return false;
+  const op = event.opId ?? event.action;
+  if (op === RETRIEVAL_EXAMINE_OP) {
+    examineItem(player, entry[0], entry[1]);
+    return true;
+  }
+  if (op !== RETRIEVAL_TAKE_OP) return false;
+  if (!held.paid) payFee(player, held);
+  else {
+    takeRetrievalEntry(player, entry);
+    finishRetrieval(player, held, true, entry[1] > 0);
+  }
   return true;
 }
 
@@ -279,20 +465,12 @@ function collect({ player }) {
     Shared.npcSay(player, Shared.NPC.PRIESTESS, "I'm afraid I don't have anything for you to collect. If I had any of your items, but you died before collecting them from me, I'd lose them.");
     return true;
   }
-  if (!payFee(player, held)) return true;
-  const { Item, ItemDefinition } = Shared.core();
-  const inventory = player.getInventory();
-  const left = [];
-  for (const [id, amount] of held.items) {
-    const stackable = ItemDefinition.forId(id)?.isStackable?.();
-    const fits = stackable ? inventory.contains(id) || inventory.getFreeSlots() > 0 : inventory.getFreeSlots() > 0;
-    if (fits) inventory.add(new Item(id, amount), false);
-    else left.push([id, amount]);
+  if (isUltimateIronman(player) || !canOpenRetrieval(player)) {
+    if (!payFee(player, held)) return true;
+    takeAllRetrieval(player, held, false);
+    return true;
   }
-  inventory.refreshItems?.();
-  player.setAttribute(Shared.ATTR.RETRIEVAL, left.length > 0 ? { items: left, paid: held.paid } : null);
-  if (left.length > 0) player.sendMessage("You don't have enough inventory space to collect all of your items.");
-  else player.sendMessage("You collect your items from the priestess.");
+  openRetrieval(player, held);
   return true;
 }
 
@@ -303,6 +481,13 @@ function collectionLogCount(request) {
 
 module.exports = function registerZulrahShrine(api) {
   Shared.bind(api);
+  const { CacheDefinitions } = Shared.core();
+  RETRIEVAL_COMPONENT.items = CacheDefinitions.getComponentId("gravestone_retrieval:items");
+  RETRIEVAL_COMPONENT.button = CacheDefinitions.getComponentId("gravestone_retrieval:button");
+  RETRIEVAL_COMPONENT.discard = CacheDefinitions.getComponentId("gravestone_retrieval:discard");
+  RETRIEVAL_COMPONENT.mainModal = CacheDefinitions.getComponentId("toplevel_osrs_stretch:mainmodal");
+  RETRIEVAL_VARP.if1 = CacheDefinitions.getVarpId("if1");
+  RETRIEVAL_VARP.if2 = CacheDefinitions.getVarpId("if2");
   api.onCustomEvent("collection-log:category-count", collectionLogCount);
   api.onCustomEvent("item-retrieval:items", retrievalItems);
   for (const key of Object.values(Shared.ATTR)) api.persistAttribute(key);
@@ -313,14 +498,18 @@ module.exports = function registerZulrahShrine(api) {
   api.onPlayerLogin(returnFromShrine);
   api.onObjectInteraction(Shared.OBJECT.BOAT, { Board: board, "Quick-Board": quickBoard });
   api.onObjectInteraction(readTeleport);
-  api.onItemAction("Zul-andra teleport", { Teleport: readScroll });
+  api.onItemAction(ZUL_ANDRA_SCROLL, { Teleport: readScroll });
+  api.onCustomEvent("teleport-scroll:read", readStoredScroll);
   api.onNpcInteraction("Priestess Zul-Gwenwynig", { "Talk-to": talkTo, Collect: collect });
+  api.onInterfaceActionButton?.(RETRIEVAL_COMPONENT.button, retrievalButton);
+  api.onInterfaceActionButton?.(RETRIEVAL_COMPONENT.items, retrievalItemAction);
   api.onNpcDeath(onZulrahDeath);
   api.onCustomEvent("npc-drops:location", lootUnderPlayer);
   api.onNpcHitModify(capDamage);
   api.onCanAttack(onlyWhenSurfaced);
   api.onPlayerDeathItemDrop(holdForPriestess);
   api.onPlayerDeath(announceHeld);
+  api.onCustomEvent("player:died", loseUnclaimed);
 };
 
 module.exports.board = board;
@@ -330,6 +519,7 @@ module.exports.talkTo = talkTo;
 module.exports.returnFromShrine = returnFromShrine;
 module.exports.capDamage = capDamage;
 module.exports.holdForPriestess = holdForPriestess;
+module.exports.loseUnclaimed = loseUnclaimed;
 module.exports.onZulrahDeath = onZulrahDeath;
 module.exports.lootUnderPlayer = lootUnderPlayer;
 module.exports.onlyWhenSurfaced = onlyWhenSurfaced;

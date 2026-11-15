@@ -12,6 +12,8 @@ import { GameState } from "../game/login/GameState";
 import { MenuOpcode } from "../ui/menu/MenuState";
 import { setMenuTransform } from "../ui/menu/menuTransforms";
 import { applyMenuSwaps } from "../game/plugins/menuswapper/menuSwaps";
+import { npcOpsVisibility } from "../game/NpcOpsVisibility";
+import { groundObjOpsVisibility } from "../game/GroundObjOpsVisibility";
 
 type Move = { dx: number; dy: number; running: boolean; rotation: number };
 
@@ -238,6 +240,14 @@ const refusal = (fromX: number, fromY: number, toX: number, toY: number): Contin
     assert.deepEqual(plugin.getUiState().action, { kind: "npc", options: [{ option: "Attack", target: "Cow", id: 0 }] });
     plugin.interact(0);
     assert.deepEqual(sent[0].slice(2), [MenuOpcode.NpcSecondOption, 11, "Attack", "Cow"]);
+    // hidenpcops takes the NPC's button away; it comes back with the next scan once shown again.
+    npcOpsVisibility.set(true);
+    plugin.onClientTick();
+    assert.equal(plugin.getUiState().action, undefined, "hidden NPC actions offer no button");
+    npcOpsVisibility.clear();
+    plugin.onGameTick();
+    plugin.onClientTick();
+    assert.equal(plugin.getUiState().action?.options[0].target, "Cow", "shown again, the cow's button returns");
     // Held, the cow stays the target after the player steps off it.
     plugin.pin(true);
     at = { x: 61, y: 61 };
@@ -308,8 +318,8 @@ const refusal = (fromX: number, fromY: number, toX: number, toY: number): Contin
 // Standing on ground items lists every stack's options, the last to land first; Take goes by stack.
 {
     const stacks = [
-        { id: 1, itemId: 526, quantity: 1, tile: { x: 40, y: 40, level: 0 } },
-        { id: 2, itemId: 995, quantity: 250, tile: { x: 40, y: 40, level: 0 } },
+        { id: 1, itemId: 526, quantity: 1, enabledOps: 31, tile: { x: 40, y: 40, level: 0 } },
+        { id: 2, itemId: 995, quantity: 250, enabledOps: 31, tile: { x: 40, y: 40, level: 0 } },
     ];
     const objTypes: Record<number, { name: string; groundActions: (string | null)[] }> = {
         526: { name: "Bones", groundActions: [null, null, "Take", null, null] },
@@ -338,6 +348,18 @@ const refusal = (fromX: number, fromY: number, toX: number, toY: number): Contin
         "the newest stack first, a hidden item's Take last");
     plugin.interact(options[1].id);
     assert.deepEqual(taken, [1], "Take sends that stack");
+    // hideobjops takes the pile's button away; it comes back with the next scan once shown again.
+    groundObjOpsVisibility.set(true);
+    plugin.onClientTick();
+    assert.equal(plugin.getUiState().action, undefined, "hidden ground-item actions offer no button");
+    groundObjOpsVisibility.clear();
+    version++;
+    plugin.onClientTick();
+    assert.equal(plugin.getUiState().action?.options.length, 2, "shown again, the pile's button returns");
+    stacks[1].enabledOps = 0; version++; plugin.onClientTick();
+    assert.deepEqual(plugin.getUiState().action?.options.map(o => o.target), ["Bones"]);
+    stacks[1].enabledOps = 31; version++; plugin.onClientTick();
+    assert.equal(plugin.getUiState().action?.options.length, 2);
     stacks.splice(1, 1);
     version++;
     plugin.onClientTick();
@@ -365,4 +387,71 @@ void (async () => {
     plugin.onClientTick();
     assert.equal(plugin.getUiState().visible, true, "back when enabled again");
     console.log("touch controls plugin test passed");
+})();
+
+// On a short landscape screen the stick can cover the All Settings categories.
+void (async () => {
+    const { client } = makeClient();
+    const plugin = new TouchControlsPlugin(client);
+    await plugin.start();
+    plugin.onClientTick();
+    assert.equal(plugin.getUiState().visible, true);
+
+    const parents = client.widgetManager!.interfaceParents;
+    parents.set((601 << 16) | 27, { type: 0 });
+    plugin.onClientTick();
+    assert.equal(plugin.getUiState().visible, false, "a modal frees its touch targets in landscape");
+
+    parents.clear();
+    plugin.onClientTick();
+    assert.equal(plugin.getUiState().visible, true, "movement returns when the modal closes");
+})();
+
+// Portrait Mode layout: the stick comes back smaller and above the minimap (hudInset is the
+// distance from the bottom to the minimap's top), and steps aside while a bank or shop is open.
+void (async () => {
+    const { setMobilePortraitLayoutActive } = await import("../game/plugins/portraitmode/PortraitLayout");
+    const parents = new Map<number, { type: number }>();
+    const widgets = new Map<number, { x?: number; y?: number; parentUid?: number }>([
+        [(601 << 16) | 20, { x: 0, y: 0, parentUid: -1 }],
+        [(601 << 16) | 22, { x: 2, y: 1600, parentUid: (601 << 16) | 20 }],
+    ]);
+    const { client } = makeClient({
+        renderer: { canvas: { width: 1000, height: 2000, clientWidth: 500, clientHeight: 1000 } },
+        widgetManager: {
+            rootInterface: 601,
+            canvasWidth: 625,
+            interfaceParents: parents,
+            isEffectivelyHidden: () => false,
+            getWidgetByUid: (uid: number) => widgets.get(uid),
+        },
+    } as Partial<TouchControlsClient>);
+    setMobilePortraitLayoutActive(true);
+    try {
+        const plugin = new TouchControlsPlugin(client);
+        await plugin.start();
+        plugin.onClientTick();
+        const state = plugin.getUiState();
+        assert.equal(state.visible, true, "the stick shows in portrait");
+        assert.equal(state.portrait, true, "drawn as the portrait stick");
+        assert.equal(state.hudInset, 200, "lifted above the minimap");
+        assert.equal(state.stonesInset, 0, "the stones are along the bottom, not on the right");
+        assert.equal(state.scale, 1, "phone-sized controls stay compact");
+        client.renderer!.canvas!.clientWidth = 1000;
+        plugin.onClientTick();
+        assert.equal(plugin.getUiState().scale, 2, "joystick and action controls follow a larger mobile viewport without reload");
+        client.renderer!.canvas!.clientWidth = 500;
+        plugin.onClientTick();
+        assert.equal(plugin.getUiState().scale, 1, "shrinking restores the compact size");
+
+        parents.set((601 << 16) | 27, { type: 0 });
+        plugin.onClientTick();
+        assert.equal(plugin.getUiState().visible, false, "a bank or shop hides it in portrait");
+        parents.clear();
+        plugin.onClientTick();
+        assert.equal(plugin.getUiState().visible, true, "back once it closes");
+    } finally {
+        setMobilePortraitLayoutActive(false);
+    }
+    console.log("touch controls portrait test passed");
 })();

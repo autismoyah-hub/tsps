@@ -45,9 +45,11 @@
  *   claws 5 north and south; NPCs at +2/+3/+2 (head, left, right) west and +1/+0/+1 east.
  * - It rises 7 ticks after the first raider passes the barrier: "The Great Olm rises with the
  *   power of <col=00ff00>acid</col>." (flame ff0000, crystal ff00ff; none in the last phase)
- *   with the rising locs; their animations (7335, 7350, 7354) and sound 3405 a tick later; the
- *   risen head and claws 6 ticks in. Its first attack is the tick after the first time, 4 after
- *   every later time (10 ticks after the message). Each step of its rotation is 4 ticks.
+ *   with the rising locs and the parts' dormant NPCs (7551 head, 7552 left claw, 7550 right
+ *   claw); their animations (7335, 7350, 7354) and sound 3405 a tick later; the risen head and
+ *   claws 6 ticks in, transformed to their risen ids (+3) as the locs turn. Its first attack is
+ *   the tick after the first time, 4 after every later time (10 ticks after the message). Each
+ *   step of its rotation is 4 ticks.
  * - The head rests 2 ticks after turning or attacking. It leaves 32 client cycles in, from height
  *   340 ahead, 360 to its right and 355 to its left, 2 tiles aside, to 160 (0 on a tile), angle 5,
  *   progress 0, landing at 46 + 5 a tile (46 + 10 on a tile): magic 1339 (sound 3749), ranged 1340,
@@ -110,8 +112,14 @@ const Raid = require("./RaidState.ChambersOfXeric");
 const Monsters = require("./Monsters.ChambersOfXeric");
 
 const Achievements = require("./CombatAchievements.ChambersOfXeric");
+const CameraShake = require("../../interface/CameraShake.plugin");
 
 const NPC = { HEAD: 7554, RIGHT_CLAW: 7553, LEFT_CLAW: 7555, RIGHT_CLAW_DOWN: 7556, LEFT_CLAW_DOWN: 7557, FIRE: 7558 };
+/**
+ * The forms the parts are spawned in (rsprox captures: NpcInfo brings 7551/7550/7552 with the
+ * rising locs) and the risen ids they are transformed to 6 ticks later (+3).
+ */
+const DORMANT = { HEAD: 7551, RIGHT_CLAW: 7550, LEFT_CLAW: 7552 };
 const OBJECT = {
   HOLE_RISING: 29880, HOLE_RISEN: 29881, HOLE: 29882, LEFT_RISING: 29883, LEFT_RISEN: 29884, LEFT_GONE: 29885,
   RIGHT_RISING: 29886, RIGHT_RISEN: 29887, RIGHT_GONE: 29888, BARRIER: 29879, ACID: 30032, CLUSTER: 30033,
@@ -172,6 +180,20 @@ const T = {
   ],
 };
 
+/**
+ * Whether Dream Mentor's spells (Humidify among them) are open to the player: the quest, a relic's unlock, or the
+ * world's quests:equipment-requirements switch off (as LunarSpells.refuseBeforeDreamMentor).
+ */
+function dreamMentorOpen(player, PluginManager) {
+  if (PluginManager.getPluginConfig("quests:equipment-requirements", true) === false) return true;
+  const query = { player, key: "dream_mentor", complete: false };
+  PluginManager.emitCustomEvent("quest:is-complete", query);
+  if (query.complete === true) return true;
+  const unlock = { player, name: "humidify", unlocked: false };
+  PluginManager.emitCustomEvent("magic:spell-unlocked", unlock);
+  return unlock.unlocked === true;
+}
+
 class OlmRoom extends Raid.Room {
   constructor(raid, record) {
     super(raid, record);
@@ -181,6 +203,7 @@ class OlmRoom extends Raid.Room {
     this.pools = new Map();
     this.objects = {};
     this.risen = false;
+    this.rising = false;
     this.direction = ZONE.MIDDLE;
     this.counter = 0;
     this.skippedBasic = false;
@@ -318,6 +341,7 @@ class OlmRoom extends Raid.Room {
   rise() {
     if (this.raid.destroyed) return;
     this.risen = true;
+    this.rising = true;
     this.rightGone = false;
     const side = T.SIDES[this.side];
     this.power = this.drawPower();
@@ -327,6 +351,14 @@ class OlmRoom extends Raid.Room {
     this.placeObject("head", OBJECT.HOLE_RISING, side.head);
     this.placeObject("leftClaw", OBJECT.LEFT_RISING, side.leftClaw);
     this.placeObject("rightClaw", OBJECT.RIGHT_RISING, side.rightClaw);
+    // rsprox captures: the dormant parts come with the rising locs, and are turned into their
+    // risen forms (id + 3) when the locs turn, 6 ticks later.
+    const { Location } = Shared.core();
+    const at = (object, shift) => new Location(object.getLocation().getX() + shift, object.getLocation().getY(), 0);
+    this.head = this.spawnPart(DORMANT.HEAD, at(this.objects.head, side.npcShift.head));
+    this.leftClaw = this.spawnPart(DORMANT.LEFT_CLAW, at(this.objects.leftClaw, side.npcShift.left));
+    this.rightClaw = this.spawnPart(DORMANT.RIGHT_CLAW, at(this.objects.rightClaw, side.npcShift.right));
+    if (this.head) this.head.__coxPointsMultiplier = 0;
     Shared.later(this.raid, TIMING.RISE_ANIM, () => {
       if (this.raid.destroyed) return;
       const { Location } = Shared.core();
@@ -356,10 +388,11 @@ class OlmRoom extends Raid.Room {
     const leftObject = this.placeObject("leftClaw", OBJECT.LEFT_RISEN, side.leftClaw);
     const rightObject = this.placeObject("rightClaw", OBJECT.RIGHT_RISEN, side.rightClaw);
     const at = (object, shift) => new Location(object.getLocation().getX() + shift, object.getLocation().getY(), 0);
-    this.head = this.spawnPart(NPC.HEAD, at(head, side.npcShift.head));
-    this.leftClaw = this.spawnPart(NPC.LEFT_CLAW, at(leftObject, side.npcShift.left));
-    this.rightClaw = this.spawnPart(NPC.RIGHT_CLAW, at(rightObject, side.npcShift.right));
+    this.head = this.risenPart(this.head, NPC.HEAD, at(head, side.npcShift.head));
+    this.leftClaw = this.risenPart(this.leftClaw, NPC.LEFT_CLAW, at(leftObject, side.npcShift.left));
+    this.rightClaw = this.risenPart(this.rightClaw, NPC.RIGHT_CLAW, at(rightObject, side.npcShift.right));
     if (this.head) this.head.__coxPointsMultiplier = 0;
+    this.rising = false;
     this.usedThisPhase.clear();
     this.counter = 0;
     this.attackWait = this.roseBefore ? TIMING.NEXT_ATTACK : TIMING.FIRST_ATTACK;
@@ -368,6 +401,15 @@ class OlmRoom extends Raid.Room {
     this.animate(this.objects.head, ANIM.HEAD_MIDDLE);
     this.animate(this.objects.leftClaw, ANIM.LEFT_CLAW_DEFAULT);
     this.animate(this.objects.rightClaw, ANIM.RIGHT_CLAW_DEFAULT);
+  }
+
+  /** A dormant part becomes its risen form; a part that is gone is spawned risen (no capture's case). */
+  risenPart(npc, id, location) {
+    if (npc?.isRegistered?.()) {
+      npc.setNpcTransformationId(id);
+      return npc;
+    }
+    return this.spawnPart(id, location);
   }
 
   spawnPart(id, location) {
@@ -385,7 +427,8 @@ class OlmRoom extends Raid.Room {
   tick() {
     this.tickPools();
     this.tickClusters();
-    if (!this.head?.isRegistered() || this.dead) return;
+    // Its parts exist dormant through the rise; it can't attack until they are up.
+    if (this.rising || !this.head?.isRegistered() || this.dead) return;
     // Wiki: before the final stand the head heals whatever is done to it.
     if (!this.finalStand() && this.head.getHitpoints() < this.head.getMaxHitpoints() && this.raid.ticks % 5 === 0) {
       this.head.setHitpoints(this.head.getMaxHitpoints());
@@ -689,7 +732,8 @@ class OlmRoom extends Raid.Room {
       state.poolKey = key;
       state.poolTick = this.raid.ticks;
       Shared.damage(player, Shared.random(3, 6));
-      CombatFactory.poisonEntity(player, 2);
+      // Severity, which poisonEntity takes: hit x 5 (the first hit is 2).
+      CombatFactory.poisonEntity(player, 10);
     }
   }
 
@@ -878,6 +922,8 @@ class OlmRoom extends Raid.Room {
   canHumidify(player) {
     const { Item, MagicSpellbook, PluginManager } = Shared.core();
     if (player.getSpellbook() !== MagicSpellbook.LUNAR || Shared.level(player, "MAGIC") < HUMIDIFY.LEVEL) return false;
+    // Humidify is a Dream Mentor spell (Wiki), here as everywhere: unless a league relic unlocks every spell.
+    if (!dreamMentorOpen(player, PluginManager)) return false;
     const short = HUMIDIFY.RUNES.filter(([id, amount]) => !Shared.has(player, id, amount))
       .map(([id, amount]) => new Item(id, amount - player.getInventory().getAmount(id)));
     return short.length === 0 || PluginManager.checkSpellRuneSource(player, short);
@@ -1273,8 +1319,8 @@ class OlmRoom extends Raid.Room {
   clawParts(left) {
     const side = T.SIDES[this.side];
     return left
-      ? { key: "leftClaw", tile: side.leftClaw, shift: side.npcShift.left, npc: NPC.LEFT_CLAW, down: NPC.LEFT_CLAW_DOWN, rising: OBJECT.LEFT_RISING, risen: OBJECT.LEFT_RISEN, gone: OBJECT.LEFT_GONE, rise: ANIM.LEFT_CLAW_RISE, idle: ANIM.LEFT_CLAW_DEFAULT, fall: ANIM.LEFT_CLAW_FALL }
-      : { key: "rightClaw", tile: side.rightClaw, shift: side.npcShift.right, npc: NPC.RIGHT_CLAW, down: NPC.RIGHT_CLAW_DOWN, rising: OBJECT.RIGHT_RISING, risen: OBJECT.RIGHT_RISEN, gone: OBJECT.RIGHT_GONE, rise: ANIM.RIGHT_CLAW_RISE, idle: ANIM.RIGHT_CLAW_DEFAULT, fall: ANIM.RIGHT_CLAW_FALL };
+      ? { key: "leftClaw", tile: side.leftClaw, shift: side.npcShift.left, npc: NPC.LEFT_CLAW, dormant: DORMANT.LEFT_CLAW, down: NPC.LEFT_CLAW_DOWN, rising: OBJECT.LEFT_RISING, risen: OBJECT.LEFT_RISEN, gone: OBJECT.LEFT_GONE, rise: ANIM.LEFT_CLAW_RISE, idle: ANIM.LEFT_CLAW_DEFAULT, fall: ANIM.LEFT_CLAW_FALL }
+      : { key: "rightClaw", tile: side.rightClaw, shift: side.npcShift.right, npc: NPC.RIGHT_CLAW, dormant: DORMANT.RIGHT_CLAW, down: NPC.RIGHT_CLAW_DOWN, rising: OBJECT.RIGHT_RISING, risen: OBJECT.RIGHT_RISEN, gone: OBJECT.RIGHT_GONE, rise: ANIM.RIGHT_CLAW_RISE, idle: ANIM.RIGHT_CLAW_DEFAULT, fall: ANIM.RIGHT_CLAW_FALL };
   }
 
   /**
@@ -1316,13 +1362,14 @@ class OlmRoom extends Raid.Room {
     const object = this.placeObject(parts.key, parts.rising, parts.tile);
     if (!left) this.rightGone = false;
     const { Location } = Shared.core();
-    const claw = this.spawnPart(parts.npc, new Location(object.getLocation().getX() + parts.shift, object.getLocation().getY(), 0));
+    const claw = this.spawnPart(parts.dormant, new Location(object.getLocation().getX() + parts.shift, object.getLocation().getY(), 0));
     if (claw) claw.__coxPointsMultiplier = 0;
     if (left) this.leftClaw = claw;
     else this.rightClaw = claw;
     Shared.later(this.raid, TIMING.RISE_ANIM, () => this.animate(this.objects[parts.key], parts.rise));
     Shared.later(this.raid, TIMING.RISEN, () => {
       if (this.dead || this.raid.destroyed) return;
+      if (claw?.isRegistered?.()) claw.setNpcTransformationId(parts.npc);
       this.placeObject(parts.key, parts.risen, parts.tile);
       this.animate(this.objects[parts.key], parts.idle);
     });
@@ -1376,10 +1423,10 @@ class OlmRoom extends Raid.Room {
     });
   }
 
-  /** Where the sound of the head falling and rising comes from. */
+  /** Where the sound of the head falling and rising comes from (the cache tile before it rises). */
   headSoundTile() {
     const { Location } = Shared.core();
-    const at = this.objects.head.getLocation();
+    const at = this.objects.head?.getLocation() ?? this.t(...T.SIDES[this.side].head);
     return new Location(at.getX() + T.SIDES[this.side].soundShift, at.getY() + 2, 0);
   }
 
@@ -1443,8 +1490,12 @@ class OlmRoom extends Raid.Room {
     let ticks = 0;
     let atRaider = finalStand;
     const volley = () => {
-      if (this.raid.destroyed || state.stopped || this.dead || ticks > duration) return false;
+      if (this.raid.destroyed || state.stopped || this.dead || ticks > duration) {
+        this.stillCamera();
+        return false;
+      }
       ticks += 2;
+      this.shakeCamera(ticks > duration);
       if (!finalStand) Shared.areaSound(this.viewers(), 3834, centre, { range: 15 });
       if (atRaider) {
         const raider = Shared.randomOf(this.raiders());
@@ -1464,12 +1515,49 @@ class OlmRoom extends Raid.Room {
     return state;
   }
 
+  /**
+   * Each volley of falling crystals shakes the chamber (random 2-5 on each of the first three
+   * slots); the last one before the Olm rises again stills it.
+   */
+  shakeCamera(last) {
+    this.shaken ??= new Set();
+    const viewers = this.viewers();
+    // Ours: a raider who has left the chamber (died, escaped) is stilled with the next volley.
+    for (const player of this.shaken) {
+      if (!viewers.includes(player)) this.stillPlayer(player);
+    }
+    for (const player of viewers) {
+      for (const slot of [0, 1, 2]) CameraShake.send(player.getPacketSender(), "olm", slot, Shared.random(2, 5), 0, 0);
+      this.shaken.add(player);
+    }
+    if (last) this.stillCamera();
+  }
+
+  /** Stills the camera of everyone the falling crystals shook. */
+  stillCamera() {
+    for (const player of [...(this.shaken ?? [])]) this.stillPlayer(player);
+  }
+
+  stillPlayer(player) {
+    this.shaken.delete(player);
+    if (player.isRegistered()) player.getPacketSender().sendCameraReset?.();
+  }
+
+  /**
+   * `::coxclear` in the chamber: it dies as the other rooms' encounters do, so a scripted run can
+   * reach the chest (the room has no exit crystal for the base cleanup to open).
+   */
+  devFinish() {
+    this.defeated();
+  }
+
   /** rsprox captures: it falls at once; at 2 the exit's crystal shatters, at 3 the raid completes, at 6 the chest and the open exit. */
   defeated() {
     if (this.dead) return;
     this.dead = true;
     if (this.fallingCrystals$) this.fallingCrystals$.stopped = true;
     this.animate(this.objects.head, ANIM.HEAD_FALL);
+    this.stillCamera();
     Shared.areaSound(this.viewers(), 3405, this.headSoundTile(), { range: 15 });
     this.completeAchievements();
     const { Animation, GameObject, Location, ObjectManager } = Shared.core();
@@ -1589,6 +1677,25 @@ function outOfReach(event) {
   }
 }
 
+/** The Great Olm's lightning: a protection prayer tried while its block holds is told this. */
+const PRAYER_BLOCKED_MESSAGE = "You've been injured and can't use that prayer!";
+
+/**
+ * Lightning's prayer block (Engine callback name: prayer disabled): only inside the Olm's
+ * chamber, and only while the block its lightning set is running. Other content's blocks keep
+ * the engine's message.
+ */
+function prayerDisabled(event) {
+  const { player, prayer } = event;
+  const room = Raid.raidOf(player)?.olmRoom;
+  if (!room || !room.inChamber(player.getLocation())) return;
+  const { PrayerData } = Shared.core();
+  if (![PrayerData.PROTECT_FROM_MAGIC, PrayerData.PROTECT_FROM_MISSILES, PrayerData.PROTECT_FROM_MELEE].includes(prayer)) return;
+  if (player.getCombat?.().getPrayerBlockTimer?.().finished?.() !== false) return;
+  event.disabled = true;
+  event.message = PRAYER_BLOCKED_MESSAGE;
+}
+
 function olmCombat(api) {
   const { CombatMethod, CombatType } = api.core;
   return class OlmPartCombat extends CombatMethod {
@@ -1614,7 +1721,8 @@ module.exports = function registerCoxOlm(api) {
   api.onItemOnNpc(vesselOnFire);
   api.onSpellOnNpc(spellOnFire);
   Raid.onRaidArea("canAttack", outOfReach);
+  api.onPrayerDisabled(prayerDisabled);
   api.registerNpcCombatMethodProvider([NPC.HEAD, NPC.LEFT_CLAW, NPC.RIGHT_CLAW, NPC.FIRE], olmCombat(api));
 };
 
-Object.assign(module.exports, { OlmRoom, SEQUENCE, LAST_SEQUENCE });
+Object.assign(module.exports, { OlmRoom, SEQUENCE, LAST_SEQUENCE, DORMANT, PRAYER_BLOCKED_MESSAGE, prayerDisabled });

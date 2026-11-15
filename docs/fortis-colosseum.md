@@ -157,7 +157,7 @@ While it charges, the orbs show on its body in throwing order, one a tick, in sp
 
 **Minotaur:**
 - Its damage lands a tick after its swing (Wiki).
-- While not in melee range of the player, every 5 ticks it heals each damaged enemy within 6 tiles to full. The Wiki says it heals continuously and gives no rate; the healing has no animation here.
+- While the player is outside its footprint's melee reach, the Minotaur heals non-Minotaur enemies below 75% health when their centre tiles are within 7 tiles and have line of sight, including around pillars ([Mod Arcane](https://www.reddit.com/r/2007scape/comments/1e90fkb/comment/lecvxj9/)). TSPS uses its standard centre tile for even-sized NPCs; that choice is not separately captured. Its existing 5-tick healing check and lack of animation remain estimates.
 
 **Animations and graphics:**
 - The trio and the shaman are from the capture. Shaman: anim 10859, cast 1458, projectile 1459, impact 1460. Seer: 10853 with fire blast 130/131. Archer: 10850 with arrow 9. Berserker: 10856.
@@ -168,7 +168,7 @@ While it charges, the orbs show on its body in throwing order, one a tick, in sp
 
 **Not done yet:**
 - Two Manticores copying each other's orb order.
-- Line-of-sight rules, including the Minotaur's healing being blocked by the pillars.
+- Other encounter line-of-sight rules.
 
 ## Modifiers
 
@@ -271,9 +271,11 @@ Enraged (150 HP): 5 pools at once, then one more every 3 ticks, and the crystals
 - Left out: the Varlamore token on wave 3 (the Wiki gives its rate as "varies").
 - Values are the items' GE prices (`item-prices.json`). The capture's 80 splinters at 30,560 is 382 each.
 
-**The chest** (Wiki; tiles **RSPS**):
+**The chest** (Wiki; rsprox captures 1193, 1227 and 4117; tiles **RSPS**):
 - Forfeiting between waves, or beating Sol Heredit (once his death animation has played and his hazards have gone), brings the Rewards Chest (loc 50741, appear anim 10825) out at (1829, 3105), with Minimus at (1830, 3103) to leave by.
-- Search opens interface 246: the items (inventory 843) in component 11 with Take, Bank-all (5), Take-all (7), Discard-all (9), and "Total Value: N" (3).
+- Search opens interface 864 and sends inventory 843. Its reward list is component 17, and its Discard-all, Take-all and Bank-all buttons are components 13, 14 and 15. Capture 4117 shows taking one item, entering two with Take-X, both answers to the discard confirmation, and the empty-chest message. Capture 1193 shows Take-All on one item; capture 1227 shows Bank-all clearing the 80 splinters after wave 1.
+- Refusals (captures 1193 and 1194, Leagues VI worlds; no normal-world capture has them): Bank-all with no room gives one "Your bank cannot hold your items.", Take-all with no room "You don't have enough space to take anything.", a single Take with no room "You don't have enough inventory space to take any.", and Bank-all on an emptied chest "You have nothing to deposit.". The chest keeps its rewards and resends its value line. Every recorded refusal had nothing fit; when only part fits we take what fits without a line (ours).
+- The chest value uses script 4929, whose current cache definition takes a long. The older interface's value text and item setup are also sent as shown in the captures. Varbit 9802 marks loot opened and clears on leaving the arena.
 - Loot left in the chest is lost on leaving. Dying, teleporting or logging out loses all of it (the capture's death sent an empty preview and "Total Value: 0").
 
 **Glory** per cleared wave (Wiki, "Glory"):

@@ -5,9 +5,15 @@ import { Item } from "../../../model/Item"
 import { Location } from "../../../model/Location"
 import { PrivateArea } from "../../../model/areas/impl/PrivateArea";
 
+export type GroundPickupReplacement = Readonly<{ id: number; telegrabDenial?: string }>;
+
 export class ItemOnGround {
     private static nextId = 1;
     private readonly id = ItemOnGround.nextId++;
+    /** Native ground-action bits 0..4; Examine, item-use and spells are separate. */
+    private enabledOps = 0x1f;
+    private viewerEnabledOps = new WeakMap<Player, number>();
+    private viewerOverrideCount = 0;
     position: Location;
     state: State = State.SEEN_BY_PLAYER;
     owner: string | null;
@@ -16,6 +22,8 @@ export class ItemOnGround {
     goesGlobal: boolean;
     pendingRemoval: boolean;
     respawnTimer: number = -1;
+    /** Original recurring-static supply, independent of partial pickups. */
+    private respawnAmount: number;
     /** World cycle in which this item last aged in {@link process}. */
     agedCycle: number = -1;
     oldAmount: number;
@@ -28,7 +36,8 @@ export class ItemOnGround {
     /** While set, the stack neither ages nor goes public (a mark of grace while its owner is logged out). */
     agingPaused: boolean = false;
 
-    constructor(state: State, owner: string | undefined, position: Location, item: Item, goesGlobal: boolean, respawnTimer: number, privateArea: PrivateArea, staticSpawn: boolean = false) {
+    constructor(state: State, owner: string | undefined, position: Location, item: Item, goesGlobal: boolean, respawnTimer: number, privateArea: PrivateArea, staticSpawn: boolean = false,
+        public readonly pickupReplacement?: GroundPickupReplacement) {
         this.state = state;
         this.owner = owner;
         this.position = position;
@@ -37,6 +46,7 @@ export class ItemOnGround {
         this.tick = 0;
         this.pendingRemoval = false;
         this.respawnTimer = respawnTimer;
+        this.respawnAmount = item?.getAmount?.() ?? 0;
         this.oldAmount = item?.getAmount?.() ?? 0;
         this.privateArea = privateArea;
         this.staticSpawn = staticSpawn;
@@ -100,6 +110,47 @@ export class ItemOnGround {
         return ItemOnGroundManager.getTiming(this);
     }
 
+    public getEnabledOps(viewer?: Player): number {
+        return (viewer && this.viewerEnabledOps.get(viewer)) ?? this.enabledOps;
+    }
+
+    public setEnabledOps(mask: number, viewer?: Player): ItemOnGround {
+        if (!Number.isInteger(mask) || mask < 0 || mask > 0x1f) throw new RangeError("Ground operation mask must be 0..31");
+        if (viewer) {
+            if (!this.viewerEnabledOps.has(viewer)) this.viewerOverrideCount++;
+            this.viewerEnabledOps.set(viewer, mask);
+        }
+        else this.enabledOps = mask;
+        this.refreshEnabledOps(viewer);
+        return this;
+    }
+
+    public resetEnabledOps(viewer: Player): ItemOnGround {
+        if (this.viewerEnabledOps.delete(viewer)) {
+            this.viewerOverrideCount--;
+            this.refreshEnabledOps(viewer);
+        }
+        return this;
+    }
+
+    public isOperationEnabled(viewer: Player, operation: number): boolean {
+        return Number.isInteger(operation) && operation >= 1 && operation <= 5
+            && (this.getEnabledOps(viewer) & (1 << (operation - 1))) !== 0;
+    }
+
+    public hasSameOperationPolicy(other: ItemOnGround): boolean {
+        // Viewer policies belong to this exact stack/session. Do not merge them away.
+        return this.enabledOps === other.enabledOps && this.viewerOverrideCount === 0 && other.viewerOverrideCount === 0
+            && this.pickupReplacement?.id === other.pickupReplacement?.id
+            && this.pickupReplacement?.telegrabDenial === other.pickupReplacement?.telegrabDenial;
+    }
+
+    private refreshEnabledOps(viewer?: Player): void {
+        if (!World.getItems().includes(this) || this.pendingRemoval) return;
+        if (viewer) ItemOnGroundManager.performPlayer(viewer, this, OperationType.ALTER);
+        else ItemOnGroundManager.perform(this, OperationType.ALTER);
+    }
+
     public getPosition(): Location {
         return this.position;
     }
@@ -114,6 +165,12 @@ export class ItemOnGround {
 
     public getItem(): Item {
         return this.item;
+    }
+
+    public getPickupItem(): Item {
+        return this.pickupReplacement
+            ? new Item(this.pickupReplacement.id, this.item.getAmount(), this.item.getMeta())
+            : this.item;
     }
 
     public getTick(): number {
@@ -144,6 +201,14 @@ export class ItemOnGround {
 
     public getRespawnTimer(): number {
         return this.respawnTimer;
+    }
+
+    public getRespawnAmount(): number {
+        return this.respawnAmount;
+    }
+
+    public mergeRespawnAmount(other: ItemOnGround): void {
+        this.respawnAmount += other.respawnAmount;
     }
 
     public respawns(): boolean {
@@ -190,8 +255,10 @@ export class ItemOnGround {
         this.pendingRemoval = pendingRemoval;
     }
     public clone(): ItemOnGround {
-        const copy = new ItemOnGround(this.state, this.owner, this.getPosition(), this.item.clone(), this.goesGlobal, this.respawnTimer, this.privateArea, this.staticSpawn);
+        const copy = new ItemOnGround(this.state, this.owner, this.getPosition(), this.item.clone(), this.goesGlobal, this.respawnTimer, this.privateArea, this.staticSpawn, this.pickupReplacement);
+        copy.respawnAmount = this.respawnAmount;
         copy.despawnDelay = this.despawnDelay;
+        copy.enabledOps = this.enabledOps;
         return copy;
     }
 

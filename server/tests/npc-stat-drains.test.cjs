@@ -58,6 +58,19 @@ test('a fresh drain after natural full recovery starts a fresh regeneration minu
   cycle = 1100;
   assert.equal(value.getCurrentLevel(Skill.ATTACK), 91);
 });
+test('NPC projected level preview uses the same immunity and base clamp without draining', () => {
+  cycle = 0;
+  const value = npc();
+  assert.equal(value.previewCurrentLevel(Skill.ATTACK, -5), 0);
+  assert.equal(value.previewCurrentLevel(Skill.ATTACK, 150), 100);
+  value.setCurrentLevels(Skill.ATTACK, 40);
+  assert.equal(value.previewCurrentLevel(Skill.ATTACK, 30), 30);
+  assert.equal(value.getCurrentLevel(Skill.ATTACK), 40, 'previewing does not change the NPC');
+  value.setStatDrainImmune(true);
+  assert.equal(value.previewCurrentLevel(Skill.ATTACK, 10), 100, 'immunity refuses the drain');
+  assert.equal(value.getCurrentLevel(Skill.ATTACK), 100);
+});
+
 test('NPC drained levels immediately affect accuracy, magic defence and damage', () => {
   cycle = 0;
   const value = npc();
@@ -96,7 +109,7 @@ test('Weaken applies base-level demon drains and ignores misses', () => {
 });
 test('Elder maul, Bone dagger, Soulshot, Condemn and Ralos drain NPC current stats', () => {
   cycle = 0;
-  for (const [name, level] of [['ElderMaul', 65], ['BoneDagger', 80], ['TonalzticsOfRalos', 90]]) {
+  for (const [name, level] of [['ElderMaul', 65], ['BoneDagger', 80], ['TonalzticsOfRalos', 88]]) {
     const value = npc();
     method(name).handleAfterHitEffects(hit(value, 20));
     assert.equal(value.getDefenceLevel(), level, name);
@@ -109,6 +122,20 @@ test('Elder maul, Bone dagger, Soulshot, Condemn and Ralos drain NPC current sta
   condemn.handleAfterHitEffects(hit(value, 10));
   assert.equal(value.getCurrentLevel(Skill.MAGIC), 80, 'Condemn never restores already drained stats');
   assert.equal(value.getDefenceLevel(), 85);
+});
+
+test('Division drains 1/8 of Magic from Defence for each damaging hit', () => {
+  cycle = 0;
+  const value = npc([100, 100, 100, 100, 120]);
+  const division = method('TonalzticsOfRalos');
+  division.handleAfterHitEffects({
+    getTarget: () => value,
+    isAccurate: () => true,
+    getHits: () => [{ getDamage: () => 10 }, { getDamage: () => 0 }, { getDamage: () => 10 }],
+  });
+  assert.equal(value.getDefenceLevel(), 70, 'two damaging hits drain 15 each');
+  division.handleAfterHitEffects(hit(value, 0, false));
+  assert.equal(value.getDefenceLevel(), 70, 'a miss drains nothing');
 });
 
 test('stat-drain immunity is instance scoped and blocks real special-attack drains', () => {
@@ -137,4 +164,31 @@ test('enabling immunity clears previous drains and disabling it restores normal 
   value.setStatDrainImmune(false);
   value.setDefenceLevel(60);
   assert.equal(value.getDefenceLevel(), 60);
+});
+
+// A floor is encounter-owned and only affects later writes/previews, not already stored drains.
+test('NPC minimum levels affect only this instance and future writes and previews', () => {
+  cycle = 0;
+  const boss = npc([100, 100, 200, 100, 100]), ordinary = npc([100, 100, 200, 100, 100]);
+  boss.setCurrentLevels(Skill.DEFENCE, 40);
+  boss.setStatMinimumLevel(Skill.DEFENCE, 125);
+  assert.equal(boss.getDefenceLevel(), 40, 'configuring the floor is not retroactive');
+  assert.equal(boss.previewCurrentLevel(Skill.DEFENCE, 20), 125);
+  assert.equal(boss.getDefenceLevel(), 40, 'preview is non-mutating');
+  boss.setCurrentLevels(Skill.DEFENCE, 20);
+  assert.equal(boss.getDefenceLevel(), 125);
+  ordinary.setCurrentLevels(Skill.DEFENCE, 20);
+  assert.equal(ordinary.getDefenceLevel(), 20, 'another NPC retains the zero default');
+  boss.setCurrentLevels(Skill.ATTACK, 0);
+  assert.equal(boss.getCurrentLevel(Skill.ATTACK), 0, 'other skills keep their default');
+  assert.throws(() => boss.setStatMinimumLevel(Skill.DEFENCE, -1), RangeError);
+  assert.throws(() => boss.setStatMinimumLevel(Skill.DEFENCE, Infinity), RangeError);
+  boss.setStatMinimumLevel(Skill.DEFENCE, 250);
+  assert.equal(boss.previewCurrentLevel(Skill.DEFENCE, 1), 200, 'the definition base remains the maximum');
+  boss.setStatDrainImmune(true);
+  assert.equal(boss.previewCurrentLevel(Skill.DEFENCE, 1), 200, 'immunity retains precedence');
+  boss.setStatDrainImmune(false);
+  boss.setStatMinimumLevel(Skill.DEFENCE, null);
+  boss.setCurrentLevels(Skill.DEFENCE, 20);
+  assert.equal(boss.getDefenceLevel(), 20, 'clearing the floor restores ordinary draining');
 });

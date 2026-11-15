@@ -34,7 +34,8 @@
  * The quest's own sub-bits live in one persisted attribute
  * "quest.sins_of_the_father.bits" and key ones are mirrored to the cache's
  * varbits (10347-10351 convinced, 10353/10354 Kroy tables, 10359 Trader Sven
- * met, 10365 puzzle, 13719 lab unlocked).
+ * met, 10365 puzzle). Capture 1637 keeps 13719 ("myq5_lab_sc_unlocked") at 0
+ * for the whole run, so the plugin does not publish it.
  *
  * Source: OSRS Wiki "Sins of the Father", its Quick guide and
  * Transcript:Sins of the Father; the cache for every id, varbit and
@@ -182,7 +183,6 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
   const VARBIT_KROY_TABLE_2 = 10354;
   const VARBIT_TRADER_SVEN_MET = 10359;
   const VARBIT_PUZZLE_COMPLETED = 10365;
-  const VARBIT_LAB_UNLOCKED = 13719;
 
   const BIT_KAEL = 1 << 0;
   const BIT_VERTIDA = 1 << 1;
@@ -294,9 +294,7 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
 
   const IVANDIS_FLAIL_ITEM_ID = ItemIdentifiers.IVANDIS_FLAIL; // 22398
   const DRAKANS_MEDALLION_ITEM_ID = ItemIdentifiers.DRAKANS_MEDALLION; // 22400
-  const RUBY_ITEM_ID = ItemIdentifiers.RUBY; // 1603
   const KNIFE_ITEM_ID = ItemIdentifiers.KNIFE; // 946
-  const CHISEL_ITEM_ID = ItemIdentifiers.CHISEL; // 1755
   const COSMIC_RUNE_ITEM_ID = ItemIdentifiers.COSMIC_RUNE; // 564
   const FIRE_RUNE_ITEM_ID = ItemIdentifiers.FIRE_RUNE; // 554
   const ENCHANT_RUBY_TABLET_ITEM_ID = ItemIdentifiers.ENCHANT_RUBY_OR_TOPAZ; // 8018
@@ -325,6 +323,10 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
   const BLISTERWOOD_FLAIL_ITEM_ID = ItemIdentifiers.BLISTERWOOD_FLAIL; // 24699
   const ENCHANTED_EMERALD_SICKLE_ITEM_ID = ItemIdentifiers.ENCHANTED_EMERALD_SICKLE_B_; // 22435
   const TOME_ITEM_ID = 24690; // myq5 xp tome
+  // Capture 1637: the first three chapters raise myq5_xp_reward 1-3, the last
+  // three raise myq5_bonus_xp_reward 1-3; completion leaves both at 0.
+  const TOME_XP_REWARD_VARBIT = 10346; // myq5_xp_reward, varp 2712 bits 9-10
+  const TOME_BONUS_XP_REWARD_VARBIT = 14611; // myq5_bonus_xp_reward, varp 3055 bits 21-22
   const LONG_VINE_ITEM_ID = 7777; // temple trekking long vine
   const SHORT_VINE_ITEM_ID = 7778; // temple trekking short vine
   const BRONZE_AXE_ITEM_ID = ItemIdentifiers.BRONZE_AXE; // 1351, zombie's axe
@@ -659,8 +661,8 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
   const CRACK_MEIYERDITCH = { x: 3627, y: 3328, z: 0 };
   const CASTLE_ARENA = { x: 3565, y: 3362, z: 0 };
   const BURGH_HIDEOUT = { x: 3494, y: 9628, z: 0 };
-  const VER_SINHAZA = { x: 3663, y: 3220, z: 0 };
-  const DARKMEYER = { x: 3597, y: 3360, z: 0 };
+  // Where the medallion lands (rsprox recordings 396, 411, 1636, 1637: op4 lands at 3592,3337).
+  const DARKMEYER_MEDALLION_TILE = { x: 3592, y: 3337, z: 0 };
   const SLEPE_DOCK = { x: 3666, y: 3279, z: 0 }; // walkable shore beside the cache rowboat
 
   // ---------------------------------------------------------------------------
@@ -737,10 +739,13 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
     player.moveTo(new Location(tile.x, tile.y, tile.z));
   }
 
+  /** A fade back in leaves the full-screen fade overlay mounted on 161:1 once the script has run (#2640). Take it down then, but only if it is still the interface mounted there: a ladder or transport that mounted something else in the meantime is not ours to close, and a later fade out is a new mount. */
   function fade(player, out) {
-    player.getPacketSender().sendSubInterface((161 << 16) | 1, 174, 1, {
+    const mount = player.getPacketSender().mountSubInterface((161 << 16) | 1, 174, 1, {
       postScripts: [{ scriptId: 948, args: out ? [0, 255, 0, 0, 80] : [0, 0, 0, 255, 80] }],
     });
+    const { CountdownTask, TaskManager } = api.core;
+    if (!out) TaskManager.submit(new CountdownTask(player, 4, () => player.getPacketSender().closeSubInterfaceMount(mount)));
   }
 
   function playCamera(player, shots) {
@@ -757,6 +762,12 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
   function resetCamera(player) {
     Scenes.cancel(player);
     player.getPacketSender().sendCameraReset();
+  }
+
+  function returnToCastle(player) {
+    teleport(player, CASTLE_ARENA);
+    setBit(player, BIT_VANSTROM);
+    applyStageSpawns(player);
   }
 
   function beginCastleFight(player) {
@@ -928,7 +939,25 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
   const hasVyreNoble = (player) =>
     VYRE_NOBLE_UNSCENTED_IDS.every((id) => held(player, id)) || VYRE_NOBLE_SCENTED_IDS.every((id) => held(player, id));
   const hasVyrewatchOutfit = (player) => VYREWATCH_ITEM_IDS.every((id) => held(player, id));
-  const hasBlisterwoodFlail = (player) => held(player, BLISTERWOOD_FLAIL_ITEM_ID);
+  /** Bought from Veliaf in this conversation: the next menu's "Let's go." is the jump option. */
+  const flailJustBought = new WeakSet();
+  const FLAIL_LEFT_BEHIND = "You need your blisterwood flail with you."; // Ours (not captured).
+  /** Carried: in the pack or in the hand, as the fight needs. */
+  const hasBlisterwoodFlail = (player) => held(player, BLISTERWOOD_FLAIL_ITEM_ID)
+    || (player.getEquipment?.().getItems?.() ?? []).some((item) => item?.getId?.() === BLISTERWOOD_FLAIL_ITEM_ID);
+  /** Not lost: carried or banked, so not for sale again. */
+  const ownsBlisterwoodFlail = (player) => hasBlisterwoodFlail(player)
+    || (player.getBanks?.() ?? []).some((bank) => Number(bank?.getAmount?.(BLISTERWOOD_FLAIL_ITEM_ID) ?? 0) > 0);
+  /**
+   * Veliaf's page with the 40,000 coin flail (Wiki, Blisterwood flail: lost before completion it is
+   * reclaimed from him). The transcript gives it to a player leaving the fight and a death reclaim to
+   * one who died. Nothing here records a reclaim, and that page's interface has no handler, so every
+   * player goes to this page. That, and offering it from the crafted flail on, not only at the fight,
+   * is ours.
+   */
+  const VELIAF_FLAIL_SALE = "a-bloody-show-vanstrom-during-the-fight-talking-to-veliaf-after-leaving-the-fight";
+  const flailLostFromVeliaf = (player, stage) =>
+    stage >= STAGE_FLAIL && stage < STAGE_VANSTROM_DEAD && !ownsBlisterwoodFlail(player);
   const logCount = (player) => player.getInventory().getAmount(BLISTERWOOD_LOGS_ITEM_ID);
 
   function isAxe(itemId) {
@@ -1442,7 +1471,15 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
     sender.sendVarbit(VARBIT_KROY_TABLE_2, tableState(BIT_TABLE_2));
     sender.sendVarbit(VARBIT_TRADER_SVEN_MET, hasBit(player, BIT_SVEN) ? 1 : 0);
     sender.sendVarbit(VARBIT_PUZZLE_COMPLETED, quest.getStage(player) >= STAGE_PUZZLE_DONE ? 1 : 0);
-    sender.sendVarbit(VARBIT_LAB_UNLOCKED, quest.getStage(player) >= STAGE_LAB_PLAN ? 1 : 0);
+    sendTomeVarbits(player);
+  }
+
+  /** Capture 1637: the tome's first three reads and last three reads are counted separately. */
+  function sendTomeVarbits(player) {
+    const used = Math.max(0, Math.min(TOME_MAX_CHAPTERS, Number(player.getAttribute(TOME_USES_ATTRIBUTE)) || 0));
+    const sender = player.getPacketSender();
+    sender.sendVarbit(TOME_XP_REWARD_VARBIT, Math.min(used, 3));
+    sender.sendVarbit(TOME_BONUS_XP_REWARD_VARBIT, Math.max(0, used - 3));
   }
 
   // ---------------------------------------------------------------------------
@@ -1783,7 +1820,8 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
       case "kqP6AE": // blisterwood flail, present
         return hasBlisterwoodFlail(player);
       case "pl5f2L": // blisterwood flail, missing
-        return !hasBlisterwoodFlail(player);
+        if (!hasBlisterwoodFlail(player) && ownsBlisterwoodFlail(player)) player.sendMessage(FLAIL_LEFT_BEHIND);
+        return !ownsBlisterwoodFlail(player);
       case "svlKBi": // 40,000 coins, missing
         return !held(player, ItemIdentifiers.COINS, 40000);
       case "z2xhAs": // 40,000 coins, present
@@ -1873,23 +1911,34 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
       case "HgxSdS": // The player, Vanescula, and the Myreque go to Castle Drakan.
         beginCastleFight(player);
         return;
-      case "ntch-j": // Vanescula's "I'm ready." in the canonical post-Safalaan variant.
-        if (quest.getStage(player) < STAGE_READY || !hasBlisterwoodFlail(player)) return;
-        beginCastleFight(player);
-        return;
       case "2PLAE9": // Vanstrom attacks the player.
         resetCamera(player);
         setBit(player, BIT_VANSTROM);
         applyStageSpawns(player);
         return;
       case "32fCzz": // The player and Veliaf return to Darkmeyer castle.
-        teleport(player, CASTLE_ARENA);
-        setBit(player, BIT_VANSTROM);
-        applyStageSpawns(player);
+        returnToCastle(player);
         return;
       case "VkGiX9": // Veliaf gives you a Blisterwood Flail.
+        // One came to hand during the conversation: nothing to sell.
+        if (hasBlisterwoodFlail(player)) {
+          event.end = true;
+          return;
+        }
+        // Paying exactly the price frees the coins' slot. No capture of a full bag: the refusal is ours.
+        if (freeSlots(player) < 1 && player.getInventory().getAmount(ItemIdentifiers.COINS) > 40000) {
+          player.sendMessage("You don't have enough inventory space.");
+          event.end = true;
+          return;
+        }
         player.getInventory().deleteNumber(ItemIdentifiers.COINS, 40000);
-        if (!hasBlisterwoodFlail(player)) give(player, BLISTERWOOD_FLAIL_ITEM_ID, 1);
+        give(player, BLISTERWOOD_FLAIL_ITEM_ID, 1);
+        flailJustBought.add(player);
+        // Before the fight there is nowhere for "Let's go." to take the player: ours, as above.
+        if (quest.getStage(player) < STAGE_CASTLE) {
+          player.sendMessage("Veliaf gives you a Blisterwood Flail.");
+          event.end = true;
+        }
         return;
       case "I_cLuQ": // Safalaan's Icyene powers activate, killing Vanstrom...
         playCamera(player, CAMERA_ESCAPE);
@@ -1947,6 +1996,19 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
   function handleDialogueChoice(event) {
     const { player, option, npcId } = event;
     if (!player) return;
+    // These two options are "same as above" jumps, which the dialogue runner resolves by text across
+    // the whole page: to the Ivan escort's "I'm ready." and the laboratory's "Let's go.". So they run here.
+    if (option === "I'm ready." && VANESCULA_IDS.has(npcId) && quest.getStage(player) >= STAGE_READY) {
+      event.end = true;
+      if (hasBlisterwoodFlail(player)) beginCastleFight(player);
+      else player.sendMessage(FLAIL_LEFT_BEHIND);
+      return;
+    }
+    if (VELIAF_IDS.has(npcId) && flailJustBought.delete(player) && option === "Let's go.") {
+      event.end = true;
+      returnToCastle(player);
+      return;
+    }
     if (option === "Where do you get your Bloody Bracers from?" && CARL_IDS.has(npcId)) {
       setBit(player, BIT_CARL_ASKED);
     }
@@ -2101,6 +2163,10 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
       play(player, npcId, "the-final-preparations-calm-before-the-storm-talking-to-veliaf-without-a-blisterwood-flail");
       return true;
     }
+    if (flailLostFromVeliaf(player, stage)) {
+      play(player, npcId, VELIAF_FLAIL_SALE);
+      return true;
+    }
     if (stage < STAGE_SAFALAAN_WALK) {
       play(player, npcId, "the-final-preparations-calm-before-the-storm-talking-to-veliaf-with-a-blisterwood-flail");
       advance(player, STAGE_SAFALAAN_WALK);
@@ -2111,11 +2177,7 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
       return true;
     }
     if (stage < STAGE_VANSTROM_DEAD) {
-      if (!hasBlisterwoodFlail(player)) {
-        play(player, npcId, "a-bloody-show-vanstrom-during-the-fight-talking-to-veliaf-after-dying-during-the-fight");
-      } else {
-        play(player, npcId, "a-bloody-show-vanstrom-during-the-fight-talking-to-veliaf-after-leaving-the-fight");
-      }
+      play(player, npcId, VELIAF_FLAIL_SALE);
       return true;
     }
     return false;
@@ -2609,13 +2671,10 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
       if (stage < STAGE_DAMIEN_DONE) return "a-vyre-ry-noble-disguise-going-back-to-slepe-talking-to-veliaf";
       if (stage < STAGE_DARKMEYER_PLAN) return "a-vyre-ry-noble-disguise-going-back-to-slepe-talking-to-veliaf-2";
       if (stage < STAGE_FLAIL) return "the-final-preparations-calm-before-the-storm-talking-to-veliaf-without-a-blisterwood-flail";
+      if (flailLostFromVeliaf(player, stage)) return VELIAF_FLAIL_SALE;
       if (stage < STAGE_SAFALAAN_WALK) return "the-final-preparations-calm-before-the-storm-talking-to-veliaf-with-a-blisterwood-flail";
       if (stage < STAGE_CASTLE) return "the-final-preparations-calm-before-the-storm-talking-to-veliaf-with-a-blisterwood-flail-talking-to-veliaf-again";
-      if (stage < STAGE_VANSTROM_DEAD) {
-        return hasBlisterwoodFlail(player)
-          ? "a-bloody-show-vanstrom-during-the-fight-talking-to-veliaf-after-leaving-the-fight"
-          : "a-bloody-show-vanstrom-during-the-fight-talking-to-veliaf-after-dying-during-the-fight";
-      }
+      if (stage < STAGE_VANSTROM_DEAD) return VELIAF_FLAIL_SALE;
       return null;
     }
     if (SAFALAAN_IDS.has(npcId)) {
@@ -3522,6 +3581,13 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
     }
   }
 
+  /** The ruby on a silver sickle (b) (Crafting's gem sickles) is made between Vertida's logs and the flail. */
+  function allowRubySickle(request) {
+    if (request.product !== RUBY_SICKLE_ITEM_ID) return;
+    const stage = quest.getStage(request.player);
+    if (stage >= STAGE_LOGS_GIVEN && stage < STAGE_FLAIL) request.allowed = true;
+  }
+
   function handleItemOnItem(event) {
     const { player, usedItemId, usedWithItemId } = event;
     if (!player) return;
@@ -3538,19 +3604,6 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
       give(player, LONG_VINE_ITEM_ID, 1);
       player.sendMessage("You twist the vines together to make a long vine.");
       syncQuestObjects(player);
-      return;
-    }
-    if (pair.has(RUBY_ITEM_ID) && pair.has(SILVER_SICKLE_BLESSED_ITEM_ID)) {
-      if (stage < STAGE_LOGS_GIVEN || stage >= STAGE_FLAIL) return;
-      event.handled = true;
-      if (!held(player, CHISEL_ITEM_ID)) {
-        player.sendMessage("You need a chisel to set the ruby into the sickle.");
-        return;
-      }
-      player.getInventory().deleteNumber(RUBY_ITEM_ID, 1);
-      player.getInventory().deleteNumber(SILVER_SICKLE_BLESSED_ITEM_ID, 1);
-      give(player, RUBY_SICKLE_ITEM_ID, 1);
-      player.sendMessage("You embed the ruby into the silver sickle.");
       return;
     }
     if (pair.has(COSMIC_RUNE_ITEM_ID) && pair.has(RUBY_SICKLE_ITEM_ID)) {
@@ -3615,11 +3668,23 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
       title: "Choose the stat you wish to be advanced!",
       onConfirm: (skill, name) => {
         if (player.getInventory().get(slot) !== item) return null;
+        // A chapter is only spent when its XP lands (an XP lock or an area's gate keeps the tome as it was).
+        const skills = player.getSkillManager();
+        const before = skills.getExperience(skill);
+        skills.addExperience(skill, 15000, true);
+        if (skills.getExperience(skill) === before) return null;
         const used = (Number(player.getAttribute(TOME_USES_ATTRIBUTE)) || 0) + 1;
         player.setAttribute(TOME_USES_ATTRIBUTE, used);
         if (used >= TOME_MAX_CHAPTERS) player.getInventory().deleteAtSlot(slot, 1);
-        player.getSkillManager().addExperience(skill, 15000, false);
-        return `You have been awarded 15,000 ${name} XP!`;
+        sendTomeVarbits(player);
+        // rsprox 226/01637.txt:137520-137521 and 138011-138012 (ticks 7398, 7424): the award line in chat,
+        // the box's mesbox line (its <br> a space, sent by the xpreward plugin), then the box; the last
+        // chapter adds the crumble to all three.
+        const award = `You have been awarded 15,000 ${name} experience!`;
+        const crumbles = used >= TOME_MAX_CHAPTERS ? "<br>The book crumbles into a dust cloud of knowledge." : "";
+        const box = `You read a fascinating chapter and earn some experience!<br>${award}${crumbles}`;
+        player.sendMessage(award + crumbles);
+        return box;
       },
     });
     return true;
@@ -3633,28 +3698,10 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
     return true;
   }
 
-  function teleportMedallion(event) {
-    const { player, itemId } = event;
-    if (itemId !== DRAKANS_MEDALLION_ITEM_ID) return false;
-    if (!quest.isComplete(player)) return false;
-    const destinations = [
-      { label: "Ver Sinhaza.", tile: VER_SINHAZA },
-      { label: "Slepe.", tile: SLEPE_DOCK },
-      { label: "Darkmeyer.", tile: DARKMEYER },
-    ];
-    // Later Myreque chapters can add a destination unlocked by their own
-    // world interaction without replacing this shared medallion menu.
-    api.emitCustomEvent("drakan-medallion:destinations", { player, destinations });
-    const options = destinations.flatMap(({ label, tile, onTeleport }) => [label, () => {
-      teleport(player, tile);
-      onTeleport?.();
-    }]);
-    api.sendMultiChatboxPrompt(
-      player,
-      "Where would you like to teleport?",
-      ...options
-    );
-    return true;
+  /** Darkmeyer joins the medallion's destinations once the quest is done (Wiki: Drakan's medallion). */
+  function addDarkmeyerMedallionDestination(event) {
+    if (!event?.player || !Array.isArray(event.destinations) || !quest.isComplete(event.player)) return;
+    event.destinations.push({ label: "Darkmeyer", tile: DARKMEYER_MEDALLION_TILE });
   }
 
   // ---------------------------------------------------------------------------
@@ -3791,9 +3838,10 @@ module.exports = function registerSinsOfTheFatherQuest(api) {
   api.onObjectInteraction(handleObjectInteraction);
   api.onItemOnObject(handleItemOnObject, { noted: false });
   api.onItemOnItem(handleItemOnItem);
+  api.onCustomEvent("crafting:gem-sickle-allowed", allowRubySickle);
   api.onItemAction("Tome of Experience", { Read: readTome });
   api.onItemAction("Old note", { Read: readOldNote });
-  api.onItemAction("Drakan's medallion", { Teleport: teleportMedallion });
+  api.onCustomEvent("drakan-medallion:destinations", addDarkmeyerMedallionDestination);
   api.onNpcDeath(handleNpcDeath);
   api.onNpcBeforeDeath(handleVanstromBeforeDeath);
   api.registerArea(new CarlFollowArea());

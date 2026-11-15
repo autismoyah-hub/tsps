@@ -24,6 +24,7 @@ const Head = require("./Head.Vardorvis");
 const Dash = require("./Dash.Vardorvis");
 const Strangle = require("./Strangle.Vardorvis");
 const CombatAchievements = require("./CombatAchievements.Vardorvis");
+const { sendBossKillCount } = require("../../interface/BossKillCount.plugin");
 
 const MELEE_PRAYER = "PROTECT_FROM_MELEE";
 const BOSS_NAME = "Vardorvis";
@@ -56,6 +57,8 @@ class Fight {
     this.over = false;
     this.stopped = false;
     this.perfectKill = true;
+    this.axeEnrageTicks = 0;
+    this.leftAxeCentre = false;
   }
 
   /** Only damage actually taken during this fight can spoil its loot bonus. */
@@ -108,6 +111,7 @@ class Fight {
     if (this.stopped) return;
     Axes.process(this);
     if (this.engaged && this.alive()) this.fightTick();
+    CombatAchievements.tick(this);
     this.updateHud();
   }
 
@@ -245,10 +249,10 @@ class Fight {
       const kills = Common.count(player, Common.AWAKENED_KILLS_ATTRIBUTE) + 1;
       player.setAttribute(Common.AWAKENED_KILLS_ATTRIBUTE, kills);
       player.getPacketSender().sendConfig(kill.awakenedKillCountVarp, kills);
-      player.sendMessage(kill.awakenedMessage.replace("%d", kills));
+      sendBossKillCount(player, kill.awakenedMessage.replace("%d", kills));
     } else {
       const own = Common.count(player, Common.KILLS_ATTRIBUTE) + 1;
-      const total = CombatAchievements.killed(player, own, (kills) => player.sendMessage(kill.message.replace("%d", kills)));
+      const total = CombatAchievements.killed(player, own, (kills) => sendBossKillCount(player, kill.message.replace("%d", kills)));
       player.setAttribute(Common.KILLS_ATTRIBUTE, Math.max(own, total ?? 0));
       if (total == null) player.getPacketSender().sendConfig(kill.killCountVarp, own);
     }

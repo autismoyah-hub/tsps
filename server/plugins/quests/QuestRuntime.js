@@ -15,7 +15,7 @@
  * so quest plugins load in a plain `node dist/Server.js` process too.
  */
 
-// Side journal quest list (client/common/ui/sideJournal.ts + questList.ts).
+// Native side-journal quest list: cache CS2 owns rows, headers, sorting and filters.
 const QUEST_LIST_GROUP = 399;
 const QUEST_LIST_ENTRY_UID = (QUEST_LIST_GROUP << 16) | 7;
 // The "Quest Points"/"Completed" header lines are rendered by cache CS2 scripts
@@ -23,11 +23,14 @@ const QUEST_LIST_ENTRY_UID = (QUEST_LIST_GROUP << 16) | 7;
 const QUEST_POINTS_TOTAL_VARBIT = 1782; // "Quest Points: X/<total>"
 const QUESTS_COMPLETED_VARBIT = 6347; // "Completed: <n>/<total>"
 const QUESTS_TOTAL_VARBIT = 11877;
-const QUEST_LIST_ENTRY_FLAGS = 0x7e;
+const MINIQUESTS_COMPLETED_VARBIT = 14162;
+const QUEST_LIST_ENTRY_FLAGS = 0x3e; // Native OP1–5 (RSProx4267); Pin journal/OP6 is dormant.
 
 // Quest journal overlay (xrsps client/common/ui constants).
 const JOURNAL_GROUP = 119;
 const JOURNAL_TITLE_CHILD = 5;
+// The text layer the line widgets hang under (InterfaceID.Questjournal.TEXTLAYER, 119:6).
+const JOURNAL_TEXTLAYER_CHILD = 6;
 const JOURNAL_CLOSE_CHILD = 8;
 const JOURNAL_SWITCH_CHILD = 9;
 const JOURNAL_FIRST_LINE_CHILD = 11;
@@ -83,18 +86,37 @@ const QUEST_POINTS_ATTRIBUTE = "quest.points";
 const EXPERIENCE_WITHHELD_ATTRIBUTE = "quest.experience-withheld";
 
 // Client quest list statuses.
-const STATUS_IN_PROGRESS = 0;
-const STATUS_NOT_STARTED = 1;
-const STATUS_COMPLETE = 2;
-
-const { questListGroups, questMetadata } = require("./QuestList.QuestRuntime");
+const { metadata, questMetadata, nativeQuestIndex, questRowById } = require("./QuestList.QuestRuntime");
 const quests = [];
-const sentQuestSlots = new WeakMap();
+const sentQuestEvents = new WeakMap();
 const openBooks = new WeakMap();
 const BOOK_GROUP = 392;
 const BOOK_CLOSE = (BOOK_GROUP << 16) | 7;
 const BOOK_PREVIOUS = (BOOK_GROUP << 16) | 75;
 const BOOK_NEXT = (BOOK_GROUP << 16) | 77;
+/** pagepos: the left page of the open spread, 0, 2, 4 ... */
+const BOOK_PAGE_VARP = 334;
+/** human_readbook_turnright/left with readbook_spotanim_turnright/left at height 92 (ticks 359, 368). */
+const BOOK_TURN_RIGHT = { animation: 3140, graphic: 548 };
+const BOOK_TURN_LEFT = { animation: 3141, graphic: 549 };
+const BOOK_TURN_GRAPHIC_HEIGHT = 92;
+/** human_readbook: the reader holds the book open while it is up. */
+const BOOK_READ_ANIMATION = 1350;
+/** busy: set while the book is open, cleared when it closes. */
+const BUSY_VARBIT = 12393;
+const READING_ANIMATIONS = new Set([BOOK_READ_ANIMATION, BOOK_TURN_RIGHT.animation, BOOK_TURN_LEFT.animation]);
+// indexed_book (680): the two-page book with a contents page (RSProx capture of Atlax's Diary).
+const INDEXED_BOOK_GROUP = 680;
+const INDEXED_BOOK = {
+  title: 6, leftNumber: 10, rightNumber: 11, indexJump: 9, previous: 108, next: 110,
+  left: { model: 13, text: 45, index: 77 },
+  right: { model: 29, text: 61, index: 93 },
+};
+const INDEXED_BOOK_LINES = 15;
+const indexedUid = (child) => (INDEXED_BOOK_GROUP << 16) | child;
+const INDEXED_BOOK_BUTTONS = [INDEXED_BOOK.previous, INDEXED_BOOK.next, INDEXED_BOOK.indexJump,
+  ...Array.from({ length: INDEXED_BOOK_LINES }, (_, line) => INDEXED_BOOK.left.index + line),
+  ...Array.from({ length: INDEXED_BOOK_LINES }, (_, line) => INDEXED_BOOK.right.index + line)].map(indexedUid);
 let widgetsRegistered = false;
 let coreApi = null;
 
@@ -102,56 +124,19 @@ function stageAttribute(questKey) {
   return `quest.${questKey}.stage`;
 }
 
-function orderedQuests() {
-  return quests.slice().sort((a, b) => a.name.localeCompare(b.name));
-}
 
 // ============================================================================
 // Quest list / journal / completion widgets
 // ============================================================================
 
-/**
- * Assigns list slots: each group's title occupies the row before its quests
- * (the client draws the title at firstQuestSlot - 1). Returns the groups for the
- * packet, the slot -> quest map for journal clicks, and the quest-slot ranges
- * that carry the "Read journal:" flags.
- */
-function questRows(player) {
-  const groups = [];
-  const slotQuests = [];
-  const ranges = [];
-  let slot = 0;
-  for (const group of questListGroups(quests, player, coreApi?.CacheDefinitions, questStatus, coreApi?.Skill)) {
-    if (group.title) { slotQuests[slot] = null; slot++; }
-    const start = slot;
-    const entries = group.quests.map(({ quest, status }) => {
-      const row = {
-        slot,
-        status,
-        key: quest.key,
-        displayName: quest.name,
-      };
-      slotQuests[slot] = quest;
-      slot++;
-      return row;
-    });
-    groups.push({ title: group.title, quests: entries });
-    ranges.push([start, slot - 1]);
-  }
-  return { groups, slotQuests, ranges };
-}
-
-function sendQuestList(player) {
-  const { groups, ranges, slotQuests } = questRows(player);
-  const previous = sentQuestSlots.get(player);
-  sentQuestSlots.set(player, slotQuests);
-  const packet = player.getPacketSender();
-  if (previous?.length) packet.sendInterfaceFlagsRange(QUEST_LIST_ENTRY_UID, 0, previous.length - 1, 0);
-  packet.sendQuestList(groups);
-  for (const [start, end] of ranges) {
-    if (end >= start) {
-      packet.sendInterfaceFlagsRange(QUEST_LIST_ENTRY_UID, start, end, QUEST_LIST_ENTRY_FLAGS);
-    }
+/** Native quest children are stable cache identities. Reapply events when 399 remounts. */
+function sendQuestList(player, forceEvents = false) {
+  const ids = [...metadata(coreApi?.CacheDefinitions).values()].map(row => row.id?.[0]).filter(Number.isInteger);
+  const max = Math.max(-1, ...ids);
+  const previous = sentQuestEvents.get(player);
+  if (max >= 0 && (forceEvents || previous !== max)) {
+    player.getPacketSender().sendInterfaceFlagsRange(QUEST_LIST_ENTRY_UID, 0, max, QUEST_LIST_ENTRY_FLAGS);
+    sentQuestEvents.set(player, max);
   }
   sendQuestHeaderStats(player);
 }
@@ -162,12 +147,24 @@ function sendQuestList(player) {
  * (1356/5995/3310) from these varps; interface text writes are overwritten.
  */
 function sendQuestHeaderStats(player) {
-  const list = orderedQuests();
+  const all = [...metadata(coreApi?.CacheDefinitions).values()].filter(row => row.release_type?.[0] !== 0);
+  const main = all.filter(row => (row.type?.[0] ?? 0) === 0 && !row.parent_quest?.length);
   const packet = player.getPacketSender();
+  const completed = type => quests.filter(quest => {
+    const row = questMetadata(quest, coreApi?.CacheDefinitions);
+    const value = quest.varbitId !== undefined ? packet.getVarbit?.(quest.varbitId) : packet.getVarp?.(quest.varpId);
+    const end = row?.endstate?.[0];
+    return row && (row.type?.[0] ?? 0) === type && !row.parent_quest?.length
+      && Number.isInteger(value) && Number.isInteger(end) && end >= 0 && value >= end;
+  }).length;
+  // Earned QP remains the saved gameplay value. Native maximum/counts describe the cache list.
   packet.sendConfig(QUEST_POINTS_VARP, Number(player.getAttribute(QUEST_POINTS_ATTRIBUTE)) || 0);
-  packet.sendVarbit(QUEST_POINTS_TOTAL_VARBIT, list.reduce((sum, quest) => sum + (quest.questPoints || 0), 0));
-  packet.sendVarbit(QUESTS_COMPLETED_VARBIT, list.filter((quest) => questStatus(quest, player) === STATUS_COMPLETE).length);
-  packet.sendVarbit(QUESTS_TOTAL_VARBIT, list.length);
+  // Rev 242 renamed the column `questpoints` to `questpoints_override` (same values).
+  const questPoints = row => Number((row.questpoints_override ?? row.questpoints)?.[0] ?? 0);
+  packet.sendVarbit(QUEST_POINTS_TOTAL_VARBIT, all.reduce((sum, row) => sum + questPoints(row), 0));
+  packet.sendVarbit(QUESTS_COMPLETED_VARBIT, completed(0));
+  packet.sendVarbit(QUESTS_TOTAL_VARBIT, main.length);
+  packet.sendVarbit(MINIQUESTS_COMPLETED_VARBIT, completed(1));
 }
 
 /**
@@ -178,12 +175,12 @@ function sendQuestHeaderStats(player) {
 const loginQuestLists = new WeakMap();
 
 /** Sends the quest list and its row flags; call when the quest tab (re)mounts. */
-function refreshQuestList(player) {
+function refreshQuestList(player, forceEvents = false) {
   if (loginQuestLists.has(player)) {
     loginQuestLists.set(player, true);
     return;
   }
-  sendQuestList(player);
+  sendQuestList(player, forceEvents);
 }
 
 /** Login started: hold quest list refreshes until the bootstrap completes. */
@@ -195,12 +192,15 @@ function holdLoginQuestList({ player }) {
 function sendLoginQuestList({ player }) {
   const requested = loginQuestLists.get(player);
   loginQuestLists.delete(player);
-  if (requested) sendQuestList(player);
+  // Restore post-bootstrap quest varps before deriving native completion counts.
+  sendQuestVarps({ player });
+  if (requested) sendQuestList(player, true);
 }
 
 /** A login that ends before its bootstrap leaves no hold behind. */
 function releaseLoginQuestList({ player }) {
   loginQuestLists.delete(player);
+  sentQuestEvents.delete(player);
 }
 
 function refreshQuestRequirements({ player }) {
@@ -214,21 +214,69 @@ function refreshQuestRequirements({ player }) {
  * bound to player:bootstrap-complete to re-send the real stages.
  */
 
-function questStatus(quest, player) {
-  if (quest.isComplete(player)) return STATUS_COMPLETE;
-  if (quest.isStarted(player)) return STATUS_IN_PROGRESS;
-  return STATUS_NOT_STARTED;
+
+function journalLines(quest, player, row) {
+  return typeof quest.buildJournal === "function" ? quest.buildJournal(player, quest, { row }) : [];
 }
 
-function journalLines(quest, player) {
-  return typeof quest.buildJournal === "function" ? quest.buildJournal(player, quest) : [];
+function openJournalById(player, id) {
+  const quest = nativeQuestIndex(quests, coreApi?.CacheDefinitions).get(id);
+  if (quest) openJournal(player, quest, questRowById(id, coreApi?.CacheDefinitions));
 }
 
-function openJournalBySlot(player, slot) {
-  // Quest rows sit in the same slots questRows() sent, after each letter header.
-  const quest = (sentQuestSlots.get(player) ?? questRows(player).slotQuests)[slot | 0];
-  if (quest) openJournal(player, quest);
+/**
+ * Whether the quest list's "Read journal" opens anything for this quest table id (the cache's
+ * `id` column): a released quest that tsps defines, or one it has start text for.
+ */
+function hasQuestJournal(id) {
+  const row = questRowById(id, coreApi?.CacheDefinitions);
+  if (!row || row.release_type?.[0] === 0) return false;
+  return nativeQuestIndex(quests, coreApi?.CacheDefinitions).has(id) || Boolean(START_TEXT[row.displayname?.[0]]);
 }
+
+/** The quest list's "Read journal" by quest table id, for other interfaces that link to a quest. */
+function openQuestJournal(player, id) {
+  questListAction({ player, slot: id, opId: 2 });
+}
+
+/** Native row ops and identities, shared unchanged by the browser and Gateway. */
+function questListAction({ player, slot, opId, action }) {
+  const op = opId ?? action ?? 2;
+  if (op < 1 || op > 5) return; // Pin journal is not enabled by live OP1–5 events.
+  const row = questRowById(slot, coreApi?.CacheDefinitions);
+  if (!row || row.release_type?.[0] === 0) return;
+  if (op === 3) {
+    showQuestStartOnMap(player, row);
+    return;
+  }
+  if (op === 4 || op === 5) {
+    // RSProx3072: OP5 -> wiki_lookup("Search", "", "", "", "<name>/Quick guide").
+    const name = String(row.displayname?.[0] ?? "");
+    if (name) player.getPacketSender().sendInterfaceScript(3300, ["Search", "", "", "", name + (op === 5 ? "/Quick guide" : "")]);
+    return;
+  }
+  const quest = nativeQuestIndex(quests, coreApi?.CacheDefinitions).get(slot);
+  let start = START_TEXT[row.displayname?.[0]];
+  if (op === 1 && !start && quest) {
+    // View info always uses the unstarted journal, without changing the saved stage.
+    const view = new Proxy(player, {
+      get(target, key) {
+        if (key === "getAttribute") return name => name === stageAttribute(quest.key) ? 0 : target.getAttribute(name);
+        const value = Reflect.get(target, key, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    start = startSentence(row, journalLines(quest, view, row));
+  }
+  if (op === 1 && start) {
+    openOverview(player, { name: row.displayname[0] }, row, start);
+  } else if (quest) {
+    openJournal(player, quest, row);
+  } else if (start) {
+    openOverview(player, { name: row.displayname[0] }, row, start);
+  }
+}
+
 
 /**
  * A journal line as live OSRS sends it: navy text, with each highlight returning to navy rather
@@ -238,6 +286,30 @@ function journalText(line) {
   const text = String(line ?? "");
   if (!text || text.startsWith("<str>") || text.includes("<col=ff0000>")) return text;
   return JOURNAL_TEXT_COLOUR + text.replace(/<\/col>/g, JOURNAL_TEXT_COLOUR);
+}
+
+/**
+ * The journal widgets a quest's guide reads, for a snapshot with no client attached. Live sends
+ * these when the journal opens (openJournal); a headless evaluation never opens it, so a guide
+ * whose conditions are WidgetTextRequirements (Clock Tower's sync, its cog steps) would see
+ * nothing and report the route unsupported.
+ */
+function journalWidgets(quest, player) {
+  // A quest with no journal of its own has nothing for a guide to read; leave the snapshot alone.
+  if (typeof quest.buildJournal !== "function") return [];
+  // The lines are the text layer's static children, as live mounts them: guides read placed-cog
+  // and other progress lines with WidgetTextRequirement(TEXTLAYER, checkChildren = true), which
+  // walks getStaticChildren() and never looks at a line widget on its own.
+  return [
+    { id: (JOURNAL_GROUP << 16) | JOURNAL_TITLE_CHILD, text: `<col=7f0000>${quest.name}</col>` },
+    {
+      id: (JOURNAL_GROUP << 16) | JOURNAL_TEXTLAYER_CHILD,
+      staticChildren: journalLines(quest, player).map((line, index) => ({
+        id: (JOURNAL_GROUP << 16) | (JOURNAL_FIRST_LINE_CHILD + index),
+        text: journalText(line),
+      })),
+    },
+  ];
 }
 
 /**
@@ -277,26 +349,28 @@ function openOverview(player, quest, row, start) {
 }
 
 /** "Show on Map" in the overview: the world map, with the quest's start point marked. */
-function showStartOnMap({ player, slot }) {
-  const row = openOverviews.get(player);
+function showQuestStartOnMap(player, row) {
   const start = row?.startcoord?.[0];
-  if (slot !== OVERVIEW_SHOW_ON_MAP_SLOT || start === undefined) return;
+  if (!Number.isInteger(start) || start < 0) return;
   const packet = player.getPacketSender();
   if (!packet.isWorldMapOpen()) packet.toggleWorldMap();
   packet.sendInterfaceScript(SCRIPT_WORLD_MAP_MARK, [WORLD_MAP_NOCLICK, start, row.mapelement?.[0] ?? -1]);
+}
+
+function showStartOnMap({ player, slot }) {
+  if (slot === OVERVIEW_SHOW_ON_MAP_SLOT) showQuestStartOnMap(player, openOverviews.get(player));
 }
 
 /**
  * The quest list's "Read journal": the overview for a quest not started yet (as live OSRS opens
  * it), otherwise the journal (119) with the quest's progress lines.
  */
-function openJournal(player, quest) {
-  const lines = journalLines(quest, player);
-  const row = questMetadata(quest, coreApi?.CacheDefinitions);
+function openJournal(player, quest, row = questMetadata(quest, coreApi?.CacheDefinitions)) {
+  const lines = journalLines(quest, player, row);
   if (row && !quest.isStarted(player)) {
     const start = startSentence(row, lines);
     if (start) {
-      openOverview(player, quest, row, start);
+      openOverview(player, { name: row.displayname?.[0] ?? quest.name }, row, start);
       return;
     }
   }
@@ -314,20 +388,26 @@ function openJournal(player, quest) {
   packet.sendInterfaceFlagsRange((JOURNAL_GROUP << 16) | JOURNAL_CLOSE_CHILD, -1, -1, 1 << 1);
   packet.sendInterfaceFlagsRange((JOURNAL_GROUP << 16) | JOURNAL_SWITCH_CHILD, -1, -1, 1 << 1);
   packet.sendInterfaceScript(SCRIPT_QJ_RESET, []);
-  setText((JOURNAL_GROUP << 16) | JOURNAL_TITLE_CHILD, `<col=7f0000>${quest.name}</col>`);
+  setText((JOURNAL_GROUP << 16) | JOURNAL_TITLE_CHILD, `<col=7f0000>${row?.displayname?.[0] ?? quest.name}</col>`);
   lines.forEach((line, index) => {
     setText((JOURNAL_GROUP << 16) | (JOURNAL_FIRST_LINE_CHILD + index), journalText(line));
   });
   packet.sendInterfaceScript(SCRIPT_QJ_SCROLL, [0, lines.length]);
 }
 
+/** The scroll's reward groups after the quest points, in live's usual order unless a quest sets its own. */
+const DEFAULT_REWARD_ORDER = ["xp", "item", "other"];
+
 function rewardLines(quest) {
   const lines = ["You are awarded:"];
   const points = quest.questPoints || 0;
   lines.push(`${points} Quest Point${points === 1 ? "" : "s"}`);
-  for (const reward of quest.xpRewards ?? []) lines.push(`${reward.amount.toLocaleString("en-US")} ${reward.label} XP`);
-  if (quest.rewardItemLabel) lines.push(quest.rewardItemLabel);
-  lines.push(...(quest.otherRewards ?? []));
+  const groups = {
+    xp: (quest.xpRewards ?? []).map((reward) => `${reward.amount.toLocaleString("en-US")} ${reward.label} XP`),
+    item: quest.rewardItemLabel ? [quest.rewardItemLabel] : [],
+    other: quest.otherRewards ?? [],
+  };
+  for (const group of quest.rewardOrder ?? DEFAULT_REWARD_ORDER) lines.push(...(groups[group] ?? []));
   return lines.slice(0, COMPLETED_LINE_COUNT);
 }
 
@@ -339,6 +419,10 @@ function openCompletedScroll(player, quest, questPoints) {
     packet.sendString(String(text ?? ""), uid);
   };
   packet.sendInterfaceRemoval();
+  // Live opens the scroll with toplevel_mainmodal_open [-1, -1] (Observatory Quest capture
+  // 20261110T110141-5ab63b4 tick 1644): the main modal's backdrop goes back to none, so one an
+  // earlier modal set (the telescope's black [0, 0], tick 1606) doesn't show around the scroll.
+  packet.sendInterfaceScript(2524, [-1, -1]);
   packet.sendInterface(COMPLETED_GROUP);
   packet.sendInterfaceFlagsRange((COMPLETED_GROUP << 16) | COMPLETED_CLOSE_CHILD, -1, -1, 1 << 1);
   setText((COMPLETED_GROUP << 16) | COMPLETED_TITLE_CHILD, "Congratulations!");
@@ -451,14 +535,13 @@ function registerQuestWidgets(api) {
   widgetsRegistered = true;
 
   api.onInterfaceActionButton([BOOK_CLOSE, BOOK_PREVIOUS, BOOK_NEXT], turnBookPage);
+  api.onInterfaceActionButton(INDEXED_BOOK_BUTTONS, turnIndexedBookPage);
   api.onCustomEvent("interface:closed", ({ player, interfaceId }) => {
-    if (interfaceId === BOOK_GROUP) closeBook(player);
+    if (interfaceId === BOOK_GROUP || interfaceId === INDEXED_BOOK_GROUP) closeBook(player);
   });
 
   // "Read journal:" on a quest list row.
-  api.onInterfaceActionButton([QUEST_LIST_ENTRY_UID], (event) => {
-    openJournalBySlot(event.player, event.slot);
-  });
+  api.onInterfaceActionButton([QUEST_LIST_ENTRY_UID], questListAction);
   // Journal close / switch-view.
   api.onInterfaceActionButton(
     [(JOURNAL_GROUP << 16) | JOURNAL_CLOSE_CHILD, (JOURNAL_GROUP << 16) | JOURNAL_SWITCH_CHILD],
@@ -472,7 +555,7 @@ function registerQuestWidgets(api) {
     event.player.getPacketSender().sendInterfaceRemoval()
   );
   // SideJournalDefaults asks for the list when it mounts the quest tab.
-  api.onCustomEvent("quest:list-refresh", ({ player }) => refreshQuestList(player));
+  api.onCustomEvent("quest:list-refresh", ({ player }) => refreshQuestList(player, true));
   api.onPlayerLevelUp?.(refreshQuestRequirements);
   api.onCustomEvent("quest:is-complete", answerIsComplete);
   api.onCustomEvent("quest:is-started", answerIsStarted);
@@ -485,21 +568,21 @@ function registerQuestWidgets(api) {
   // The character summary shows the same header stats without opening the list.
   api.onPlayerLogin(({ player }) => sendQuestHeaderStats(player));
   api.onPlayerLogin(sendQuestVarps);
-  // The login bootstrap's sendTabInterface(6) runs after the login hooks and
-  // re-sends the all-spells-unlocked varps, clobbering quest varps that share
-  // storage with cache transforms (e.g. Drezel's 302). Re-send ours afterwards.
-  api.onCustomEvent("player:bootstrap-complete", ({ player }) => sendQuestVarps({ player }));
 }
 
 /**
  * The cache's two-page book (392), using the captured text lines for each spread.
+ * A page maps its text components (44-58 left, 60-74 right) to their lines, and may map a
+ * line's picture component (12-26 left, 28-42 right) to `{ item, zoom }`.
+ * Opening it sets busy and plays the reading animation; closing it clears both.
  * `onClose` runs once when the reader closes the book (X, close button, or the
  * interface being removed), so quests can advance only after it has been read.
  */
 function openBook(player, title, pages, onClose) {
   if (!pages.length) return;
-  player.getPacketSender().sendInterface(BOOK_GROUP);
   openBooks.set(player, { title, pages, page: 0, onClose });
+  player.getPacketSender().sendVarbit?.(BUSY_VARBIT, 1);
+  readingAnimation(player, BOOK_READ_ANIMATION);
   showBookPage(player);
 }
 
@@ -508,7 +591,32 @@ function closeBook(player) {
   const book = openBooks.get(player);
   if (!book) return;
   openBooks.delete(player);
+  if (!book.indexed) {
+    player.getPacketSender().sendVarbit?.(BUSY_VARBIT, 0);
+    // The reset stops the reading pose, not an animation the closing action has just started.
+    const current = player.getAnimation?.();
+    if (!current || READING_ANIMATIONS.has(current.getId?.())) readingAnimation(player, -1);
+  }
   if (typeof book.onClose === "function") book.onClose();
+}
+
+function readingAnimation(player, animation) {
+  if (coreApi?.Animation) player.performAnimation?.(new coreApi.Animation(animation));
+}
+
+/**
+ * Book 392 pages from `[left, right]` spreads of up to 15 lines a side: a line is its text,
+ * or `{ item, zoom }` for an item picture on that line.
+ */
+function bookPagesFromSpreads(spreads) {
+  return spreads.map((sides) => {
+    const page = {};
+    sides.forEach((lines, side) => lines.forEach((line, index) => {
+      if (typeof line === "string") page[(side ? 60 : 44) + index] = line;
+      else page[(side ? 28 : 12) + index] = { item: line.item, zoom: line.zoom };
+    }));
+    return page;
+  });
 }
 
 function showBookPage(player) {
@@ -519,19 +627,96 @@ function showBookPage(player) {
   packet.sendString(String(page * 2 + 2), (BOOK_GROUP << 16) | 10);
   for (let line = 0; line < 15; line++) {
     for (const [text, model] of [[44 + line, 12 + line], [60 + line, 28 + line]]) {
+      const picture = pages[page][model];
       packet.sendString(pages[page][text] ?? "", (BOOK_GROUP << 16) | text);
-      packet.sendInterfaceDisplayState((BOOK_GROUP << 16) | model, true);
+      packet.sendInterfaceDisplayState((BOOK_GROUP << 16) | model, !picture);
+      if (picture) packet.sendItemOnInterface((BOOK_GROUP << 16) | model, picture.item, 0, picture.zoom);
     }
   }
-  packet.sendInterfaceDisplayState(BOOK_PREVIOUS, page === 0);
   packet.sendInterfaceDisplayState(BOOK_NEXT, page === pages.length - 1);
+  packet.sendInterfaceDisplayState(BOOK_PREVIOUS, page === 0);
   packet.sendInterfaceScript(2524, [-1, -1]);
+  // Live (Witches' Diary capture 20261108T030409 ticks 357-368) re-opens the book after every
+  // spread, its content first, and tracks the left page in varp pagepos; without it the client
+  // never sends the previous-page click.
+  packet.sendConfig(BOOK_PAGE_VARP, page * 2);
+  packet.sendInterface(BOOK_GROUP);
+}
+
+/**
+ * The cache's indexed book (680), as live sends it for Atlax's Diary: `spreads` are [left, right]
+ * line lists; a `{ index }` line is a contents entry that opens `spreadOf(index)` when clicked.
+ * The index-jump button (shown past the first spread) returns to the contents.
+ */
+function openIndexedBook(player, { title, spreads, spreadOf }, onClose) {
+  if (!spreads.length) return;
+  openBooks.set(player, { indexed: true, title, spreads, spreadOf, page: 0, onClose });
+  showIndexedBookPage(player);
+}
+
+function showIndexedBookPage(player) {
+  const { title, spreads, page } = openBooks.get(player);
+  const packet = player.getPacketSender();
+  packet.sendString(title, indexedUid(INDEXED_BOOK.title));
+  packet.sendString(String(page * 2 + 1), indexedUid(INDEXED_BOOK.leftNumber));
+  packet.sendString(String(page * 2 + 2), indexedUid(INDEXED_BOOK.rightNumber));
+  for (const [side, lines] of [[INDEXED_BOOK.left, spreads[page][0]], [INDEXED_BOOK.right, spreads[page][1]]]) {
+    for (let line = 0; line < INDEXED_BOOK_LINES; line++) {
+      const entry = lines[line];
+      const index = typeof entry === "object" && entry ? entry.index : null;
+      packet.sendInterfaceDisplayState(indexedUid(side.model + line), true);
+      packet.sendInterfaceDisplayState(indexedUid(side.index + line), !index);
+      packet.sendString(index ? "" : (entry ?? ""), indexedUid(side.text + line));
+      if (index) packet.sendString(index, indexedUid(side.index + line));
+    }
+  }
+  packet.sendInterfaceDisplayState(indexedUid(INDEXED_BOOK.next), page === spreads.length - 1);
+  packet.sendInterfaceDisplayState(indexedUid(INDEXED_BOOK.previous), page === 0);
+  packet.sendInterfaceDisplayState(indexedUid(INDEXED_BOOK.indexJump), page === 0);
+  packet.sendInterfaceScript(2524, [-1, -1]);
+  // Live (Sacraments of Ent Folk, RSProx 20261109T224258-5ab63b4 ticks 826-847) sends each
+  // spread's content first and then opens the book again, the left page in varp pagepos.
+  packet.sendConfig(BOOK_PAGE_VARP, page * 2);
+  packet.sendInterface(INDEXED_BOOK_GROUP);
+}
+
+function turnIndexedBookPage(event) {
+  const { player, buttonId } = event;
+  const book = openBooks.get(player);
+  if (!book?.indexed) return false;
+  event.handled = true;
+  const child = buttonId & 0xffff;
+  let page = book.page;
+  if (child === INDEXED_BOOK.next) page += 1;
+  else if (child === INDEXED_BOOK.previous) page -= 1;
+  else if (child === INDEXED_BOOK.indexJump) page = 0;
+  else {
+    const side = child >= INDEXED_BOOK.right.index ? 1 : 0;
+    const entry = book.spreads[book.page][side][child - (side ? INDEXED_BOOK.right.index : INDEXED_BOOK.left.index)];
+    if (!entry?.index || typeof book.spreadOf !== "function") return;
+    page = book.spreadOf(entry.index);
+  }
+  if (page < 0 || page >= book.spreads.length || page === book.page) return;
+  const forward = page > book.page;
+  book.page = page;
+  turnAnimation(player, forward);
+  showIndexedBookPage(player);
+}
+
+/** The reader's page-turn animation and spot effect, both books. */
+function turnAnimation(player, forward) {
+  if (!coreApi) return;
+  const turn = forward ? BOOK_TURN_RIGHT : BOOK_TURN_LEFT;
+  player.performAnimation?.(new coreApi.Animation(turn.animation));
+  const graphic = new coreApi.Graphic(turn.graphic);
+  graphic.height = BOOK_TURN_GRAPHIC_HEIGHT;
+  player.performGraphic?.(graphic);
 }
 
 function turnBookPage(event) {
   const { player, buttonId } = event;
   const book = openBooks.get(player);
-  if (!book) return false;
+  if (!book || book.indexed) return false;
   event.handled = true;
   if (buttonId === BOOK_CLOSE) {
     // Close the book first, then run its reader callback: the callback may open
@@ -540,9 +725,11 @@ function turnBookPage(event) {
     closeBook(player);
     return;
   }
-  const page = book.page + (buttonId === BOOK_NEXT ? 1 : -1);
+  const forward = buttonId === BOOK_NEXT;
+  const page = book.page + (forward ? 1 : -1);
   if (page < 0 || page >= book.pages.length) return;
   book.page = page;
+  turnAnimation(player, forward);
   showBookPage(player);
 }
 
@@ -577,8 +764,9 @@ function sendQuestVarps({ player }) {
  * @param api  the plugin api
  * @param def  { key, name, varpId, varbitId, varbitValue, startedValue, completionValue, questPoints,
  *               xpRewards?, rewardItemId?, rewardItemLabel?, otherRewards?,
+ *               rewardOrder? (the scroll's groups after the points: "xp", "item", "other"),
  *               scrollItemId? (item id or function of player),
- *               buildJournal?(player, quest), onReward?(player, quest),
+ *               buildJournal?(player, quest, { row }?), onReward?(player, quest),
  *               varpValue?(stage, player) }
  */
 function registerQuest(api, def) {
@@ -611,9 +799,9 @@ function registerQuest(api, def) {
       } else {
         player.getPacketSender().sendConfig(def.varpId, quest.varpValue(value | 0, player));
       }
-      refreshQuestList(player);
-      // Quests whose progress shows in more than their varp (a varbit the cache reads) follow it.
+      // Quests whose progress shows in more than their varp publish their native state first.
       api.emitCustomEvent?.("quest:stage-changed", { player, key: def.key, stage: value | 0 });
+      refreshQuestList(player);
     },
     isStarted(player) {
       return quest.getStage(player) >= (def.startedValue ?? 1);
@@ -646,14 +834,11 @@ function registerQuest(api, def) {
       player.getPacketSender().sendConfig(QUEST_POINTS_VARP, points | 0);
 
       if (def.onReward) def.onReward(player, quest, options);
-      if (def.rewardItemId !== undefined) {
-        const inventory = player.getInventory();
-        if (inventory.isFull()) inventory.forceAdd(player, new coreApi.Item(def.rewardItemId, 1));
-        else inventory.adds(def.rewardItemId, 1);
-      }
+      // A plain add would clamp at a capped stack; giveReward's forceAdd floors what does not fit.
+      if (def.rewardItemId !== undefined) giveReward(player, def.rewardItemId, 1);
       if (options.scroll !== false) player.getPacketSender().sendJingle(def.completionJingleId ?? QUEST_COMPLETE_JINGLE, 0);
       if (options.announce !== false) {
-        player.sendMessage(`Congratulations, you've completed a quest: <col=081190>${def.name}</col>`);
+        player.sendMessage(`Congratulations, you've completed a quest: <col=${def.completionMessageColor ?? "081190"}>${def.name}</col>`);
       }
       if (options.scroll !== false) showCompletedScroll(player, quest, points | 0);
       api.emitCustomEvent?.("quest:completed", { player, key: def.key, quest });
@@ -695,7 +880,12 @@ function runSteps(api, player, context, steps) {
     return;
   }
   if (step.exec) {
-    step.exec(player, context);
+    const result = step.exec(player, context);
+    if (step.stopOnFalse && result === false) {
+      player.getDialogueManager().reset();
+      player.getPacketSender().sendInterfaceRemoval();
+      return;
+    }
     // A terminal exec owns its own UI (starts the next conversation, opens a
     // reward scroll, ...), so never force-close the interface after it.
     if (rest.length > 0) runSteps(api, player, context, rest);
@@ -752,7 +942,7 @@ function loadTranscripts(api) {
  * `select` can narrow the variant's steps (e.g. skip a wiki continuation tail); `npc`, the
  * NPC talked to, reaches the dialogue events (for its animations).
  */
-function startTranscript(api, player, npcId, page, variant, select, npc = null) {
+function startTranscript(api, player, npcId, page, variant, select, npc = null, { scoped = false } = {}) {
   const data = loadTranscripts(api);
   const record = data?.[page];
   const raw = record?.variants?.[variant];
@@ -766,29 +956,51 @@ function startTranscript(api, player, npcId, page, variant, select, npc = null) 
     transcriptSpeakers = speakerIdIndex(index, api.core.NpcDefinition);
   }
   const definition = api.core.NpcDefinition.forId(npcId);
-  const event = { player, npcId, npc, definition };
+  // Timed scenes can retain the existing named-playback ownership token across Continues.
+  const event = { player, npcId, npc, definition, explicit: scoped };
   const options = collectPageOptions(record);
   const context = { player, npc, npcId, definition, pages: [{ page, variants: [variant] }], speakerIdByName: transcriptSpeakers,
-    pageOptions: options.byText, pageOptionList: options.list, pageLines: collectPageLines(record), pageMenuBefore: collectMenuBefore(record, variant) };
+    pageOptions: options.byText, pageOptionList: options.list, pageLines: collectPageLines(record),
+    pageMenuBefore: collectMenuBefore(record, variant),
+    pageInitialMenu: collectMenuBefore(record, variant, { initial: true, callerName: definition.getName() }) };
   playDialogue(api, event, steps, record.branches, context);
   return true;
 }
 
+/**
+ * A quest reward item: into the inventory, or (what does not fit) onto the floor under the player, as the runtime's
+ * own completion item already is. `adds` alone drops a full inventory's reward on the spot.
+ */
+function giveReward(player, itemId, amount = 1) {
+  // forceAdd adds what fits (stacks included, up to the cap) and puts the rest on the floor. A container without it
+  // (a test stand-in) takes a plain add.
+  const inventory = player.getInventory();
+  if (typeof inventory.forceAdd === "function") inventory.forceAdd(player, new coreApi.Item(itemId, amount));
+  else inventory.adds(itemId, amount);
+}
+
 module.exports = {
+  rewardLines,
   openBook,
+  bookPagesFromSpreads,
+  openIndexedBook,
+  journalWidgets,
   QUEST_POINTS_VARP,
   QUEST_POINTS_ATTRIBUTE,
   EXPERIENCE_WITHHELD_ATTRIBUTE,
   QUEST_COMPLETE_JINGLE,
   registerQuestWidgets,
   registerQuest,
+  giveReward,
   getRegisteredQuests: () => quests.slice(),
   questNamed,
   pickQuestShopVersion,
   sendQuestVarps,
   refreshQuestList,
   openJournal,
-  openJournalBySlot,
+  openJournalById,
+  hasQuestJournal,
+  openQuestJournal,
   startDialogue,
   startTranscript,
   loadTranscripts,

@@ -36,18 +36,9 @@ function sizeOf(site) {
   return site.size >= 3 ? 3 : 2;
 }
 
-/** Tiles around the tree, outside it, where a pile can go. */
+/** Tiles around the tree, outside it, where a pile can go: ones a player can walk to from it. */
 function pileTiles(site, size) {
-  const { ingredientRange: range } = S();
-  const [x0, y0, z] = [site.location.getX(), site.location.getY(), site.location.getZ()];
-  const tiles = [];
-  for (let x = x0 - range; x < x0 + size + range; x++) {
-    for (let y = y0 - range; y < y0 + size + range; y++) {
-      const inside = x >= x0 && x < x0 + size && y >= y0 && y < y0 + size;
-      if (!inside && Common.walkable(x, y, z)) tiles.push(new Common.core.Location(x, y, z));
-    }
-  }
-  return tiles;
+  return Common.freeTiles(site, site.location, S().ingredientRange, size);
 }
 
 function start(site) {
@@ -307,14 +298,17 @@ function clearMulch(player) {
   player.setAttribute(MULCH_ATTRIBUTE, null);
 }
 
-/** The next tick: bark by average nutrition, the tree's leaves, and bonus XP. */
+/** The next tick: bark by average nutrition, leaves of a random tier, and bonus XP. */
 function gifts(event) {
   const sapling = S();
   for (const [player, fed] of event.fed) {
     if (!player.isRegistered?.()) continue;
     const average = fed.reduce((sum, value) => sum + value, 0) / fed.length;
     Common.bark(player, lumpBark(average), true);
-    const leaves = Common.data.trees[event.site.name] ?? "Leaves";
+    // Wiki (Forestry): "20 leaves of a random tier"; Struggling Sapling lists all six at 1/6. Recorded: a willow gave
+    // yew leaves (227/00083.txt:365537), an oak willow leaves (227/01723.txt:113389), a yew plain leaves (227/01850.txt:208509).
+    const tiers = Object.keys(Common.data.leaves);
+    const leaves = tiers[Common.randomInt(0, tiers.length - 1)];
     const amount = Common.randomInt(...sapling.leaves);
     Common.award(player, Common.data.leaves[leaves], amount);
     player.sendMessage(Common.message("leaves", { amount, leaves }));

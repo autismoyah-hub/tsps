@@ -31,11 +31,67 @@ export class PrayerHandler {
     public static togglePrayer(player: Player, childId: number): boolean {
         let prayerId = this.prayerIdForChild(childId);
         if (prayerId === null) return false;
-        // Zeal takes Piety's place in the book once unlocked (Wiki: Zeal).
-        if (prayerId === this.PIETY && player.getAttribute(ZEAL_UNLOCKED_ATTRIBUTE) === true) prayerId = this.ZEAL;
+        prayerId = this.bookPrayer(player, prayerId);
         if (player.getPrayerActive()[prayerId]) this.deactivatePrayer(player, prayerId);
         else this.activatePrayerPrayerId(player, prayerId);
         return true;
+    }
+
+    /**
+     * The prayer a book slot stands for: Zeal takes Piety's place once unlocked (Wiki: Zeal), and
+     * wherever the client draws it there without the unlock (cs2 10157/10194: a Last Man Standing
+     * game treats every prayer as unlocked), which plugins answer with "prayer:zeal-replaces-piety"
+     * { player, replaces }.
+     */
+    public static bookPrayer(player: Player, prayerId: number): number {
+        return prayerId === this.PIETY && this.zealReplacesPiety(player) ? this.ZEAL : prayerId;
+    }
+
+    /** Set by reading the Deadeye / Mystic vigour prayer scrolls (plugins/skills/PrayerUnlocks.plugin.js). */
+    public static readonly DEADEYE_UNLOCKED_ATTRIBUTE = "prayer:deadeye-unlocked";
+    public static readonly MYSTIC_VIGOUR_UNLOCKED_ATTRIBUTE = "prayer:mystic-vigour-unlocked";
+
+    /**
+     * Wiki: Deadeye and Mystic Vigour replace Eagle Eye and Mystic Might in the book once learnt.
+     * rsprox captures (recs 3273, 3276, 4068): the slot keeps Mystic Might's prayer_allactive bit,
+     * varbit and sound, and prayer_mysticvigour follows prayer_mysticmight on and off.
+     */
+    private static get UPGRADES(): ReadonlyMap<number, { attribute: string; varbit: number; level: number; name: string }> {
+        return PrayerHandler.upgrades ??= new Map([
+            [PrayerHandler.EAGLE_EYE, { attribute: PrayerHandler.DEADEYE_UNLOCKED_ATTRIBUTE, varbit: 16090, level: 62, name: "Deadeye" }],
+            [PrayerHandler.MYSTIC_MIGHT, { attribute: PrayerHandler.MYSTIC_VIGOUR_UNLOCKED_ATTRIBUTE, varbit: 16091, level: 63, name: "Mystic Vigour" }],
+        ]);
+    }
+    private static upgrades?: ReadonlyMap<number, { attribute: string; varbit: number; level: number; name: string }>;
+
+    /** The learnt upgrade a book slot's prayer stands for (Deadeye for Eagle Eye ...), or null. */
+    private static upgradeOf(character: Mobile, prayerId: number) {
+        const upgrade = this.UPGRADES.get(prayerId);
+        if (!upgrade || !character.isPlayer()) return null;
+        return character.getAsPlayer().getAttribute(upgrade.attribute) === true ? upgrade : null;
+    }
+
+    /** Deadeye is on: Eagle Eye's slot with the Deadeye prayer scroll read. */
+    public static deadeyeActive(character: Mobile): boolean {
+        return this.isActivated(character, this.EAGLE_EYE) && this.upgradeOf(character, this.EAGLE_EYE) !== null;
+    }
+
+    /** Mystic Vigour is on: Mystic Might's slot with the Mystic vigour prayer scroll read. */
+    public static mysticVigourActive(character: Mobile): boolean {
+        return this.isActivated(character, this.MYSTIC_MIGHT) && this.upgradeOf(character, this.MYSTIC_MIGHT) !== null;
+    }
+
+    /** Lights an upgrade's own varbit when it is learnt with its slot already on. */
+    public static syncUpgrade(player: Player, prayerId: number): void {
+        const upgrade = this.upgradeOf(player, prayerId);
+        if (upgrade && this.isActivated(player, prayerId)) player.getPacketSender().sendVarbit(upgrade.varbit, 1);
+    }
+
+    public static zealReplacesPiety(player: Player): boolean {
+        if (player.getAttribute(ZEAL_UNLOCKED_ATTRIBUTE) === true) return true;
+        const event = { player, replaces: false };
+        require("../../plugins/PluginManager").PluginManager.emitCustomEvent("prayer:zeal-replaces-piety", event);
+        return event.replaces === true;
     }
 
     public static THICK_SKIN = 0;
@@ -92,6 +148,21 @@ export class PrayerHandler {
             case PrayerHandler.PROTECT_FROM_MAGIC: return Sound.PRAYER_PROTECT_MAGIC;
             case PrayerHandler.PROTECT_FROM_MISSILES: return Sound.PRAYER_PROTECT_RANGE;
             case PrayerHandler.PROTECT_FROM_MELEE: return Sound.PRAYER_PROTECT_MELEE;
+            case PrayerHandler.SHARP_EYE:
+            case PrayerHandler.RIGOUR: return Sound.PRAYER_SHARP_EYE;
+            case PrayerHandler.MYSTIC_WILL:
+            case PrayerHandler.AUGURY: return Sound.PRAYER_MYSTIC_WILL;
+            case PrayerHandler.PROTECT_ITEM: return Sound.PRAYER_PROTECT_ITEM;
+            case PrayerHandler.HAWK_EYE: return Sound.PRAYER_HAWK_EYE;
+            case PrayerHandler.MYSTIC_LORE: return Sound.PRAYER_MYSTIC_LORE;
+            case PrayerHandler.EAGLE_EYE: return Sound.PRAYER_EAGLE_EYE;
+            case PrayerHandler.MYSTIC_MIGHT: return Sound.PRAYER_MYSTIC_MIGHT;
+            case PrayerHandler.RETRIBUTION: return Sound.PRAYER_RETRIBUTION;
+            case PrayerHandler.REDEMPTION: return Sound.PRAYER_REDEMPTION;
+            case PrayerHandler.SMITE: return Sound.PRAYER_SMITE;
+            case PrayerHandler.PRESERVE: return Sound.PRAYER_RAPID_RESTORE;
+            case PrayerHandler.CHIVALRY: return Sound.PRAYER_CHIVALRY;
+            case PrayerHandler.PIETY: return Sound.PRAYER_PIETY;
             default: return null;
         }
     }
@@ -211,6 +282,8 @@ export class PrayerHandler {
         if (character.isPlayer()) {
             const player = character.getAsPlayer();
             player.getPacketSender().sendVarbit(pd.configId, 1);
+            const upgrade = PrayerHandler.upgradeOf(player, prayerId);
+            if (upgrade) player.getPacketSender().sendVarbit(upgrade.varbit, 1);
             const activationSound = PrayerHandler.getActivationSound(prayerId);
             if (activationSound != null) {
                 Sounds.sendSound(player, activationSound);
@@ -261,6 +334,15 @@ export class PrayerHandler {
             if (msg) {
                 player.getPacketSender().sendVarbit(prayer.configId, 0);
                 player.sendMessage(`You need a Prayer level of at least ${prayer.requirement} to use ${prayer.getPrayerName()}.`);
+            }
+            return false;
+        }
+        // Wiki: Deadeye needs 62 Prayer and Mystic Vigour 63 where their slot shows them.
+        const upgrade = PrayerHandler.upgradeOf(player, prayer.prayerId);
+        if (upgrade && player.getSkillManager().getMaxLevel(Skill.PRAYER) < upgrade.level) {
+            if (msg) {
+                player.getPacketSender().sendVarbit(prayer.configId, 0);
+                player.sendMessage(`You need a Prayer level of at least ${upgrade.level} to use ${upgrade.name}.`);
             }
             return false;
         }
@@ -316,7 +398,7 @@ export class PrayerHandler {
         return true;
     }
 
-    public static deactivatePrayer(c: Mobile, prayerId: number): void {
+    public static deactivatePrayer(c: Mobile, prayerId: number, audible = true): void {
         if (!c.getPrayerActive()[prayerId]) {
             return;
         }
@@ -325,7 +407,9 @@ export class PrayerHandler {
         if (c.isPlayer()) {
             const player = c.getAsPlayer();
             player.getPacketSender().sendVarbit(pd.configId, 0);
-            Sounds.sendSound(player, Sound.PRAYER_TURN_OFF);
+            const upgrade = this.upgradeOf(player, prayerId);
+            if (upgrade) player.getPacketSender().sendVarbit(upgrade.varbit, 0);
+            if (audible) Sounds.sendSound(player, Sound.PRAYER_TURN_OFF);
             if (pd.hint !== -1) {
                 const hintId = this.getHeadHint(c);
                 player.getAppearance().setHeadHint(hintId);
@@ -343,9 +427,9 @@ export class PrayerHandler {
         }
     }
 
-    public static deactivatePrayers(character: Mobile): void {
+    public static deactivatePrayers(character: Mobile, audible = true): void {
         for (let i = 0; i < character.getPrayerActive().length; i++) {
-            this.deactivatePrayer(character, i);
+            this.deactivatePrayer(character, i, audible);
         }
         if (character.isPlayer()) {
             character.getAsPlayer().getQuickPrayers().setEnabled(false);
@@ -363,6 +447,8 @@ export class PrayerHandler {
             if (!pd) continue;
             player.getPrayerActive()[i] = false;
             player.getPacketSender().sendVarbit(pd.configId, 0);
+            const upgrade = this.upgradeOf(player, i);
+            if (upgrade) player.getPacketSender().sendVarbit(upgrade.varbit, 0);
             if (pd.hint !== -1) {
                 const hintId = this.getHeadHint(player);
                 player.getAppearance().setHeadHint(hintId);
@@ -417,8 +503,12 @@ export class PrayerHandler {
         // Recordings 1764, 1852, 4152: Prayer shows 0 on one tick and every prayer
         // is switched off, with this message, on the next.
         if (player.getSkillManager().getCurrentLevel(Skill.PRAYER) <= 0) {
-            PrayerHandler.deactivatePrayers(player);
-            player.sendMessage(RUN_OUT_MESSAGE);
+            if (player.getPrayerActive().some(Boolean)) {
+                // Raw3167: shutdown one tick after zero, with one depletion sound, not one off sound per prayer.
+                PrayerHandler.deactivatePrayers(player, false);
+                Sounds.sendSound(player, Sound.PRAYER_DEPLETED);
+                player.sendMessage(RUN_OUT_MESSAGE);
+            }
             PrayerHandler.stopDrain(player);
             return;
         }
@@ -476,7 +566,7 @@ export class PrayerHandler {
     public static resetPrayersC(c: Mobile, prayers: number[], prayerID: number): void {
         for (let i = 0; i < prayers.length; i++) {
             if (prayers[i] != prayerID)
-                this.deactivatePrayer(c, prayers[i]);
+                this.deactivatePrayer(c, prayers[i], false);
         }
     }
 

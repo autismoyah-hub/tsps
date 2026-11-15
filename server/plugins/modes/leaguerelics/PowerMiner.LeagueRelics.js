@@ -32,11 +32,15 @@ function secondChance(request) {
 
 /** The rock stands until its fourth ore; a rock depleted by anyone else starts its count afresh. */
 function keepRock(request) {
+  // The oozing water's end is no ore: it neither counts toward the four nor clears another miner's count.
+  if (request.water) return;
   if (!withTool(request.player)) {
     // Another miner's last ore really depletes it; the respawned rock is the same object.
     if (!request.handled) mined.delete(request.object);
     return;
   }
+  // A glove save is an additional gather, not one of this relic's four ores.
+  if (request.gloveSaveAdditive) return;
   const count = (mined.get(request.object) ?? 0) + 1;
   if (count < effect.oresPerRock) {
     mined.set(request.object, count);
@@ -67,9 +71,11 @@ function gather(request) {
   const { player, amount } = request;
   if (request.stored >= amount || request.skill !== core.Skill.MINING || !withTool(player)) return;
   const result = processed(player, request.itemId);
-  if (Common.bank(player, result.itemId, amount - request.stored)) {
+  // Only what this relic banks is smelted or cut; what another store already took stays ore and pays nothing here.
+  const banking = amount - request.stored;
+  if (Common.bank(player, result.itemId, banking)) {
     request.stored = amount;
-    if (result.skill && result.xp > 0) player.getSkillManager().addExperiences(result.skill, result.xp * amount);
+    if (result.skill && result.xp > 0) player.getSkillManager().addExperiences(result.skill, result.xp * banking);
     return;
   }
   // The processed item has no room: the ore itself, as it is.

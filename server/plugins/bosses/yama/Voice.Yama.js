@@ -4,11 +4,12 @@
  *   plays the Wiki's first-time transcript and sets it to 2 (Talk-to, Travel, Join) as its menu
  *   comes up; later talks play the short one;
  * - "Enter Yama's domain." and Travel take the player into the domain (Domain.Yama).
- * Open access: A Kingdom Divided isn't asked for (docs/yama.md).
+ * Access requires A Kingdom Divided (Yama Wiki; Domain.Yama checks it before entry).
  *
- * OSRS keeps what a challenger drops in a gravestone by the Voice. tsps has no gravestones, so the
- * Voice holds it, as Zul-Gwenwynig does at Zulrah; Talk-to hands it back for the gravestone's fee
- * (Wiki), and an unsafe death anywhere else first loses it.
+ * OSRS keeps what a challenger drops in a gravestone by the Voice. Here the Voice holds what would
+ * drop, as Zul-Gwenwynig does at Zulrah; Talk-to hands it back for the gravestone's fee (Wiki),
+ * and an unsafe death anywhere else first loses it. Untradeables, which the Voice doesn't hold, go
+ * to a gravestone by the Voice (graveByVoice).
  */
 const Common = require("./Common.Yama");
 const Domain = require("./Domain.Yama");
@@ -74,6 +75,12 @@ const heldItems = (player) => {
   return held && Array.isArray(held.items) && held.items.length > 0 ? held : null;
 };
 
+/** An item's meta (charges, degradation) as the save keeps it, or null. */
+function metaOf(item) {
+  const meta = item.getMeta?.();
+  return meta == null ? null : JSON.parse(JSON.stringify(meta));
+}
+
 /** A death in the domain: what would drop stays with the Voice. Elsewhere, an unsafe death loses it. */
 function holdForVoice(event) {
   const { player, item } = event;
@@ -85,19 +92,32 @@ function holdForVoice(event) {
     return;
   }
   if (!event.dropEligible) return;
-  const held = heldItems(player) ?? { items: [], paid: false };
-  held.items.push([item.getId(), item.getAmount()]);
+  const existing = heldItems(player);
+  const held = existing ?? { items: [], paid: false };
+  // Yama's discount is fixed at the death, as the grave's is (graveByVoice); a merge keeps the greater multiplier,
+  // as a gravestone's does, so full-fee items never take a later death's discount.
+  const multiplier = deathFeeMultiplier(player);
+  held.feeMultiplier = existing && Number.isFinite(existing.feeMultiplier) ? Math.max(existing.feeMultiplier, multiplier) : multiplier;
+  held.items.push([item.getId(), item.getAmount(), metaOf(item)]);
+  // As a gravestone's merge (Grave.Gravestones.js): new items reopen the fee for the whole lot.
+  held.paid = false;
   held.announce = true;
   player.setAttribute(Common.HELD_ITEMS_ATTRIBUTE, held);
   event.handled = true;
 }
 
+/** Yama's discount for a death now: 75% off until the player has 10 successes (Wiki), else none. */
+function deathFeeMultiplier(player) {
+  const { discountedKills, discountFactor } = Common.data.retrieval;
+  return Common.count(player, Common.SUCCESS_COUNT_ATTRIBUTE) < discountedKills ? discountFactor : 1;
+}
+
 /**
- * The gravestone's fee (Wiki): per item by its value, capped, halved for Ironmen; Yama's own
- * discount takes 75% off until the player has 10 successes.
+ * The gravestone's fee (Wiki): per item by its value, capped, halved for Ironmen; Yama's own discount is the one fixed
+ * at the death (`multiplier`; held items saved before it was kept read it now).
  */
-function retrievalFee(player, items) {
-  const { tiers, cap, ironmanFactor, discountedKills, discountFactor } = Common.data.retrieval;
+function retrievalFee(player, items, multiplier = deathFeeMultiplier(player)) {
+  const { tiers, cap, ironmanFactor } = Common.data.retrieval;
   const { ItemDefinition } = Common.core;
   let fee = 0;
   for (const [id, amount] of items) {
@@ -109,7 +129,7 @@ function retrievalFee(player, items) {
   const mode = { player, mode: null };
   Common.api.emitCustomEvent("ironman:mode", mode);
   if (mode.mode && mode.mode !== "none") fee *= ironmanFactor;
-  if (Common.count(player, Common.SUCCESS_COUNT_ATTRIBUTE) < discountedKills) fee *= discountFactor;
+  fee *= multiplier;
   return Math.floor(fee);
 }
 
@@ -126,7 +146,8 @@ function talkToVoice({ player }) {
   if (!held) return false;
   const { retrieval } = Common.data;
   if (!held.paid) {
-    const fee = retrievalFee(player, held.items);
+    const fee = Number.isFinite(held.feeMultiplier)
+      ? retrievalFee(player, held.items, held.feeMultiplier) : retrievalFee(player, held.items);
     const inventory = player.getInventory();
     if (fee > 0 && inventory.getAmount(COINS) < fee) {
       voiceSays(player, retrieval.feeLine.replace("[fee]", fee.toLocaleString("en-GB")));
@@ -135,19 +156,33 @@ function talkToVoice({ player }) {
     if (fee > 0) inventory.delete(COINS, fee);
     held.paid = true;
   }
-  const { Item, ItemDefinition } = Common.core;
+  const { Item } = Common.core;
   const inventory = player.getInventory();
   const left = [];
-  for (const [id, amount] of held.items) {
-    const stackable = ItemDefinition.forId(id)?.isStackable?.();
-    const fits = stackable ? inventory.contains(id) || inventory.getFreeSlots() > 0 : inventory.getFreeSlots() > 0;
-    if (fits) inventory.add(new Item(id, amount), false);
-    else left.push([id, amount]);
+  for (const [id, amount, meta = null] of held.items) {
+    // An item with meta (charges, degradation) goes back as itself, stacking only onto the same meta.
+    const copy = (n) => (meta == null ? new Item(id, n) : new Item(id, n, JSON.parse(JSON.stringify(meta))));
+    // Only what fits moves (free slots, or a stack's cap): the rest stays here.
+    const moved = inventory.getAddableAmount(copy(amount));
+    if (moved > 0) inventory.add(copy(moved), false);
+    if (moved < amount) left.push([id, amount - moved, meta]);
   }
   inventory.refreshItems?.();
-  player.setAttribute(Common.HELD_ITEMS_ATTRIBUTE, left.length > 0 ? { items: left, paid: true } : null);
+  player.setAttribute(Common.HELD_ITEMS_ATTRIBUTE, left.length > 0 ? { items: left, paid: true, feeMultiplier: held.feeMultiplier } : null);
   player.sendMessage(left.length > 0 ? retrieval.partialMessage : retrieval.collectedMessage);
   return true;
+}
+
+/**
+ * What the Voice doesn't hold (untradeables) goes to a grave. Wiki (Yama, Death mechanics): "Their grave is also
+ * located there", by the Voice, with Yama's discount until 10 kills, rather than at the default respawn.
+ */
+function graveByVoice(request) {
+  if (!Domain.sessionOf(request.player)) return;
+  const [x, y, z = 0] = Common.data.voice.respawn;
+  request.tile = { x, y, z };
+  const multiplier = deathFeeMultiplier(request.player);
+  if (multiplier !== 1) request.feeMultiplier = multiplier;
 }
 
 function attachVoice(api) {
@@ -160,10 +195,11 @@ function attachVoice(api) {
   api.onCustomEvent("npc-dialogue:action", enterFromChat);
   api.onNpcInteraction("Voice of Yama", { "Talk-to": talkToVoice, Travel: travel, Join: join });
   api.onPlayerDeathItemDrop(holdForVoice);
+  api.onCustomEvent("gravestones:grave-location", graveByVoice);
 }
 
 function retrievalItems(request) {
   for (const [itemId, amount] of heldItems(request.player)?.items ?? []) request.items.push({itemId, amount});
 }
 
-module.exports = { attachVoice, retrievalFee, retrievalItems };
+module.exports = { attachVoice, retrievalFee, retrievalItems, graveByVoice };

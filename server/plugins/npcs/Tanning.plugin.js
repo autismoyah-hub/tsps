@@ -11,6 +11,7 @@ const GROUP = 324;
 const CLOSE = (GROUP << 16) | 91;
 const BUTTONS = Array.from({ length:32 }, (_, index) => (GROUP << 16) | (124 + index));
 const opened = new WeakMap();
+let api = null;
 
 function openTanning(event) {
   if (!event.player || event.handled) return;
@@ -31,8 +32,25 @@ function priceOf(context, index) {
   return context.prices?.[index] ?? data.hides[index].price;
 }
 
+/**
+ * Eodan (Forthos Dungeon) tans at 10 times the normal price, 8, 6, 4 and 2 times with the Kourend & Kebos diary's easy,
+ * medium, hard and elite tiers (Elise's rewards, rsprox_transcripts/234/00787.txt; Wiki: Eodan).
+ */
+const EODAN_MULTIPLIERS = [["elite", 2], ["hard", 4], ["medium", 6], ["easy", 8]];
+
+function eodanPrices(player) {
+  let multiplier = 10;
+  for (const [tier, value] of EODAN_MULTIPLIERS) {
+    const request = { player, diary: "kourend", tier, complete: false };
+    api?.emitCustomEvent?.("diary:is-complete", request);
+    if (request.complete) { multiplier = value; break; }
+  }
+  return data.hides.map((hide) => hide.price * multiplier);
+}
+
 function tradeWithTanner(event) {
-  const prices = data.prices?.[event.definition?.getName?.()];
+  const name = event.definition?.getName?.() ?? event.npc?.getDefinition?.()?.getName?.();
+  const prices = name === "Eodan" ? eodanPrices(event.player) : data.prices?.[name];
   openTanning({ player: event.player, npc: event.npc, prices });
 }
 
@@ -52,6 +70,7 @@ function tan(player, index, requested, context) {
   if (hide.hide) player.sendMessage(count === 1 ? `The tanner tans your ${hide.hide}.` : `The tanner tans ${count} ${hide.hide}s for you.`);
   opened.delete(player);
   player.getPacketSender().sendInterfaceRemoval();
+  api?.emitCustomEvent('tanning:done', { player, tanner: context.npc?.getCurrentDefinition?.()?.getName?.() ?? context.npc?.getDefinition?.()?.getName?.(), count });
   return count;
 }
 
@@ -77,7 +96,9 @@ function logout({ player }) { opened.delete(player); }
 
 module.exports = {
   name: 'Tanning',
-  register(api) {
+  description: 'Opens the tanning interface from Ellis, Tanner, Sbott and Eodan, with per-tanner price overrides.',
+  register(pluginApi) {
+    api = pluginApi;
     api.onCustomEvent('tanning:open', openTanning);
     api.onNpcsInteraction(['Ellis', 'Tanner', 'Sbott'], { Trade: tradeWithTanner });
     api.onNpcInteraction('Eodan', { 'Tan-hides': tradeWithTanner });

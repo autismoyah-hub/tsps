@@ -1,5 +1,7 @@
 import { ArchiveVarBitTypeLoader } from "./codec/rs/config/vartype/bit/VarBitTypeLoader";
 import { ArchiveIdkTypeLoader } from "./codec/rs/config/idktype/IdkTypeLoader";
+import { ArchiveSpotAnimTypeLoader } from "./codec/rs/config/spotanimtype/SpotAnimTypeLoader";
+import { SpotAnimType } from "./codec/rs/config/spotanimtype/SpotAnimType";
 import type { IdkType } from "./codec/rs/config/idktype/IdkType";
 import type { VarManager } from "./codec/rs/config/vartype/VarManager";
 import type { Archive } from "./codec/rs/cache/Archive";
@@ -22,9 +24,28 @@ import { Gamevals, GamevalKind } from "./Gamevals";
 import { ByteBuffer } from "./codec/rs/io/ByteBuffer";
 import { Type } from "./codec/rs/config/Type";
 import { ArchivedTypeLoader } from "./codec/rs/config/ArchivedTypeLoader";
+import { ArchiveTypeLoader } from "./codec/rs/config/TypeLoader";
+import { SeqType } from "./codec/rs/config/seqtype/SeqType";
 import { ArchivedDefinitionRegistry, ArchivedDefinitionBundle, ArchivedDefinitionKind, ArchivedDefinitionContext } from "./codec/rs/config/ArchivedDefinitionRegistry";
+import { encodeContentData } from "../../net/protocol/ClientProtocol";
 
 const STRUCT_PARAMS_OPCODE = 249;
+const CACHE_EDITOR_SOURCE = "cache-editor";
+type CustomDefinitionFields = { baseId: number | null; fields: Record<string, unknown> };
+
+function customDefinitionRows(definitions: ReadonlyMap<string, CustomDefinitionFields>) {
+    return [...definitions].map(([key, row]) => {
+        const [kind, id] = key.split(":");
+        return { kind, id: Number(id), baseId: row.baseId, fields: structuredClone(row.fields) };
+    });
+}
+
+function customDefinitionDataset(source: string, definitions: ReadonlyMap<string, CustomDefinitionFields>) {
+    return {
+        key: source === CACHE_EDITOR_SOURCE ? "customDefinitions" : "customDefinitionsAppend",
+        rows: customDefinitionRows(definitions),
+    };
+}
 
 export interface ServerCustomItem {
     id: number;
@@ -32,6 +53,8 @@ export interface ServerCustomItem {
     objType: Record<string, unknown>;
     itemDef?: Record<string, unknown>;
     models?: Record<string, string>;
+    /** A special attack bar: `from`, another item whose special it uses; `energy`, its cost in percent. */
+    specialAttack?: { from?: number; energy?: number };
 }
 
 export class CacheDefinitions {
@@ -49,12 +72,23 @@ export class CacheDefinitions {
         identKits: ArchiveIdkTypeLoader;
         items: PostProcessedObjTypeLoader;
         objects: ArchivedTypeLoader<LocType>;
+        sequences: ArchivedTypeLoader<SeqType>;
+        spotAnims: ArchiveSpotAnimTypeLoader;
         objArchives: ArchivedTypeLoader<ObjType>;
         archives: ArchivedDefinitionRegistry;
         archiveContext: ArchivedDefinitionContext;
         info: CacheInfo;
     };
     private static customItems = new Map<number, ServerCustomItem>();
+    /**
+     * Decoded definition overlays: a base definition from the cache plus the fields this project
+     * overrides. Kept apart from `customItems`, which is the item loader's own JSON pipeline, so a
+     * loc or npc overlay needs no encoder and no cache repack.
+     */
+    private static customDefinitions = new Map<string, CustomDefinitionFields>();
+    /** Each source's rows (the cache editor's document, the custom pets); customDefinitions is all of them. */
+    private static customDefinitionSources = new Map<string, Map<string, CustomDefinitionFields>>();
+    private static customDefinitionCache = new Map<string, unknown>();
     private static customItemTypes = new Map<number, ObjType>();
     private static customModels?: Array<{ id: number; data: string }>;
     private static dbArchive?: Archive;
@@ -85,12 +119,18 @@ export class CacheDefinitions {
             npc: new ArchiveNpcTypeLoader(info, configs.getArchive(ConfigType.DAT2.npcs)),
             loc: new ArchiveLocTypeLoader(info, configs.getArchive(ConfigType.DAT2.locs)),
             obj: new ArchiveObjTypeLoader(info, configs.getArchive(ConfigType.DAT2.objs)),
+            // Only archived animations are decoded here (validation); playback is client-side.
+            seq: new ArchiveTypeLoader(SeqType, info, configs.getArchive(ConfigType.DAT2.seqs)),
         };
         const archiveContext: ArchivedDefinitionContext = {
             cacheInfo: info,
-            counts: { npc: native.npc.getCount(), loc: native.loc.getCount(), obj: native.obj.getCount() },
+            counts: {
+                npc: native.npc.getCount(), loc: native.loc.getCount(), obj: native.obj.getCount(),
+                seq: native.seq.getCount(),
+            },
             currentDefinition: (kind, id) => ({
-                name: native[kind].load(id).name,
+                // Sequences have no name; only retired items are ever replaced in place.
+                name: kind === "seq" ? "" : native[kind].load(id).name,
                 data: native[kind].archive.getFile(id)?.data,
             }),
         };
@@ -99,6 +139,9 @@ export class CacheDefinitions {
             id => archives.getSource("obj", id), () => archives.getCount("obj"));
         this.state = {
             varbits: new ArchiveVarBitTypeLoader(info, configs.getArchive(ConfigType.DAT2.varbits)),
+            sequences: new ArchivedTypeLoader(native.seq, SeqType,
+                id => archives.getSource("seq", id), () => archives.getCount("seq")),
+            spotAnims: new ArchiveSpotAnimTypeLoader(info, configs.getArchive(ConfigType.DAT2.spotAnims)),
             identKits: new ArchiveIdkTypeLoader(info, configs.getArchive(ConfigType.DAT2.identkits)),
             npcs: new ArchivedTypeLoader(native.npc, NpcType,
                 id => archives.getSource("npc", id), () => archives.getCount("npc")),
@@ -117,26 +160,41 @@ export class CacheDefinitions {
     }
 
     static getNpc(id: number): NpcType {
-        return this.getState().npcs.load(id);
+        return this.applyCustomDefinition("npc", id, (baseId) => this.getState().npcs.load(baseId))
+            ?? this.getState().npcs.load(id);
     }
 
     static registerDefinitionArchives(bundles: readonly ArchivedDefinitionBundle[]): Record<ArchivedDefinitionKind, number[]> {
         const state = this.getState(), registry = state.archives;
-        const before = { npc: registry.ids("npc"), loc: registry.ids("loc"), obj: registry.ids("obj") };
+        const candidate = new ArchivedDefinitionRegistry(state.archiveContext);
+        candidate.replace(bundles);
+        for (const kind of ["npc", "loc", "obj"] as const) {
+            for (const id of candidate.ids(kind)) {
+                if (this.hasCustomDefinition(kind === "obj" ? "item" : kind, id) || kind === "obj" && this.customItems.has(id)) {
+                    throw new Error(`Archived ${kind} ${id} collides with custom content`);
+                }
+            }
+        }
+        const before = { npc: registry.ids("npc"), loc: registry.ids("loc"), obj: registry.ids("obj"), seq: registry.ids("seq") };
         registry.replace(bundles);
+        this.customDefinitionCache.clear();
         if (before.obj.length > 0 || registry.ids("obj").length > 0) {
             this.spellNamesByWidget = undefined;
             this.spellsByName = undefined;
             this.spellWidgetGroups = undefined;
         }
+        state.sequences.clearArchivedCache();
         state.npcs.clearArchivedCache();
         state.objects.clearArchivedCache();
         state.objArchives.clearArchivedCache();
-        return {
+        const changed = {
             npc: [...new Set([...before.npc, ...registry.ids("npc")])],
             loc: [...new Set([...before.loc, ...registry.ids("loc")])],
             obj: [...new Set([...before.obj, ...registry.ids("obj")])],
+            seq: [...new Set([...before.seq, ...registry.ids("seq")])],
         };
+        this.includeDependentCustomDefinitions(changed);
+        return changed;
     }
 
     static getDefinitionArchiveBundles(): readonly ArchivedDefinitionBundle[] {
@@ -151,7 +209,18 @@ export class CacheDefinitions {
         const changed = (kind: ArchivedDefinitionKind) =>
             [...new Set([...state.archives.ids(kind), ...candidate.ids(kind)])].filter(id =>
                 JSON.stringify(state.archives.getSource(kind, id)) !== JSON.stringify(candidate.getSource(kind, id)));
-        return { npc: changed("npc"), loc: changed("loc"), obj: changed("obj") };
+        const result = { npc: changed("npc"), loc: changed("loc"), obj: changed("obj"), seq: changed("seq") };
+        this.includeDependentCustomDefinitions(result);
+        return result;
+    }
+
+    /** Hydrated gameplay definitions derived from an archive must be invalidated with their base. */
+    private static includeDependentCustomDefinitions(changed: Record<ArchivedDefinitionKind, number[]>): void {
+        for (const [key, row] of this.customDefinitions) {
+            const [kind, id] = key.split(":");
+            const archiveKind = (kind === "item" ? "obj" : kind) as ArchivedDefinitionKind;
+            if (row.baseId !== null && changed[archiveKind].includes(row.baseId)) changed[archiveKind].push(Number(id));
+        }
     }
 
     static getArchivedId(bundle: string, kind: ArchivedDefinitionKind, symbol: string): number | null {
@@ -278,6 +347,36 @@ export class CacheDefinitions {
         return this.getGamevals().namesOf(GamevalKind.OBJ);
     }
 
+    /** Every named graphic: id -> gameval name. */
+    static getSpotanimNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.SPOTANIM);
+    }
+
+    /** Every named varbit: id -> gameval name. */
+    static getVarbitNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.VARBIT);
+    }
+
+    /** Every named db row: id -> gameval name. */
+    static getDbRowNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.DBROW);
+    }
+
+    /** Every named db table: id -> gameval name. */
+    static getDbTableNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.DBTABLE);
+    }
+
+    /** Every named varp: id -> gameval name. */
+    static getVarpNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.VARP);
+    }
+
+    /** Every named inventory: id -> gameval name. */
+    static getInventoryNames(): ReadonlyMap<number, string> {
+        return this.getGamevals().namesOf(GamevalKind.INV);
+    }
+
     /** Every named NPC: id -> gameval name. */
     static getNpcNames(): ReadonlyMap<number, string> {
         return this.getGamevals().namesOf(GamevalKind.NPC);
@@ -296,6 +395,12 @@ export class CacheDefinitions {
     /** A graphic's id by its gameval name, or null. */
     static getSpotanimId(name: string): number | null {
         return this.idByName(GamevalKind.SPOTANIM).get(name) ?? null;
+    }
+
+    /** A sprite archive by its cache name, including multi-frame overhead icons. */
+    static getSpriteId(name: string): number | null {
+        const id = CacheIndexDat2.fromStore(IndexType.DAT2.sprites, CachePipeline.getStore()).getArchiveId(name);
+        return id < 0 ? null : id;
     }
 
     /** An interface component's packed id by its gameval name (`bankside:runepouch_top`), or null. */
@@ -324,7 +429,7 @@ export class CacheDefinitions {
     private static gamevals?: Gamevals;
 
     private static getGamevals(): Gamevals {
-        this.gamevals ??= new Gamevals(CachePipeline.getStore());
+        this.gamevals ??= new Gamevals();
         return this.gamevals;
     }
 
@@ -335,18 +440,22 @@ export class CacheDefinitions {
     static getStructParams(id: number): ReadonlyMap<number, number | string> {
         const cached = this.structParams.get(id);
         if (cached) return cached;
-        const params = new Map<number, number | string>();
         this.structArchive ??= CacheIndexDat2.fromStore(IndexType.DAT2.configs, CachePipeline.getStore())
             .getArchive(ConfigType.OSRS.struct);
         const file = this.structArchive.getFile(id);
-        if (file) {
-            const buffer = new ByteBuffer(new Int8Array(file.data));
-            for (let opcode = buffer.readUnsignedByte(); opcode !== 0; opcode = buffer.readUnsignedByte()) {
-                if (opcode !== STRUCT_PARAMS_OPCODE) break; // the only struct opcode
-                Type.readParamsMap(buffer, params);
-            }
-        }
+        const params = file ? this.decodeStructParams(new Int8Array(file.data)) : new Map<number, number | string>();
         this.structParams.set(id, params);
+        return params;
+    }
+
+    /** A struct file's params; also read from an older cache by scripts/league-era-cache.ts. */
+    static decodeStructParams(data: Int8Array): Map<number, number | string> {
+        const params = new Map<number, number | string>();
+        const buffer = new ByteBuffer(data);
+        for (let opcode = buffer.readUnsignedByte(); opcode !== 0; opcode = buffer.readUnsignedByte()) {
+            if (opcode !== STRUCT_PARAMS_OPCODE) break; // the only struct opcode
+            Type.readParamsMap(buffer, params);
+        }
         return params;
     }
 
@@ -367,34 +476,38 @@ export class CacheDefinitions {
     static getEnumValues(id: number): ReadonlyMap<number, number | string> {
         const cached = this.enumValues.get(id);
         if (cached) return cached;
-        const values = new Map<number, number | string>();
         // The enums archive is decoded once; decompressing it for each new enum caused a hitch.
         this.enumArchive ??= CacheIndexDat2.fromStore(IndexType.DAT2.configs, CachePipeline.getStore())
             .getArchive(ConfigType.DAT2.enums);
         const file = this.enumArchive.getFile(id);
-        if (file) {
-            const buffer = new ByteBuffer(new Int8Array(file.data));
-            for (let opcode = buffer.readUnsignedByte(); opcode !== 0; opcode = buffer.readUnsignedByte()) {
-                if (opcode === 1 || opcode === 2) buffer.readUnsignedByte(); // key / value type
-                else if (opcode === 3) buffer.readString(); // default string
-                else if (opcode === 4) buffer.readInt(); // default int
-                else if (opcode === 5 || opcode === 6) {
-                    const size = buffer.readUnsignedShort();
-                    for (let i = 0; i < size; i++) {
-                        const key = buffer.readInt();
-                        values.set(key, opcode === 5 ? buffer.readString() : buffer.readInt());
-                    }
-                } else if (opcode === 7 || opcode === 8) {
-                    buffer.readUnsignedShort(); // the dense table's size
-                    const size = buffer.readUnsignedShort();
-                    for (let i = 0; i < size; i++) {
-                        const key = buffer.readUnsignedShort();
-                        values.set(key, opcode === 7 ? buffer.readString() : buffer.readInt());
-                    }
-                } else break;
-            }
-        }
+        const values = file ? this.decodeEnumValues(new Int8Array(file.data)) : new Map<number, number | string>();
         this.enumValues.set(id, values);
+        return values;
+    }
+
+    /** An enum file's key -> value entries; also read from an older cache by scripts/league-era-cache.ts. */
+    static decodeEnumValues(data: Int8Array): Map<number, number | string> {
+        const values = new Map<number, number | string>();
+        const buffer = new ByteBuffer(data);
+        for (let opcode = buffer.readUnsignedByte(); opcode !== 0; opcode = buffer.readUnsignedByte()) {
+            if (opcode === 1 || opcode === 2) buffer.readUnsignedByte(); // key / value type
+            else if (opcode === 3) buffer.readString(); // default string
+            else if (opcode === 4) buffer.readInt(); // default int
+            else if (opcode === 5 || opcode === 6) {
+                const size = buffer.readUnsignedShort();
+                for (let i = 0; i < size; i++) {
+                    const key = buffer.readInt();
+                    values.set(key, opcode === 5 ? buffer.readString() : buffer.readInt());
+                }
+            } else if (opcode === 7 || opcode === 8) {
+                buffer.readUnsignedShort(); // the dense table's size
+                const size = buffer.readUnsignedShort();
+                for (let i = 0; i < size; i++) {
+                    const key = buffer.readUnsignedShort();
+                    values.set(key, opcode === 7 ? buffer.readString() : buffer.readInt());
+                }
+            } else break;
+        }
         return values;
     }
 
@@ -408,13 +521,60 @@ export class CacheDefinitions {
         return this.getState().varbits.load(id);
     }
 
+    static getSeq(id: number): SeqType {
+        return this.getState().sequences.load(id);
+    }
+
+    static getSeqCount(): number {
+        return this.getState().sequences.getCount();
+    }
+
+    static getSpotanimCount(): number {
+        return this.getState().spotAnims.getCount();
+    }
+
+    /**
+     * Whether a definition id exists, by asking the archive or the registry rather than by decoding:
+     * a loader answers an unknown id with a default object, which is indistinguishable from a real
+     * definition that happens to hold default values.
+     */
+    static hasDefinition(kind: string, id: number): boolean | undefined {
+        if (!Number.isInteger(id) || id < 0) return false;
+        const state = this.getState();
+        const counts = state.archiveContext.counts;
+        switch (kind) {
+            case "loc":
+                return this.hasCustomDefinition("loc", id) || id < counts.loc || state.archives.ids("loc").includes(id);
+            case "npc":
+                return this.hasCustomDefinition("npc", id) || id < counts.npc || state.archives.ids("npc").includes(id);
+            case "item":
+                return this.hasCustomDefinition("item", id) || id < counts.obj || this.customItems.has(id) || state.archives.ids("obj").includes(id);
+            case "varbit":
+                return state.varbits.archive.getFile(id) !== undefined;
+            case "seq":
+                return state.archives.ids("seq").includes(id) || state.archiveContext.currentDefinition("seq", id).data !== undefined;
+            case "spotanim":
+                return state.spotAnims.archive.getFile(id) !== undefined;
+            case "dbro":
+                return this.getDbRow(id) !== undefined;
+            default:
+                // Structs, enums, db tables, varps, inventories, sprites, sounds and params cannot be
+                // proven absent from an empty result, so they answer "unknown" rather than a guess.
+                return undefined;
+        }
+    }
+
+    static getSpotanim(id: number): SpotAnimType {
+        return this.getState().spotAnims.load(id);
+    }
+
     static resolveNpc(id: number, vars: Pick<VarManager, "getVarp" | "getVarbit">): NpcType | undefined {
         let npc = this.getNpc(id);
         const seen = new Set<number>();
         while (npc?.transforms) {
             if (seen.has(npc.id)) return undefined;
             seen.add(npc.id);
-            npc = npc.transform(vars, this.getState().npcs);
+            npc = npc.transform(vars, { load: (target) => this.getNpc(target), getCount: () => this.getCounts().npcs, clearCache() {} });
         }
         return npc;
     }
@@ -422,12 +582,13 @@ export class CacheDefinitions {
     static getItem(id: number): ObjType {
         const custom = this.customItemTypes.get(id);
         if (custom) return custom;
-        return this.getState().items.load(id);
+        return this.applyCustomDefinition("item", id, (baseId) => this.getState().items.load(baseId))
+            ?? this.getState().items.load(id);
     }
 
     static hasItem(id: number): boolean {
         if (!Number.isInteger(id) || id <= 0) return false;
-        if (this.customItems.has(id)) return true;
+        if (this.customItems.has(id) || this.hasCustomDefinition("item", id)) return true;
         if (id >= this.getCounts().items) return false;
         const item = this.getItem(id);
         return Boolean(item?.name && item.name !== "null");
@@ -445,6 +606,7 @@ export class CacheDefinitions {
             if (!Number.isInteger(id) || id < 50000 || id < state.items.getCount() || id > 65022) {
                 throw new Error(`[custom-items] id must be in 50000..65022: ${String(id)}`);
             }
+            if (this.hasCustomDefinition("item", id)) throw new Error(`[custom-items] item id ${id} already belongs to a custom definition`);
             if (items.has(id)) throw new Error(`[custom-items] duplicate item id: ${id}`);
             const objProps = raw.objType;
             if (!objProps || typeof objProps !== "object") {
@@ -467,6 +629,10 @@ export class CacheDefinitions {
                 itemDef: raw.itemDef && typeof raw.itemDef === "object" ? raw.itemDef as Record<string, unknown> : undefined,
                 models: raw.models && typeof raw.models === "object" ? raw.models as Record<string, string> : undefined,
             };
+            // Validated by the item loader; kept so the server and the client (sent this row) see it.
+            if (raw.specialAttack && typeof raw.specialAttack === "object") {
+                item.specialAttack = raw.specialAttack as ServerCustomItem["specialAttack"];
+            }
             for (const rawModelId of Object.keys(item.models ?? {})) {
                 const modelId = Number(rawModelId);
                 if (!Number.isInteger(modelId) || modelId < 1000000 || modelId > 0x7fffffff || modelIds.has(modelId)) {
@@ -528,16 +694,137 @@ export class CacheDefinitions {
         return this.customModels ?? [];
     }
 
-    static getObject(id: number): LocType {
-        return this.getState().objects.load(id);
+    /**
+     * Registers overlay rows (`{ kind, id, baseId, fields }`) for one source, replacing that
+     * source's previous rows only: the cache editor's document (the default) and generated rows
+     * such as the custom pets' followers live side by side. An id another source already has is
+     * refused.
+     */
+    static registerCustomDefinitions(
+        rows: readonly { kind: string; id: number; baseId: number | null; fields?: Record<string, unknown> }[],
+        source = CACHE_EDITOR_SOURCE,
+    ): number {
+        const next = new Map<string, CustomDefinitionFields>();
+        const counts = this.getBaseCounts();
+        for (const row of rows) {
+            const count = row?.kind === "loc" ? counts.objects : row?.kind === "npc" ? counts.npcs : counts.items;
+            const validBase = row?.baseId === null || (!!row && Number.isInteger(row.baseId) && row.baseId >= 0 && row.baseId < count);
+            if (!row || !["loc", "npc", "item"].includes(row.kind) || !Number.isInteger(row.id) || row.id < Math.max(50000, count) || row.id >= 65535 ||
+                !validBase || next.has(`${row.kind}:${row.id}`)) throw new Error("Invalid custom definition identity");
+            if (row.kind === "item" && this.customItems.has(row.id)) throw new Error("Item ID already belongs to custom-items");
+            const owner = this.getCustomDefinitionOwner(row.kind, row.id);
+            if (owner !== undefined && owner !== source) throw new Error(`Custom ${row.kind} ${row.id} already belongs to ${owner}`);
+            const fields = structuredClone(row.fields ?? {});
+            if (Object.keys(fields).some(key => ["id", "cacheInfo", "cacheType", "__proto__", "constructor", "prototype"].includes(key))) throw new Error("Invalid custom definition field");
+            next.set(`${row.kind}:${row.id}`, { baseId: row.baseId, fields });
+        }
+        if (next.size) {
+            try {
+                encodeContentData("server", [customDefinitionDataset(source, next)]);
+            } catch (error) {
+                throw new Error(`Cannot encode custom definitions from ${source}: ${(error as Error).message}`);
+            }
+        }
+        this.customDefinitionSources.set(source, next);
+        this.customDefinitions = new Map([...this.customDefinitionSources.values()].flatMap((defined) => [...defined]));
+        this.customDefinitionCache = new Map();
+        return next.size;
     }
 
-    static getCounts(): { npcs: number; items: number; objects: number } {
+    static getCustomDefinitionOwner(kind: string, id: number): string | undefined {
+        const key = `${kind}:${id}`;
+        for (const [source, rows] of this.customDefinitionSources) {
+            if (rows.has(key)) return source;
+        }
+        return undefined;
+    }
+
+    static getCustomDefinitions(): Array<{ kind: string; id: number; baseId: number | null; fields: Record<string, unknown> }> {
+        return customDefinitionRows(this.customDefinitions);
+    }
+
+    static getCustomDefinitionDatasets() {
+        // Start with a replacement, even on an empty world. Subsequent packets add plugin rows.
+        const editor = this.customDefinitionSources.get(CACHE_EDITOR_SOURCE);
+        const datasets = [customDefinitionDataset(CACHE_EDITOR_SOURCE, editor ?? new Map())];
+        for (const [source, definitions] of this.customDefinitionSources) {
+            if (source !== CACHE_EDITOR_SOURCE && definitions.size) {
+                datasets.push(customDefinitionDataset(source, definitions));
+            }
+        }
+        return datasets;
+    }
+
+    /** True when this id is authored here rather than read from the cache. */
+    static hasCustomDefinition(kind: string, id: number): boolean {
+        return this.customDefinitions.has(`${kind}:${id}`);
+    }
+
+    /**
+     * The overlay applied: the base definition cloned with its overridden fields. A shallow clone is
+     * enough because every overridable field is a scalar or a whole array.
+     */
+    private static createBlankCustomDefinition(kind: string, id: number): object {
+        const info = this.getState().info;
+        if (kind === "loc") return new LocType(id, info);
+        if (kind === "npc") return new NpcType(id, info);
+        if (kind === "item") return new ObjType(id, info);
+        throw new Error(`Cannot create a blank ${kind} definition`);
+    }
+
+    private static applyCustomDefinition<T extends object>(kind: string, id: number, loadBase: (baseId: number) => T): T | undefined {
+        const row = this.customDefinitions.get(`${kind}:${id}`);
+        if (!row) return undefined;
+        const key = `${kind}:${id}`;
+        const cached = this.customDefinitionCache.get(key) as T | undefined;
+        if (cached) return cached;
+        const base = row.baseId === null ? this.createBlankCustomDefinition(kind, id) as T : loadBase(row.baseId);
+        if (!base) return undefined;
+        const clone = Object.assign(Object.create(Object.getPrototypeOf(base)), base) as T;
+        for (const [field, value] of Object.entries(base)) {
+            if (Array.isArray(value) || value instanceof Map) (clone as any)[field] = structuredClone(value);
+        }
+        for (const [field, value] of Object.entries(row.fields)) {
+            (clone as any)[field] = field === "params" && value && !Array.isArray(value)
+                ? new Map(Object.entries(value).map(([id, entry]) => [Number(id), entry])) : structuredClone(value);
+        }
+        if (row.baseId !== null && Object.prototype.hasOwnProperty.call(row.fields, "actions") && !Object.prototype.hasOwnProperty.call(row.fields, "isInteractive") && "isInteractive" in clone) {
+            (clone as any).isInteractive = ((clone as any).actions ?? []).some(Boolean) ? 1 : 0;
+        }
+        if (kind === "item") delete (clone as any).__postProcessed;
+        (clone as { id: number }).id = id;
+        if (row.baseId === null) {
+            // Fresh definitions bypass the native loader, so finalize derived defaults only after
+            // authored fields have been applied (for example, loc model/action interactivity).
+            (clone as Type).post();
+        }
+        this.customDefinitionCache.set(key, clone);
+        return clone;
+    }
+
+    static getObject(id: number): LocType {
+        return this.applyCustomDefinition("loc", id, (baseId) => this.getState().objects.load(baseId))
+            ?? this.getState().objects.load(id);
+    }
+
+    static getCounts(): { npcs: number; items: number; objects: number; seqs: number } {
+        const counts = this.getBaseCounts();
+        for (const key of this.customDefinitions.keys()) {
+            const [kind, id] = key.split(":");
+            const field = kind === "npc" ? "npcs" : kind === "loc" ? "objects" : "items";
+            counts[field] = Math.max(counts[field], Number(id) + 1);
+        }
+        return counts;
+    }
+
+    static getBaseCounts(): { npcs: number; items: number; objects: number; seqs: number } {
         const state = this.getState();
         return {
             npcs: state.npcs.getCount(),
             items: state.items.getCount(),
             objects: state.objects.getCount(),
+            // Native sequences plus appended archived ones (the next free archived id).
+            seqs: state.archives.getCount("seq"),
         };
     }
 
@@ -583,6 +870,12 @@ export class CacheDefinitions {
     static getSpellByName(name: string): { widgetId: number; itemId: number } | undefined {
         this.ensureSpellMetadata();
         return this.spellsByName!.get(name.trim().toLowerCase());
+    }
+
+    /** Every spell name the cache's spell objs carry (lower case). */
+    static getSpellNames(): string[] {
+        this.ensureSpellMetadata();
+        return [...this.spellsByName!.keys()];
     }
 
     /** The Magic level and runes the cache's spell obj lists for the spell with this name. */

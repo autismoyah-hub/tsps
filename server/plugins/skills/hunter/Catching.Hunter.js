@@ -1,8 +1,10 @@
 "use strict";
 
 const C = require("./Context.Hunter");
-const { H, ANIM, level, requireLevel, hasTool, nearby, active, available, roll, exchange, xp, begin, hide, chance } = C;
+const { H, ANIM, level, requireLevel, hasTool, nearby, active, available, roll, exchange, catchExchange, xp, begin, hide, chance } = C;
 const tables = require("../data/impling-loot.json");
+const Matthias = require("./Matthias.Hunter");
+const { boostSkill } = require("../../items/ConsumableEffects");
 const falcons = new Map();
 const caught = new Map();
 // Players wearing a falconer's glove, so leaving the falconry grounds is checked for them only.
@@ -16,6 +18,8 @@ const OUTSIDE_RESPAWN_TICKS = 100;
 const JAR_MESSAGE = "You manage to catch the impling and squeeze it into a jar.";
 const LOOT_MESSAGE = "You manage to catch the impling and acquire some loot.";
 const NO_JAR_MESSAGE = "You don't have an empty impling jar in which to keep an impling.";
+// Wiki (Falconry): "Your falcon has left its prey. You see it heading back toward the falconer."
+const LOST_PREY_MESSAGE = "Your falcon has left its prey. You see it heading back toward the falconer.";
 const NO_SPACE_MESSAGE = "You'll need to clear some space in your pack to catch this impling without a jar.";
 // A barehanded butterfly or moth (rsprox captures 95, 1634, 3279, 4051): the grab, the creature's
 // out-of-hands graphic and sound 7870 (45 cycles late) and the spam line on the tick the player
@@ -45,7 +49,8 @@ function hire({ player }) {
   if ([E.WEAPON_SLOT, E.SHIELD_SLOT, E.HANDS_SLOT].some(slot => player.getEquipment().get(slot).getId() > 0)) {
     player.sendMessage("Remove your weapon, shield and gloves before borrowing a falcon."); return true;
   }
-  if (!exchange(player, [[I.COINS, 500]], [])) { player.sendMessage("It costs 500 coins to borrow a falcon."); return true; }
+  // Wiki (Falconry): an investor borrows falcons without the 500-coin fee.
+  if (!Matthias.invested(player) && !exchange(player, [[I.COINS, 500]], [])) { player.sendMessage("It costs 500 coins to borrow a falcon."); return true; }
   gloves(player, I.FALCONERS_GLOVE_2);
   H.players.add(player);
   player.sendMessage("Matthias lends you a falcon. Catch a kebbit, then retrieve the falcon and its prey.");
@@ -82,15 +87,30 @@ function catchFalcon(player, npc, def) {
   else gloves(player, I.FALCONERS_GLOVE);
 }
 
+/** Wiki (Falconry): bones and fur always, plus a raw dashing kebbit from the dashing kebbit. */
+function prey(def) {
+  return [H.core.ItemIdentifiers.BONES, def.fur, ...(def.meat === null ? [] : [def.meat])].map(itemId => ({ itemId, amount: 1, noted: false }));
+}
+
+/**
+ * Wiki (Falconry, "Full inventory"): what doesn't fit is discarded, not dropped, and the falcon is
+ * retrieved all the same. A bonecrusher takes the bones through `npc-drops:generated`, as for a kill.
+ */
+function collect(player, npc, def) {
+  const generated = { player, npc, npcId: def.npc, drops: prey(def), handled: false };
+  H.api.emitCustomEvent("npc-drops:generated", generated);
+  if (generated.handled) return;
+  for (const drop of generated.drops) catchExchange(player, [], [[drop.itemId, drop.amount]]);
+}
+
 function retrieve({ player, npc }) {
   const state = caught.get(npc);
   if (!state) return false;
   if (state.player !== player) { player.sendMessage("This isn't your falcon."); return true; }
   if (!nearby(player, npc)) return true;
-  const loot = [[H.core.ItemIdentifiers.BONES, 1], [state.def.fur, 1]];
-  if (!exchange(player, [], loot, false)) { player.getInventory().full(); return true; }
   begin(player, 1, ANIM.PICKUP, () => {
-    if (caught.get(npc) !== state || !exchange(player, [], loot)) return;
+    if (caught.get(npc) !== state) return;
+    collect(player, npc, state.def);
     xp(player, state.def.xp, "falconry", state.def.npc);
     removeFalcon(state);
   });
@@ -140,7 +160,7 @@ function catchNpc({ player, npc, npcId }) {
     if (!exchange(player, inputs, outputs)) return;
     xp(player, def.xp, "butterfly", npcId);
     if (!jarred) freed(player, def);
-    player.sendMessage(jarred ? "You catch the creature in a jar." : "You catch the creature barehanded and release it.");
+    player.sendMessage(jarred ? "You catch the creature in a jar." : "You catch the creature in your net and release it.");
   });
   return true;
 }
@@ -213,11 +233,12 @@ function catchImpling(player, npc, npcId, def) {
   }
   if (!exchange(player, inputs, outputs)) return;
   player.getPacketSender().sendSound(IMPLING_CATCH_SOUND, 1, 0);
-  player.sendMessage(jarred ? JAR_MESSAGE : LOOT_MESSAGE);
+  // Spam in every recording: the jar line 395 times, the loot line 7.
+  player.getPacketSender().sendTypedMessage(H.core.ChatType.SPAM, jarred ? JAR_MESSAGE : LOOT_MESSAGE);
   xp(player, puro ? def.puroXp : def.xp, "impling", npcId);
   npc.performAnimation(new H.core.Animation(ANIM.IMPLING_CAUGHT));
   // Roaming spawns (Puro-Puro's and the overworld's) manage their own removal and respawn.
-  const event = { npc, handled: false };
+  const event = { player, npc, npcId, puro, handled: false };
   H.api.emitCustomEvent("hunter:impling-caught", event);
   if (!event.handled) hide(npc, CAUGHT_TICKS + (puro ? def.puroRespawn : OUTSIDE_RESPAWN_TICKS), CAUGHT_TICKS);
 }
@@ -250,7 +271,7 @@ function bonus(player, def) {
   const skills = player.getSkillManager(), max = skills.getMaxLevel(def.boost), current = skills.getCurrentLevel(def.boost);
   if (def.boost === H.core.Skill.PRAYER) skills.setCurrentLevels(def.boost, Math.min(max, current + 22));
   else if (def.boost === H.core.Skill.HITPOINTS) skills.setCurrentLevels(def.boost, Math.min(max, current + 8));
-  else skills.setCurrentLevels(def.boost, Math.max(current, max + Math.floor(max * 0.15) + 4));
+  else boostSkill(player, def.boost, 4, 0.15);
 }
 
 function boost(event) {
@@ -261,12 +282,45 @@ function boost(event) {
   if (!nearby(player, target) || target.getAttribute("accept-aid") === false || target.getHitpoints() <= 0
     || !exchange(player, [[def.jar, 1]], [[H.core.ItemIdentifiers.BUTTERFLY_JAR, 1]])) return;
   bonus(target, def);
-  if (H.api.getAreaManager().inMulti(target)) {
-    const others = H.core.World.getNearbyPlayersForUpdate(target).filter(p => p !== target && p !== player
-      && nearby(target, p, 2) && p.getAttribute("accept-aid") !== false && p.getHitpoints() > 0);
-    for (let i = 0; i < 3 && others.length; i++) bonus(others.splice(roll(0, others.length - 1), 1)[0], def);
-  }
+  share(target, def, player);
   target.sendMessage("A butterfly restores your vigour.");
+}
+
+/** In a multicombat area up to three other players within two tiles of `centre` who accept aid get the same bonus. */
+function share(centre, def, user = null) {
+  if (!H.api.getAreaManager().inMulti(centre)) return;
+  const others = H.core.World.getNearbyPlayersForUpdate(centre).filter(p => p !== centre && p !== user
+    && nearby(centre, p, 2) && p.getAttribute("accept-aid") !== false && p.getHitpoints() > 0);
+  for (let i = 0; i < 3 && others.length; i++) bonus(others.splice(roll(0, others.length - 1), 1)[0], def);
+}
+
+// Wiki (Hunter's mix and each mix's page): a jarred butterfly or moth mixed with raw hunter meat, two
+// doses, each giving the jar's own bonus (Attack, Defence or Strength 4 + 15%; 8 Hitpoints; the
+// sunlight moth's restore and 8 Hitpoints; 22 Prayer) to the drinker and, in a multicombat area, to
+// up to three players within two tiles of them who have Accept Aid on. They share the potions' 3-tick
+// delay but add no eating or attack delay (`eatingDelay: false`); the chugging barrel can't store
+// them (Wiki: Chugging barrel, `chuggable: false`). Ours: what the last dose leaves
+// (the Wiki doesn't say); the butterfly jar the mix was made in.
+const MIXES = [
+  ["Ruby harvest mix", "RUBY_HARVEST_MIX", "RUBY_HARVEST"],
+  ["Sapphire glacialis mix", "SAPPHIRE_GLACIALIS_MIX", "SAPPHIRE_GLACIALIS"],
+  ["Snowy knight mix", "SNOWY_KNIGHT_MIX", "SNOWY_KNIGHT"],
+  ["Black warlock mix", "BLACK_WARLOCK_MIX", "BLACK_WARLOCK"],
+  ["Sunlight moth mix", "SUNLIGHT_MOTH_MIX", "SUNLIGHT_MOTH_2"],
+  ["Moonlight moth mix", "MOONLIGHT_MOTH_MIX", "MOONLIGHT_MOTH_2"],
+];
+
+/** Drink on the hunter's mixes, through the potions plugin's doses and delay ("potions:register"). */
+function registerMixes() {
+  const I = H.core.ItemIdentifiers;
+  for (const [name, key, jar] of MIXES) {
+    const def = H.data.butterflies.find(c => c.jar === I[jar]);
+    if (!def) continue;
+    H.api.emitCustomEvent("potions:register", {
+      name, chains: [[I[`${key}_2_`], I[`${key}_1_`]]], emptyItemId: I.BUTTERFLY_JAR, eatingDelay: false, chuggable: false,
+      effect: (player) => { bonus(player, def); share(player, def); },
+    });
+  }
 }
 
 function rewards(player, def) {
@@ -299,7 +353,10 @@ function rewards(player, def) {
     const chance = { player, impling: def.key, tier: tier.toLowerCase(), oneIn: denominator };
     H.api.emitCustomEvent("hunter:impling-clue-chance", chance);
     const oneIn = Number.isInteger(chance.oneIn) && chance.oneIn > 0 ? chance.oneIn : denominator;
-    if (roll(1, oneIn) === 1 && !C.ownsClue(player, tier)) result.push([id, 1]);
+    if (roll(1, oneIn) !== 1) continue;
+    // A hit the player cannot take is lost; the tier's clue scroll warning mentions it.
+    if (C.ownsClue(player, tier)) H.api.emitCustomEvent("treasure-trails:missed-clue", { player, tier: tier.toLowerCase() });
+    else result.push([id, 1]);
   }
   return result;
 }
@@ -336,7 +393,11 @@ function login({ player }) {
 }
 
 function process() {
-  for (const state of caught.values()) if (H.tick >= state.due || !state.falcon.isRegistered()) removeFalcon(state);
+  for (const state of caught.values()) {
+    if (H.tick < state.due && state.falcon.isRegistered()) continue;
+    if (H.tick >= state.due) state.player.sendMessage(LOST_PREY_MESSAGE);
+    removeFalcon(state);
+  }
   for (const player of gloved) {
     const p = player.getLocation();
     if (!hasFalcon(player)) gloved.delete(player);
@@ -350,4 +411,4 @@ function cleanup({ player }) {
   if (hasFalcon(player)) gloves(player, -1);
 }
 
-module.exports = { catchNpc, hire, retrieve, release, boost, loot, rewards, equipment, login, process, cleanup };
+module.exports = { catchNpc, hire, retrieve, release, boost, registerMixes, loot, rewards, equipment, login, process, cleanup };

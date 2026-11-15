@@ -1,9 +1,10 @@
+import { lazyRequire } from "../../../../util/LazyRequire";
 import { ItemContainer } from "../ItemContainer";
 import { Item } from "../../Item";
 import { Player } from "../../../entity/impl/player/Player";
 import { StackType } from "../StackType";
-const getWeaponInterfaces = () => require("../../../content/combat/WeaponInterfaces").WeaponInterfaces as typeof import("../../../content/combat/WeaponInterfaces").WeaponInterfaces;
-const getItemDefinition = () => require("../../../definition/ItemDefinition").ItemDefinition as typeof import("../../../definition/ItemDefinition").ItemDefinition;
+const getWeaponInterfaces = lazyRequire(() => require("../../../content/combat/WeaponInterfaces").WeaponInterfaces as typeof import("../../../content/combat/WeaponInterfaces").WeaponInterfaces);
+const getItemDefinition = lazyRequire(() => require("../../../definition/ItemDefinition").ItemDefinition as typeof import("../../../definition/ItemDefinition").ItemDefinition);
 
 export class Equipment extends ItemContainer {
 
@@ -66,13 +67,16 @@ export class Equipment extends ItemContainer {
         return StackType.DEFAULT;
     }
 
-    public refreshItems(): ItemContainer {
+    public refreshItems(change?: { equipped: true; itemId: number; slot: number }): ItemContainer {
         this.getPlayer().getPacketSender().sendItemContainer(this, Equipment.INVENTORY_INTERFACE_ID);
         if ((this.getPlayer().getNpcTransformationId?.() ?? -1) >= 0) {
             this.sendWornInventory();
         }
         this.getPlayer().onEquipmentChanged();
-        require("../../../../plugins/PluginManager").PluginManager.emitCustomEvent("equipment:changed", { player: this.getPlayer() });
+        require("../../../../plugins/PluginManager").PluginManager.emitCustomEvent("equipment:changed", {
+            player: this.getPlayer(),
+            ...(change ? { equipped: true, itemId: change.itemId, slot: change.slot } : {}),
+        });
         return this;
     }
 

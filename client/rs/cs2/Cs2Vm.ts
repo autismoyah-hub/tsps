@@ -3,7 +3,7 @@ import { EMOTE_SHORTCUT_SCRIPT_ID, isEmoteShortcut } from "./EmoteShortcuts";
 import { GAMEFRAME_LAYOUT_SETTING, GAMEFRAME_317_OPTION, GAMEFRAME_317_FIXED_OPTION, SETTINGS_GET_SELECTED_SCRIPT, VARP_GAMEFRAME_317 } from "../../common/ui/gameframeLayout";
 import type { FriendsChatAction } from "../../common/social/FriendsChat";
 import type { ClanChannel, ClanSettings } from "./handlers/HandlerTypes";
-import type { WidgetManager, WidgetNode } from "../../widgets/WidgetManager";
+import { loadGroupForCs2Lookup, type WidgetManager, type WidgetNode } from "../../widgets/WidgetManager";
 import type { TypeLoader } from "../config/TypeLoader";
 import type { DbRepository } from "../config/db/DbRepository";
 import type { EnumType } from "../config/enumtype/EnumType";
@@ -185,7 +185,12 @@ export interface Cs2Context {
      * A script is about to run, before the VM's own pre-script listeners (RuneLite's ScriptPreFired,
      * higher priority first).
      */
-    onScriptPre?: (scriptId: number) => void;
+    /**
+     * A script is about to run. `vm` is given for a script invoked from another, whose arguments
+     * are still on the stacks (RuneLite's ScriptPreFired lets a listener change them); a
+     * top-level run passes its arguments directly, so it gives no vm.
+     */
+    onScriptPre?: (scriptId: number, vm?: Cs2Vm) => void;
 
     /**
      * PARITY: OSRS Protocol Revision (e.g., 179, 220).
@@ -222,8 +227,13 @@ export interface Cs2Context {
     clanChannel?: ClanChannel | null;
     listenedClanSettings?: ClanSettings | null;
     listenedClanChannel?: ClanChannel | null;
+    /** Every affined clan by type: 0 the player's own, 2 the PvP Arena group signed up to. */
+    affinedClanSettings?: Map<number, ClanSettings>;
+    affinedClanChannels?: Map<number, ClanChannel>;
     activeClanSettingsIsListened?: boolean;
     activeClanChannelIsListened?: boolean;
+    activeClanSettingsType?: number;
+    activeClanChannelType?: number;
     clanVars?: Map<number, number>;
 
     // Stats/skills (indices 0-22 for OSRS skills)
@@ -318,6 +328,9 @@ export interface Cs2Context {
 
     /** Dispatches the native player-option packet requested by CS2 OPPLAYER. */
     sendPlayerOption?: (playerName: string, option: number) => void;
+
+    /** Native OPENURL: preserve the script URL and new-window flag at the browser boundary. */
+    openUrl?: (url: string, newWindow: boolean) => void;
 
     // Input manager for keyboard state queries (KEYHELD, KEYPRESSED)
     inputManager?: {
@@ -821,6 +834,7 @@ export class Cs2Vm {
         return {
             // Reference to the VM for input dialog state access
             cs2Vm: vm,
+            openUrl: (url, newWindow) => vm.context.openUrl?.(url, newWindow),
 
             // Stacks - direct references to VM arrays
             get intStack() {
@@ -920,23 +934,25 @@ export class Cs2Vm {
             },
             sendFriendsChatAction: (action) => vm.context.sendFriendsChatAction?.(action),
             get clanSettings() {
-                return vm.context.activeClanSettingsIsListened
-                    ? vm.context.listenedClanSettings
-                    : vm.context.clanSettings;
+                if (vm.context.activeClanSettingsIsListened) return vm.context.listenedClanSettings;
+                const type = vm.context.activeClanSettingsType ?? 0;
+                return type === 0 ? vm.context.clanSettings : (vm.context.affinedClanSettings?.get(type) ?? null);
             },
             get clanChannel() {
-                return vm.context.activeClanChannelIsListened
-                    ? vm.context.listenedClanChannel
-                    : vm.context.clanChannel;
+                if (vm.context.activeClanChannelIsListened) return vm.context.listenedClanChannel;
+                const type = vm.context.activeClanChannelType ?? 0;
+                return type === 0 ? vm.context.clanChannel : (vm.context.affinedClanChannels?.get(type) ?? null);
             },
             get clanVars() {
                 return vm.context.clanVars;
             },
-            selectClanSettings: (listened) => {
+            selectClanSettings: (listened, clanType = 0) => {
                 vm.context.activeClanSettingsIsListened = listened;
+                vm.context.activeClanSettingsType = clanType;
             },
-            selectClanChannel: (listened) => {
+            selectClanChannel: (listened, clanType = 0) => {
                 vm.context.activeClanChannelIsListened = listened;
+                vm.context.activeClanChannelType = clanType;
             },
 
             // Event context (for magic argument substitution)
@@ -1452,7 +1468,7 @@ export class Cs2Vm {
         // - resolve parent by widget UID
         // - if childIndex != -1, resolve child from parent.children[childIndex]
         const groupId = (widgetUid >>> 16) & 0xffff;
-        this.context.widgetManager.getGroup(groupId);
+        loadGroupForCs2Lookup(this.context.widgetManager, groupId);
         const parent = this.context.widgetManager.getWidgetByUid(widgetUid);
         const widget =
             childIndex !== -1
@@ -1777,7 +1793,7 @@ export class Cs2Vm {
 
                         // RuneLite's ScriptPreFired: the args are still on the stacks, where a listener
                         // may read or change them (intStack[intStackSize - n]).
-                        this.context.onScriptPre?.(subScript.id);
+                        this.context.onScriptPre?.(subScript.id, this);
                         for (const listener of this.scriptPreListeners) listener(subScript.id, null);
                         const subFrame = allocateFrameLocals(subScript);
                         for (let i = subScript.intArgCount - 1; i >= 0; i--) {
@@ -2107,7 +2123,7 @@ export class Cs2Vm {
 
         //  - UID lookup attempts group load first.
         const groupId = (uid >>> 16) & 0xffff;
-        this.context.widgetManager.getGroup(groupId);
+        loadGroupForCs2Lookup(this.context.widgetManager, groupId);
         const widget = this.context.widgetManager.getWidgetByUid(uid);
         if (!widget) {
             throw new Error("RuntimeException");

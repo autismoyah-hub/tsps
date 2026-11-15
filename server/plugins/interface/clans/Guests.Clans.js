@@ -59,8 +59,6 @@ const LAST_BOARD_ENTRY = 89;
 const LAST_BOARD_FILTER = 15;
 const LAST_BOARD_BUTTON = 3;
 const MODAL_UID = (161 << 16) | 16;
-/** A messagebox's line goes in the chat log too, as this type (rsprox 2778 tick 67, 76 tick 7508). */
-const MESSAGEBOX_LOG_TYPE = 115;
 const NOT_FOUND_SOUND = 2277; // rsprox 76 tick 7508
 /** "Fetching your clan data...": the chatbox's 293 with the spinner 663 in it (rsprox 2778 tick 73). */
 const CHATBOX_CLEAR_SCRIPT = 2379;
@@ -89,7 +87,6 @@ function init(apiCore, schedule, openSettings, interestNames, dateText) {
 /** Over whatever is in the chatbox, with its line logged; <br> is only for the box. */
 function messageBox(player, text) {
   const { DialogueChainBuilder, StatementDialogue } = core;
-  player.getPacketSender().sendTypedMessage(MESSAGEBOX_LOG_TYPE, text.replace(/<br>/g, " "));
   player.getDialogueManager().startDialogues(new DialogueChainBuilder().add(new StatementDialogue(0, text)));
 }
 
@@ -282,7 +279,11 @@ function settleApplicant(player, clan, accept) {
   selectedApplicant.delete(player);
   const online = Core.onlinePlayer(chosen.account);
   online?.getPacketSender().sendVarbit(APPLYING_VARBIT, 0);
-  if (!accept) {
+  // A ban placed after they applied withdraws the application: accepting it would override the ban.
+  if (accept && Core.isBanned(clan, chosen.name)) {
+    Store.save();
+    player.sendMessage(`${chosen.name} is banned from ${clan.name}, so their application has been withdrawn.`);
+  } else if (!accept) {
     Store.save();
     online?.sendMessage(`Your application to ${clan.name} has been declined.`);
   } else if (online && !Core.clanOf(online)) {

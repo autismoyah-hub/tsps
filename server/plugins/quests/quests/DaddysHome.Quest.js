@@ -1,5 +1,6 @@
 /**
- * Daddy's Home (members miniquest, Mahogany Homes prerequisite content).
+ * Daddy's Home (members quest from rev 242, 1 Quest Point; a miniquest before; Mahogany Homes
+ * prerequisite content).
  *
  * Source of truth: the OSRS Wiki walkthrough/quick guide and Transcript:Daddy's Home.
  * Quest Helper `helpers/miniquests/daddyshome/DaddysHome.java` supplies the stage map:
@@ -9,7 +10,9 @@
  *   3/4 all removed, talk to Yarlo again
  *   5-9 rebuild the furniture (stools, tables, chair, carpet, waxwood bed)
  *   10-12 talk to Marlo for the reward
- * Cache DB row 159 (type 1 = miniquest) completes at varbit 10570 (varp 393 bits 19-22) = 13.
+ * Cache DB row 159 (type 0 = quest from rev 242, 1 before) completes at varbit 10570 (varp 393
+ * bits 19-22) = 13. The rev 242 capture (2026-11-05) gives the start/complete messages, +1 qp and
+ * the scroll's rewards and saw model.
  *
  * The seven furniture varbits live in the same shared varp as Karamja/Kalphite/God Wars
  * bits, so they are read and written individually:
@@ -24,9 +27,11 @@
  * Varrock sawmill operator). The generic Old Man Yarlo/Marlo pages remain the fallback outside
  * the quest's stage windows.
  *
- * Known difference: Yarlo's Construction demonstration follows RSProx 3218's beats, camera and
- * message lines but plays in Yarlo's house rather than instantiating the capture's POH template
- * room. Nails bend per nail, with the captured "You accidentally bend a nail." message.
+ * Yarlo's Construction demonstration uses an isolated current-cache parlour approximation.
+ * RSProx 3218 (rev 232) instead shows a different village-style room, which is not reproduced
+ * here. The parlour furniture, builder/camera tiles and timing are not retail-room parity;
+ * this change fixes the real Varrock house overlay. See docs/quests/daddys-home/README.md.
+ * Nails bend per nail, with the captured "You accidentally bend a nail." message.
  */
 module.exports = function registerDaddysHomeQuest(api) {
   const {
@@ -46,8 +51,12 @@ module.exports = function registerDaddysHomeQuest(api) {
     PlayerDialogue,
     Skill,
     StatementDialogue,
+    Task,
+    TaskManager,
   } = api.core;
-  const { registerQuest } = require("../QuestRuntime");
+  const { registerQuest, refreshQuestList, QUEST_POINTS_ATTRIBUTE, QUEST_POINTS_VARP } = require("../QuestRuntime");
+  // Set once a player who finished the miniquest before rev 242 has been given its new Quest Point.
+  const QP_CREDITED_ATTRIBUTE = "daddys-home:quest-point-credited";
   const { createQuestScenes } = require("../QuestScenes");
 
   // Cache ids (gamevals from osrs-241_2026-10-20).
@@ -67,6 +76,7 @@ module.exports = function registerDaddysHomeQuest(api) {
   const FURNITURE_VARBITS = [10563, 10564, 10565, 10566, 10567, 10568, 10569];
   const FURNITURE_ATTRIBUTE = "daddys-home:furniture";
   const CRATE_OPENED_ATTRIBUTE = "daddys-home:crate-opened";
+  const LECTURE_EXIT_ATTRIBUTE = "daddys-home:lecture-exit";
 
   const STAGE_STARTED = 1;
   const STAGE_REMOVE = 2;
@@ -81,14 +91,20 @@ module.exports = function registerDaddysHomeQuest(api) {
   const STATE_BUILT = 3;
 
   const BUILD_ANIMATION = 3676; // human_poh_build
+  const CARPET_BUILD_ANIMATION = 3683; // carpet laying (RSProx 1702)
   const REMOVE_ANIMATION = 3685; // human_throw_away
   const BUILD_SOUND = 938;
   const REMOVE_SOUNDS = [2097, 2098];
 
-  // RSProx 3218 (rev 232): the cutscene's builder variants and the POH demo room.
+  // Builder variants: RSProx 3218 (rev 232). The parlour below approximates a different recorded room.
   const CUTSCENE_BUILDER_PLAIN = NpcIdentifiers.OLD_MAN_YARLO_2; // 10426
   const CUTSCENE_BUILDER_HAMMER = NpcIdentifiers.OLD_MAN_YARLO_3; // 10427
-  const CUTSCENE_BOUNDS = [[3237, 3246, 3391, 3399, 0]];
+  // The same canonical room template Construction uses; current-cache loc geometry is checked
+  // by quest-scene-return-state.test.cjs. Copy only this room, never the Varrock house.
+  const CUTSCENE_ROOM = require("../../skills/construction/data/rooms.json").find(room => room.key === "PARLOUR");
+  const CUTSCENE_X = CUTSCENE_ROOM.sourceChunkX * 8;
+  const CUTSCENE_Y = CUTSCENE_ROOM.sourceChunkY * 8;
+  const CUTSCENE_BOUNDS = [[CUTSCENE_X, CUTSCENE_X + 7, CUTSCENE_Y, CUTSCENE_Y + 7, 0]];
   const CUTSCENE_HOME = new Location(3240, 3395, 0);
   const CUTSCENE_LINES = [
     "As a builder, in your own house, you can create your own rooms full of furniture. A house may start out very basic...",
@@ -132,13 +148,13 @@ module.exports = function registerDaddysHomeQuest(api) {
 
   /** The seven pieces, in varbit order. */
   const PIECES = [
-    { key: "stool-1", name: "stool", planks: 1, nails: 2, xp: 29 },
-    { key: "stool-2", name: "stool", planks: 1, nails: 2, xp: 29 },
-    { key: "chair", name: "chair", planks: 2, nails: 2, xp: 58 },
-    { key: "table-1", name: "table", planks: 3, nails: 4, xp: 87 },
-    { key: "table-2", name: "table", planks: 3, nails: 4, xp: 87 },
-    { key: "bed", name: "bed", waxwood: 3, cloth: 2, xp: 207 },
-    { key: "carpet", name: "carpet", cloth: 3, xp: 45 },
+    { key: "stool-1", name: "stool", removalDescription: "A broken stool in the kitchen", planks: 1, nails: 2, xp: 29 },
+    { key: "stool-2", name: "stool", removalDescription: "A broken stool in the bedroom", planks: 1, nails: 2, xp: 29 },
+    { key: "chair", name: "chair", removalDescription: "A broken chair in the bedroom", planks: 2, nails: 2, xp: 58 },
+    { key: "table-1", name: "table", removalDescription: "A broken table in the kitchen", planks: 3, nails: 4, xp: 87 },
+    { key: "table-2", name: "table", removalDescription: "A broken table in the bedroom", planks: 3, nails: 4, xp: 87 },
+    { key: "bed", name: "bed", removalDescription: "The old campbed", waxwood: 3, cloth: 2, xp: 207 },
+    { key: "carpet", name: "carpet", removalDescription: "The rotten carpet", cloth: 3, xp: 45, animation: CARPET_BUILD_ANIMATION },
   ];
 
   // Base loc id -> piece index. The carpet is twelve placements sharing one transform.
@@ -169,10 +185,10 @@ module.exports = function registerDaddysHomeQuest(api) {
     [Items.FALADOR_TELEPORT, 1],
   ];
 
-  const START_MESSAGE = "You've started a new miniquest: <col=081190>Daddy's Home</col>";
+  const START_MESSAGE = "You've started a new quest: <col=081190>Daddy's Home</col>";
 
   let quest;
-  const Scenes = createQuestScenes(api, { onEnd: onCutsceneEnd });
+  const Scenes = createQuestScenes(api, { onEnd: onCutsceneEnd, recoveryAttribute: LECTURE_EXIT_ATTRIBUTE });
 
   const inventory = (player) => player.getInventory();
   const has = (player, itemId) => inventory(player).getAmount(itemId) > 0;
@@ -216,6 +232,22 @@ module.exports = function registerDaddysHomeQuest(api) {
 
   function syncFurniture({ player }) {
     sendFurniture(player);
+    creditQuestPoint(player);
+  }
+
+  /**
+   * Rev 242 made the miniquest a 1 QP quest: a save that finished it earlier gets the point once.
+   * The flag is set on the first login either way, so a later completion (which awards the point
+   * itself) is never credited twice.
+   */
+  function creditQuestPoint(player) {
+    if (player.getAttribute(QP_CREDITED_ATTRIBUTE) === true) return;
+    player.setAttribute(QP_CREDITED_ATTRIBUTE, true);
+    if (!quest?.isComplete(player)) return;
+    const points = (Number(player.getAttribute(QUEST_POINTS_ATTRIBUTE)) || 0) + 1;
+    player.setAttribute(QUEST_POINTS_ATTRIBUTE, points);
+    player.getPacketSender().sendConfig(QUEST_POINTS_VARP, points);
+    refreshQuestList(player);
   }
 
   function setPieceState(player, index, value) {
@@ -275,26 +307,6 @@ module.exports = function registerDaddysHomeQuest(api) {
     return Math.max(0, base * Math.max(0.05, 1 - (Math.max(1, level) - 1) * 0.06));
   }
 
-  /** Each nail is hammered in turn; a bent nail is consumed and does not count (RSProx 1723). */
-  function consumeNails(player, amount) {
-    const stock = inventory(player);
-    let remaining = amount;
-    let attempts = 0;
-    while (remaining > 0 && attempts < amount * 10) {
-      const id = NAIL_IDS.find((nail) => stock.getAmount(nail) > 0);
-      if (id === undefined) return false;
-      stock.delete(id, 1);
-      attempts++;
-      if (Math.random() < nailBendChance(player, id)) {
-        player.sendMessage("You accidentally bend a nail.");
-      } else {
-        player.sendMessage("You use a nail.");
-        remaining--;
-      }
-    }
-    return remaining === 0;
-  }
-
   function buildRequirements(piece) {
     const parts = [];
     const name = (amount, singular, plural = `${singular}s`) => `${amount} ${amount === 1 ? singular : plural}`;
@@ -305,22 +317,20 @@ module.exports = function registerDaddysHomeQuest(api) {
     return parts.join(", ");
   }
 
-  function canBuild(player, piece) {
+  function canBuild(player, piece, nails = piece.nails) {
     const stock = inventory(player);
     if (piece.planks && stock.getAmount(Items.PLANK) < piece.planks) return false;
     if (piece.waxwood && stock.getAmount(WAXWOOD_PLANK) < piece.waxwood) return false;
     if (piece.cloth && stock.getAmount(Items.BOLT_OF_CLOTH) < piece.cloth) return false;
-    if (piece.nails && NAIL_IDS.reduce((sum, id) => sum + stock.getAmount(id), 0) < piece.nails) return false;
+    if (nails && NAIL_IDS.reduce((sum, id) => sum + stock.getAmount(id), 0) < nails) return false;
     return true;
   }
 
   function consumeMaterials(player, piece) {
-    if (piece.nails && !consumeNails(player, piece.nails)) return false;
     const stock = inventory(player);
     if (piece.planks) stock.deleteNumber(Items.PLANK, piece.planks);
     if (piece.waxwood) stock.deleteNumber(WAXWOOD_PLANK, piece.waxwood);
     if (piece.cloth) stock.deleteNumber(Items.BOLT_OF_CLOTH, piece.cloth);
-    return true;
   }
 
   function missingToolMessage(player) {
@@ -340,6 +350,81 @@ module.exports = function registerDaddysHomeQuest(api) {
     }
     stock.adds(itemId, 1);
     player.sendMessage(itemId === Items.HAMMER ? "Yarlo gives you a hammer." : "Yarlo gives you a saw.");
+  }
+
+  // RSProx 1702/1723: one nail attempt per tick, then built state/XP on the next tick.
+  // The earlier hammering must reach player sync before a completion level-up resets it.
+  class FurnitureBuild extends Task {
+    constructor(player, index) {
+      super(1, player);
+      this.player = player;
+      this.index = index;
+      this.location = player.getLocation().clone();
+      this.remaining = PIECES[index].nails ?? 0;
+      this.attempts = 0;
+    }
+
+    hasRequirements() {
+      return !missingToolMessage(this.player) && canBuild(this.player, PIECES[this.index]);
+    }
+
+    start() {
+      this.animate(0);
+      TaskManager.submit(this);
+    }
+
+    animate(tick) {
+      this.player.performAnimation(new Animation(PIECES[this.index].animation ?? BUILD_ANIMATION));
+      if (tick % 2 === 0) this.player.getPacketSender().sendSound(BUILD_SOUND, 0, 0);
+    }
+
+    cancel() {
+      this.stop();
+      if (this.player.getSkill() !== this) return;
+      this.player.setSkill(null);
+      if (this.player.isRegistered() && this.player.getHitpoints() > 0) {
+        this.player.performAnimation(Animation.DEFAULT_RESET_ANIMATION);
+      }
+    }
+
+    execute() {
+      const player = this.player;
+      const piece = PIECES[this.index];
+      if (player.getSkill() !== this || !player.isRegistered() || player.getHitpoints() <= 0 ||
+          !player.getLocation().equals(this.location) || quest.getStage(player) < STAGE_BUILD ||
+          stateOf(player)[this.index] !== STATE_HOTSPOT) return this.cancel();
+      const toolMessage = missingToolMessage(player);
+      if (toolMessage || !canBuild(player, piece, 0)) {
+        player.sendMessage(toolMessage || `You need ${buildRequirements(piece)} to build that.`);
+        return this.cancel();
+      }
+      if (this.remaining > 0) {
+        const nail = NAIL_IDS.find((id) => has(player, id));
+        if (nail === undefined || this.attempts >= piece.nails * 10) {
+          player.sendMessage("You need more nails to finish that.");
+          return this.cancel();
+        }
+        inventory(player).delete(nail, 1);
+        this.attempts++;
+        if (Math.random() < nailBendChance(player, nail)) player.sendMessage("You accidentally bend a nail.");
+        else {
+          player.sendMessage("You use a nail.");
+          this.remaining--;
+        }
+        if (this.remaining > 0) this.animate(this.attempts);
+        return;
+      }
+      consumeMaterials(player, piece);
+      setPieceState(player, this.index, STATE_BUILT);
+      this.stop();
+      player.setSkill(null);
+      player.getSkillManager().addExperiences(Skill.CONSTRUCTION, piece.xp);
+      if (allBuilt(stateOf(player)) && quest.getStage(player) < STAGE_BUILT) quest.setStage(player, STAGE_BUILT);
+    }
+  }
+
+  function cancelBuild({ player }) {
+    if (player.getSkill() instanceof FurnitureBuild) player.getSkillManager().stopSkillable();
   }
 
   // ==========================================================================
@@ -377,15 +462,8 @@ module.exports = function registerDaddysHomeQuest(api) {
         const verbal = buildRequirements(piece);
         return player.sendMessage(`You need ${verbal}${piece.nails ? " of any type" : ""} to build that.`), true;
       }
-      if (!consumeMaterials(player, piece)) {
-        return player.sendMessage("You need more nails to finish that."), true;
-      }
-      setPieceState(player, index, STATE_BUILT);
-      player.performAnimation(new Animation(BUILD_ANIMATION));
-      player.getPacketSender().sendSound(BUILD_SOUND, 0, 0);
-      player.getSkillManager().addExperiences(Skill.CONSTRUCTION, piece.xp);
-      if (allBuilt(stateOf(player)) && stage < STAGE_BUILT) {
-        quest.setStage(player, STAGE_BUILT);
+      if (!(player.getSkill() instanceof FurnitureBuild && player.getSkill().index === index)) {
+        player.getSkillManager().startSkillable(new FurnitureBuild(player, index));
       }
       return true;
     }
@@ -468,9 +546,11 @@ module.exports = function registerDaddysHomeQuest(api) {
 
   function describeRemaining(player) {
     const left = remainingFurniture(player);
-    const lines = left.slice(0, 3).map(({ piece }) => `- A broken ${piece.name}`);
+    // rsprox 226/01702.txt:27405: each line of the box is its own row ("You still need to
+    // remove:<br>- The rotten carpet"); chat history shows the <br> as a space.
+    const lines = [["You still need to remove:", ...left.slice(0, 3).map(({ piece }) => `- ${piece.removalDescription}`)].join("<br>")];
     for (let index = 3; index < left.length; index += 3) {
-      lines.push(left.slice(index, index + 3).map(({ piece }) => `- A broken ${piece.name}`).join("  "));
+      lines.push(left.slice(index, index + 3).map(({ piece }) => `- ${piece.removalDescription}`).join("<br>"));
     }
     return lines;
   }
@@ -530,10 +610,8 @@ module.exports = function registerDaddysHomeQuest(api) {
   }
 
   /**
-   * Yarlo's Construction demonstration, from RSProx 3218 (rev 232): fade out, the builder
-   * assembling a parlour, the slow camera pan and fourteen messagebox lines. The capture runs
-   * this in the POH template; the server keeps the same beats in Yarlo's own house so the
-   * surrounding map and collision are the ones the player already has.
+   * An isolated parlour demonstration. The existing lecture sequence is retained; the source
+   * tiles below refer to the current cache room and QuestScenes translates them into its copy.
    */
   function playLectureCutscene(player, npcId) {
     if (Scenes.get(player)) return;
@@ -541,20 +619,24 @@ module.exports = function registerDaddysHomeQuest(api) {
     Scenes.hold(player);
     Scenes.controls(player, true, true);
     player.getPacketSender().sendSong(147);
-    const scene = Scenes.open(player, "daddys-home-lecture", CUTSCENE_BOUNDS);
+    const scene = Scenes.open(player, "daddys-home-lecture", CUTSCENE_BOUNDS, {}, {
+      instance: { sourceChunk: [CUTSCENE_ROOM.sourceChunkX, CUTSCENE_ROOM.sourceChunkY], size: 1 },
+      at: [CUTSCENE_X + 3, CUTSCENE_Y + 3, 0],
+      exit: [CUTSCENE_HOME.getX(), CUTSCENE_HOME.getY(), CUTSCENE_HOME.getZ()],
+    });
     scene.npcId = npcId;
     scene.finished = false;
-    player.moveTo(CUTSCENE_HOME);
-    const builder = Scenes.actor(scene, CUTSCENE_BUILDER_PLAIN, [3244, 3392, 0], [3241, 3395]);
-    if (builder) builder.setPositionToFace(new Location(3241, 3395, 0));
+    Scenes.actor(scene, CUTSCENE_BUILDER_PLAIN,
+      [CUTSCENE_X + 5, CUTSCENE_Y + 5, 0], [CUTSCENE_X + 4, CUTSCENE_Y + 3]);
     Scenes.later(scene, 2, () => {
       if (Scenes.get(player) !== scene) return;
       player.getPacketSender().sendJingle(20, 0).sendSong(454);
-      Scenes.camera(player, [3241, 3401, 350], [3241, 3394, 50]);
+      Scenes.camera(player, [CUTSCENE_X + 3, CUTSCENE_Y + 7, 350], [CUTSCENE_X + 3, CUTSCENE_Y + 3, 50]);
       Scenes.fade(player, false);
-      Scenes.loc(scene, { id: 6752, x: 3244, y: 3395, type: 10, face: 2 });
-      Scenes.loc(scene, { id: 6768, x: 3244, y: 3394, type: 10, face: 0 });
-      Scenes.loc(scene, { id: 6780, x: 3241, y: 3392, type: 10, face: 1 });
+      // Chair, west bookcase and fireplace at their actual template hotspots (4517/4521/4523).
+      Scenes.loc(scene, { id: 6752, x: CUTSCENE_X + 4, y: CUTSCENE_Y + 3, type: 10, face: 2 });
+      Scenes.loc(scene, { id: 6768, x: CUTSCENE_X, y: CUTSCENE_Y + 1, type: 10, face: 0 });
+      Scenes.loc(scene, { id: 6780, x: CUTSCENE_X + 3, y: CUTSCENE_Y + 7, type: 10, face: 1 });
     });
     CUTSCENE_LINES.forEach((line, index) => {
       Scenes.later(scene, 8 + index * LECTURE_TICKS, () => {
@@ -583,7 +665,9 @@ module.exports = function registerDaddysHomeQuest(api) {
 
   /** A logout or walk-out during the demonstration still unlocks the building stage. */
   function onCutsceneEnd(player, scene, logout) {
-    if (scene?.name !== "daddys-home-lecture" || scene.finished) return;
+    if (scene?.name !== "daddys-home-lecture") return;
+    Scenes.closeFade(player);
+    if (scene.finished) return;
     if (!logout) player.moveTo(CUTSCENE_HOME);
     quest.setStage(player, STAGE_BUILD);
     sendFurniture(player);
@@ -930,13 +1014,14 @@ module.exports = function registerDaddysHomeQuest(api) {
       return ["Marlo asked me to help his father, <col=800000>Old Man Yarlo</col>,", "in his house in south-east Varrock, west of Aubury's Rune Shop."];
     }
     return [
-      "I can start this miniquest by talking to <col=800000>Marlo</col> in the",
+      "I can start this quest by talking to <col=800000>Marlo</col> in the",
       "<col=800000>Varrock Estate Agent's</col> office.",
     ];
   }
 
   api.persistAttribute(FURNITURE_ATTRIBUTE, [0, 0, 0, 0, 0, 0, 0]);
   api.persistAttribute(CRATE_OPENED_ATTRIBUTE, 0);
+  api.persistAttribute(QP_CREDITED_ATTRIBUTE, false);
 
   quest = registerQuest(api, {
     key: "daddys_home",
@@ -945,13 +1030,14 @@ module.exports = function registerDaddysHomeQuest(api) {
     varbitId: VARBIT_STATUS,
     startedValue: STAGE_STARTED,
     completionValue: STAGE_COMPLETE,
-    questPoints: 0,
+    questPoints: 1,
     rewardItemId: MARLOS_CRATE,
-    scrollItemId: MARLOS_CRATE,
+    scrollItemId: Items.SAW, // poh_saw 8794 on the rev 242 scroll
+    // The rev 242 scroll's lines, in its order.
     otherRewards: [
+      "A house in Rimmington",
       "400 Construction XP",
-      "Marlo's crate (Construction supplies)",
-      "A house in Rimmington, or 1,000 coins",
+      "A crate of supplies",
     ],
     onReward,
     buildJournal,
@@ -964,4 +1050,5 @@ module.exports = function registerDaddysHomeQuest(api) {
   api.onObjectInteraction(handleCrateSearch);
   api.onItemAction("Marlo's crate", { Open: openCrate });
   api.onPlayerLogin(syncFurniture);
+  api.onPlayerLogout(cancelBuild);
 };

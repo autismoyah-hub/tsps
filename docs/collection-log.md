@@ -49,9 +49,10 @@ The client reads the log straight from its cache too. It used to override these 
 **Login** sends:
 - `collection_count` (2943) and its maximum (2944);
 - per tab, the count and maximum: bosses 4613/4614, raids 4615/4616, clues 4617/4618, minigames 4619/4620, other 4621/4622;
+  - These count **items, not slots**: an item listed by several categories counts once, and in the earliest tab that has it. The five tab maximums always add up to 2944 (captured: 1699 = 332 + 67 + 611 + 257 + 432), and a first Abyssal dagger (Abyssal Sire and Slayer) raised 4613 and 2943 by one and left 4621 alone;
 - `collection_count_highscores` (4612) and `collection_count_unsynced` (4848);
 - the 12 recent items at varps 4623, 4625 … 4645, each followed by its day number (days since 27 February 2002, UTC);
-- `option_collection_new_item` (varbit 11959) = 3, for chat message plus popup.
+- `option_collection_new_item` (varbit 11959) = the saved preference: 0 Off, 1 chat, 2 popup, 3 both (a new account starts at 3). All Settings rows 85 ("New addition notification") and 171 ("New addition popup") toggle its two bits (cache script 6716), and the client's whole varp 2856 transmission is kept so the bits survive relog without disturbing the other settings sharing that varp.
 
 **Opening the log** (account summary, row 6):
 1. the last category's items in `collection_transmit` (620);
@@ -79,7 +80,11 @@ The client reads the log straight from its cache too. It used to override these 
 1. OP1 on the results (621:84, 0 to the global category total);
 2. one `collection_delayed_transmit` (script 4100) `[item, count, global category number, category struct]` per obtained item and category. The global number is a category's key plus the key ranges of the tabs before it.
 
-**The overview** (908): the burger menu's slot 12 closes 621 and opens 908 in the floater, with OP1 on 908:7 (10–12), 908:22 (0–4) and 908:21 (0). Its section buttons reopen the log on that tab. Both close with `chatdefault_restoreinput` (script 2158).
+**A search result** (621:84, sub = that global category number) shows its category: its count (varp 2048), `collection_last_category`, `collection_last_tab` when the tab changes, OP1 on the keys and both search buttons, the new tab's rows when the tab changes, then the category's items and `collection_draw`.
+
+**The burger menus** (621:73 and 908:7) are both built by cache script 7814: "View Log" on slot 10 and "Overview" on slot 12 (slot 11 is the Overview row's background, with no op).
+
+**The overview** (908): the log's "Overview" (slot 12) sends `current_runeday` (varbit 9535, today's day number) if the client doesn't have it yet, closes 621 and opens 908 in the floater, with OP1 on 908:7 (10–12), 908:22 (0–4) and 908:21 (0). A latest item's Check-obtained (cache script 7810) prints "obtained today", "yesterday" or "N days ago" from varbit 9535 minus the item's day, and "recently" when that is negative. The overview's "View Log" (slot 10) and its section buttons reopen the log, the section buttons on that tab. Both close with `chatdefault_restoreinput` (script 2158).
 
 **A new item:**
 
@@ -93,7 +98,8 @@ A boss category's **Combat Achievements button** (621:21) closes the log and ope
 
 ## Not modelled
 
-- **The burger menu's other slots** (10, 11).
+- **The log's own "View Log" entry** (621:73 slot 10, the view already open): no capture shows it, so it does nothing.
+- **`current_runeday` from the side journal's summary tab**, which live also sends; that tab is not part of the log.
 - **The per-item varbits** OSRS sends at login for a few items (`collection_item_*`, e.g. Zulrah's scales) and the `collection_other_*_completed` flags.
 - **Loot that doesn't go through `npc-drops:roll` yet:** additional reward sources, raids chests and clue caskets. Each needs a `collection-log:obtain` in a follow-up; unimplemented content has no acquisition route yet.
 - **"Opened" and "completed" counts** for chests and minigames; they come with those follow-ups.

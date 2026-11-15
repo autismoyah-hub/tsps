@@ -8,6 +8,9 @@ module.exports = function registerRecipeForDisasterQuest(api) {
 
   const PAGE = "Recipe for Disaster/Another Cook's Quest";
   const QUEST = "recipe_for_disaster";
+  const FEAST_PENDING_ATTRIBUTE = "recipe-for-disaster:feast-pending";
+  const FEAST_SEEN_ATTRIBUTE = "recipe-for-disaster:feast-seen";
+  const FEAST_VARIANT = "chef-surprise-the-lumbridge-secret-council";
   const FLAGS_ATTRIBUTE = "recipe-for-disaster:rescues";
   const PIRATE_ATTRIBUTE = "recipe-for-disaster:pirate-state";
   const PIRATE_HIDES_ATTRIBUTE = "recipe-for-disaster:pirate-hides-given";
@@ -50,6 +53,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
   const START_HOOK = "quest:recipe-for-disaster:start";
   const VARP_RFD = 678;
   const VARBIT_RFD = 1850;
+  const SUBQUESTS_COMPLETED_VARBIT = 13987; // native subquests_completed_count
   const VARBIT_OGRE_BOAT = 1908;
   const RESCUE_QUEST_VARBITS = new Map([
     [1, [1892, 60]], // Mountain Dwarf
@@ -99,18 +103,97 @@ module.exports = function registerRecipeForDisasterQuest(api) {
   let pirateRockPilesInstalled = false;
   const FINAL_ROOM = { x: 1900, y: 5355, z: 2 };
   const FINAL_ROOM_BOUNDS = { minX: 1889, maxX: 1910, minY: 5345, maxY: 5366, z: 2 };
+  // The frozen Lumbridge dining room (the Culinaromancer's dimension) and its guests' seats,
+  // the cache's own npc-spawns for them; Aris has no cache spawn, so she stands by the table.
+  const DINING_DIMENSION = { minX: 1855, maxX: 1870, minY: 5338, maxY: 5358, z: 0 };
+  // Lumbridge's two ways into the dining room: the large doors from the hall and the door from
+  // the kitchen (hundred_lumbridge_door*). The dimension has the same pair: castledoubledoorl/r
+  // and elfdoor. Each leads to the matching doorway on the other side.
+  const DINING_LARGE_DOORS = new Set([ObjectIdentifiers.LARGE_DOOR_41, ObjectIdentifiers.LARGE_DOOR_42]);
+  const DINING_KITCHEN_DOOR = ObjectIdentifiers.DOOR_302;
+  const DIMENSION_LARGE_DOORS = new Set([ObjectIdentifiers.LARGE_DOOR_15, ObjectIdentifiers.LARGE_DOOR_17]);
+  const DIMENSION_KITCHEN_DOOR = ObjectIdentifiers.DOOR_30;
+  /** Where the feast's walk-in from the large doors ends. */
+  const DINING_ENTRY = { x: 1867, y: 5348, z: 0 };
+  // Live lands a large-door entrant on 1866,5323 in the cache's frozen copy of the room (the
+  // Shortest Path transport in plugins/agent/data/transports.json): just inside the barrier.
+  // This room is that copy 24 tiles north, so the same tile is 1866,5347.
+  const COUNCIL_ENTRY = { x: 1866, y: 5347, z: 0 };
+  const COUNCIL_KITCHEN_ENTRY = { x: 1861, y: 5341, z: 0 };
+  const DINING_EXIT = { x: 3214, y: 3221, z: 0 };
+  const KITCHEN_EXIT = { x: 3207, y: 3217, z: 0 };
+  // The cache's frozen copy of the dining room (y 5314-5334) carries Aris's time bubble: the
+  // white walls round the room (100_bubble*), a barrier in each doorway (hundred_portal_door1-3)
+  // and the rings on the Culinaromancer's seat (100_rings_froze). The council room shows them
+  // for its owner, read from that copy, 24 tiles further north.
+  const FROZEN_ROOM_SOURCE = { minX: 1860, maxX: 1867, minY: 5316, maxY: 5331, z: 0 };
+  const FROZEN_ROOM_OFFSET_Y = 24;
+  const FROZEN_ROOM_LOCS = ["100_bubble3", "100_bubbleb3", "hundred_portal_door1", "hundred_portal_door2",
+    "hundred_portal_door3", "100_rings_froze"];
+  const DINING_BARRIERS = new Set([ObjectIdentifiers.BARRIER_3, ObjectIdentifiers.BARRIER_4, ObjectIdentifiers.BARRIER_5]);
+  const DINING_KITCHEN_BARRIER = ObjectIdentifiers.BARRIER_3;
+  const FROZEN_ROOM_BY_PLAYER = new WeakMap();
+  let frozenRoomLayout = null;
+  const CULINAROMANCER_CHEST_CELLAR = 12308;
+  const CULINAROMANCER_CHEST_SIDE = { x: 3218, y: 9623, z: 0 };
   const COUNCIL_SPAWNS = [
-    { id: NpcIdentifiers.MOUNTAIN_DWARF, x: 3236, y: 3219 },
-    { id: NpcIdentifiers.GENERAL_WARTFACE_5, x: 3237, y: 3219 },
-    { id: NpcIdentifiers.GENERAL_BENTNOZE_5, x: 3238, y: 3219 },
-    { id: NpcIdentifiers.PIRATE_PETE_3, x: 3239, y: 3219 },
-    { id: NpcIdentifiers.LUMBRIDGE_GUIDE_4, x: 3240, y: 3219 },
-    { id: NpcIdentifiers.EVIL_DAVE_3, x: 3236, y: 3220 },
-    { id: NpcIdentifiers.SKRACH_UGLOGWEE, x: 3237, y: 3220 },
-    { id: NpcIdentifiers.SIR_AMIK_VARZE_3, x: 3238, y: 3220 },
-    { id: NpcIdentifiers.AWOWOGEI, x: 3239, y: 3220 },
-    { id: NpcIdentifiers.ARIS_3, x: 3240, y: 3220 },
+    { id: NpcIdentifiers.MOUNTAIN_DWARF, x: 1862, y: 5345 },
+    { id: NpcIdentifiers.GENERAL_WARTFACE_5, x: 1862, y: 5351 },
+    { id: NpcIdentifiers.GENERAL_BENTNOZE_5, x: 1862, y: 5349 },
+    { id: NpcIdentifiers.PIRATE_PETE_3, x: 1862, y: 5347 },
+    { id: NpcIdentifiers.LUMBRIDGE_GUIDE_4, x: 1865, y: 5349 },
+    { id: NpcIdentifiers.EVIL_DAVE_3, x: 1865, y: 5347 },
+    { id: NpcIdentifiers.SKRACH_UGLOGWEE, x: 1863, y: 5352 },
+    { id: NpcIdentifiers.SIR_AMIK_VARZE_3, x: 1865, y: 5345 },
+    { id: NpcIdentifiers.AWOWOGEI, x: 1865, y: 5343 },
+    { id: NpcIdentifiers.ARIS_3, x: 1866, y: 5351 },
   ];
+  // These are the cache's own per-model seated/frozen rigs, not human animations
+  // applied to the dwarf, ogre, goblins or monkey.
+  const FEAST_POSES = new Map([
+    [NpcIdentifiers.MOUNTAIN_DWARF, "dwarf"], [NpcIdentifiers.PIRATE_PETE_3, "pirate"],
+    [NpcIdentifiers.GENERAL_WARTFACE_5, "gobtwo"], [NpcIdentifiers.GENERAL_BENTNOZE_5, "gob"],
+    [NpcIdentifiers.LUMBRIDGE_GUIDE_4, "guide"], [NpcIdentifiers.EVIL_DAVE_3, "dave"],
+    [NpcIdentifiers.SIR_AMIK_VARZE_3, "sir"], [NpcIdentifiers.AWOWOGEI, "monkey"],
+    [NpcIdentifiers.SKRACH_UGLOGWEE, "ogre"], [NpcIdentifiers.CULINAROMANCER, "cul"],
+  ]);
+  const FEAST_HEAD = [1863, 5341, 0];
+  const FEAST_DOOR = [1868, 5347, 0];
+  const FEAST_DOOR_OBJECT = ObjectIdentifiers.LARGE_DOOR_15; // castledoubledoorl, 1521
+  // The feast's camera, one shot per stage direction of the Wiki transcript ("Camera pans to
+  // Mountain Dwarf.", "Camera switches to Wartface and Bentnoze." ...) and on each later actor
+  // as they act. No live recording covers this cutscene, so the framing is ours: the camera sits
+  // across the table from whoever speaks, at the heights the captured quest cutscenes use
+  // (move 450-900, look 80-260). A "switch" cuts at the captured cut rates; a "pan" glides at
+  // a captured quest-cutscene glide (cam_moveto rate=10, rate2=20) that lands within a line.
+  const FEAST_PAN = { rate: 10, rate2: 20 };
+  const FEAST_OPENING_SHOT = { move: [1863, 5353, 800], look: [1863, 5341, 150] };
+  const FEAST_HORACIO_SHOT = { move: [1863, 5346, 560], look: [1863, 5341, 180] };
+  const FEAST_SPY_SHOT = { move: [1861, 5349, 500], look: [1865, 5351, 180] };
+  const FEAST_WIDE_SHOT = { move: [1863, 5354, 900], look: [1863, 5346, 100] };
+  const FEAST_SHOTS = new Map([
+    ["XaiZ99", { ...FEAST_HORACIO_SHOT, pan: true }],
+    ["3Yulm_", FEAST_SPY_SHOT], ["9XHwuQ", FEAST_SPY_SHOT],
+    ["8J08ap", { move: [1866, 5344, 450], look: [1862, 5345, 110], pan: true }],
+    ["6oXtXi", { move: [1866, 5346, 480], look: [1862, 5347, 170], pan: true }],
+    ["C8WkoA", { move: [1866, 5349, 470], look: [1862, 5350, 110] }],
+    ["QkbX04", { move: [1864, 5347, 600], look: [1864, 5353, 260] }],
+    ["uD2WTl", { move: [1861, 5348, 480], look: [1865, 5349, 170] }],
+    ["yFRs14", { move: [1861, 5346, 480], look: [1865, 5347, 170], pan: true }],
+    ["-ph0H8", { move: [1861, 5344, 480], look: [1865, 5345, 180], pan: true }],
+    ["SPJBD9", { move: [1861, 5343, 450], look: [1865, 5343, 80] }],
+    ["2dDdeS", FEAST_HORACIO_SHOT],
+    ["lDT9yg", { move: [1863, 5346, 560], look: [1862, 5341, 180] }],
+    ["j-YkVf", { move: [1861, 5349, 500], look: [1866, 5351, 150] }],
+    ["smgzvU", { move: [1863, 5345, 600], look: [1868, 5348, 180] }],
+    ["YKM4VY", { move: [1863, 5347, 600], look: [1863, 5341, 200] }],
+    ["8R1_CN", { ...FEAST_WIDE_SHOT, pan: true }],
+    ["44MzE_", { move: [1862, 5345, 600], look: [1867, 5349, 180] }],
+    ["keglCJ", { move: [1862, 5344, 650], look: [1865, 5349, 150], pan: true }],
+    ["UOCpz9", FEAST_WIDE_SHOT],
+  ]);
+  const { createQuestScenes } = require("../QuestScenes");
+  const Feast = createQuestScenes(api, { onEnd: feastEnded });
   function ensureCouncilTalkActions() {
     for (const { id } of COUNCIL_SPAWNS) {
       const actions = api.core.NpcDefinition.forId(id)?.getActions?.();
@@ -132,6 +215,8 @@ module.exports = function registerRecipeForDisasterQuest(api) {
   const GOBLIN_PAGE = "Recipe for Disaster/Freeing the Goblin generals";
   const DWARF_PAGE = "Recipe for Disaster/Freeing the Mountain Dwarf";
   const MURPHY_IDS = new Set([NpcIdentifiers.MURPHY, NpcIdentifiers.MURPHY_2, NpcIdentifiers.MURPHY_3, NpcIdentifiers.MURPHY_4]);
+  /** The Murphy on the Port Khazard docks (5607); 5608-5610 are his trawler and wreck copies. */
+  const PORT_MURPHY_ID = NpcIdentifiers.MURPHY;
   const NUNG_IDS = new Set([NpcIdentifiers.NUNG]);
   const GOBLIN_COOK_IDS = new Set([NpcIdentifiers.GOBLIN_COOK, NpcIdentifiers.GOBLIN_COOK_2, NpcIdentifiers.GOBLIN_COOK_3]);
   const RANTZ_IDS = new Set([1470, NpcIdentifiers.RANTZ, NpcIdentifiers.RANTZ_2, NpcIdentifiers.RANTZ_3,
@@ -186,8 +271,28 @@ module.exports = function registerRecipeForDisasterQuest(api) {
 
   function stage(player) { return quest.getStage(player); }
   function flags(player) { return Number(player.getAttribute(FLAGS_ATTRIBUTE)) || 0; }
+  function recoverOpeningFeast(player) {
+    if (stage(player) !== STAGE_OPENING_COMPLETE) return false;
+    if (quest.isComplete(player) || player.getAttribute(FEAST_SEEN_ATTRIBUTE)
+      || player.getAttribute(FEAST_PENDING_ATTRIBUTE) || flags(player) !== 0) return false;
+    if ([pirateQuestStage, goblinQuestStage, dwarfQuestStage, guideQuestStage,
+      daveQuestStage, skrachQuestStage, amikQuestStage, awowogeiQuestStage].some(read => read(player) > 0)) return false;
+    // Older saves can record a briefing or recipe before their numeric subquest stage.
+    if ([PIRATE_ATTRIBUTE, GOBLIN_STATE_ATTRIBUTE, DWARF_STATE_ATTRIBUTE, GUIDE_STATE_ATTRIBUTE,
+      DAVE_STATE_ATTRIBUTE, SKRACH_STATE_ATTRIBUTE, AMIK_STATE_ATTRIBUTE, AWOWOGEI_STATE_ATTRIBUTE,
+      PIRATE_HIDES_ATTRIBUTE, PIRATE_FIRST_DIVE_ATTRIBUTE, DAVE_RECIPE_ATTRIBUTE, DAVE_STEW_ATTRIBUTE,
+      AMIK_DRAGON_DROP_ATTRIBUTE, AMIK_CHICKEN_DEAD_ATTRIBUTE, AMIK_WOM_BRIEFED_ATTRIBUTE,
+      FINAL_FIGHT_ATTRIBUTE, FINAL_BOSS_DEFEATED_ATTRIBUTE].some(key => player.getAttribute(key))) return false;
+    player.setAttribute(FEAST_PENDING_ATTRIBUTE, true);
+    return true;
+  }
   function has(player, itemId, amount = 1) {
     return player.getInventory().getAmount(itemId) >= amount;
+  }
+  /** Carried or banked (bank tabs only: the search tab repeats them, placeholders hold 0). */
+  function owns(player, itemId) {
+    return has(player, itemId) || (player.getBanks?.() ?? []).some((bank, tab) =>
+      tab !== api.core.Bank.BANK_SEARCH_TAB_INDEX && Number(bank?.getAmount?.(itemId) ?? 0) > 0);
   }
   function hasSpace(player, count = 1) {
     return player.getInventory().getFreeSlots() >= count;
@@ -196,9 +301,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     player.setAttribute(FLAGS_ATTRIBUTE, flags(player) | flag);
   }
   function syncRescueQuestVarbits(player) {
-    for (const [flag, [varbitId, completedValue]] of RESCUE_QUEST_VARBITS) {
-      if (hasFlag(player, flag)) player.getPacketSender().sendVarbit(varbitId, completedValue);
-    }
+    player.getPacketSender().sendVarbit(VARBIT_RFD, mainQuestValue(stage(player), player));
     syncDwarfQuestVarbits(player);
     syncGoblinQuestVarbits(player);
     syncDaveQuestVarbits(player);
@@ -207,9 +310,15 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     syncSkrachQuestVarbits(player);
     syncAmikQuestVarbits(player);
     syncAwowogeiQuestVarbits(player);
+    const sender = player.getPacketSender();
+    const main = mainQuestValue(stage(player), player);
+    const completedRescues = [...RESCUE_QUEST_VARBITS.values()]
+      .filter(([varbitId, completedValue]) => (sender.getVarbit?.(varbitId) ?? 0) >= completedValue).length;
+    // Native RFD children include Another Cook's Quest (state 2) and the final battle (5).
+    sender.sendVarbit(SUBQUESTS_COMPLETED_VARBIT, completedRescues + (main >= 2 ? 1 : 0) + (main >= STAGE_COMPLETE ? 1 : 0));
   }
   function pirateQuestStage(player) {
-    if (hasFlag(player, 4)) return 110;
+    if (quest.isComplete(player) || hasFlag(player, 4)) return 110;
     const state = pirateState(player);
     const legacy = state & 8 ? 70 : state & 4 ? 40 : state & 2 ? 30 : state & 1 ? 10 : 0;
     return Math.max(Number(player.getAttribute(PIRATE_STAGE_ATTRIBUTE)) || 0, legacy);
@@ -272,7 +381,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     }
   }
   function guideQuestStage(player) {
-    if (hasFlag(player, 8)) return 5;
+    if (quest.isComplete(player) || hasFlag(player, 8)) return 5;
     const state = Number(player.getAttribute(GUIDE_STATE_ATTRIBUTE)) || 0;
     const legacy = (state & 7) === 7 ? 3 : state !== 0 ? 2 : 0;
     return Math.max(Number(player.getAttribute(GUIDE_STAGE_ATTRIBUTE)) || 0, legacy);
@@ -300,7 +409,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     if (TRAIBORN_IDS.has(npcId) && text?.includes("Bring me the basic ingredients")) setGuideStage(player, 2);
   }
   function dwarfQuestStage(player) {
-    if (hasFlag(player, 1)) return 60;
+    if (quest.isComplete(player) || hasFlag(player, 1)) return 60;
     const saved = Number(player.getAttribute(DWARF_STAGE_ATTRIBUTE)) || 0;
     const state = dwarfState(player);
     const legacy = state & 0x800 ? 50 : state & 0x400 ? 40 : state & 0x200 ? 30
@@ -314,7 +423,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     player.getPacketSender().sendVarbit(1893, state & 7);
   }
   function goblinQuestStage(player) {
-    if (hasFlag(player, 2)) return 40;
+    if (quest.isComplete(player) || hasFlag(player, 2)) return 40;
     const saved = Number(player.getAttribute(GOBLIN_STAGE_ATTRIBUTE)) || 0;
     const state = goblinState(player);
     const legacy = state & GOBLIN_SLOP_RECEIVED ? 35 : state & 2 ? 15 : 0;
@@ -331,7 +440,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     syncGoblinQuestVarbits(player);
   }
   function daveQuestStage(player) {
-    if (hasFlag(player, 16)) return 5;
+    if (quest.isComplete(player) || hasFlag(player, 16)) return 5;
     const saved = Number(player.getAttribute(DAVE_STAGE_ATTRIBUTE)) || 0;
     const state = Number(player.getAttribute(DAVE_STATE_ATTRIBUTE)) || 0;
     const legacy = state & 4 ? 4 : state & 2 ? 2 : state & 1 ? 1 : 0;
@@ -442,19 +551,57 @@ module.exports = function registerRecipeForDisasterQuest(api) {
       location.getX() >= SHADOW_UZER_DAVE_AREA.minX && location.getX() <= SHADOW_UZER_DAVE_AREA.maxX &&
       location.getY() >= SHADOW_UZER_DAVE_AREA.minY && location.getY() <= SHADOW_UZER_DAVE_AREA.maxY;
   }
+  function frozenRoomFromCache() {
+    if (frozenRoomLayout) return frozenRoomLayout;
+    const { CacheDefinitions, Location, MapObjects } = api.core;
+    const ids = new Set(FROZEN_ROOM_LOCS.map((name) => CacheDefinitions.getLocId(name)));
+    const { minX, maxX, minY, maxY, z } = FROZEN_ROOM_SOURCE;
+    const layout = [];
+    for (let x = minX; x <= maxX; x++) {
+      for (let y = minY; y <= maxY; y++) {
+        for (const object of MapObjects.getObjectsAt(new Location(x, y, z), null)) {
+          if (!ids.has(object.getId())) continue;
+          layout.push({ id: object.getId(), x, y: y + FROZEN_ROOM_OFFSET_Y, z, type: object.getType(), face: object.getFace() });
+        }
+      }
+    }
+    return frozenRoomLayout = layout;
+  }
+  function showFrozenRoom(player) {
+    if (FROZEN_ROOM_BY_PLAYER.has(player)) return;
+    const { GameObject, Location, ObjectManager } = api.core;
+    FROZEN_ROOM_BY_PLAYER.set(player, frozenRoomFromCache().map(({ id, x, y, z, type, face }) => {
+      const object = new GameObject(id, new Location(x, y, z), type, face, null).setOwner(player);
+      ObjectManager.register(object, true);
+      return object;
+    }));
+  }
+  function hideFrozenRoom(player) {
+    for (const object of FROZEN_ROOM_BY_PLAYER.get(player) ?? []) api.core.ObjectManager.deregister(object, true);
+    FROZEN_ROOM_BY_PLAYER.delete(player);
+  }
   function spawnCouncil(player) {
-    if (stage(player) < STAGE_OPENING_COMPLETE || quest.isComplete(player)) return;
+    if (stage(player) < STAGE_OPENING_COMPLETE || quest.isComplete(player)
+      || player.getAttribute(FEAST_PENDING_ATTRIBUTE) || Feast.get(player)) {
+      hideFrozenRoom(player);
+      return;
+    }
     ensureCouncilTalkActions();
-    const spawns = COUNCIL_SPAWNS.filter(({ id }) => {
+    if (inZone(player, DINING_DIMENSION)) showFrozenRoom(player);
+    else hideFrozenRoom(player);
+    const spawns = [...COUNCIL_SPAWNS, { id: NpcIdentifiers.CULINAROMANCER_2, x: FEAST_HEAD[0], y: FEAST_HEAD[1] }].filter(({ id }) => {
       const rescue = RESCUES.find((entry) => entry.ids.includes(id));
       return !rescue || !hasFlag(player, rescue.flag);
     });
     const existing = COUNCIL_BY_PLAYER.get(player);
     if (existing?.length === spawns.length && existing.every((npc) => npc?.isRegistered?.() !== false)) return;
     for (const npc of existing ?? []) api.removeNpc?.(npc);
-    COUNCIL_BY_PLAYER.set(player, spawns.map((spawn) => api.spawnNpc({
-      ...spawn, z: 0, wanderRadius: 0, owner: player, ownerOnly: true,
-    })).filter(Boolean));
+    COUNCIL_BY_PLAYER.set(player, spawns.map((spawn) => {
+      const npc = api.spawnNpc({ ...spawn, z: 0, wanderRadius: 0, owner: player, ownerOnly: true });
+      const prefix = FEAST_POSES.get(spawn.id);
+      if (npc && prefix) frozenPose(npc, prefix);
+      return npc;
+    }).filter(Boolean));
   }
   function completed(player, flag) {
     if (hasFlag(player, flag)) return false;
@@ -476,7 +623,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
   }
   function skrachState(player) { return Number(player.getAttribute(SKRACH_STATE_ATTRIBUTE)) || 0; }
   function skrachQuestStage(player) {
-    if (hasFlag(player, 32)) return 170;
+    if (quest.isComplete(player) || hasFlag(player, 32)) return 170;
     const state = skrachState(player);
     const legacy = state & 16 ? 80 : state & 8 ? 90 : state & 4 ? 60 : state & 2 ? 50 : state & 1 ? 20 : 0;
     return Math.max(Number(player.getAttribute(SKRACH_STAGE_ATTRIBUTE)) || 0, legacy);
@@ -619,7 +766,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
   function hasPetCarried(player) {
     return (player.getInventory().getItems?.() ?? []).some((item) => {
       const name = item?.getDefinition?.().getName?.() ?? "";
-      return /^(?:pet )?(?:kitten|cat|wily cat|hellcat)/i.test(name);
+      return /^(?:pet |wily |lazy |overgrown )?(?:kitten|cat|hellcat|hell cat|hell-kitten)/i.test(name);
     });
   }
   function follower(player) {
@@ -651,6 +798,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
       return { page: amik.page, variant: "finding-the-lair-talking-to-the-wise-old-man" };
     }
     if (COOK_IDS.has(npcId) && page) {
+      if (recoverOpeningFeast(player)) syncRescueQuestVarbits(player);
       if (pirateState(player) & 16) {
         const pirateVariant = pages.find((entry) => entry.page === PIRATE_PAGE);
         if (pirateVariant) return { page: PIRATE_PAGE, variant: "finishing-up-talking-to-the-cook" };
@@ -664,7 +812,8 @@ module.exports = function registerRecipeForDisasterQuest(api) {
           : "d-j-vu-talking-to-the-cook-without-all-of-the-ingredients" };
       }
       if (stage(player) >= STAGE_OPENING_COMPLETE && !quest.isComplete(player)) {
-        return { page: PAGE, variant: "recipe-for-success" };
+        return { page: PAGE, variant: player.getAttribute(FEAST_PENDING_ATTRIBUTE)
+          ? "d-j-vu-talking-to-the-cook-again" : "recipe-for-success" };
       }
     }
     if (BANQUET_ARIS_IDS.has(npcId)) {
@@ -702,7 +851,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
         ? "talking-to-evil-dave-talking-to-evil-dave-again-after-getting-him-to-tell-you-what-he-ate"
         : "talking-to-evil-dave" };
     }
-    if (MURPHY_IDS.has(npcId) && pages.some((entry) => entry.page === PIRATE_PAGE)) {
+    if (npcId === PORT_MURPHY_ID && pages.some((entry) => entry.page === PIRATE_PAGE)) {
       const state = pirateState(player);
       const variant = state & 2 ? "asking-about-giant-crabs-talking-to-murphy-again-again"
         : state & 1 ? "asking-about-giant-crabs-talking-to-murphy-again"
@@ -718,7 +867,8 @@ module.exports = function registerRecipeForDisasterQuest(api) {
       if (has(player, ItemIdentifiers.MUDSKIPPER_HIDE)) return { page: PIRATE_PAGE, variant: "underwater-bringing-nung-the-mudskipper-hides" };
       return { page: PIRATE_PAGE, variant: hides >= 5 ? "underwater-talking-to-nung-again-2" : "underwater-talking-to-nung" };
     }
-    if (COUNCIL_IDS.has(npcId) && stage(player) >= STAGE_OPENING_COMPLETE) {
+    if (COUNCIL_IDS.has(npcId) && inZone(player, DINING_DIMENSION)
+      && stage(player) >= STAGE_OPENING_COMPLETE) {
       const rescue = RESCUES.find(({ ids }) => ids.includes(npcId));
       if (rescue && pages.some((entry) => entry.page === rescue.page)) {
         if (!hasFlag(player, rescue.flag)) {
@@ -777,7 +927,8 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     // to the F2P line on a members world and makes RFD appear unavailable.
     if (ownCondition && value.includes("free-to-play world")) return false;
     if (ownCondition && value.includes("members' world")) return true;
-    if (stepId === "2hoQn_" || (ownPage && value.includes("has completed beneath cursed sands"))) return false;
+    if (ownPage && stepId === "2hoQn_") return !completedQuest(player, "beneath_cursed_sands");
+    if (ownPage && stepId === "thzrOu") return completedQuest(player, "beneath_cursed_sands");
     if (ownCondition && (value.includes("does not meet the requirements") || value.includes("doesn't meet the requirements"))) {
       return !meetsOpeningRequirements(player);
     }
@@ -887,6 +1038,9 @@ module.exports = function registerRecipeForDisasterQuest(api) {
 
   function handleMurphy(event) {
     const { player, npcId } = event;
+    // Only the Port Khazard Murphy talks about the quest; the copies on the trawler at sea and in
+    // the wreck keep their own dialogue (the at-sea one is how the crew bails out).
+    if (npcId !== PORT_MURPHY_ID) return false;
     if (!MURPHY_IDS.has(npcId) || stage(player) < STAGE_OPENING_COMPLETE || hasFlag(player, 4)) return false;
     const option = event.definition?.getActions?.()?.[event.clickType - 1];
     if (option !== "Talk-to") return false;
@@ -1220,6 +1374,8 @@ module.exports = function registerRecipeForDisasterQuest(api) {
         ItemIdentifiers.ROTTEN_TOMATO, ItemIdentifiers.DIRTY_BLAST];
       if (!ingredients.every((id) => has(player, id))) return;
       for (const id of ingredients) player.getInventory().deleteNumber(id, 1);
+      player.setAttribute(FEAST_SEEN_ATTRIBUTE, false);
+      player.setAttribute(FEAST_PENDING_ATTRIBUTE, true);
       quest.setStage(player, STAGE_OPENING_COMPLETE);
       awardPoint(player);
       spawnCouncil(player);
@@ -1376,7 +1532,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
           return `You need level 50 ${name ?? skill.getName()} to use this lamp.`;
         }
         const before = player.getSkillManager().getExperience(skill);
-        player.getSkillManager().addExperience(skill, 20_000, false);
+        player.getSkillManager().addExperience(skill, 20_000, true);
         if (player.getSkillManager().getExperience(skill) === before) return null;
         player.getInventory().deleteAtSlot(slot, 1);
         return `You have been awarded 20,000 ${name ?? skill.getName()} XP!`;
@@ -1437,7 +1593,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
 
   function handleCouncilInteraction(event) {
     const { player, npcId } = event;
-    if (stage(player) < STAGE_OPENING_COMPLETE) return false;
+    if (!inZone(player, DINING_DIMENSION) || stage(player) < STAGE_OPENING_COMPLETE) return false;
     const option = event.definition?.getActions?.()?.[event.clickType - 1];
     if (option !== "Talk-to" && option !== "Inspect") return false;
     const rescue = RESCUES.find((entry) => entry.ids.includes(npcId));
@@ -1764,6 +1920,8 @@ module.exports = function registerRecipeForDisasterQuest(api) {
       leaveFinalRoom(player);
       return true;
     }
+    // Only the Lumbridge entry portal is ours; other "Portal" objects belong to other quests.
+    if (location && (location.x !== ENTRY_PORTAL_TILE.x || location.y !== ENTRY_PORTAL_TILE.y || location.z !== ENTRY_PORTAL_TILE.z)) return false;
     if (!canBeginFinale(player)) {
       if (flags(player) === ALL_RESCUES) {
         player.sendMessage("You need at least 175 quest points, Desert Treasure I and Horror from the Deep before facing the Culinaromancer.");
@@ -1773,7 +1931,6 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     }
     const checkpoint = Number(player.getAttribute(FINAL_FIGHT_ATTRIBUTE));
     if (checkpoint !== -1 && !(checkpoint >= 1 && checkpoint <= FINAL_WAVES.length)) return false;
-    if (location && (location.x !== ENTRY_PORTAL_TILE.x || location.y !== ENTRY_PORTAL_TILE.y || location.z !== ENTRY_PORTAL_TILE.z)) return false;
     if (action && !["Use", "Enter", "Enter portal", "Walk-through", "Pass-through"].includes(action)) return false;
     enterFinalRoom(player);
     moveTo(player, FINAL_ROOM.x, FINAL_ROOM.y, FINAL_ROOM.z);
@@ -2324,6 +2481,13 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     }
   }
 
+  /** Suck on the swamp bubbles fills the bellows just as using them on the bubbles does (SwampBubbles). */
+  function handleSkrachGasCollected({ player }) {
+    if (stage(player) < STAGE_OPENING_COMPLETE || hasFlag(player, 32)
+      || !(Number(player.getAttribute(SKRACH_STATE_ATTRIBUTE)) & 1)) return;
+    setSkrachStage(player, 110);
+  }
+
   function handleSkrachItemOnObject(event) {
     const { player, objectId, itemId } = event;
     if (stage(player) < STAGE_OPENING_COMPLETE || hasFlag(player, 32)
@@ -2616,7 +2780,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
         ItemOnGroundManager.registerLocation(player, new Item(ItemIdentifiers.EVIL_CHICKENS_EGG, 1), player.getLocation());
       }
     } else if (BLACK_DRAGON_IDS.has(event.npcId) && Number(player.getAttribute(AMIK_STATE_ATTRIBUTE)) === 1
-      && inZone(player, EVIL_CHICKEN_LAIR_ZONE) && !has(player, ItemIdentifiers.DRAGON_TOKEN)) {
+      && inZone(player, EVIL_CHICKEN_LAIR_ZONE) && !owns(player, ItemIdentifiers.DRAGON_TOKEN)) {
       player.setAttribute(AMIK_DRAGON_DROP_ATTRIBUTE, true);
       syncAmikQuestVarbits(player);
       if (hasSpace(player)) player.getInventory().adds(ItemIdentifiers.DRAGON_TOKEN, 1);
@@ -2628,12 +2792,24 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     }
   }
 
+  /**
+   * The dragon token's row on the shared `black_dragon` table carries only the subquest
+   * condition, so without a place limit every black dragon rolls it — and Taverley's dragons use
+   * the same ids as the lair's. This plugin is the token's only source: it hands one out in
+   * `handleAmikCombatDrop`, gated on the Evil Chicken's Lair, so the table never rolls it.
+   * Answered the way Rag and Bone Man and Lunar Diplomacy answer for their own rows.
+   */
+  function handleAmikQuestItemDrop(event) {
+    if (event?.itemId !== ItemIdentifiers.DRAGON_TOKEN) return;
+    event.allowed = false;
+  }
+
   function equippedMonkey(player, choices) {
     return choices.includes(equipmentId(player, api.core.Equipment.WEAPON_SLOT));
   }
 
   function amikQuestStage(player) {
-    if (hasFlag(player, 64)) return 20;
+    if (quest.isComplete(player) || hasFlag(player, 64)) return 20;
     return Number(player.getAttribute(AMIK_STAGE_ATTRIBUTE)) || 0;
   }
   function syncAmikQuestVarbits(player) {
@@ -2648,7 +2824,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
   }
 
   function awowogeiQuestStage(player) {
-    if (hasFlag(player, 128)) return 50;
+    if (quest.isComplete(player) || hasFlag(player, 128)) return 50;
     const state = awowogeiState(player);
     const saved = Number(player.getAttribute(AWOWOGEI_STAGE_ATTRIBUTE)) || 0;
     const legacy = state & 48 ? 15 : 0;
@@ -2911,6 +3087,347 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     if (reach <= 2) event.destination = { x: playerLocation.getX(), y: playerLocation.getY(), z: playerLocation.getZ() };
   }
 
+  function mainQuestValue(value, player) {
+    if (value !== STAGE_OPENING_COMPLETE) return value;
+    if (player.getAttribute(FEAST_PENDING_ATTRIBUTE)) return 2;
+    return flags(player) === ALL_RESCUES ? 4 : 3;
+  }
+
+  function frozenPose(npc, prefix, animate = false) {
+    const { Animation, CacheDefinitions } = api.core;
+    const idle = CacheDefinitions.getSeqId(`100_${prefix}_froze`);
+    if (idle !== null) npc.setBaseAnimations?.({ idle, walk: idle });
+    if (animate) npc.performAnimation(new Animation(CacheDefinitions.getSeqId(`100_${prefix}_freeze`)));
+  }
+
+  function feastActor(scene, name, id, tile, face = FEAST_HEAD) {
+    const npc = Feast.actor(scene, id, tile, face);
+    if (npc) scene.cast.set(name, npc);
+    return npc;
+  }
+
+  function feastAnimation(npc, name) {
+    if (npc) npc.performAnimation(new api.core.Animation(api.core.CacheDefinitions.getSeqId(name)));
+  }
+
+  function feastGraphic(npc, name) {
+    if (npc) npc.performGraphic(new api.core.Graphic(api.core.CacheDefinitions.getSpotanimId(name)));
+  }
+
+  function feastTeleportOut(scene, name) {
+    const npc = scene.cast.get(name);
+    if (!npc) return;
+    // The named human teleport asset lasts three ticks in this cache. Cats use
+    // the graphic only; a human sequence would deform Evil Bob's model.
+    if (name !== "Evil Bob") feastAnimation(npc, "human_castteleport");
+    feastGraphic(npc, "teleport_casting");
+    scene.cast.delete(name);
+    Feast.later(scene, 3, () => Feast.removeActor(scene, npc));
+  }
+
+  function openFeastDoor(scene) {
+    const { MapObjects, Location } = api.core;
+    const object = MapObjects.get(FEAST_DOOR_OBJECT, new Location(...FEAST_DOOR), scene.area);
+    if (object) api.emitCustomEvent("door:open", { player: scene.owner, object, handled: false });
+  }
+
+  function canContinueFeast(scene) {
+    const player = scene.owner;
+    return player.isRegistered() && player.getHitpoints() > 0 && !player.isDying
+      && stage(player) === STAGE_OPENING_COMPLETE && player.getAttribute(FEAST_PENDING_ATTRIBUTE)
+      && player.getPrivateArea() === scene.area;
+  }
+
+  function startFeast(player) {
+    if (Feast.get(player)) return;
+    for (const npc of COUNCIL_BY_PLAYER.get(player) ?? []) api.removeNpc(npc);
+    COUNCIL_BY_PLAYER.delete(player);
+    hideFrozenRoom(player);
+    const scene = Feast.open(player, "recipe-for-disaster-feast", [[1855, 1870, 5338, 5358, 0]], {
+      process(mobile) {
+        if (mobile === player && (!canContinueFeast(scene)
+          || (scene.started && (scene.finishing || scene.transitioning
+            ? player.getDialogueManager().getCurrent() !== scene.holdDialogue
+            : player.getDialogueManager().getOwner() !== scene.dialogueOwner)))) Feast.end(player, false);
+      },
+    });
+    scene.cast = new Map();
+    scene.finished = false;
+    scene.spy = completedQuest(player, "beneath_cursed_sands") ? "Selim" : "Osman";
+    Feast.controls(player, true, true);
+    Feast.fade(player, true);
+    Feast.hold(player);
+    scene.holdDialogue = player.getDialogueManager().getCurrent();
+    // The ordinary upper room and the guests' seats are the cache-authored
+    // banquet template. Transient entrants are staged beside its real doors/table.
+    moveTo(player, 1869, 5348, 0);
+    for (const spawn of COUNCIL_SPAWNS) {
+      if (spawn.id === NpcIdentifiers.ARIS_3 || spawn.id === NpcIdentifiers.AWOWOGEI) continue;
+      const name = api.core.NpcDefinition.forId(spawn.id).getName();
+      feastActor(scene, name, spawn.id, [spawn.x, spawn.y, 0]);
+    }
+    feastActor(scene, "Duke Horacio", NpcIdentifiers.DUKE_HORACIO, FEAST_HEAD, [1863, 5348]);
+    feastActor(scene, scene.spy, scene.spy === "Selim" ? NpcIdentifiers.SELIM_2 : NpcIdentifiers.OSMAN_4, [1865, 5351, 0]);
+    feastActor(scene, "Awowogei", NpcIdentifiers.AWOWOGEI_2, [1866, 5343, 0]);
+    Feast.later(scene, 2, () => {
+      if (Feast.get(player) !== scene) return;
+      if (!canContinueFeast(scene) || player.getDialogueManager().getCurrent() !== scene.holdDialogue) return Feast.end(player, false);
+      // The camera leaves the hidden player (the room is loaded by now) as the screen fades in.
+      feastShot(player, FEAST_OPENING_SHOT);
+      Feast.fade(player, false);
+      scene.started = true;
+      playFeast(scene);
+    });
+  }
+
+  function playFeast(scene, afterStep) {
+    const player = scene.owner;
+    scene.transitioning = false;
+    scene.playback = { player, npc: scene.cast.get("Duke Horacio"), npcId: NpcIdentifiers.DUKE_HORACIO,
+      variant: { page: PAGE, variant: FEAST_VARIANT }, exact: true,
+      select: afterStep ? steps => steps.slice(steps.findIndex(step => step.id === afterStep) + 1) : undefined };
+    api.emitCustomEvent("npc-dialogue:start", scene.playback);
+    if (!scene.playback.handled) return Feast.end(player, false);
+    scene.dialogueOwner = player.getDialogueManager().getOwner();
+  }
+
+  function waitForFeastActor(scene, afterStep) {
+    const player = scene.owner;
+    scene.playback.cancel();
+    // A close callback may have installed a different dialogue. It owns its UI.
+    if (player.getDialogueManager().isActive()) return Feast.end(player, false);
+    scene.transitioning = true;
+    Feast.hold(player);
+    scene.holdDialogue = player.getDialogueManager().getCurrent();
+    // A newly spawned actor must pass a completed native NPC_INFO update before
+    // the dialogue runner can safely resolve its first overhead line.
+    Feast.later(scene, 2, () => {
+      if (Feast.get(player) !== scene) return;
+      if (!canContinueFeast(scene) || player.getDialogueManager().getCurrent() !== scene.holdDialogue) return Feast.end(player, false);
+      playFeast(scene, afterStep);
+    });
+  }
+
+  function feastEnded(player, scene) {
+    Feast.closeFade(player);
+    const manager = player.getDialogueManager();
+    scene.playback?.cancel?.();
+    if (manager.getCurrent() === scene.holdDialogue) {
+      player.getPacketSender().sendInterfaceRemoval();
+      if (manager.getCurrent() === scene.holdDialogue) manager.reset();
+    }
+    if (!scene.finished) moveTo(player, DINING_EXIT.x, DINING_EXIT.y, DINING_EXIT.z);
+  }
+
+  function finishFeast(scene) {
+    if (scene.finishing) return;
+    scene.finishing = true;
+    const player = scene.owner;
+    Feast.hold(player);
+    scene.holdDialogue = player.getDialogueManager().getCurrent();
+    Feast.fade(player, true);
+    Feast.later(scene, 2, () => {
+      if (Feast.get(player) !== scene) return;
+      if (!canContinueFeast(scene) || player.getDialogueManager().getCurrent() !== scene.holdDialogue) return Feast.end(player, false);
+      scene.finished = true;
+      player.setAttribute(FEAST_SEEN_ATTRIBUTE, true);
+      player.setAttribute(FEAST_PENDING_ATTRIBUTE, false);
+      Feast.end(player, false);
+      moveTo(player, COUNCIL_ENTRY.x, COUNCIL_ENTRY.y, COUNCIL_ENTRY.z);
+      syncRescueQuestVarbits(player);
+      spawnCouncil(player);
+    });
+  }
+
+  function handleFeastLine(event) {
+    const scene = Feast.get(event.player);
+    if (!scene || !event.pages?.some(({ page, variants }) => page === PAGE && variants?.includes(FEAST_VARIANT))) return;
+    const name = event.step.speaker === "Osman/Selim" ? scene.spy : event.step.speaker;
+    const npc = scene.cast.get(name);
+    if (!npc) return;
+    event.speakerId = npc.getId();
+    event.speakerName = name;
+    if (event.step.presentation === "overhead") event.actors = [npc];
+  }
+
+  function feastShot(player, { move, look, pan }) {
+    Feast.camera(player, move, look, pan ? FEAST_PAN : Feast.CAMERA_RATES);
+  }
+
+  // Full canonical story, with model-specific game-authored assets. Dialogue
+  // Continue drives reading pace; FEAST_SHOTS frames each stage direction.
+  function handleFeastAction(event) {
+    const scene = Feast.get(event.player);
+    if (!scene || !event.pages?.some(({ page, variants }) => page === PAGE && variants?.includes(FEAST_VARIANT))) return;
+    const actor = name => scene.cast.get(name);
+    const { Location, ForceMovement, ForceMovementTask, TaskManager, CacheDefinitions } = api.core;
+    const { stepId } = event;
+    event.handled = true;
+    const shot = FEAST_SHOTS.get(stepId);
+    if (shot) feastShot(event.player, shot);
+    if (stepId === "51KbmY") {
+      actor("Awowogei").getMovementQueue().reset().addSteps(new Location(1864, 5342, 0));
+    } else if (stepId === "uAnh15") {
+      feastAnimation(actor("Duke Horacio"), "human_unarmedkick");
+      actor("Awowogei").getMovementQueue().reset();
+      actor("Awowogei").exactMove(new Location(1866, 5343, 0));
+    } else if (stepId === "wkskGX") {
+      actor("Awowogei").moveTo(new Location(1865, 5343, 0));
+      actor("Awowogei").setNpcTransformationId(NpcIdentifiers.AWOWOGEI);
+      Feast.face(actor("Awowogei"), [1863, 5343]);
+    } else if (stepId === "lDT9yg") {
+      const oldMan = feastActor(scene, "Mysterious Old Man", NpcIdentifiers.MYSTERIOUS_OLD_MAN, [1862, 5341, 0]);
+      feastGraphic(oldMan, "teleport_casting");
+      feastAnimation(oldMan, "emote_bow");
+      waitForFeastActor(scene, stepId);
+    } else if (stepId === "lFBUM6") feastTeleportOut(scene, "Mysterious Old Man");
+    else if (stepId === "V4KsQO") feastTeleportOut(scene, "Duke Horacio");
+    else if (stepId === "j-YkVf") {
+      const bob = feastActor(scene, "Evil Bob", NpcIdentifiers.EVIL_BOB, [1866, 5351, 0], [1865, 5351]);
+      feastGraphic(bob, "teleport_casting");
+      waitForFeastActor(scene, stepId);
+    } else if (stepId === "jRldYp") {
+      feastTeleportOut(scene, scene.spy);
+      feastTeleportOut(scene, "Evil Bob");
+    } else if (stepId === "smgzvU") {
+      openFeastDoor(scene);
+      const player = event.player;
+      const start = player.getLocation().clone();
+      const walk = new ForceMovementTask(player, 2, new ForceMovement(start,
+        new Location(DINING_ENTRY.x - start.getX(), DINING_ENTRY.y - start.getY(), 0),
+        0, 60, 3, CacheDefinitions.getSeqId("human_walk_f")));
+      walk.key = scene;
+      TaskManager.submit(walk);
+    } else if (stepId === "YKM4VY") {
+      feastGraphic(feastActor(scene, "Culinaromancer", NpcIdentifiers.CULINAROMANCER, FEAST_HEAD, [1863, 5348]), "teleport_casting");
+    } else if (stepId === "8R1_CN") {
+      feastAnimation(actor("Culinaromancer"), "human_casting");
+      for (const [name, npc] of scene.cast) if (FEAST_POSES.has(npc.getId()) && name !== "Culinaromancer") feastGraphic(npc, "100_rings_spot");
+    } else if (stepId === "44MzE_") {
+      openFeastDoor(scene);
+      const aris = feastActor(scene, "Aris", NpcIdentifiers.ARIS_3, [1868, 5348, 0], FEAST_HEAD);
+      aris.getMovementQueue().reset().addSteps(new Location(1866, 5351, 0));
+    } else if (stepId === "j3mNp4") feastAnimation(actor("Aris"), "emote_panic");
+    else if (stepId === "keglCJ") {
+      Feast.face(actor("Culinaromancer"), [1866, 5351]);
+      feastAnimation(actor("Culinaromancer"), "human_casting");
+      feastGraphic(actor("Aris"), "100_rings_spot");
+    } else if (stepId === "U-DQ9S") feastAnimation(actor("Aris"), "100_gypsy_freeze");
+    else if (stepId === "UOCpz9") {
+      for (const npc of scene.cast.values()) {
+        const prefix = FEAST_POSES.get(npc.getId());
+        if (prefix) frozenPose(npc, prefix, true);
+      }
+      event.player.getPacketSender().sendSubInterface((161 << 16) | 1, 174, 1,
+        { postScripts: [{ scriptId: 948, args: [0xffffff, 0, 0xffffff, 255, 50] }] });
+      Feast.later(scene, 2, () => { if (Feast.get(event.player) === scene && !scene.finishing) Feast.closeFade(event.player); });
+    } else if (stepId === "Fx3emi") finishFeast(scene);
+  }
+
+  // Recover unmarked opening-only saves; recorded rescue progress keeps its access.
+  function handleDiningDoors(event) {
+    if (event.handled) return;
+    const { player, objectId } = event;
+    if (Feast.get(player)) return;
+    const kitchen = objectId === DINING_KITCHEN_DOOR || objectId === DIMENSION_KITCHEN_DOOR;
+    const inside = (DIMENSION_LARGE_DOORS.has(objectId) || objectId === DIMENSION_KITCHEN_DOOR)
+      && inZone(player, DINING_DIMENSION);
+    // The kitchen door leads into the dimension only from the kitchen; from the real dining room
+    // it is still the way into the kitchen.
+    const fromKitchen = (player.getLocation()?.getY() ?? 0) <= KITCHEN_EXIT.y;
+    // After the quest the kitchen door is an ordinary door again; only the large doors keep the way in.
+    const lumbridgeDoor = DINING_LARGE_DOORS.has(objectId)
+      || (objectId === DINING_KITCHEN_DOOR && fromKitchen && !quest.isComplete(player));
+    if (!inside && !(lumbridgeDoor && stage(player) >= STAGE_OPENING_COMPLETE)) return;
+    if (recoverOpeningFeast(player)) syncRescueQuestVarbits(player);
+    event.handled = true;
+    if (inside) return leaveDiningDimension(player, kitchen);
+    if (player.getAttribute(FEAST_PENDING_ATTRIBUTE)) return startFeast(player);
+    const to = kitchen ? COUNCIL_KITCHEN_ENTRY : COUNCIL_ENTRY;
+    moveTo(player, to.x, to.y, to.z);
+    spawnCouncil(player);
+  }
+  function leaveDiningDimension(player, kitchen) {
+    hideFrozenRoom(player);
+    const to = kitchen ? KITCHEN_EXIT : DINING_EXIT;
+    moveTo(player, to.x, to.y, to.z);
+  }
+  /** The doorway barriers lead out the same way as the doors behind them. */
+  function passDiningBarrier({ player, objectId }) {
+    if (!DINING_BARRIERS.has(objectId) || !inZone(player, DINING_DIMENSION) || Feast.get(player)) return false;
+    leaveDiningDimension(player, objectId === DINING_KITCHEN_BARRIER);
+    return true;
+  }
+  // The chest sits against the cellar's east wall, so no tile on its cache access side can be
+  // stood on; it is operated from the floor beside it.
+  function routeCulinaromancerChest(event) {
+    if (event.objectId !== CULINAROMANCER_CHEST_CELLAR) return;
+    event.destination = { ...CULINAROMANCER_CHEST_SIDE };
+  }
+  const CHEST_SHOP = "Culinaromancer's Chest";
+  const CHEST_ITEM_VARIANTS = ["Full", "Elite Diary", ...Array.from({ length: 9 }, (_, count) => `${count} Subquest${count === 1 ? "" : "s"}`)];
+  const CHEST_FOOD_VARIANTS = ["food, full", "food, full, diary", ...Array.from({ length: 9 }, (_, count) => `food, ${count} Subquest${count === 1 ? "" : "s"}`)];
+  const CHEST_SHOP_NAMES = new Set([...CHEST_ITEM_VARIANTS, ...CHEST_FOOD_VARIANTS].map(variant => `${CHEST_SHOP} (${variant})`));
+
+  function chestDiscount(player) {
+    if (!quest.isComplete(player)) return false;
+    const request = { player, diary: "lumbridge", tier: "elite", claimed: false };
+    api.emitCustomEvent("diary:is-reward-claimed", request);
+    return request.claimed === true;
+  }
+
+  function chestShopName(player, food) {
+    const variants = food ? CHEST_FOOD_VARIANTS : CHEST_ITEM_VARIANTS;
+    if (quest.isComplete(player)) return `${CHEST_SHOP} (${variants[chestDiscount(player) ? 1 : 0]})`;
+    const rescued = (flags(player) & ALL_RESCUES).toString(2).replaceAll("0", "").length;
+    return `${CHEST_SHOP} (${variants[rescued + 2]})`;
+  }
+
+  // Apply the canonical full-stock coefficients before rounding. Stock-dependent
+  // pricing remains the shared shop engine's policy.
+  function priceCulinaromancerChest(event) {
+    if (!event.player || event.currency !== "COINS" || !CHEST_SHOP_NAMES.has(event.shopName) || event.price <= 0) return;
+    const stock = api.core.ShopDefinition.forId(event.shopId)?.getOriginalStock().find(item => item.id === event.itemId);
+    const base = stock?.price > 0 ? stock.price : api.core.ItemDefinition.forId(event.itemId).getValue();
+    // Earlier hooks may already have set a free or otherwise customized price.
+    if (event.price !== base) return;
+    event.price = Math.floor(base * (chestDiscount(event.player) ? 104 : 130) / 100);
+  }
+
+  function buybackCulinaromancerChest(event) {
+    if (event.currency !== "COINS" || !CHEST_SHOP_NAMES.has(event.shopName) || event.price <= 0) return;
+    event.price = Math.floor(event.buyPrice * 40 / 100);
+  }
+
+  function handleCulinaromancerChest(event) {
+    if (event.objectId !== CULINAROMANCER_CHEST_CELLAR) return false;
+    const option = event.definition?.getActions?.()?.[event.clickType - 1];
+    if (option === "Bank") {
+      event.handled = true;
+      event.player.getBank(event.player.getCurrentBankTab()).open();
+      return true;
+    }
+    if (option !== "Buy-food" && option !== "Buy-items") return false;
+    event.handled = true;
+    const player = event.player;
+    if (stage(player) < STAGE_OPENING_COMPLETE) {
+      player.sendMessage("You must help the Cook prepare the banquet before using this shop.");
+      return true;
+    }
+    const name = chestShopName(player, option === "Buy-food");
+    const shop = api.core.ShopDefinition.all().find(definition => definition.getName() === name);
+    if (!shop || !api.core.ShopManager.open(player, shop.getId())) {
+      player.sendMessage("This shop is currently unavailable.");
+    }
+    return true;
+  }
+  function blockStaticDiningGuests(event) {
+    const x = event.location?.getX?.() ?? event.location?.x;
+    const y = event.location?.getY?.() ?? event.location?.y;
+    if (x >= DINING_DIMENSION.minX && x <= DINING_DIMENSION.maxX && y >= DINING_DIMENSION.minY
+      && y <= DINING_DIMENSION.maxY && COUNCIL_SPAWNS.some(({ id }) => id === event.npcId)) event.allow = false;
+  }
+
   function handleAwowogeiDungeon(event) {
     const { player, objectId } = event;
     const option = event.definition?.getActions?.()?.[event.clickType - 1];
@@ -3043,23 +3560,170 @@ module.exports = function registerRecipeForDisasterQuest(api) {
   }
 
   function handleStageChanged({ player, key }) {
-    if (key === QUEST) syncSkrachSpitRoast(player);
+    if (key === QUEST) {
+      syncSkrachSpitRoast(player);
+      syncRescueQuestVarbits(player);
+    }
   }
 
   function handleLogout({ player }) {
-    if (player) clearSkrachSpitRoast(player);
+    if (player) {
+      Feast.end(player, true);
+      Feast.cancel(player);
+      clearSkrachSpitRoast(player);
+      hideFrozenRoom(player);
+    }
   }
 
-  function buildJournal(player) {
-    if (quest.isComplete(player)) return ["I freed the Lumbridge council and defeated the Culinaromancer.", "", "<col=ff0000>QUEST COMPLETE!</col>"];
+  // Native child display names are supplied by the shared journal runtime. The
+  // existing stage readers also recover legacy saves and completed rescue flags.
+  const rescueJournals = require("../data/recipe-for-disaster-journals");
+  const journalStages = new Map([
+    ["Mountain Dwarf", dwarfQuestStage], ["Wartface & Bentnoze", goblinQuestStage],
+    ["Pirate Pete", pirateQuestStage], ["Lumbridge Guide", guideQuestStage],
+    ["Evil Dave", player => Math.max(daveQuestStage(player), (Number(player.getAttribute(DAVE_STATE_ATTRIBUTE)) & 2) ? 3 : 0)], ["Skrach Uglogwee", skrachQuestStage],
+    ["Sir Amik Varze", amikQuestStage], ["King Awowogei", awowogeiQuestStage],
+  ]);
+
+  // Authored summary: https://oldschool.runescape.wiki/w/Special:PermanentLink/15263687
+  function openingJournal(player) {
     if (stage(player) >= STAGE_OPENING_COMPLETE) {
-      return ["I started the Recipe for Disaster banquet and freed the council members.", "", "The council still need to be freed, and the Culinaromancer defeated."];
+      return ["<str>I helped the Cook prepare the banquet for the Lumbridge council.</str>", "", "<col=ff0000>QUEST COMPLETE!</col>"];
     }
-    if (stage(player) >= STAGE_STARTED) return ["The Cook is preparing a banquet for the Lumbridge council.", "", "I need to help him gather the ingredients."];
-    return ["I can start this quest by talking to the <col=800000>Cook</col> in the kitchen of <col=800000>Lumbridge Castle</col>."];
+    if (stage(player) < STAGE_STARTED) {
+      return ["I can start this quest by talking to the Cook in the kitchen of Lumbridge Castle."];
+    }
+    const ingredients = [
+      [ItemIdentifiers.EYE_OF_NEWT, "an eye of newt"],
+      [ItemIdentifiers.GREENMANS_ALE, "a glass of greenman's ale"],
+      [ItemIdentifiers.ROTTEN_TOMATO, "a rotten tomato"],
+      [ItemIdentifiers.DIRTY_BLAST, "a Dirty Blast, made from a freshly mixed fruit blast and ashes"],
+    ];
+    const lines = ["The Cook is preparing a banquet for the Lumbridge council.", "I need to bring him:"];
+    for (const [id, name] of ingredients) lines.push(has(player, id) ? `<str>${name}</str>` : `<col=800000>${name}</col>`);
+    if (ingredients.every(([id]) => has(player, id))) lines.push("", "I have all the ingredients. I should return to the Cook.");
+    return lines;
+  }
+
+  // Aris's portal direction: https://oldschool.runescape.wiki/w/Special:PermanentLink/15354817
+  function finaleJournal(player) {
+    if (quest.isComplete(player)) return ["<str>I freed the Lumbridge council and defeated the Culinaromancer.</str>", "", "<col=ff0000>QUEST COMPLETE!</col>"];
+    if (stage(player) < STAGE_OPENING_COMPLETE) return ["I must help the Cook prepare the banquet before I can face the Culinaromancer."];
+    if (player.getAttribute(FEAST_PENDING_ATTRIBUTE)) return ["I should enter the dining room in Lumbridge Castle to attend the banquet."];
+    if (flags(player) !== ALL_RESCUES) {
+      const remaining = [...journalStages].filter(([name, read]) => {
+        const steps = rescueJournals[name];
+        return read(player) < steps[steps.length - 1][0];
+      }).length;
+      if (remaining === 0) {
+        // Old saves can have completed numeric child stages without rescue flags.
+        // Report those journals honestly without opening a mechanically gated portal.
+        return ["All eight council members' rescue journals are complete.", "", "I still need to finish the council's rescue at the banquet before I can follow the Culinaromancer through the portal."];
+      }
+      return ["Aris has protected the council from the Culinaromancer by freezing time.", "", `I still need to free ${remaining} council member${remaining === 1 ? "" : "s"}. I should inspect the guests in the dining room to learn how to help them.`];
+    }
+    const lines = ["<str>I freed all eight members of the Lumbridge council.</str>", ""];
+    if (!canBeginFinale(player)) {
+      lines.push("Before I can follow the Culinaromancer through the portal, I need:");
+      if ((Number(player.getAttribute(QUEST_POINTS_ATTRIBUTE)) || 0) < 175) lines.push("<col=800000>175 quest points</col>");
+      if (!completedQuest(player, "desert_treasure_i")) lines.push("<col=800000>Desert Treasure I completed</col>");
+      if (!completedQuest(player, "horror_from_the_deep")) lines.push("<col=800000>Horror from the Deep completed</col>");
+      return lines;
+    }
+    if (player.getAttribute(FINAL_BOSS_DEFEATED_ATTRIBUTE)) {
+      lines.push("I defeated the Culinaromancer. I should speak to Aris to finish the quest.");
+    } else {
+      if (!player.getAttribute(FINAL_FIGHT_ATTRIBUTE)) lines.push("I should speak to Aris in the dining room about the Culinaromancer.");
+      lines.push("I must follow the Culinaromancer through the portal and defeat him once and for all.");
+    }
+    return lines;
+  }
+
+  function councilJournal(player) {
+    const guidance = finaleJournal(player);
+    if (player.getAttribute(FEAST_PENDING_ATTRIBUTE) && !quest.isComplete(player)) return guidance;
+    // Informational progress, not the retail interactive member selector (CS2
+    // recipe_for_disaster_subquests). Use the same completion as each child and
+    // the remaining count; zero alone does not tell us whether a guest was inspected.
+    const members = [...journalStages].map(([name, read]) => {
+      const steps = rescueJournals[name];
+      const complete = read(player) >= steps[steps.length - 1][0];
+      const label = name === "Wartface & Bentnoze" ? "Goblin generals (Wartface & Bentnoze)" : name;
+      const line = `${label}: ${complete ? "rescue complete" : "still needs rescuing"}.`;
+      return complete ? `<str>${line}</str>` : line;
+    });
+    return ["Council members:", ...members, "", ...guidance];
+  }
+
+  // Like Vampyre Slayer's journal, prose is split across the native fixed-height
+  // line widgets. Whole-line colour/strike tags are repeated on continuation lines.
+  function wrapJournalLine(text) {
+    const match = /^(<(?:str|col=[^>]+)>)(.*)(<\/(?:str|col)>)$/.exec(text);
+    const plain = match ? match[2] : text;
+    const lines = [];
+    let line = "";
+    for (const word of plain.split(" ")) {
+      if (line && line.length + 1 + word.length > 58) { lines.push(line); line = word; }
+      else line = line ? `${line} ${word}` : word;
+    }
+    lines.push(line);
+    return match ? lines.map(value => `${match[1]}${value}${match[3]}`) : lines;
+  }
+
+  function amikJournalDetails(player) {
+    if (has(player, ItemIdentifiers.BRULEE_SUPREME)) return ["I need to use the creme brulee supreme on Sir Amik Varze in the dining room."];
+    if (has(player, ItemIdentifiers.BRULEE_3)) return ["My brulee is ready to flambe. I need to rub a dragon token and ask the dragon to help."];
+    const lines = [];
+    if (!player.getAttribute(AMIK_WOM_BRIEFED_ATTRIBUTE)) lines.push("I should ask the Wise Old Man about the Evil Chicken.");
+    else if (!player.getAttribute(AMIK_CHICKEN_DEAD_ATTRIBUTE)) lines.push("I should offer raw chicken at the chicken shrine in Zanaris and defeat the Evil Chicken for its egg.");
+    else lines.push("<str>I defeated the Evil Chicken.</str>");
+    if (player.getAttribute(AMIK_DRAGON_DROP_ATTRIBUTE)) lines.push("I obtained a dragon token. I can use it to summon a dragon to flambe the prepared brulee.");
+    else lines.push("I need to kill a black dragon in the Evil Chicken's Lair to obtain a dragon token.");
+    return lines;
+  }
+
+  function journalProgress(player, context) {
+    const name = context?.row?.displayname?.[0];
+    const child = name?.startsWith("Recipe for Disaster - ") ? name.slice("Recipe for Disaster - ".length) : null;
+    if (stage(player) === 0 && child && journalStages.has(child)) {
+      return [`I can start this quest by inspecting ${child === "Wartface & Bentnoze" ? "the goblin generals" : child} in the Lumbridge Castle dining room after helping the Cook prepare the banquet.`];
+    }
+    if (stage(player) === 0 && child === "Culinaromancer") {
+      return ["I can start this quest by helping the Cook in Lumbridge Castle, then freeing all eight council members before facing the Culinaromancer."];
+    }
+    if (child === "Another Cook's Quest") return openingJournal(player);
+    const readStage = journalStages.get(child);
+    if (readStage) {
+      if (stage(player) < STAGE_OPENING_COMPLETE) return ["I must help the Cook prepare the banquet before I can rescue the council members."];
+      if (player.getAttribute(FEAST_PENDING_ATTRIBUTE)) return ["I should enter the dining room in Lumbridge Castle to attend the banquet."];
+      const progress = readStage(player);
+      const steps = rescueJournals[child];
+      const current = steps.filter(([value]) => value <= progress).pop() ?? steps[0];
+      const complete = progress >= steps[steps.length - 1][0];
+      // Supply-gathering stages can advance independently: lower numbers do not
+      // prove that every earlier objective was completed.
+      const lines = [complete ? `<str>${current[1]}</str>` : current[1]];
+      if (!complete && child === "Skrach Uglogwee" && progress === 150 && has(player, ItemIdentifiers.RAW_JUBBLY)) {
+        lines[0] = "I need to cook the raw jubbly on Rantz's spit roast.";
+      }
+      if (!complete && child === "Sir Amik Varze" && progress >= 10) lines.push("", ...amikJournalDetails(player));
+      if (complete) lines.push("", "<col=ff0000>QUEST COMPLETE!</col>");
+      return lines;
+    }
+    if (child === "Culinaromancer") return finaleJournal(player);
+    if (stage(player) >= STAGE_OPENING_COMPLETE) return councilJournal(player);
+    return openingJournal(player);
+  }
+
+  function buildJournal(player, _quest, context) {
+    return journalProgress(player, context).flatMap(wrapJournalLine);
   }
 
   function syncQuestState({ player }) {
+    recoverOpeningFeast(player);
+    if (player.getAttribute(FEAST_PENDING_ATTRIBUTE) && inZone(player, DINING_DIMENSION) && !Feast.get(player)) {
+      moveTo(player, DINING_EXIT.x, DINING_EXIT.y, DINING_EXIT.z);
+    }
     ensureOgreBoatTalkActions();
     syncSkrachSpitRoast(player);
     syncRescueQuestVarbits(player);
@@ -3075,6 +3739,8 @@ module.exports = function registerRecipeForDisasterQuest(api) {
   }
 
   api.persistAttribute(FLAGS_ATTRIBUTE);
+  api.persistAttribute(FEAST_PENDING_ATTRIBUTE, false);
+  api.persistAttribute(FEAST_SEEN_ATTRIBUTE, false);
   api.persistAttribute(PIRATE_ATTRIBUTE);
   api.persistAttribute(PIRATE_HIDES_ATTRIBUTE);
   api.persistAttribute(PIRATE_STAGE_ATTRIBUTE, 0);
@@ -3105,6 +3771,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
     name: "Recipe for Disaster",
     varpId: VARP_RFD,
     varbitId: VARBIT_RFD,
+    varbitValue: mainQuestValue,
     startedValue: STAGE_STARTED,
     completionValue: STAGE_COMPLETE,
     questPoints: 1,
@@ -3119,13 +3786,16 @@ module.exports = function registerRecipeForDisasterQuest(api) {
   api.onNpcDialogueCondition(answerCondition);
   api.onCustomEvent("npc-dialogue:hook", handleHook);
   api.onCustomEvent("recipe-for-disaster:rescue-status", handleRescueStatusQuery);
+  api.onCustomEvent("npc-drops:quest-item", handleAmikQuestItemDrop);
   api.onCustomEvent("npc-dialogue:choice", handlePirateChoice);
   api.onCustomEvent("npc-dialogue:choice", handleSkrachChoice);
   api.onCustomEvent("npc-dialogue:choice", handleDwarfBarChoice);
   api.onCustomEvent("npc-dialogue:choice", handleAmikWiseOldManChoice);
   api.onCustomEvent("interface:closed", handleAmikWiseOldManBriefingClosed);
   api.onCustomEvent("npc-dialogue:condition", handleGuideConditionGrant);
+  api.onCustomEvent("npc-dialogue:action", handleFeastAction);
   api.onCustomEvent("npc-dialogue:action", handleAction);
+  api.onCustomEvent("npc-dialogue:line", handleFeastLine);
   api.onCustomEvent("npc-dialogue:line", handleFlambeLine);
   api.onCustomEvent("npc-dialogue:line", handleDwarfMilestoneLine);
   api.onCustomEvent("npc-dialogue:line", handleGoblinMilestoneLine);
@@ -3154,6 +3824,7 @@ module.exports = function registerRecipeForDisasterQuest(api) {
   api.onItemOnNpc(handleAwowogeiOffer);
   api.onItemOnObject(handleGoblinIngredients, { noted: false });
   api.onItemOnObject(handleSkrachItemOnObject, { noted: false });
+  api.onCustomEvent("swamp-bubbles:gas-collected", handleSkrachGasCollected);
   api.onItemOnObject(handleEvilChickenShrine, { noted: false });
   api.onItemOnObject(handleAwowogeiObjects, { noted: false });
   api.onItemOnItem(handlePirateFoodItems, { noted: false });
@@ -3203,6 +3874,13 @@ module.exports = function registerRecipeForDisasterQuest(api) {
   api.onObjectInteraction(handleAwowogeiDungeon);
   api.onObjectInteraction(handleAwowogeiSnakePit);
   api.onObjectRoute(routeRedBananaTree);
+  api.onObjectRoute(routeCulinaromancerChest);
+  api.onCustomEvent("door:toggle", handleDiningDoors);
+  api.onObjectInteraction("Barrier", { "Pass-through": passDiningBarrier });
+  api.onObjectInteraction(handleCulinaromancerChest);
+  api.onCustomEvent("shop:buy-price", priceCulinaromancerChest);
+  api.onCustomEvent("shop:sell-price", buybackCulinaromancerChest);
+  api.onCanSpawnNpc(blockStaticDiningGuests);
   api.onObjectInteraction(handleAwowogeiKing);
   api.onItemAction("Balloon toad", { Drop: handleSkrachDrop, Release: handleSkrachDrop });
   api.onItemDropPolicy(handleSkrachDrop);

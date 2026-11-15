@@ -120,6 +120,19 @@ test('::toaskiptoreward can force a unique and the pet to one player', () => {
   assert.equal(Rewards.sealedUnique(b), -1);
 });
 
+test('the collection log keeps the player\'s completions separate by mode', () => {
+  const { collectionLogCount } = require('../plugins/minigames/toa/Raid.TombsOfAmascut');
+  const attributes = new Map([['toa:completions', { entry: 2, normal: 3, expert: 4 }]]);
+  const player = { getAttribute: (key) => attributes.get(key), setAttribute: (key, value) => attributes.set(key, value) };
+  const request = { player, category: 'Tombs of Amascut' };
+  collectionLogCount(request);
+  assert.equal(request.count, 3, 'the primary label is Normal Mode');
+  assert.deepEqual(request.extraCounts, [2, 4], 'Entry and Expert have their own labels');
+  const other = { player, category: 'Chambers of Xeric' };
+  collectionLogCount(other);
+  assert.equal(other.count, undefined, 'only its own category');
+});
+
 test('the collection log gets the loot when it is claimed (as in OSRS), once; the pet winner rolls only the pet', () => {
   const { PluginManager } = require('../dist/plugins/PluginManager');
   const { ItemIdentifiers: I } = require('../dist/util/ItemIdentifiers');
@@ -257,6 +270,230 @@ test("the party panel's buttons follow the cache: Accept 36-43, Decline 44-51, i
   click({ player: leader, slot: 52 });
   assert.equal(party.settings.isActive('TRY_AGAIN'), true, "the first invocation (enum 4664's first)");
   party.disband();
+});
+
+const IN_LOBBY = { x: 3358, y: 9117 };
+const IN_NECROPOLIS = { x: 3357, y: 2713 };
+const GROUP_TOLD = (leader) => `${leader} has made a Tombs of Amascut party for your group. Apply at the Grouping Obelisk and you'll be let straight in.`;
+
+/**
+ * The lobby's party board through its buttons, with Grouping's "grouping:" replies mocked from
+ * `groups` (each a list of players, leader first; `online: false` members count but aren't sent).
+ * `grouping` false leaves emitCustomEvent answering nothing, as without the Grouping plugin.
+ */
+function partyBoard(groups = [], { grouping = true } = {}) {
+  const { PluginManager } = require('../dist/plugins/PluginManager');
+  const Lobby = require('../plugins/minigames/toa/Lobby.TombsOfAmascut');
+  const Parties = require('../plugins/minigames/toa/Parties.TombsOfAmascut');
+  CachePipeline.initialize();
+  const buttons = new Map();
+  const startup = [];
+  const emitted = [];
+  const groupOf = (player) => groups.find((group) => group.includes(player));
+  const emitCustomEvent = (name, request) => {
+    emitted.push([name, { ...request }]);
+    if (!grouping) return;
+    const group = groupOf(request.player);
+    if (name === 'grouping:same-group') {
+      request.same = !!group && group.includes(request.other);
+    } else if (name === 'grouping:members' && !group) {
+      Object.assign(request, { groupId: 0, leader: null, isLeader: false, members: [request.player], size: 1, max: request.maxSize, fits: true });
+    } else if (name === 'grouping:members') {
+      const fits = group.length <= request.maxSize;
+      Object.assign(request, {
+        groupId: 1, leader: group[0], isLeader: group[0] === request.player,
+        members: group.filter((member) => member.online !== false), size: group.length, max: request.maxSize, fits,
+      });
+      if (!fits) request.message = `Your group has ${group.length} players; ${request.activity} takes at most ${request.maxSize}.`;
+    }
+  };
+  const noop = () => {};
+  const api = new Proxy({ core: PluginManager.getCoreApi(), emitCustomEvent }, {
+    get: (target, key) => key in target ? target[key]
+      : key === 'onInterfaceActionButton' ? (uid, handler) => buttons.set(uid, handler)
+        : key === 'onServerStartup' ? (handler) => startup.push(handler) : noop,
+  });
+  Lobby(api);
+  const overview = buttons.get((772 << 16) | 1);
+  const list = buttons.get((772 << 16) | 16);
+  const management = buttons.get((774 << 16) | 1);
+  return {
+    Parties, startup, emitted,
+    makeParty(player) {
+      overview({ player, slot: 1 });
+      return Parties.currentParty(player);
+    },
+    /** Opens the party from the list and presses the panel's context button (Apply for a non-member). */
+    applyTo(player, party) {
+      overview({ player, slot: 0 });
+      list({ player, slot: Parties.stateOf(player).listed.indexOf(party) });
+      management({ player, slot: 4 });
+    },
+    pressMemberOption(player) {
+      management({ player, slot: 4 });
+    },
+  };
+}
+
+function boardPlayer(name, where = IN_LOBBY) {
+  const attributes = new Map();
+  const sent = [];
+  const sender = new Proxy({}, {
+    get: (_, key) => key === 'getVarbit' ? () => 0 : (...args) => { sent.push([key, ...args]); return sender; },
+  });
+  const player = {
+    name, messages: [], statements: 0, sent, where,
+    getUsername: () => name, getDisplayName: () => name,
+    getAttribute: (key) => attributes.get(key),
+    setAttribute: (key, value) => attributes.set(key, value),
+    sendMessage(message) { this.messages.push(message); },
+    getPacketSender: () => sender,
+    getDialogueManager: () => ({ startDialogues: () => { player.statements++; } }),
+    getSkillManager: () => ({ getMaxLevel: () => 99, getCombatLevel: () => 126 }),
+    getInterfaceId: () => -1,
+    getLocation: () => ({ getX: () => player.where.x, getY: () => player.where.y, getZ: () => 0 }),
+  };
+  return player;
+}
+
+function disbandAll(Parties) {
+  for (const party of [...Parties.lobbyParties]) party.disband();
+}
+
+test('the Tombs of Amascut tell Grouping at startup that a raid takes 8', () => {
+  const board = partyBoard();
+  assert.equal(board.startup.length, 1, 'one startup hook');
+  board.startup[0]({});
+  assert.deepEqual(board.emitted, [['grouping:activity', { name: 'Tombs of Amascut', maxSize: 8 }]]);
+});
+
+test("a group leader's new party takes in the group members in the lobby; the others are told how to follow", () => {
+  const leader = boardPlayer('Leader');
+  const near = boardPlayer('Near');
+  const applying = boardPlayer('Applying');
+  const away = boardPlayer('Away', IN_NECROPOLIS);
+  const busy = boardPlayer('Busy');
+  const offline = Object.assign(boardPlayer('Offline'), { online: false });
+  const stranger = boardPlayer('Stranger');
+  const board = partyBoard([[leader, near, applying, away, busy, offline]]);
+  const { Parties } = board;
+  const other = Parties.createParty(stranger);
+  other.addPlayer(busy);
+  other.apply(applying);
+  try {
+    const party = board.makeParty(leader);
+    assert.deepEqual(party.players, [leader, near, applying], 'in the lobby, in no party, in the group order');
+    assert.deepEqual(party.applicants, []);
+    for (const member of [near, applying]) {
+      assert.equal(Parties.currentParty(member), party);
+      assert.ok(member.sent.some(([key, id, value]) => key === 'sendVarbit' && id === 14345 && value === 1), `${member.name}: PARTY_STATUS`);
+      assert.ok(member.sent.some(([key, text]) => key === 'sendString' && text.startsWith('Leader<br>Near<br>Applying<br>-')), `${member.name}: overlay 773's names`);
+      assert.deepEqual(member.messages, ['You have joined the party of Leader.']);
+    }
+    assert.equal(other.applicants.includes(applying), false, 'an application elsewhere is withdrawn, as on joining any party');
+    assert.equal(Parties.stateOf(applying).applied, null);
+    assert.deepEqual(away.messages, [GROUP_TOLD('Leader')], 'outside the lobby: told');
+    assert.deepEqual(busy.messages, [GROUP_TOLD('Leader')], 'in another party: told');
+    assert.deepEqual(other.players, [stranger, busy], 'and left in it');
+    assert.equal(Parties.currentParty(busy), other);
+    assert.deepEqual(leader.messages, [], 'the group fits');
+    assert.deepEqual(stranger.messages, []);
+  } finally {
+    disbandAll(Parties);
+  }
+});
+
+test("a group leader's party takes in at most 8; the leader hears the group is too big, the rest are told", () => {
+  const group = Array.from({ length: 10 }, (_, i) => boardPlayer(i === 0 ? 'Leader' : `Member${i}`));
+  const board = partyBoard([group]);
+  try {
+    const party = board.makeParty(group[0]);
+    assert.deepEqual(party.players, group.slice(0, 8));
+    assert.deepEqual(group[0].messages, ['Your group has 10 players; Tombs of Amascut takes at most 8.']);
+    for (const member of group.slice(1, 8)) assert.deepEqual(member.messages, ['You have joined the party of Leader.']);
+    for (const member of group.slice(8)) {
+      assert.deepEqual(member.messages, [GROUP_TOLD('Leader')]);
+      assert.equal(board.Parties.currentParty(member), null);
+    }
+  } finally {
+    disbandAll(board.Parties);
+  }
+});
+
+test("a group member applying to their group's party is accepted at once; declined or to a full party, they wait as before", () => {
+  const leader = boardPlayer('Leader');
+  const mate = boardPlayer('Mate', IN_NECROPOLIS);
+  const declined = boardPlayer('Declined');
+  const late = boardPlayer('Late');
+  const board = partyBoard([[leader, mate, declined, late]]);
+  const { Parties } = board;
+  try {
+    // Everyone but the leader is away when the party is made; Declined is then declined (blocked).
+    declined.where = IN_NECROPOLIS;
+    late.where = IN_NECROPOLIS;
+    const party = board.makeParty(leader);
+    assert.deepEqual(party.players, [leader]);
+    party.blocked.push(declined);
+
+    mate.where = IN_LOBBY;
+    board.applyTo(mate, party);
+    assert.deepEqual(party.players, [leader, mate], 'let straight in');
+    assert.deepEqual(party.applicants, []);
+    assert.equal(Parties.currentParty(mate), party);
+    assert.deepEqual(mate.messages, [GROUP_TOLD('Leader'), 'You have applied to join the party of Leader.',
+      'Your application to the party of Leader has been accepted.']);
+    assert.deepEqual(leader.messages, ['You have accepted Mate into your party.'], "as the leader's Accept");
+
+    declined.where = IN_LOBBY;
+    board.applyTo(declined, party);
+    assert.equal(declined.statements, 1, '"You have been declined by this party."');
+    assert.deepEqual(party.players, [leader, mate]);
+    // Even from a panel drawn before the decline, a declined member only applies.
+    Parties.stateOf(declined).viewingValue = 0;
+    board.pressMemberOption(declined);
+    assert.deepEqual(party.players, [leader, mate], 'still declined');
+    assert.deepEqual(party.applicants, [declined]);
+
+    for (let i = 0; i < 6; i++) party.addPlayer(boardPlayer(`Filler${i}`));
+    leader.messages.length = 0;
+    late.where = IN_LOBBY;
+    board.applyTo(late, party);
+    assert.equal(party.players.length, 8);
+    assert.equal(party.players.includes(late), false, 'a full party: waits in the applicants');
+    assert.deepEqual(party.applicants, [declined, late]);
+    assert.deepEqual(leader.messages, [], 'no "Your party is full."');
+  } finally {
+    disbandAll(Parties);
+  }
+});
+
+test('without a group, or a group of which they are not the leader, the board is as before', () => {
+  for (const grouping of [true, false]) {
+    const solo = boardPlayer('Solo');
+    const stranger = boardPlayer('Stranger');
+    const groupLeader = boardPlayer('GroupLeader');
+    const member = boardPlayer('Member');
+    const other = boardPlayer('Other');
+    const board = partyBoard([[groupLeader, member, other]], { grouping });
+    const { Parties } = board;
+    try {
+      const party = board.makeParty(solo);
+      assert.deepEqual(party.players, [solo]);
+      board.applyTo(stranger, party);
+      assert.deepEqual(party.players, [solo], 'applying waits for the leader');
+      assert.deepEqual(party.applicants, [stranger]);
+      assert.deepEqual(stranger.messages, ['You have applied to join the party of Solo.']);
+      assert.deepEqual(solo.messages, []);
+
+      const memberParty = board.makeParty(member);
+      assert.deepEqual(memberParty.players, [member], "a member's party doesn't take the group in");
+      board.applyTo(stranger, memberParty);
+      assert.deepEqual(memberParty.applicants, [stranger], 'nor lets a stranger in');
+      for (const player of [groupLeader, member, other]) assert.deepEqual(player.messages, []);
+    } finally {
+      disbandAll(Parties);
+    }
+  }
 });
 
 test('struct reads decode the struct archive once, so the first party (44 invocation structs) does not stall', () => {
@@ -463,7 +700,12 @@ test("invocations: the Wiki's levels from the cache structs, its time penalties,
 
 test('combat achievements: a party failure names who, a personal one says You, each once, and tasks finish only in their mode', () => {
   const events = [];
-  toaApi(events);
+  const Shared = toaApi(events);
+  // Combat Achievements sends the failure line ("combat-achievements:failed"), as with its settings on.
+  Shared.bind({ core: Shared.api().core, emitCustomEvent: (name, event) => {
+    events.push({ name, ...event });
+    if (name === 'combat-achievements:failed') event.player.sendMessage(`You have failed <col=0cc919>${event.task}</col>: ${event.reason}`);
+  } });
   const CA = require('../plugins/minigames/toa/CombatAchievements.TombsOfAmascut');
   const a = playerStub('a');
   const b = playerStub('b');
@@ -711,5 +953,156 @@ test('the escape crystal never fires on a killing hit, and nothing lands between
     Raid.raidOf = raidOf;
     PluginManager.customEventHooks.delete('combat:damage-apply');
     PluginManager.customEventHooks.delete('escape-crystal:settings');
+  }
+});
+
+test('logging out in the Nexus with an inventory escape crystal ejects instead of rejoining the party', () => {
+  CachePipeline.initialize();
+  const { PluginManager } = require('../dist/plugins/PluginManager');
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const { Location } = require('../dist/game/model/Location');
+  const { Item, ItemIdentifiers: I } = PluginManager.getCoreApi();
+  const Shared = require('../plugins/minigames/toa/Shared.TombsOfAmascut');
+  const State = require('../plugins/minigames/toa/RaidState.TombsOfAmascut');
+  const Parties = require('../plugins/minigames/toa/Parties.TombsOfAmascut');
+  const { api, calls } = recordingApi();
+  require('../plugins/minigames/toa/Raid.TombsOfAmascut')(api);
+  const login = calls.find((call) => call.name === 'onPlayerLogin').args[0];
+  const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true, send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+  const player = (name, index) => {
+    const p = new Player(new PlayerSession(channel), new Location(3550, 5161, 0));
+    p.setUsername(name);
+    p.setIndex(index);
+    p.setHitpoints(10);
+    return p;
+  };
+  const leader = player('toaleader', 101);
+  const member = player('toamember', 102);
+  const party = Parties.createParty(leader);
+  party.addPlayer(member);
+  const raid = new State.Raid(party, leader);
+  const room = new State.Room(raid, { key: 'MAIN_HALL', spawn: { x: 3550, y: 5161, z: 0 }, spread: 0 });
+  raid.rooms.set(room.key, room);
+  raid.roomKey = room.key;
+  for (const p of [leader, member]) {
+    raid.member(p).roomKey = room.key;
+    raid.area.enter(p);
+  }
+  leader.getInventory().setItem(0, new Item(Shared.escapeCrystalId(), 1));
+  leader.getInventory().setItem(1, new Item(I.COINS, 100));
+  State.registerRaidItems(I.NECTAR_4_);
+  leader.getInventory().setItem(2, new Item(I.NECTAR_4_, 1));
+  let nextParty;
+  try {
+    // Without a crystal, the member can rejoin the surviving leader.
+    raid.area.leave(member, true);
+    login({ player: member });
+    assert.equal(State.raidOf(member), raid);
+    assert.equal(Parties.currentParty(member), party);
+    // Area.leave is the logout dispatch used by Player.onLogout; the member stays in the raid.
+    raid.area.leave(leader, true);
+    assert.equal(leader.getInventory().contains(Shared.escapeCrystalId()), false);
+    assert.equal(leader.getInventory().getAmount(I.COINS), 100);
+    assert.equal(party.players.includes(leader), false);
+    assert.equal(State.absentees.has(leader.getUsername()), false);
+    assert.equal(party.leader, member);
+    assert.equal(raid.leader, member);
+    login({ player: leader });
+    assert.equal(State.raidOf(leader), null);
+    assert.equal(Parties.currentParty(leader), null);
+    assert.equal(leader.getLocation().getX(), Shared.LOBBY_RETURN.x);
+    assert.equal(leader.getLocation().getY(), Shared.LOBBY_RETURN.y);
+    assert.equal(leader.getInventory().getAmount(I.COINS), 100);
+    assert.equal(raid.players.includes(member), true);
+    assert.equal(leader.getInventory().contains(I.NECTAR_4_), false);
+    nextParty = Parties.createParty(leader);
+    assert.equal(Parties.currentParty(leader), nextParty);
+  } finally {
+    nextParty?.disband();
+    raid.dispose();
+    party.disband();
+  }
+});
+
+test('active encounter logout distinguishes a crystal eject from a death and rejoin', () => {
+  CachePipeline.initialize();
+  const { PluginManager } = require('../dist/plugins/PluginManager');
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const { Location } = require('../dist/game/model/Location');
+  const { Item } = PluginManager.getCoreApi();
+  const Shared = require('../plugins/minigames/toa/Shared.TombsOfAmascut');
+  const State = require('../plugins/minigames/toa/RaidState.TombsOfAmascut');
+  const Parties = require('../plugins/minigames/toa/Parties.TombsOfAmascut');
+  const { api, calls } = recordingApi();
+  require('../plugins/minigames/toa/Raid.TombsOfAmascut')(api);
+  const login = calls.find((call) => call.name === 'onPlayerLogin').args[0];
+  const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true, send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+  const makePlayer = (name, index) => {
+    const p = new Player(new PlayerSession(channel), new Location(3550, 5161, 0));
+    p.setUsername(name);
+    p.setIndex(index);
+    p.setHitpoints(10);
+    return p;
+  };
+  for (const crystal of [false, true]) {
+    const leader = makePlayer(`toaactiveleader${crystal}`, crystal ? 111 : 113);
+    const member = makePlayer(`toaactivemember${crystal}`, crystal ? 112 : 114);
+    const party = Parties.createParty(leader);
+    party.addPlayer(member);
+    const raid = new State.Raid(party, leader);
+    const room = new State.Room(raid, { key: 'TEST', spawn: { x: 3550, y: 5161, z: 0 }, bounds: { minX: 3549, maxX: 3551, minY: 5160, maxY: 5162, z: 0 } });
+    room.stage = State.STAGE.STARTED;
+    let leaves = 0;
+    room.onPlayerLeave = (p) => { if (p === member) leaves++; };
+    raid.rooms.set(room.key, room);
+    raid.roomKey = room.key;
+    for (const p of [leader, member]) {
+      raid.member(p).roomKey = room.key;
+      raid.area.enter(p);
+    }
+    if (crystal) member.getInventory().setItem(0, new Item(Shared.escapeCrystalId(), 1));
+    const memberState = raid.member(member);
+    try {
+      raid.area.leave(member, true);
+      assert.equal(memberState.deaths, crystal ? 0 : 1);
+      assert.equal(memberState.points, crystal ? 5000 : 4000);
+      assert.equal(leaves, crystal ? 1 : 0);
+      assert.equal(raid.players.includes(leader), true);
+      if (crystal) {
+        assert.equal(member.getInventory().contains(Shared.escapeCrystalId()), false);
+        assert.equal(party.players.includes(member), false);
+      }
+      login({ player: member });
+      assert.equal(State.raidOf(member), crystal ? null : raid);
+      if (!crystal) assert.equal(raid.member(member).ghost, true);
+      assert.equal(leaves, crystal ? 1 : 0);
+    } finally {
+      raid.dispose();
+      party.disband();
+    }
+  }
+  const solo = makePlayer('toasolocrystal', 115);
+  const party = Parties.createParty(solo);
+  const raid = new State.Raid(party, solo);
+  const room = new State.Room(raid, { key: 'MAIN_HALL', spawn: { x: 3550, y: 5161, z: 0 } });
+  raid.rooms.set(room.key, room);
+  raid.roomKey = room.key;
+  raid.member(solo).roomKey = room.key;
+  raid.area.enter(solo);
+  solo.getInventory().setItem(0, new Item(Shared.escapeCrystalId(), 1));
+  try {
+    raid.area.leave(solo, true);
+    assert.equal(raid.over, true);
+    assert.equal(party.raid, null);
+    login({ player: solo });
+    assert.equal(State.raidOf(solo), null);
+    assert.equal(solo.getInventory().contains(Shared.escapeCrystalId()), false);
+    assert.equal(solo.getLocation().getX(), Shared.LOBBY_RETURN.x);
+    assert.equal(solo.getLocation().getY(), Shared.LOBBY_RETURN.y);
+  } finally {
+    raid.dispose();
+    party.disband();
   }
 });

@@ -165,6 +165,26 @@ function unlock(player, areaId) {
   return true;
 }
 
+/**
+ * Developer: every area the league offers, past its slots and tasks (`::areas all`, `::leagueunlock`),
+ * with each area's content and `league:area-unlocked`, but none of the presentation. The slot
+ * varbits show only the first slots' areas; the rest are open all the same. Returns the names added.
+ */
+function unlockAll(player) {
+  const type = Common.leagueOf(player);
+  if (type === null) return [];
+  const list = Common.unlocked(player);
+  const added = Common.league(type).areas.filter((id) => !list.includes(id));
+  for (const id of added) {
+    list.push(id);
+    player.setAttribute(Common.AREAS_ATTRIBUTE, [...list]);
+    Common.api.emitCustomEvent("league:area-unlocked", { player, league: type, area: id, slot: list.length - 1 });
+    completeAreaContent(player, type, id);
+  }
+  sendState(player, type);
+  return added.map((id) => Common.area(id).name);
+}
+
 /** An award that reaches the next slot's tasks shows the popup once (captures 227/00075, 00196). */
 function pointsChanged({ player, tasks, previousTasks }) {
   const type = Common.leagueOf(player);
@@ -183,12 +203,13 @@ function pointsChanged({ player, tasks, previousTasks }) {
   });
 }
 
-/** `league:areas` { player } -> league, unlocked (ids in order), next ({ slot, tasks } or null), available. */
+/** `league:areas` { player } -> league, unlocked (ids in order) and unlockedKeys (their keys), next ({ slot, tasks } or null), available. */
 function answerAreas(query) {
   if (!query) return;
   const type = query.player ? Common.leagueOf(query.player) : null;
   query.league = type;
   query.unlocked = type === null ? [] : Common.unlocked(query.player);
+  query.unlockedKeys = query.unlocked.map((id) => Common.area(id)?.key).filter(Boolean);
   query.next = type === null ? null : Common.nextSlot(type, query.player);
   query.available = type !== null && Common.available(type, query.player);
 }
@@ -196,12 +217,18 @@ function answerAreas(query) {
 /** world.json pluginConfig key naming the world's league (LeagueMode reads the same one). */
 const LEAGUE_TYPE_CONFIG = "league:type";
 
-/** `league:area-at` { x, y, player | league } -> area (id or null when open), name. The world's league when neither is given. */
+/**
+ * `league:area-at` { x, y, player | league | base } -> area (id or null when open), name. The
+ * world's league when none is given; `base: true` asks for the areas as the cache's region table
+ * and the data place them, with no league's overrides (a death broadcast's "in Misthalin" on any
+ * world).
+ */
 function answerAreaAt(query) {
   if (!query) return;
   let type = query.player ? Common.leagueOf(query.player) : Number(query.league ?? Common.api.getPluginConfig(LEAGUE_TYPE_CONFIG, 0));
   if (!Common.league(type)) type = null;
-  query.area = type === null ? null : Regions.areaAt(type, query.x | 0, query.y | 0);
+  if (query.base === true) query.area = Regions.areaAt(null, query.x | 0, query.y | 0);
+  else query.area = type === null ? null : Regions.areaAt(type, query.x | 0, query.y | 0);
   query.name = query.area === null ? null : Common.area(query.area).name;
 }
 
@@ -215,4 +242,4 @@ module.exports = function attach(api) {
   api.onCustomEvent("league:area-at", answerAreaAt);
 };
 
-Object.assign(module.exports, { unlock, refusal, state, sendState });
+Object.assign(module.exports, { unlock, unlockAll, refusal, state, sendState });

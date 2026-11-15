@@ -11,6 +11,7 @@
  */
 const Common = require("./Common.RatBoneWeapons");
 const Staff = require("./Staff.RatBoneWeapons");
+const { plainAmount, takePlain, PRESET_TEXT } = require("../PoweredStaff");
 
 const LEVEL = 35;
 const EXPERIENCE = 300;
@@ -30,7 +31,7 @@ function hasMaterials(player, weapon) {
   const inventory = player.getInventory();
   const I = core.ItemIdentifiers;
   return inventory.contains(I.SCURRIUS_SPINE) && inventory.contains(weapon.base)
-    && inventory.getAmount(I.CHAOS_RUNE) >= (weapon.chaosRunes ?? 0);
+    && plainAmount(inventory, I.CHAOS_RUNE) >= (weapon.chaosRunes ?? 0);
 }
 
 function itemBox(player, itemId, text) {
@@ -38,20 +39,42 @@ function itemBox(player, itemId, text) {
   player.getDialogueManager().startDialogues(new DialogueChainBuilder().add(new ItemStatementDialogue(0, itemId, text)));
 }
 
-/** Takes the materials and hands over the weapon (a new bone staff holds its chaos runes as charges). */
-function make(player, weapon) {
+/** Short of plain chaos runes only because some held are preset copies, which never become charges. */
+function shortOnlyByPreset(player, weapon) {
   const inventory = player.getInventory();
   const I = core.ItemIdentifiers;
-  inventory.delete(weapon.base, 1);
+  const needed = weapon.chaosRunes ?? 0;
+  return needed > 0 && inventory.contains(I.SCURRIUS_SPINE) && inventory.contains(weapon.base)
+    && plainAmount(inventory, I.CHAOS_RUNE) < needed && inventory.getAmount(I.CHAOS_RUNE) >= needed;
+}
+
+/**
+ * Takes the materials and hands over the weapon (a new bone staff holds its chaos runes as charges). The base is
+ * the one in `baseSlot` (the slot the player used) when given, else the first copy.
+ */
+function make(player, weapon, baseSlot) {
+  const inventory = player.getInventory();
+  const I = core.ItemIdentifiers;
+  // The base becomes the weapon in place (setId keeps its meta: a preset mace makes a preset bone mace), and
+  // only plain chaos runes become a bone staff's charges, since Uncharge refunds plain runes.
   inventory.delete(I.SCURRIUS_SPINE, 1);
-  if (weapon.chaosRunes) inventory.deleteNumber(I.CHAOS_RUNE, weapon.chaosRunes);
-  const item = new core.Item(weapon.id, 1);
+  if (weapon.chaosRunes) takePlain(inventory, I.CHAOS_RUNE, weapon.chaosRunes);
+  const items = inventory.getItems?.();
+  let item = items?.[baseSlot]?.getId() === weapon.base ? items[baseSlot] : items?.find((held) => held?.getId() === weapon.base);
+  if (item) {
+    item.setId(weapon.id);
+  } else {
+    // A container without slots (a test stand-in): the old delete and add.
+    inventory.delete(weapon.base, 1);
+    item = new core.Item(weapon.id, 1);
+  }
   if (weapon.chaosRunes) Staff.setCharges(item, weapon.chaosRunes);
-  inventory.addItem(item);
+  if (!inventory.getItems) inventory.addItem(item);
+  inventory.refreshItems?.();
 }
 
 /** The player's own creation: the tool, the level, the materials, then the weapon. */
-function craft(player, weapon) {
+function craft(player, weapon, baseSlot) {
   const inventory = player.getInventory();
   if (!inventory.contains(weapon.tool)) {
     player.sendMessage(`You'll need a ${weapon.toolName} to do that.`);
@@ -62,10 +85,14 @@ function craft(player, weapon) {
     return;
   }
   if (!hasMaterials(player, weapon)) {
+    if (shortOnlyByPreset(player, weapon)) {
+      player.sendMessage(PRESET_TEXT);
+      return;
+    }
     player.sendMessage(`You need ${weapon.chaosRunes.toLocaleString("en-GB")} chaos runes and a Scurrius' spine to create the ${weapon.name}.`);
     return;
   }
-  make(player, weapon);
+  make(player, weapon, baseSlot);
   player.performAnimation(new core.Animation(weapon.anim));
   if (weapon.gfx) player.performGraphic(new core.Graphic(weapon.gfx));
   if (weapon.sound) player.getPacketSender().sendSound(weapon.sound, 1, 0);
@@ -79,6 +106,7 @@ function spineOnItem(event) {
   const ids = [Number(event.usedItemId), Number(event.usedWithItemId)];
   if (!ids.includes(I.SCURRIUS_SPINE)) return;
   const other = ids[0] === I.SCURRIUS_SPINE ? ids[1] : ids[0];
+  const baseSlot = ids[0] === I.SCURRIUS_SPINE ? event.usedWithItemSlot : event.usedItemSlot;
   const weapon = weaponBy("base", other);
   if (!weapon) return;
   event.handled = true;
@@ -86,11 +114,14 @@ function spineOnItem(event) {
     event.player.sendMessage("I should probably smith this at an anvil...");
     return;
   }
-  craft(event.player, weapon);
+  craft(event.player, weapon, baseSlot);
 }
 
+/** The spine on an anvil smiths the bone mace; with no rune mace there is nothing to smith (the default line). */
 function spineOnAnvil({ player }) {
-  craft(player, weaponBy("key", "mace"));
+  const mace = weaponBy("key", "mace");
+  if (!player.getInventory().contains(mace.base)) return false;
+  craft(player, mace);
   return true;
 }
 

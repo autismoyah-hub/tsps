@@ -11,6 +11,12 @@
 const { TIERS, DIARIES, tierOfTask } = require("./Data.AchievementDiaries");
 
 const TIER_COMPLETE_DELAY = 3;
+/**
+ * wilderness_diary_any_complete: a bit per completed tier, easy first (live logins send 1, 3, 7
+ * and 15). The settings scripts read it to unlock the Deep Wilderness lever row.
+ */
+const ANY_COMPLETE_VARBITS = { wilderness: 4470 };
+const tierGenerations = new WeakMap();
 
 /** Done task keys by diary key: { ardougne: ["<task key>", ...] }. */
 const TASKS_ATTRIBUTE = "achievement-diaries:tasks";
@@ -54,6 +60,23 @@ function isStarted(player, diary) {
   return doneTasks(player, diary).size > 0;
 }
 
+function tierKey(diary, tier) {
+  return `${diary.key}:${tier}`;
+}
+
+function tierGeneration(player, diary, tier) {
+  return tierGenerations.get(player)?.get(tierKey(diary, tier)) ?? 0;
+}
+
+function advanceTierGeneration(player, diary, tier) {
+  let generations = tierGenerations.get(player);
+  if (!generations) tierGenerations.set(player, generations = new Map());
+  const key = tierKey(diary, tier);
+  const next = (generations.get(key) ?? 0) + 1;
+  generations.set(key, next);
+  return next;
+}
+
 function sendTier(player, diary, tier, { onlySet = false } = {}) {
   const sender = player.getPacketSender();
   const data = diary.tiers[tier];
@@ -69,13 +92,34 @@ function sendDiary(player, diary, options) {
   const started = isStarted(player, diary) ? 1 : 0;
   if (!options?.onlySet || started) player.getPacketSender().sendVarbit(diary.startedVarbit, started);
   for (const tier of TIERS) sendTier(player, diary, tier, options);
+  sendAnyComplete(player, diary, options);
+}
+
+function sendAnyComplete(player, diary, { onlySet = false } = {}) {
+  const varbit = ANY_COMPLETE_VARBITS[diary.key];
+  if (varbit === undefined) return;
+  const mask = TIERS.reduce((bits, tier, index) => (isTierComplete(player, diary, tier) ? bits | (1 << index) : bits), 0);
+  if (!onlySet || mask !== 0) player.getPacketSender().sendVarbit(varbit, mask);
 }
 
 function migrateLegacy(player) {
   for (const [legacy, attribute, diary] of LEGACY_ATTRIBUTES) {
     const values = player.getAttribute(legacy);
     if (!Array.isArray(values)) continue;
-    store(player, attribute, diary, values);
+
+    const validValues = attribute === TASKS_ATTRIBUTE
+      ? new Set(TIERS.flatMap((tier) => diary.tiers[tier].tasks.map((task) => task.key)))
+      : new Set(TIERS);
+    const existing = player.getAttribute(attribute)?.[diary.key];
+    const current = Array.isArray(existing) ? existing : [];
+    const merged = [...current];
+    const mergedValues = new Set(current);
+    for (const value of values) {
+      if (!validValues.has(value) || mergedValues.has(value)) continue;
+      merged.push(value);
+      mergedValues.add(value);
+    }
+    store(player, attribute, diary, merged);
     player.setAttribute(legacy, null);
   }
 }
@@ -86,18 +130,29 @@ function restore({ player }) {
   for (const diary of DIARIES) sendDiary(player, diary, { onlySet: true });
 }
 
-function announceTierComplete(player, diary, tier) {
-  if (!player.isRegistered() || !isTierComplete(player, diary, tier)) return;
+function announceTierComplete(player, diary, tier, generation) {
+  if (!player.isRegistered() || tierGeneration(player, diary, tier) !== generation || !isTierComplete(player, diary, tier)) return;
   const data = diary.tiers[tier];
   player.getPacketSender().sendVarbit(data.completeVarbit, data.completeValue ?? 1);
+  sendAnyComplete(player, diary);
   api.emitCustomEvent("diary:tier-complete", { player, diary: diary.name, tier });
+  if (claimedTiers(player, diary).has(tier) || player.getDialogueManager().isActive?.()
+    || core.MultiChatboxPrompt?.getPending?.(player)) return;
   player.getDialogueManager().startDialogues(new core.DialogueChainBuilder().add(
     new core.StatementDialogue(0, `Congratulations! You have completed all of the ${tier} tasks in the ${diary.name} area. Speak to ${diary.npcAt} to claim your reward.`),
     new core.EndDialogue(1),
   ));
 }
 
-/** Marks a task done; false when it already was (or is unknown). */
+/** Emits progress only for a valid, unfinished task after its owner changes task state. */
+function notifyTaskProgress(player, diary, taskKey) {
+  if (!api || typeof player?.getAttribute !== "function" || player.isRegistered?.() !== true
+    || !tierOfTask(diary, taskKey) || doneTasks(player, diary).has(taskKey)) return false;
+  api.emitCustomEvent("diary:task-progressed", { player, diary: diary.key, task: taskKey });
+  return true;
+}
+
+/** Returns false for unknown or completed tasks; emits `diary:task-completed` after normal updates. */
 function completeTask(player, diary, taskKey) {
   const tier = tierOfTask(diary, taskKey);
   if (!tier) return false;
@@ -112,11 +167,13 @@ function completeTask(player, diary, taskKey) {
   if (!wasStarted) sender.sendVarbit(diary.startedVarbit, 1);
   if (isTierComplete(player, diary, tier)) {
     api.emitCustomEvent("persistence:save", { player, reason: "diary-tier-completion" });
+    const generation = advanceTierGeneration(player, diary, tier);
     api.getTaskManager().submit(new (class extends core.Task {
       constructor() { super(TIER_COMPLETE_DELAY); }
-      execute() { this.stop(); announceTierComplete(player, diary, tier); }
+      execute() { this.stop(); announceTierComplete(player, diary, tier, generation); }
     })());
   }
+  api.emitCustomEvent("diary:task-completed", { player, diary: diary.key, task: taskKey, tier });
   return true;
 }
 
@@ -130,6 +187,7 @@ function claimTier(player, diary, tier) {
 
 /** Clears tiers' tasks and rewards (the admin command's reset). */
 function resetTiers(player, diary, tiers) {
+  for (const tier of tiers) advanceTierGeneration(player, diary, tier);
   const keys = new Set(tiers.flatMap((tier) => diary.tiers[tier].tasks.map((task) => task.key)));
   store(player, TASKS_ATTRIBUTE, diary, [...doneTasks(player, diary)].filter((key) => !keys.has(key)));
   store(player, REWARDS_ATTRIBUTE, diary, [...claimedTiers(player, diary)].filter((tier) => !tiers.includes(tier)));
@@ -146,6 +204,6 @@ module.exports = function attachProgress(pluginApi) {
 };
 
 Object.assign(module.exports, {
-  TASKS_ATTRIBUTE, REWARDS_ATTRIBUTE, doneTasks, claimedTiers, tierCount, isTierComplete,
-  completeTask, claimTier, resetTiers, restore, sendDiary,
+  TASKS_ATTRIBUTE, REWARDS_ATTRIBUTE, doneTasks, claimedTiers, tierCount, isTierComplete, isStarted,
+  notifyTaskProgress, completeTask, claimTier, resetTiers, restore, sendDiary, tierGeneration,
 });

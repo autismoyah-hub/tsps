@@ -1,3 +1,4 @@
+import { PlayerSyncContext } from "../../../game/sync/PlayerSyncContext";
 import { ClientState } from "../../../game/ClientState";
 import {
     VARP_AREA_SOUNDS_VOLUME,
@@ -41,6 +42,10 @@ import { applyGroundItemsDelta, cloneGroundItemsPayload } from "../utils/groundI
 import { sanitizeBankSlotMessage, sanitizeInventorySlotMessage, sanitizeSpellResult } from "../utils/sanitize";
 
 export function handleInboundSync(msg: any): boolean {
+    if (msg.type === "npc_specific_effect") {
+        for (const cb of state.npcSpecificEffectListeners) cb(msg.payload);
+        return true;
+    }
     if (msg.type === "rebuild_region") {
         ClientState.inInstance = true;
         ClientState.instanceTemplateChunks = msg.payload.templateChunks;
@@ -240,7 +245,7 @@ export function handleInboundSync(msg: any): boolean {
             if (!buffer || buffer.length === 0) return true;
             for (const cb of state.npcInfoListeners) {
                 try {
-                    cb({ loopCycle, large, rootTileX, rootTileY, packet: buffer });
+                    cb({ loopCycle, large, crossFloor: payload?.crossFloor === true, rootTileX, rootTileY, packet: buffer });
                 } catch (err) {
                     console.warn("npc_info listener error", err);
                 }
@@ -318,6 +323,8 @@ export function handleInboundSync(msg: any): boolean {
         return true;
     }
     if (msg.type === "handshake") {
+        // Every bootstrap starts a fresh sync stream, even when a player index is reused.
+        state.playerSyncContext = new PlayerSyncContext();
         state.lastHandshake = msg.payload as any;
         for (const cb of state.handshakeListeners) cb(msg.payload as any);
         try {

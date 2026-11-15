@@ -23,7 +23,7 @@ before(async () => {
 // Fixtures set stage and inventory only where the check is explicitly a handler
 // contract; no fixture sets the expected postcondition or calls plugin helpers.
 
-function setup() {
+function setup({ barcrawl = true } = {}) {
   const hooks = {
     custom: new Map(), variants: [], conditions: [], login: [], logout: [], npcDeaths: [],
     objects: [], itemOnObject: [], npcs: [], hits: [], process: [],
@@ -81,6 +81,8 @@ function setup() {
     setAttribute(key, value) { attrs.set(key, value); },
     getPacketSender: () => sender,
     sendMessage(message) { messages.push(message); },
+    dialogues: [],
+    getDialogueManager() { return { startDialogues: (chain) => player.dialogues.push(chain), isActive: () => false }; },
     getInventory: () => inventoryApi,
     getEquipment: () => ({ getItems: () => [] }),
     getSkillManager: () => ({
@@ -135,6 +137,7 @@ function setup() {
         getOwner: () => def.owner,
         getLocation: () => new core.Location(def.x, def.y, def.z),
         setNpcTransformationId(id) { this.transformationId = id; },
+        forceChat(text) { (this.overheads ??= []).push(text); },
         isRegistered: () => true,
       };
       spawned.push(npc);
@@ -143,6 +146,9 @@ function setup() {
     removeNpc() {},
   }, { get(target, key) { return target[key] ?? (() => {}); } });
 
+  hooks.custom.set('quest:is-complete', [(request) => {
+    if (request?.name === "Alfred Grimhand's Barcrawl") request.complete = barcrawl;
+  }]);
   require('../plugins/quests/quests/HorrorFromTheDeep.Quest')(api);
   const quest = runtime.getRegisteredQuests().at(-1);
 
@@ -204,7 +210,9 @@ test('q059 cache contract: varbit 34 is the wire, not whole varp 351', () => {
   // The canonical completion is at or above the cache threshold (10).
   h.quest.complete(h.player);
   assert.equal(h.quest.getStage(h.player), 10);
-  assert.equal(h.varbits.get(35), 0, 'completion alone does not fabricate wall offerings');
+  // A completed account's login sends horrordoor (35) as 1 (rsprox_transcripts/224/01512.txt),
+  // so completion, played through or not, opens the strange wall (#3851).
+  assert.equal(h.varbits.get(35), 1, 'completion opens the strange wall');
   assert.ok(h.varbits.get(34) >= 10);
   assert.equal(h.inventory.get(I.RUSTY_CASKET), 1, 'completion hands over the casket');
 });
@@ -238,13 +246,23 @@ test('q059 mandatory handler route: start gate, bridge, key, door, light, wall, 
 
   // Fresh stage 0: 35 Agility is required before the start hook advances.
   h.skills.set(SKILL.AGILITY, 34);
-  h.emit('npc-dialogue:hook', {
+  const underLevel = h.emit('npc-dialogue:hook', {
     npcId: N.LARRISSA, hook: 'quest:horror-from-the-deep:start',
   });
+  assert.equal(underLevel.end, true, 'refused start stops the transcript');
   assert.equal(h.quest.getStage(h.player), 0, 'under-leveled start stays at stage 0');
   assert.ok(h.messages.some((text) => /Agility level of at least 35/.test(text)));
 
   h.skills.set(SKILL.AGILITY, 35);
+  const noBarcrawl = setup({ barcrawl: false });
+  noBarcrawl.skills.set(SKILL.AGILITY, 35);
+  const missingBarcrawl = noBarcrawl.emit('npc-dialogue:hook', {
+    npcId: N.LARRISSA, hook: 'quest:horror-from-the-deep:start',
+  });
+  assert.equal(missingBarcrawl.end, true, 'missing Barcrawl stops the transcript');
+  assert.equal(noBarcrawl.quest.getStage(noBarcrawl.player), 0, 'missing Barcrawl stays at stage 0');
+  assert.ok(noBarcrawl.messages.some((text) => /Alfred Grimhand's Barcrawl/.test(text)));
+
   h.emit('npc-dialogue:hook', {
     npcId: N.LARRISSA, hook: 'quest:horror-from-the-deep:start',
   });
@@ -308,6 +326,10 @@ test('q059 mandatory handler route: start gate, bridge, key, door, light, wall, 
   assert.equal(h.quest.getStage(h.player), 5, 'an untracked base-ID mother cannot complete the quest');
   h.death(988);
   assert.equal(h.quest.getStage(h.player), 10);
+  // Transcript: "(The player is teleported to outside the strange wall.)", then the player's and Jossik's lines.
+  assert.deepEqual([h.player.getLocation().getX(), h.player.getLocation().getY()], [2514, 3627]);
+  const said = JSON.stringify([...(h.player.dialogues.at(-1)?.getDialogues?.().values() ?? [])]);
+  assert.ok(said.includes("Okay, it's dead! Let's get out of here!"), 'the post-kill transcript plays: ' + said.slice(0, 200));
   for (const id of [35,36,37,38,40,41,42,43,44,45,46,47,48]) assert.equal(h.varbits.get(id), 1, `earned helper flag ${id}`);
   assert.ok(h.varbits.get(34) >= 10);
 });
@@ -392,6 +414,8 @@ test('q059 mother cycles canonical weaknesses and blocks damage from the wrong s
     assert.ok(h.messages.includes(`The Dagannoth changes to ${phases[index + 1].name}...`));
     assert.equal(mother.transformationId, phases[index + 1].id, `${phases[index + 1].name} transition changes cache form`);
   }
+  // Transcript:Horror_from_the_Deep: each change has its overhead (blue "Krrrrrrk" ... green "Krkrkrkrkrkrkrkr").
+  assert.deepEqual(mother.overheads, ['Krrrrrrk', 'Chkhkhkhkhk', 'Krrrrrrssssssss', 'Sssssrrrkkkkk', 'Krkrkrkrkrkrkrkr']);
 
   assert.equal(CombatSpells.WIND_BOLT.spellId(), 1160, 'air bolt is the canonical spell ID, not Curse 1161');
 

@@ -1,3 +1,4 @@
+import { lazyRequire } from "../../../util/LazyRequire";
 import { Entity } from "../Entity";
 import { getSequenceForcedPriority } from "../../cache/NpcAnimationScanner";
 import { Sound } from "../../Sound";
@@ -22,20 +23,21 @@ import { TimerRepository } from "../../../util/timers/TimerRepository";
 import { Misc } from "../../../util/Misc";
 import type { Boundary } from "../../model/Boundary";
 
-const getPlayerCtor = () =>
-  require("./player/Player").Player as typeof import("./player/Player").Player;
-const getNpcCtor = () =>
-  require("./npc/NPC").NPC as typeof import("./npc/NPC").NPC;
-const getCombatCtor = () =>
-  require("../../content/combat/Combat").Combat as typeof import("../../content/combat/Combat").Combat;
-const getMovementQueueCtor = () =>
-  require("../../model/movement/MovementQueue").MovementQueue as typeof import("../../model/movement/MovementQueue").MovementQueue;
-const getRegionManager = () =>
-  require("../../collision/RegionManager").RegionManager as typeof import("../../collision/RegionManager").RegionManager;
-const getWorld = () =>
-  require("../../World").World as typeof import("../../World").World;
-const getPlayerRights = () =>
-  require("../../model/rights/PlayerRights").PlayerRights as typeof import("../../model/rights/PlayerRights").PlayerRights;
+const getPlayerCtor = lazyRequire(() =>
+  require("./player/Player").Player as typeof import("./player/Player").Player);
+const getNpcCtor = lazyRequire(() =>
+  require("./npc/NPC").NPC as typeof import("./npc/NPC").NPC);
+const getCombatCtor = lazyRequire(() =>
+  require("../../content/combat/Combat").Combat as typeof import("../../content/combat/Combat").Combat);
+const getMovementQueueCtor = lazyRequire(() =>
+  require("../../model/movement/MovementQueue").MovementQueue as typeof import("../../model/movement/MovementQueue").MovementQueue);
+const getRegionManager = lazyRequire(() =>
+  require("../../collision/RegionManager").RegionManager as typeof import("../../collision/RegionManager").RegionManager);
+const getWorld = lazyRequire(() =>
+  require("../../World").World as typeof import("../../World").World);
+const getPlayerRights = lazyRequire(() =>
+  require("../../model/rights/PlayerRights").PlayerRights as typeof import("../../model/rights/PlayerRights").PlayerRights);
+// Not cached: tests reload PluginManager through require.cache, and this runs once per hit, not per check.
 const getPluginManager = () =>
   require("../../../plugins/PluginManager").PluginManager as typeof import("../../../plugins/PluginManager").PluginManager;
 
@@ -85,6 +87,8 @@ export abstract class Mobile extends Entity {
     public updateFlag = new UpdateFlag();
     public positionToFace: Location;
     public animation: Animation;
+    /** Retained after sync so delayed cleanup can identify the last accepted animation. */
+    private animationGeneration = 0;
     public graphic: Graphic;
     private following: Mobile;
     /**
@@ -269,6 +273,7 @@ export abstract class Mobile extends Entity {
         this.graphic = null;
         this.slotGraphics?.clear();
         this.displayedHealth = null;
+        this.healthBarHidden = false;
         this.tintState = null;
     }
 
@@ -289,20 +294,28 @@ export abstract class Mobile extends Entity {
 
     /** What the health bar shows with this tick's hits, when it is not the actor's hitpoints. */
     private displayedHealth: { current: number; max: number; bar?: { id: number; width: number } } | null = null;
+    /** This tick's hits go out without a health bar (`showHitsplat(..., false)`). */
+    private healthBarHidden = false;
 
     /**
      * Shows a hitsplat that changes nothing - a meter other than hitpoints, such as the
      * Wintertodt's cold on the warmth meter. `splat` is the cache hitsplat for the target and
-     * for everyone else; `health`, when given, is what the health bar shows with it.
+     * for everyone else; `health`, when given, is what the health bar shows with it, and `false`
+     * sends the splat with no health bar at all.
      */
     showHitsplat(
         damage: number,
         splat: { mine: number; others: number },
-        health?: { current: number; max: number; bar?: { id: number; width: number } },
+        health?: { current: number; max: number; bar?: { id: number; width: number } } | false,
     ): void {
         const hit = new HitDamage(Math.max(0, Math.trunc(damage)), HitMask.RED).setSplatTypes(splat.mine, splat.others);
         this.addTickHit(hit);
-        if (health) this.displayedHealth = health;
+        if (health === false) this.healthBarHidden = true;
+        else if (health) this.displayedHealth = health;
+    }
+
+    isHealthBarHidden(): boolean {
+        return this.healthBarHidden;
     }
 
     getDisplayedHealth(): { current: number; max: number; bar?: { id: number; width: number } } | null {
@@ -374,6 +387,7 @@ export abstract class Mobile extends Entity {
             }
         }
         this.animation = animation;
+        this.animationGeneration++;
         this.getUpdateFlag().flag(Flag.ANIMATION);
     }
 
@@ -498,7 +512,7 @@ export abstract class Mobile extends Entity {
     /** The animation for an attack, on `target` where it matters (players animate some attacks on NPCs differently). */
     public abstract getAttackAnim(target?: Mobile): number;
 
-    public abstract getAttackSound(): Sound;
+    public abstract getAttackSound(): Sound | null;
 
     public abstract getBlockAnim(): number;
 
@@ -520,6 +534,10 @@ export abstract class Mobile extends Entity {
 
     getAnimation(): Animation {
         return this.animation;
+    }
+
+    getAnimationGeneration(): number {
+        return this.animationGeneration;
     }
 
     /**
@@ -737,7 +755,35 @@ export abstract class Mobile extends Entity {
         if (outcome < 0)
             outcome = 0;
         hit.setHealthLost(this.getHitpoints() - outcome);
+        const source = hit.getSource();
+        // Reflections land separately from the attack, sometimes after their source died.
+        if (hit.isReflected() && source && source !== this && hit.getHealthLost() > 0) {
+            if (this.isNpc()) {
+                // Such a hit pauses regeneration, but it never takes a single-way NPC from
+                // the player fighting it, and a dead or logged-out source tags nobody. While
+                // another attacker is held its own clock is left alone: restarting it would keep
+                // an absent fighter's tag alive, and regeneration (20s) can't start before that
+                // tag expires (6s), which resets the clock anyway.
+                const combat = this.getCombat();
+                const attacker = combat.getAttacker();
+                const sourceLive = source.isRegistered() && source.getHitpoints() > 0;
+                if (sourceLive && (attacker == null || attacker === source)) combat.setUnderAttack(source);
+                else if (attacker == null) combat.getLastAttack().reset();
+            }
+            // A reflection credits its source against another player (PvP kill credit). Against
+            // an NPC it credits nobody unless the hit says it counts — a monster killed by a
+            // ring of recoil alone drops nothing (Wiki: Ring of recoil), while a League's Thorns
+            // damage does count as the wearer's damage. Without that, a thorns kill left the
+            // NPC with no damage-map entry and went to nobody: no kill, no Slayer count or XP,
+            // no loot. `addDamage` ignores a non-player source, so an NPC's reflection credits
+            // nothing either way.
+            if (source.isPlayer() && (this.isPlayer() || hit.creditsItsSource()))
+                this.getCombat().addDamage(source, hit.getHealthLost());
+        }
         this.setHitpoints(outcome);
+        if (hit.getHealthLost() > 0) {
+            getPluginManager().emitCustomEvent("combat:damage-applied", { target: this, hit });
+        }
         return hit;
     }
     /**
@@ -951,7 +997,8 @@ export abstract class Mobile extends Entity {
     }
 
     sendMessage(message: string): void {
-        if (!this.isPlayer() || this.isPlayerBot()) {
+        // A bot an administrator drives (::botcontrol) has their client, so it is told what a player is told.
+        if (!this.isPlayer() || (this.getAsPlayer()?.isUnwatchedBot?.() ?? this.isPlayerBot())) {
             return;
         }
 

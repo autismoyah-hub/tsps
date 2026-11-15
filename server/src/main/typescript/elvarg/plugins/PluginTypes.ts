@@ -8,6 +8,35 @@ import type { DefinitionSource } from "../game/definition/loader/DefinitionLoade
 import type { FriendsChatAction } from "../net/protocol/ClientProtocol";
 import type { PlayerRights } from "../game/model/rights/PlayerRights";
 
+/** Mutable login state after core credential checks, before a player is created. */
+export interface PluginLoginPending {
+  username: string;
+  credentialName: string;
+  profile: import("../game/entity/impl/player/persistence/PlayerProfile").PlayerProfile;
+  passwordHash: string;
+  save: any | null;
+  loginTokens: import("../net/login/LoginTokens").LoginTokenEntry[] | null;
+}
+
+export interface PluginLoginConnection {
+  api: PluginApi;
+  send(packet: Buffer): void;
+  pending(): PluginLoginPending | undefined;
+  isActive(pending: PluginLoginPending): boolean;
+  reserveName(name: string): void;
+  releaseName(name: string): void;
+  isNameBusy(name: string): boolean;
+  reject(code: number, message: string): never;
+}
+
+/** A plugin can extend an authenticated login without owning credentials or socket cleanup. */
+export interface PluginLoginExtension {
+  authenticated?(pending: PluginLoginPending, event: { typedName: string; flags: number; credentials: any }): string | undefined;
+  accepted?(pending: PluginLoginPending): void;
+  packet?(packet: import("../net/protocol/ClientProtocol").ClientMessage): boolean | Promise<boolean>;
+  entered?(pending: PluginLoginPending): void;
+}
+
 /** A player entered a different 64x64 map square (or plane), by walking or teleporting. */
 export interface PluginPlayerMapSquareChangeEvent {
   player: any;
@@ -20,7 +49,7 @@ export interface PluginPlayerLoginEvent {
   username: string;
   /** True only when login created a player because no saved account exists (or no save for this profile). */
   isNewAccount?: boolean;
-  /** "main", or "league" for the league character chosen at login (persistence/PlayerProfile). */
+  /** "main", or the world's own character chosen at login: "league" or "hardcore" (persistence/PlayerProfile). */
   profile?: string;
 }
 
@@ -296,6 +325,8 @@ export interface PluginCanTeleportEvent {
   wildernessLevelLimit?: number;
   /** Where the teleport lands, when the caller knows it. */
   destination?: any;
+  /** Name of the spell, when the teleport comes from a spell cast. */
+  spellName?: string;
   allow: boolean | null;
 }
 
@@ -348,6 +379,8 @@ export interface PluginPrayerDisabledEvent {
 
 export interface PluginSpecialAttackDisabledEvent {
   player: any;
+  /** The actual selected special's registration id, including native offhand selection. Legacy queries may omit it. */
+  specialAttackId?: string;
   disabled: boolean | null;
   /** Shown to the player when disabled is true. */
   message?: string;
@@ -431,6 +464,8 @@ export interface PluginCanBankItemEvent {
   player: any;
   item: any;
   allow: boolean | null;
+  /** A policy query (e.g. the crew's Bank-cargo): refuse without telling the player why. */
+  quiet?: boolean;
 }
 
 export interface PluginCanShopEvent {
@@ -464,6 +499,8 @@ export interface PluginPlayerDeathItemDropEvent {
   /** Prevent the normal floor-item spawn without stopping later death-drop hooks. */
   suppressDefaultDrop: boolean;
   handled: boolean;
+  /** Items a hook adds to the death's losses (to the grave or the floor with the rest); set by core. */
+  extraDrops?: any[];
 }
 
 /**
@@ -510,6 +547,8 @@ export interface PluginPlayerBeforeDeathEvent {
   preventDeath: boolean;
   /** Set false when the plugin says "Oh dear, you are dead!" itself (at the moment it chooses). */
   announce?: boolean;
+  /** The line the respawn tick prints instead of "Oh dear, you are dead!" (a safe minigame's own). */
+  message?: string;
 }
 
 export interface PluginPlayerOptionEvent {
@@ -569,6 +608,13 @@ export interface PluginAttackSpeedEvent {
   target: any;
   combatType: any;
   speed: number;
+}
+
+/** A real hit is being prepared, before accuracy, damage and the target HP cap. */
+export interface PluginCombatHitPrepareEvent {
+  attacker: any;
+  target: any;
+  combatType: any;
 }
 
 export interface PluginCombatHitRollEvent {
@@ -649,6 +695,14 @@ export interface PluginItemUseFilter {
   /**
    * Item on object only: run after every other handler, and only when none handled the use. For an
    * object's own refusal in place of "Nothing interesting happens." ("You can't cook that.").
+   */
+  fallback?: boolean;
+}
+
+export interface PluginItemActionOptions {
+  /**
+   * Run after every other item-action handler, and only when none took the click: an item's own
+   * answer when no content claimed it (a spade dug where nothing is buried).
    */
   fallback?: boolean;
 }
@@ -782,7 +836,10 @@ export interface PluginItemActionEvent {
   slot: number;
   clickType: number;
   option?: string;
+  /** The submenu entry's index, 1-based (the wire index plus one). */
   subOpId?: number;
+  /** The submenu entry's cache label ("Xeric's Glade" under Rub), set by emitItemAction. */
+  subOption?: string;
   handled: boolean;
 }
 
@@ -823,6 +880,8 @@ export interface PluginInterfaceActionClickEvent {
   itemId?: number;
   slot?: number;
   option?: string;
+  /** The op's submenu entry, 1-based (absent or 0 for none). */
+  subOpId?: number;
   targetWidgetId?: number;
   targetSlot?: number;
   targetItemId?: number;
@@ -845,6 +904,11 @@ export interface PluginCombatEngine {
 
 export interface PluginCombatMethodResolver {
   resolve(attacker: any): any | null;
+  /**
+   * Replaces the attack whatever weapon is held (an armed worn item, such as the Dragonfire
+   * shield's blast), so it is asked before the weapon resolvers whatever the plugin load order.
+   */
+  overridesWeapon?: boolean;
 }
 
 export interface PluginCombatSpecialDefinition {
@@ -935,6 +999,7 @@ export interface PluginRangedCombatModifier {
 export interface PluginApi {
   /** Attributes registered hook/area timings to this label while retaining plugin ownership. */
   withProfileLabel(label: string): PluginApi;
+  registerLoginExtension(factory: (connection: PluginLoginConnection) => PluginLoginExtension | undefined): void;
   onPlayerLogin(handler: (event: PluginPlayerLoginEvent) => void): void;
   /** Fires per map square crossed, not per tile: content spread over the map (patches, bird
    * houses) syncs here instead of checking every player every tick. */
@@ -1082,6 +1147,7 @@ export interface PluginApi {
   onPlayerDealtDamage(
     handler: (event: PluginPlayerDealtDamageEvent) => void
   ): void;
+  onCombatHitPrepare(handler: (event: PluginCombatHitPrepareEvent) => void): void;
   onCombatHitRoll(handler: (event: PluginCombatHitRollEvent) => void): void;
   onCombatHitDamage(handler: (event: PluginCombatHitDamageEvent) => void): void;
   /** Lets an attack ignore the attack timer, or leave it untouched (see PluginAttackTimingEvent). */
@@ -1146,7 +1212,11 @@ export interface PluginApi {
   onSpellCast(handler: (event: PluginSpellCastEvent) => void): void;
   onItemAction(handler: (event: PluginItemActionEvent) => void): void;
   /** Exact item name and inventory option matching. Return false to fall through. */
-  onItemAction(itemName: string, actions: Record<string, (event: PluginItemActionEvent) => void | boolean>): void;
+  onItemAction(
+    itemName: string,
+    actions: Record<string, (event: PluginItemActionEvent) => void | boolean>,
+    options?: PluginItemActionOptions
+  ): void;
   onItemDropPolicy(handler: (event: PluginItemDropEvent) => void): void;
   onItemFirstAction(
     handler: (event: PluginItemActionEvent) => void | boolean
@@ -1160,9 +1230,9 @@ export interface PluginApi {
     >
   ): boolean;
   /**
-   * Reads an entry from world.json `pluginConfig` by key, e.g.
-   * `getPluginConfig("TutorialIsland:allowSkip", true)`. Returns `defaultValue`
-   * when the key is not set.
+   * Reads an option from this plugin, e.g. `getPluginConfig("allowSkip", true)`.
+   * Full legacy keys such as `TutorialIsland:allowSkip` also work. Returns
+   * `defaultValue` when the key is not set.
    */
   getPluginConfig<T = unknown>(key: string, defaultValue?: T): T;
   onButton(
@@ -1176,6 +1246,11 @@ export interface PluginApi {
     buttonIds: number | number[],
     handler: (event: PluginInterfaceActionClickEvent) => void | boolean
   ): void;
+  /**
+   * While the player is locked (a teleport's cast, an agility obstacle: Player.isLocked), a click on
+   * one of these buttons answers "Please finish what you are doing first." and reaches no handler.
+   */
+  refuseWhileBusy(buttonIds: number | number[]): void;
   onCommand(handler: (event: PluginCommandEvent) => void): void;
   /**
    * Registers a command handler. `minimumRights` is the lowest rank that may run it -
@@ -1245,6 +1320,17 @@ export interface PluginApi {
     regionId: number,
     source: string | [string, string]
   ): void;
+  /**
+   * Replace a region with in-memory map data (decoded terrain and loc files), reload its
+   * clipping and stream it to connected players. Returns false when it was refused.
+   */
+  replaceMapRegionData(regionId: number, terrainData: Uint8Array, objectData: Uint8Array | null): boolean;
+  /**
+   * Drop this plugin's runtime replacement: native clipping returns and connected clients get
+   * the native map. False when it was refused (another owner, no native map: the replacement is
+   * kept) or when a connected client could not be sent the native map.
+   */
+  restoreMapRegion(regionId: number): boolean;
   registerDefinitionSource(
     definitionType: string,
     source: DefinitionSource
@@ -1267,9 +1353,15 @@ export interface PluginApi {
   setExperienceRate(rate: number): void;
   /**
    * Names the character profile every login on this world gets ("main" by default): a game mode
-   * with characters of its own (Leagues) calls it from its plugin config at startup.
+   * with characters of its own (Leagues, Hardcore Worlds) calls it from its plugin config at startup.
    */
-  setWorldProfile(profile: "main" | "league"): void;
+  setWorldProfile(profile: import("../game/entity/impl/player/persistence/PlayerProfile").PlayerProfile): void;
+  /**
+   * Says what kind of world this is (GameConstants.WORLD_TYPE): script 876's world-type label, the
+   * world-list type flags and activity text. A game mode with worlds of its own (Hardcore Worlds)
+   * calls it from its plugin config at startup.
+   */
+  setWorldType(type: Partial<import("../game/GameConstants").WorldType>): void;
   getActiveRegionSnapshot(): PluginActiveRegionsEvent;
   log(message: string, extra?: Record<string, unknown>): void;
   /**
@@ -1303,7 +1395,7 @@ export interface PluginApi {
   emitCanEat(player: any, itemId: number): boolean | null;
   emitCanDrink(player: any, itemId: number): boolean | null;
   emitCanBank(player: any, source?: string): boolean | null;
-  emitCanBankItem(player: any, item: any): boolean | null;
+  emitCanBankItem(player: any, item: any, options?: { quiet?: boolean }): boolean | null;
   emitShouldKeepItemOnDeath(player: any, item: any): boolean | null;
   emitFiremakingBlocked(event: PluginFiremakingBlockedEvent): boolean;
   emitObjectInteraction(event: PluginObjectInteractionEvent): boolean;
@@ -1360,10 +1452,18 @@ export interface PluginApi {
   /**
    * Adds to the magic damage bonus, in tenths of a percent, before it scales the
    * spell's base max hit - for effects the Wiki counts as magic damage %, like the
-   * salve amulet (i)'s 15% against the undead.
+   * salve amulet (i)'s 15% against the undead. `spell` is the spell whose max hit it is.
    */
   registerMagicDamageBonusModifier(
-    modifier: (entity: any, permille: number) => number
+    modifier: (entity: any, permille: number, spell?: any) => number
+  ): void;
+  /**
+   * Adds percentage points to the magic attack roll; the total scales the roll once, before
+   * the registerMagicAttackAccuracyModifier multipliers (the Wiki DPS calculator adds the
+   * salve amulet (i) and smoke staff bonuses this way). `spell` is the spell being cast.
+   */
+  registerMagicAccuracyPercentModifier(
+    modifier: (entity: any, percent: number, spell?: any) => number
   ): void;
   /**
    * Accuracy modifiers scale the finished attack roll - effective level times
@@ -1387,12 +1487,17 @@ export interface PluginApi {
   registerMagicDefenseModifier(
     modifier: (entity: any, baseHit: number) => number
   ): void;
+  /** Run energy units regained per tick; the graceful set raises the amount. */
   registerRunEnergyRestoreModifier(
-    modifier: (entity: any, delayMs: number) => number
+    modifier: (entity: any, units: number) => number
   ): void;
-  /** Run energy spent per movement step; return 0 to skip the drain. */
+  /** Run energy spent per running tick; return 0 to skip the drain. */
   registerRunEnergyDrainModifier(
     modifier: (entity: any, amount: number) => number
+  ): void;
+  /** Fills the run-energy status the client needs (the stamina effect's remaining ticks). */
+  registerRunEnergyStatusModifier(
+    modifier: (entity: any, status: { staminaTicks: number; staminaMultiplier: number }) => void
   ): void;
   /** Ticks between special-attack restores; a rate-doubling effect halves this. */
   registerSpecialEnergyRestoreModifier(
@@ -1453,16 +1558,23 @@ export interface PluginApi {
  * Typed as `any` on purpose: this is a deliberately thin, evolving surface.
  */
 export interface PluginCoreApi {
+  CrossFloor: typeof import("../game/CrossFloor").CrossFloor;
+  WorldConfigCatalog: typeof import("./WorldConfigCatalog").WorldConfigCatalog;
+  WorldConfigStore: typeof import("../game/definition/WorldConfigStore").WorldConfigStore;
   MeleeCombatMethod: any;
   RangedCombatMethod: any;
   MagicCombatMethod: any;
+  TeleBlock: any;
   CombatMethod: any;
   CombatSpecial: any;
   CombatFactory: any;
   BonusManager: any;
+  EquipmentRequirements: typeof import("../game/model/equipment/EquipmentRequirements").EquipmentRequirements;
   WeaponInterfaces: any;
   Barrows: any;
   applyPrayerDrainModifiers(entity: any, amount: number, context?: any): number;
+  /** Who an attacker's hit is judged against: an area hit's own victim while it is rolled, else the combat target. */
+  hitTargetOf(attacker: any): any;
   CombatEquipment: any;
   CanAttackResponse: any;
   CombatType: any;
@@ -1474,6 +1586,7 @@ export interface PluginCoreApi {
   HitDamage: any;
   HitMask: any;
   RangedWeapon: any;
+  RangedWeaponType: any;
   Ammunition: any;
   WeaponProfiles: any;
   FightStyle: any;
@@ -1484,7 +1597,11 @@ export interface PluginCoreApi {
   ItemActionPacketListener: any;
   /** Run shared item alchemy; plugins authorize opaque alternate payment sources via magic:alchemy-payment. */
   castAlchemy: (player: any, spellId: number | string, itemId: number, slot: number, source?: unknown) => boolean;
+  /** An item's examine text, then the price line the player's settings ask for. */
+  examineItem: typeof import("../game/content/ExaminePrice").examineItem;
   ChatType: any;
+  /** `@mes_hl_<colour>@` tags as `<col=...>` for the chatbox's background (ClientProtocol.CHAT_HIGHLIGHTS). */
+  resolveChatHighlights: typeof import("../net/protocol/ClientProtocol").resolveChatHighlights;
   DuelRule: any;
   RegionManager: any;
   Animation: any;
@@ -1515,11 +1632,23 @@ export interface PluginCoreApi {
   ObjectIdentifiers: any;
   ShopIdentifiers: any;
   Misc: any;
+  ChatTextLayout: any;
   TimerKey: any;
+  /** A countdown in whole seconds, the one Trading spaces trade requests with (game/model/SecondsTimer). */
+  SecondsTimer: typeof import("../game/model/SecondsTimer").SecondsTimer;
   Sound: any;
   Sounds: any;
   Location: any;
   Mobile: any;
+  encodeCharacterList: typeof import("../net/protocol/ClientProtocol").encodeCharacterList;
+  encodeCharacterResult: typeof import("../net/protocol/ClientProtocol").encodeCharacterResult;
+  LOGIN_FLAG_CHARACTER_SELECT: number;
+  MAIN_PROFILE: import("../game/entity/impl/player/persistence/PlayerProfile").PlayerProfile;
+  LEAGUE_PROFILE: import("../game/entity/impl/player/persistence/PlayerProfile").PlayerProfile;
+  HARDCORE_PROFILE: import("../game/entity/impl/player/persistence/PlayerProfile").PlayerProfile;
+  /** Every character profile, the main one first (persistence/PlayerProfile). */
+  PLAYER_PROFILES: readonly import("../game/entity/impl/player/persistence/PlayerProfile").PlayerProfile[];
+  Skills: any;
   encodePluginMessage: typeof import("../net/protocol/ClientProtocol").encodePluginMessage;
   encodeChatMessage: typeof import("../net/protocol/ClientProtocol").encodeChatMessage;
   encodeClanSettingsFull: typeof import("../net/protocol/ClientProtocol").encodeClanSettingsFull;
@@ -1531,6 +1660,8 @@ export interface PluginCoreApi {
   XPDROPS_ENABLED_ATTRIBUTE: typeof import("../net/protocol/ClientProtocol").XPDROPS_ENABLED_ATTRIBUTE;
   encodeGameframeBootstrap: typeof import("../net/protocol/ClientProtocol").encodeGameframeBootstrap;
   resolveGameframeRoot: typeof import("../net/protocol/ClientProtocol").resolveGameframeRoot;
+  orbsGroupFor: typeof import("../net/protocol/ClientProtocol").orbsGroupFor;
+  dataOrbsHidden: typeof import("../net/protocol/ClientProtocol").dataOrbsHidden;
   encodeFinePosition: typeof import("../net/protocol/ClientProtocol").encodeFinePosition;
   Boundary: any;
   PolygonalBoundary: any;
@@ -1544,8 +1675,11 @@ export interface PluginCoreApi {
     isEnabled(): boolean;
   };
   World: any;
+  DisplayNames: any;
+  Accounts: any;
   BoatManager: any;
   Sailing: any;
+  BoatMoveMode: typeof import("../game/content/sailing/Boat").BoatMoveMode;
   BOAT_VIEW_DISTANCE: number;
   GameObject: any;
   PrivateArea: any;
@@ -1555,6 +1689,7 @@ export interface PluginCoreApi {
   LocModelType: any;
   MapObjects: any;
   ItemOnGroundManager: any;
+  GroundItemOperationType: any;
   ItemOnGround: any;
   GroundItemState: any;
   ItemDefinition: any;
@@ -1582,6 +1717,8 @@ export interface PluginCoreApi {
   CombatSpells: any;
   Autocasting: any;
   NPC: any;
+  /** World spawns: `requeue(npc)` returns a live spawn to pending, `activateNear(location)` spawns what is due. */
+  NpcSpawnDefinitionLoader: any;
   GameConstants: any;
   Music: any;
   WorldDefinition: any;
@@ -1600,12 +1737,17 @@ export interface PluginCoreApi {
   PlayerRights: any;
   Server: any;
   PluginManager: any;
+  CustomInterfaceRegistry: any;
   ShopManager: any;
   ShopDefinition: any;
   MultiChatboxPrompt: any;
   /** Public chat as a client sends it (filter, mute, broadcast): bots speak through it too. */
   ChatPacketListener: any;
   TradeState: any;
+  controlPlayer: (owner: any, target: any, released: () => void) => boolean;
+  releasePlayerControl: (player: any) => boolean;
+  /** The parked owner left the world: release the controlled player and close the owner's connection. */
+  endPlayerControl: (controlled: any) => boolean;
   dispatchClientMessages: (player: any, messages: any[]) => boolean;
   connectHeadlessClient: (username: string, password: string) => Promise<{ player?: any; error?: string }>;
   CachePipeline: typeof import("../game/cache/CachePipeline").CachePipeline;
@@ -1620,6 +1762,8 @@ export interface PluginCoreApi {
   PrivateChatStatus: typeof import("../game/model/PlayerRelations").PrivateChatStatus;
   SpellTeleports: typeof import("../game/content/combat/magic/SpellTeleports").SpellTeleports;
   LunarSpells: typeof import("../game/content/combat/magic/LunarSpells").LunarSpells;
+  /** The quest each locked spellbook needs, shared by the altars, cape, grimoire and Spellbook Swap. */
+  SpellbookLocks: typeof import("../game/content/combat/magic/SpellbookLocks");
   EffectSpells: typeof import("../game/content/combat/magic/EffectSpells").EffectSpells;
   ArceuusSpells: typeof import("../game/content/combat/magic/ArceuusSpells").ArceuusSpells;
   ArceuusOfferings: typeof import("../game/content/combat/magic/ArceuusOfferings");
@@ -1627,10 +1771,16 @@ export interface PluginCoreApi {
 
 export interface PluginModule {
   name: string;
+  /** One line shown beside the plugin on the world config page. */
+  description?: string;
+  /** pluginConfig options this plugin reads, keyed "<namespace>:<key>". */
+  config?: Record<string, import("../game/definition/WorldSettingDeclarations").ConfigOptionDeclaration>;
   dependsOn?: string[];
-  /** Members content: not loaded when world.json sets membersWorld false. */
+  /** Members content: skipped when the FreeToPlay plugin is enabled. */
   members?: boolean;
   /** False keeps the plugin off unless world.json `plugins` turns it on. */
   enabled?: boolean;
   register(api: PluginApi): void;
+  /** Additional hooks registered at this plugin's path position in the next dependency pass. */
+  registerDeferred?(api: PluginApi): void;
 }

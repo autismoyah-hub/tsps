@@ -3,11 +3,14 @@
  * Wiki DPS calculator):
  * - salve amulet and (i): melee accuracy and damage x7/6; (e) and (ei): x6/5.
  * - (i) also ranged x7/6, and magic +15% accuracy and +15% magic damage; (ei) 20%.
+ *   The magic accuracy adds to other additive percentages (the smoke staves) before
+ *   scaling the roll once, as the Wiki DPS calculator does.
  * The salve wins over a black mask or slayer helmet for any style it boosts; the
  * slayer helmet asks through "salve:applies".
  */
 const { Equipment } = require("../../../src/main/typescript/elvarg/game/model/container/impl/Equipment");
 const { asPlayer, wornName, targetHasAttribute, scale } = require("./GearChecks.EquipmentEffects");
+let weaponProfiles;
 
 const SALVES = new Map([
   ["salve amulet", { melee: [7, 6] }],
@@ -36,9 +39,15 @@ function rangedBoost(entity, value) {
   return salve ? scale(value, ...salve.ranged) : value;
 }
 
-function magicAccuracyBoost(entity, value) {
+function rangedDamageBoost(entity, value) {
+  const player = asPlayer(entity);
+  return player && weaponProfiles?.usesMeleeStrength(player) ? meleeBoost(entity, value) : rangedBoost(entity, value);
+}
+
+/** Magic accuracy in percentage points, added to the smoke staff's before they scale the roll. */
+function magicAccuracyPercent(entity, percent) {
   const salve = activeSalve(entity, "magic");
-  return salve ? scale(value, 100 + salve.magicPercent, 100) : value;
+  return salve ? percent + salve.magicPercent : percent;
 }
 
 /** Magic damage in permille: the salve adds to the magic damage bonus. */
@@ -53,13 +62,14 @@ function salveApplies(payload) {
 }
 
 module.exports = function registerSalveAmuletEffects(api) {
+  weaponProfiles = api.core?.WeaponProfiles;
   api.registerMeleeAttackAccuracyModifier(meleeBoost);
   api.registerMeleeHitModifier(meleeBoost);
   api.registerRangedAttackAccuracyModifier(rangedBoost);
-  api.registerRangedHitModifier(rangedBoost);
-  api.registerMagicAttackAccuracyModifier(magicAccuracyBoost);
+  api.registerRangedHitModifier(rangedDamageBoost);
+  api.registerMagicAccuracyPercentModifier(magicAccuracyPercent);
   api.registerMagicDamageBonusModifier(magicDamageBonus);
   api.onCustomEvent("salve:applies", salveApplies);
 };
 
-module.exports._test = { activeSalve, meleeBoost, rangedBoost, magicAccuracyBoost, magicDamageBonus };
+module.exports._test = { activeSalve, meleeBoost, rangedBoost, magicAccuracyPercent, magicDamageBonus };

@@ -8,6 +8,10 @@
  *     -> sets `completed` true when the task was newly done
  *   api.emitCustomEvent("diary:is-complete", { player, diary: "ardougne", tier: "hard" })
  *     -> sets `complete`
+ *   api.emitCustomEvent("diary:is-started", { player, diary: "western" })
+ *     -> sets `started`
+ *   api.emitCustomEvent("diary:has-task", { player, diary: "western", task: "<task key>" })
+ *     -> sets `done`
  *   api.emitCustomEvent("diary:is-reward-claimed", { player, diary: "western", tier: "elite" })
  *     -> sets `claimed` from the canonical claimed-tier record, not task completion
  *   api.emitCustomEvent("diary:all-complete", { player })
@@ -49,6 +53,18 @@ function onIsComplete(request) {
     request.complete = Progress.isTierComplete(request.player, diary, request.tier);
   }
 }
+function onIsStarted(request) {
+  const diary = BY_KEY.get(request.diary);
+  if (diary && request.player) request.started = Progress.isStarted(request.player, diary);
+}
+
+function onHasTask(request) {
+  const diary = BY_KEY.get(request.diary);
+  if (diary && request.player && typeof request.task === "string") {
+    request.done = Progress.doneTasks(request.player, diary).has(request.task);
+  }
+}
+
 /** Claimed rewards are distinct from completed tasks (e.g. pet eligibility). */
 function onIsRewardClaimed(request) {
   const diary = BY_KEY.get(request.diary);
@@ -100,21 +116,89 @@ function diaryCommand({ player, parts }) {
   return true;
 }
 
+const taskModules = [
+  require("./diaries/ArdougneAleckHunterEmporiumDiary.AchievementDiaries"),
+  require("./diaries/ArdougneBalloonDiary.AchievementDiaries"),
+  require("./diaries/ArdougneBertSandDiary.AchievementDiaries"),
+  require("./diaries/ArdougneCastleChestDiary.AchievementDiaries"),
+  require("./diaries/ArdougneCombatTrainingCampDiary.AchievementDiaries"),
+  require("./diaries/ArdougneDeathRunesDiary.AchievementDiaries"),
+  require("./diaries/ArdougneEliteMantaDiary.AchievementDiaries"),
+  require("./diaries/ArdougneEliteRuneCrossbowDiary.AchievementDiaries"),
+  require("./diaries/ArdougneEliteTaskProgress.AchievementDiaries"),
+  require("./diaries/ArdougneFishingPlatformDiary.AchievementDiaries"),
+  require("./diaries/ArdougneHeroDiary.AchievementDiaries"),
+  require("./diaries/ArdougneIbanStaffDiary.AchievementDiaries"),
+  require("./diaries/ArdougneIceBarrageDiary.AchievementDiaries"),
+  require("./diaries/ArdougneMagicGuildDiary.AchievementDiaries"),
+  require("./diaries/ArdougneMasterFarmerDiary.AchievementDiaries"),
+  require("./diaries/ArdougneNecromancerIslandDiary.AchievementDiaries"),
+  require("./diaries/ArdougneNightshadeDiary.AchievementDiaries"),
+  require("./diaries/ArdougnePalmHealthDiary.AchievementDiaries"),
+  require("./diaries/ArdougnePoisonIvyDiary.AchievementDiaries"),
+  require("./diaries/ArdougneRedSalamanderDiary.AchievementDiaries"),
+  require("./diaries/ArdougneSalveDiary.AchievementDiaries"),
+  require("./diaries/ArdougneSmithingDiary.AchievementDiaries"),
+  require("./diaries/ArdougneStrawberryFarmDiary.AchievementDiaries"),
+  require("./diaries/ArdougneTeleportDiary.AchievementDiaries"),
+  require("./diaries/ArdougneTorstolDiary.AchievementDiaries"),
+  require("./diaries/ArdougneUnicornPenFairyRingDiary.AchievementDiaries"),
+  require("./diaries/ArdougneWatchtowerDiary.AchievementDiaries"),
+  require("./diaries/ArdougneYanilleDoorDiary.AchievementDiaries"),
+  require("./diaries/ArdougneYanilleGrappleDiary.AchievementDiaries"),
+  require("./diaries/DesertFinish.AchievementDiaries"),
+  require("./diaries/FaladorDiary.AchievementDiaries"),
+  require("./diaries/FaladorDiaryRemainder.AchievementDiaries"),
+  require("./diaries/FremennikDiary.AchievementDiaries"),
+  require("./diaries/FremennikLighthouseDiary.AchievementDiaries"),
+  require("./diaries/KandarinDiary.AchievementDiaries"),
+  require("./diaries/KandarinDiaryFinish.AchievementDiaries"),
+  require("./diaries/KaramjaDiary.AchievementDiaries"),
+  require("./diaries/KaramjaDiaryFinish.AchievementDiaries"),
+  require("./diaries/KourendDiaryActivitiesFinish.AchievementDiaries"),
+  require("./diaries/KourendDiarySkillsFinish.AchievementDiaries"),
+  require("./diaries/KourendDiaryTravelFinish.AchievementDiaries"),
+  require("./diaries/KourendKebosDiary.AchievementDiaries"),
+  require("./diaries/LumbridgeDraynorDiary.AchievementDiaries"),
+  require("./diaries/MorytaniaActivities.AchievementDiaries"),
+  require("./diaries/VarrockDiary.AchievementDiaries"),
+  require("./diaries/VarrockDiaryFinish.AchievementDiaries"),
+  require("./diaries/WesternProvincesDiary.AchievementDiaries"),
+  require("./diaries/WildernessDiary.AchievementDiaries"),
+  require("./diaries/WildernessResourceDiary.AchievementDiaries"),
+  require("./diaries/WildernessTriosDiary.AchievementDiaries"),
+];
+
+function registerDiaryTasks(api, { names }) {
+  for (const task of taskModules) {
+    if (task.dependsOn?.some((name) => !names.has(name))) continue;
+    task.register(api);
+  }
+}
+
 module.exports = {
   name: "AchievementDiaries",
+  description: "Achievement diaries: task lists, progress, tier reward claims and lamps, plus the ::diary command to inspect, complete or reset tiers.",
   members: true,
   register(api) {
+    api.onCustomEvent("plugins:loaded", registerDiaryTasks.bind(null, api));
     Progress(api);
     Journal(api);
     Rewards(api);
     Lamps(api);
+    require("./diaries/Cape.AchievementDiaries")(api);
     require("./diaries/Actions.AchievementDiaries")(api);
+    require("./diaries/Desert.AchievementDiaries")(api);
+    require("./diaries/Morytania.AchievementDiaries")(api);
+    require("./diaries/NotedDrops.AchievementDiaries")(api);
     api.onCustomEvent("diary:task", onTask);
     api.onCustomEvent("diary:is-complete", onIsComplete);
+    api.onCustomEvent("diary:is-started", onIsStarted);
+    api.onCustomEvent("diary:has-task", onHasTask);
     api.onCustomEvent("diary:is-reward-claimed", onIsRewardClaimed);
     api.onCustomEvent("diary:all-complete", onAllComplete);
     api.onCustomEvent("diary:tokkul", onTokkul);
     api.registerCommand("diary", diaryCommand, api.core.PlayerRights.ADMINISTRATOR, "Show or set achievement diary progress: ::diary <name> [tier|all] [complete|reset]");
   },
-  _test: { diaryCommand, findDiaries, onTask, onIsComplete, onAllComplete, onTokkul },
+  _test: { diaryCommand, findDiaries, onTask, onIsComplete, onIsStarted, onHasTask, onAllComplete, onTokkul },
 };

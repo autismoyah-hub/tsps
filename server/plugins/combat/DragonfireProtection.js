@@ -1,4 +1,10 @@
 const ATTR_DRAGONFIRE_STATE = "combat:dragonfire:protection";
+/**
+ * The protection's tier and label, saved (the state's wall-clock end isn't: the fire-immunity timer, which pauses
+ * offline, carries the time left). A relog rebuilt the state from the timer alone as a plain antifire, so a super
+ * antifire's immunity came back as only the damage cut.
+ */
+const ATTR_DRAGONFIRE_TIER = "combat:dragonfire:tier";
 
 const DragonfireProtectionTier = Object.freeze({
   NONE: 0,
@@ -29,6 +35,13 @@ const PRAYER_MESSAGE = "Your prayers resist some of the dragon fire!";
 const ANTIFIRE_MESSAGE = "Your antifire potion helps to protect you from the dragon's breath!";
 const SUPER_ANTIFIRE_MESSAGE = "Your super antifire potion completely protects you from the dragon fire!";
 
+/**
+ * Sent for every dragonfire breath that reaches a player, whatever protects them, so a worn
+ * shield can absorb it (the Dragonfire shield gains a charge). Listeners may append
+ * `{ text, spam }` lines to `messages`; they are sent after the protection lines.
+ */
+const DRAGONFIRE_BREATH_EVENT = "combat:dragonfire-breath";
+
 let core;
 let pluginApi;
 
@@ -36,6 +49,7 @@ let pluginApi;
 function initDragonfireProtectionCoreAccess(api) {
   core = api.core;
   pluginApi = api;
+  api.persistAttribute?.(ATTR_DRAGONFIRE_TIER, null);
 }
 
 /**
@@ -68,9 +82,10 @@ function normalizeState(player) {
   if (timer && !timer.finished?.()) {
     const secondsRemaining = Number(timer.secondsRemaining?.() ?? 0);
     if (secondsRemaining > 0) {
+      const saved = player.getAttribute?.(ATTR_DRAGONFIRE_TIER);
       const fallbackState = {
-        tier: DragonfireProtectionTier.ANTIFIRE,
-        label: "antifire potion",
+        tier: Number.isFinite(saved?.tier) ? saved.tier : DragonfireProtectionTier.ANTIFIRE,
+        label: typeof saved?.label === "string" && saved.label ? saved.label : "antifire potion",
         endsAt: nowMs + secondsRemaining * 1000,
         warned: false,
       };
@@ -99,6 +114,7 @@ function setDragonfireProtection(player, { tier, seconds, label }) {
   };
 
   player.setAttribute?.(ATTR_DRAGONFIRE_STATE, state);
+  player.setAttribute?.(ATTR_DRAGONFIRE_TIER, { tier: state.tier, label: state.label });
   player.getCombat?.().getFireImmunityTimer?.().start(seconds);
   return true;
 }
@@ -108,6 +124,7 @@ function clearDragonfireProtection(player) {
     return;
   }
   player.setAttribute?.(ATTR_DRAGONFIRE_STATE, null);
+  player.setAttribute?.(ATTR_DRAGONFIRE_TIER, null);
   player.getCombat?.().getFireImmunityTimer?.().stop?.();
 }
 
@@ -131,14 +148,32 @@ function processDragonfireProtection(player) {
  * The player's protection tier: their potion's, or full protection when content makes them immune
  * to dragonfire outright (a league relic answers `combat:status-apply` for it as for poison).
  */
+/** Through the plugin api this module was given; a caller that only handed it `core` goes through core. */
+function emit(name, payload) {
+  const emitter = pluginApi?.emitCustomEvent ? pluginApi : core?.PluginManager;
+  emitter?.emitCustomEvent?.(name, payload);
+}
+
+/** Lets a worn shield absorb the breath; returns `messages` with any lines it added. */
+function emitDragonfireBreath(attacker, player, messages) {
+  emit(DRAGONFIRE_BREATH_EVENT, { attacker, player, messages });
+  return messages;
+}
+
 function getDragonfireProtectionTier(player) {
   const status = { target: player, kind: "dragonfire", allow: true };
-  // Through the plugin api this module was given; a caller that only handed it `core` goes through core.
-  const emitter = pluginApi?.emitCustomEvent ? pluginApi : core?.PluginManager;
-  emitter?.emitCustomEvent?.("combat:status-apply", status);
+  emit("combat:status-apply", status);
   if (status.allow === false) {
     return DragonfireProtectionTier.SUPER_ANTIFIRE;
   }
+  return normalizeState(player)?.tier ?? DragonfireProtectionTier.NONE;
+}
+
+/**
+ * The tier of the antifire potion the player has active, ignoring anything else that protects
+ * them from dragonfire (a league relic's combat:status-apply answer): for tasks about the potion.
+ */
+function getDragonfirePotionTier(player) {
   return normalizeState(player)?.tier ?? DragonfireProtectionTier.NONE;
 }
 
@@ -155,7 +190,8 @@ function resolveChromaticDragonfireDamage(attacker, player, options = {}) {
   if (tier >= DragonfireProtectionTier.SUPER_ANTIFIRE) {
     // The potion's message is the potion's; an immunity granted by content says nothing.
     const potion = (normalizeState(player)?.tier ?? DragonfireProtectionTier.NONE) >= DragonfireProtectionTier.SUPER_ANTIFIRE;
-    return { damage: 0, accurate: true, messages: potion ? [spam(SUPER_ANTIFIRE_MESSAGE)] : [] };
+    const messages = potion ? [spam(SUPER_ANTIFIRE_MESSAGE)] : [];
+    return { damage: 0, accurate: true, messages: emitDragonfireBreath(attacker, player, messages) };
   }
 
   let accurate = true;
@@ -178,7 +214,7 @@ function resolveChromaticDragonfireDamage(attacker, player, options = {}) {
     damage = Math.max(0, damage - ANTIFIRE_REDUCTION);
     messages.push(spam(ANTIFIRE_MESSAGE));
   }
-  return { damage, accurate, messages };
+  return { damage, accurate, messages: emitDragonfireBreath(attacker, player, messages) };
 }
 
 function game(text) {
@@ -203,11 +239,15 @@ function sendDragonfireMessages(player, messages) {
 module.exports = {
   initDragonfireProtectionCoreAccess,
   ATTR_DRAGONFIRE_STATE,
+  ATTR_DRAGONFIRE_TIER,
   DragonfireProtectionTier,
+  DRAGONFIRE_BREATH_EVENT,
+  emitDragonfireBreath,
   setDragonfireProtection,
   clearDragonfireProtection,
   processDragonfireProtection,
   getDragonfireProtectionTier,
+  getDragonfirePotionTier,
   resolveChromaticDragonfireDamage,
   sendDragonfireMessages,
 };

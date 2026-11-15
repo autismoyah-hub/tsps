@@ -15,7 +15,7 @@ const { PluginManager } = require('../dist/plugins/PluginManager');
 const DuelArena = require('../plugins/minigames/DuelArena.plugin');
 const Scoreboard = require('../plugins/minigames/duelarena/Scoreboard.DuelArena');
 
-const hooks = { objects: {}, custom: {}, persisted: new Map(), options: [], deaths: [], logouts: [] };
+const hooks = { objects: {}, custom: {}, persisted: new Map(), options: [], deaths: [], logouts: [], clicks: [] };
 let INTERFACE, BOARD, TEXT;
 let index = 1;
 
@@ -24,6 +24,9 @@ before(() => {
   const noop = () => {};
   const api = new Proxy({
     core: PluginManager.getCoreApi(),
+    getPluginConfig: (key, fallback) => key === 'DuelArena:pvpArenaWorld' ? true : fallback,
+    onInterfaceActionClick: handler => hooks.clicks.push(handler),
+    sendMultiChatboxPrompt: (_player, _title, _label, signUp) => signUp(),
     persistAttribute: (key, value) => hooks.persisted.set(key, value),
     onObjectInteraction: (name, actions) => { (hooks.objects[name] ??= []).push(actions); },
     onCustomEvent: (name, handler) => { (hooks.custom[name] ??= []).push(handler); },

@@ -3,7 +3,13 @@ import type { SeqTypeLoader } from "../rs/config/seqtype/SeqTypeLoader";
 import { WidgetLoader } from "./WidgetLoader";
 import type { WidgetNode } from "./WidgetNode";
 import { runCs1 } from "./cs1/runCs1";
-import { layoutSingleWidget, layoutWidgets } from "./layout/WidgetLayout";
+import { layoutSingleWidget, layoutWidgets, setWidgetLayoutAdjuster, type WidgetLike } from "./layout/WidgetLayout";
+import {
+    isPortraitModeEnabled,
+    isPortraitViewport,
+    setMobilePortraitLayoutActive,
+} from "../game/plugins/portraitmode/PortraitLayout";
+import { adjustMobileHudWidget } from "../game/widgets/MobileHudLayout";
 
 export type { WidgetNode };
 
@@ -71,7 +77,20 @@ export const SCRIPT_LAYOUT = "script-layout";
 
 /** What a script's position, size and hide ops change on a widget. */
 function layoutInputs(w: WidgetNode): string {
-    return `${w.rawX},${w.rawY},${w.rawWidth},${w.rawHeight},${w.xPositionMode},${w.yPositionMode},${w.widthMode},${w.heightMode},${w.isHidden}`;
+    // Absolute-position ops also write x/y; a raw round-trip must not erase a layout adjustment.
+    return `${w.rawX},${w.rawY},${w.rawWidth},${w.rawHeight},${w.xPositionMode},${w.yPositionMode},${w.widthMode},${w.heightMode},${w.isHidden},${w.x},${w.y}`;
+}
+
+/**
+ * Widget.getWidget's group load for a CS2 lookup (IF_/CC_ ops, IF_FIND, CC_FIND): a closed
+ * interface is loaded without counting as opened. Stand-in managers without it just look up.
+ */
+export function loadGroupForCs2Lookup(
+    manager: Pick<WidgetManager, "getGroup"> & Partial<Pick<WidgetManager, "loadGroupForLookup">>,
+    groupId: number,
+): void {
+    if (typeof manager.loadGroupForLookup === "function") manager.loadGroupForLookup(groupId);
+    else manager.getGroup(groupId);
 }
 
 export class WidgetManager {
@@ -130,6 +149,33 @@ export class WidgetManager {
     /** The widget with contentType 1338 - minimap area */
     minimapWidget: WidgetNode | null = null;
 
+    /**
+     * OSRS `minimap_state` (varbit 6719), read from its `toplevel_temp` varp:
+     * 0 enabled, 1 map unclickable, 2 hide map, 3 hide compass,
+     * 4 hide compass and map unclickable, 5 disabled.
+     */
+    minimapState = 0;
+
+    /**
+     * Whether the mobile chatbox is toggled off (varc OSM_CHATBOX_DISABLED, 1220). Set by the
+     * client; windows that reserve the chat's height use it to grow into the freed space.
+     */
+    isMobileChatDisabled: (() => boolean) | null = null;
+
+    private lastMobileChatDisabled = false;
+
+    /**
+     * Lay the All Settings window (group 134) out again when the mobile chat is toggled, so it
+     * grows into or gives back the chat's space (MobileHudLayout). Call between frames.
+     */
+    syncMobileChatToggle(): void {
+        const disabled = this.isMobileChatDisabled?.() ?? false;
+        if (disabled === this.lastMobileChatDisabled) return;
+        this.lastMobileChatDisabled = disabled;
+        const root = this.groups.get(134)?.root;
+        if (root) this.invalidateWidget(root, "chat-toggle");
+    }
+
     /** The widget with contentType 1339 - compass (rotates with camera yaw) */
     compassWidget: WidgetNode | null = null;
 
@@ -161,6 +207,17 @@ export class WidgetManager {
     private groupToContainerUid: Map<number, number> = new Map();
 
     readonly groupLoadedListeners = new Set<(groupId: number) => void>();
+    /**
+     * A sub-interface open of a group that was already loaded (the same dialogue group re-mounted
+     * for its next page). Together with `groupLoadedListeners` this is every interface open, as
+     * RuneLite's WidgetLoaded sees it.
+     */
+    readonly groupRemountedListeners = new Set<(groupId: number) => void>();
+    /**
+     * Groups a CS2 lookup loaded (Widget.getWidget on a closed interface) that no open has
+     * mounted since: their first real open is still the load the listeners above hear about.
+     */
+    private readonly groupsLoadedForLookup = new Set<number>();
     readonly interfaceClosedListeners = new Set<(groupId: number, modalMode: number, unload: boolean) => void>();
 
     onLoadListener?: (scriptId: number, sourceWidget: WidgetNode) => void;
@@ -189,7 +246,7 @@ export class WidgetManager {
     canvasHeight: number = 0;
     private pendingRootOnLoad: number = -1;
 
-    private notifyInterfacesClosed(includeLoadedGroups = false): void {
+    private notifyInterfacesClosed(includeLoadedGroups = false, retainedGroups: ReadonlySet<number> = new Set()): void {
         const groupIds = new Set<number>();
         if (includeLoadedGroups) {
             for (const groupId of this.groups.keys()) {
@@ -203,6 +260,7 @@ export class WidgetManager {
             groupIds.add(parent.group);
         }
         for (const groupId of groupIds) {
+            if (retainedGroups.has(groupId)) continue;
             this.onInterfaceClose?.(groupId);
             for (const listener of this.interfaceClosedListeners) listener(groupId, 0, includeLoadedGroups);
         }
@@ -505,6 +563,18 @@ export class WidgetManager {
             if (((w.type ?? 0) | 0) !== 6) continue;
             const groupId = typeof w.groupId === "number" ? w.groupId | 0 : ((w.uid ?? 0) >>> 16) & 0xffff;
             if (!openGroups.has(groupId)) continue;
+
+            // IF_SETROTATESPEED rotates the model whether or not it has a sequence. Recording
+            // 1723 packs the yaw speed in the high short and the x (pitch) speed in the low.
+            const rotationSpeed = (w.modelRotationSpeed ?? 0) | 0;
+            if (rotationSpeed !== 0) {
+                const speedY = rotationSpeed >> 16;
+                const speedX = (rotationSpeed << 16) >> 16;
+                w.rotationY = ((w.rotationY ?? 0) + speedY * delta) & 2047;
+                w.rotationX = ((w.rotationX ?? 0) + speedX * delta) & 2047;
+                this.invalidateWidgetRender(w, "widget-model-rotation");
+            }
+
             const seqId0 = (w.sequenceId ?? -1) | 0;
             const seqId2 = (w.sequenceId2 ?? -1) | 0;
             if (seqId0 === -1 && seqId2 === -1) continue;
@@ -636,13 +706,19 @@ export class WidgetManager {
         }
     }
 
-    /**
-     * Update canvas dimensions used for root widget sizing
-     * @param width New width
-     * @param height New height
-     */
+    private readonly adjustMobileHud = (node: WidgetLike, width: number, height: number): void => {
+        adjustMobileHudWidget(node, width, height, this);
+    };
+
+    /** Update canvas dimensions used for root widget sizing. */
     resize(width: number, height: number): void {
-        const changed = this.canvasWidth !== width || this.canvasHeight !== height;
+        // Portrait Mode plugin: an upright phone rearranges the mobile gameframe (601).
+        const mobile = this.rootInterface === 601;
+        const portrait = mobile && isPortraitModeEnabled();
+        setWidgetLayoutAdjuster(mobile ? this.adjustMobileHud : null);
+        const portraitChanged = setMobilePortraitLayoutActive(portrait && isPortraitViewport(width, height));
+        const changed =
+            portraitChanged || this.canvasWidth !== width || this.canvasHeight !== height;
         this.canvasWidth = width;
         this.canvasHeight = height;
         if (changed) {
@@ -1419,6 +1495,7 @@ export class WidgetManager {
         this.rootsByGroup.clear();
         this.dynamicChildrenByParent.clear();
         this.loadedGroups = [];
+        this.groupsLoadedForLookup.clear();
         this.loader.clearCache();
 
         // Clear dynamic UID allocators
@@ -1487,6 +1564,19 @@ export class WidgetManager {
      * Only loads if not already loaded (checks loadedGroups array)
      */
     loadGroup(groupId: number): WidgetGroupInstance | undefined {
+        return this.loadGroupInstance(groupId, true);
+    }
+
+    /**
+     * Widget.getWidget's load of a closed interface for a CS2 IF_ op: the widgets exist (decoded
+     * from the cache, onLoad not run), but nothing has opened it, so the open listeners
+     * (RuneLite WidgetLoaded and the plugins on it) wait for its first real open.
+     */
+    loadGroupForLookup(groupId: number): WidgetGroupInstance | undefined {
+        return this.groups.get(groupId) ?? this.loadGroupInstance(groupId, false);
+    }
+
+    private loadGroupInstance(groupId: number, opened: boolean): WidgetGroupInstance | undefined {
         // Check if already loaded
         if (this.loadedGroups[groupId]) {
             return this.groups.get(groupId);
@@ -1502,12 +1592,19 @@ export class WidgetManager {
             // Mark as loaded
             this.loadedGroups[groupId] = true;
             this.onGroupLoaded?.(groupId);
-            for (const listener of this.groupLoadedListeners) listener(groupId);
+            if (opened) for (const listener of this.groupLoadedListeners) listener(groupId);
+            else this.groupsLoadedForLookup.add(groupId);
 
             return instance;
         } catch {
             return undefined;
         }
+    }
+
+    /** A group a CS2 lookup loaded is opened for the first time: that open is its load. */
+    private notifyLookupLoadedGroupOpened(groupId: number): void {
+        if (!this.groupsLoadedForLookup.delete(groupId)) return;
+        for (const listener of this.groupLoadedListeners) listener(groupId);
     }
 
     /**
@@ -1528,6 +1625,7 @@ export class WidgetManager {
 
         // Only unload if actually loaded
         if (!this.loadedGroups[groupId]) return false;
+        this.groupsLoadedForLookup.delete(groupId);
 
         // Clear the group from our maps
         this.clearGroupIndex(groupId);
@@ -1791,8 +1889,14 @@ export class WidgetManager {
      * This loads the interface and triggers onLoad scripts.
      * Does NOT clear widget caches - loaded groups persist in memory
      */
-    setRootInterface(groupId: number): WidgetGroupInstance | undefined {
-        this.notifyInterfacesClosed();
+    setRootInterface(groupId: number, transfers?: ReadonlyMap<number, number>): WidgetGroupInstance | undefined {
+        // A layout transfer keeps the InterfaceParent and its widgets alive. In particular,
+        // bank onLoad deletes/recreates dynamic item slots; replaying an open is not a move.
+        const retained = [...this.interfaceParents].flatMap(([target, parent]) => {
+            const destination = transfers?.get(target);
+            return destination === undefined ? [] : [[destination, parent] as const];
+        });
+        this.notifyInterfacesClosed(false, new Set(retained.map(([, parent]) => parent.group)));
 
         // Do NOT clear all caches here. Widgets stay loaded in memory.
         // Only clear special widget references and interface parents for the new root.
@@ -1805,11 +1909,19 @@ export class WidgetManager {
         // Clear mounted sub-interfaces (they belong to the old root)
         this.interfaceParents.clear();
         this.groupToContainerUid.clear();
+        for (const [target, parent] of retained) {
+            this.interfaceParents.set(target, parent);
+            this.groupToContainerUid.set(parent.group, target);
+        }
         this.timerWidgetPaths = undefined;
-        // Clear runtime widget flags overrides on major interface changes.
-        // Reinitialize widgetFlags when interface parents are refreshed.
-        this.widgetFlagsOverrides.clear();
-        this.widgetOpMaskOverrides.clear();
+        // Mounted interfaces keep their server flags when only the gameframe changes (e.g. an open bank).
+        const gameframes = [161, 164, 165, 548, 601];
+        if (gameframes.includes(this.rootInterface) && gameframes.includes(groupId)) {
+            this.clearWidgetFlagsOverridesForGroup(this.rootInterface);
+        } else {
+            this.widgetFlagsOverrides.clear();
+            this.widgetOpMaskOverrides.clear();
+        }
         this.widgetFlagsVersion++;
 
         // Mark all widgets dirty - major interface change requires full redraw
@@ -1817,11 +1929,14 @@ export class WidgetManager {
 
         this.rootInterface = groupId;
         this.pendingRootOnLoad = -1;
+        // Install the root's layout adjustment before its first mounted interface is laid out.
+        this.resize(this.canvasWidth, this.canvasHeight);
 
         const instance = this.getGroup(groupId);
         if (!instance) {
             return undefined;
         }
+        this.notifyLookupLoadedGroupOpened(groupId);
 
         // Already-cached groups skip the load-time indexing, so always re-find
         // the root's scene viewport/minimap/compass. Without it a layout switch
@@ -1834,6 +1949,16 @@ export class WidgetManager {
         } else {
             this.pendingRootOnLoad = groupId;
         }
+
+        for (const [, parent] of retained) {
+            for (const root of this.getAllGroupRoots(parent.group)) {
+                const width = root.width, height = root.height;
+                this.invalidateWidget(root, "interface-transfer");
+                this.ensureLayout(root);
+                if (root.width !== width || root.height !== height) this.triggerOnResize(root);
+            }
+        }
+        if (retained.length) this.triggerOnSubChange();
 
         return instance;
     }
@@ -1936,12 +2061,14 @@ export class WidgetManager {
         // Close any existing interface mounted here. Reopening the same group keeps it loaded.
         const existing = this.interfaceParents.get(targetUid);
         this.closeSubInterface(targetUid, existing?.group !== groupId);
+        const wasLoaded = this.loadedGroups[groupId] === true && !this.groupsLoadedForLookup.has(groupId);
 
         // Load the interface
         const instance = this.getGroup(groupId);
         if (!instance) {
             return;
         }
+        this.notifyLookupLoadedGroupOpened(groupId);
 
         // Track the mounting
         this.interfaceParents.set(targetUid, { group: groupId, type, closeOnOutsideClick });
@@ -2031,6 +2158,9 @@ export class WidgetManager {
         // This is critical for OSRS - when sub-interfaces are mounted, the root interface's
         // onSubChange handler runs, which calls toplevel_sidebuttons_enable to show/hide tab icons
         this.triggerOnSubChange();
+
+        // An open that did not load the group (it stayed loaded, as a re-mounted dialogue page does).
+        if (wasLoaded) for (const listener of this.groupRemountedListeners) listener(groupId);
     }
 
     /**
@@ -2382,6 +2512,34 @@ export class WidgetManager {
     }
 
     /**
+     * Apply OSRS `minimap_state` (varbit 6719). Native draws the map unless the
+     * state is 2 or 5, and the compass unless it is 3, 4 or 5.
+     */
+    setMinimapState(state: number): void {
+        const next = Math.max(0, Math.min(7, state | 0));
+        if (next === this.minimapState) return;
+        this.minimapState = next;
+        // Repaint the whole frame so a hidden map or compass cannot leave its last
+        // drawn pixels behind.
+        this.invalidateAll();
+    }
+
+    /** OSRS minimap_state: the map is drawn for every state except 2 and 5. */
+    isMinimapMapVisible(): boolean {
+        return this.minimapState !== 2 && this.minimapState !== 5;
+    }
+
+    /** OSRS minimap_state: the compass is drawn only while the state is below 3. */
+    isMinimapCompassVisible(): boolean {
+        return this.minimapState < 3;
+    }
+
+    /** OSRS minimap_state: only states 0 and 3 accept click-to-walk on the map. */
+    isMinimapClickable(): boolean {
+        return this.minimapState === 0 || this.minimapState === 3;
+    }
+
+    /**
      * Update the compass widget's spriteAngle based on camera yaw.
      * In OSRS, the compass is drawn natively using the camera yaw directly.
      * Here we update the widget's spriteAngle property before rendering.
@@ -2389,7 +2547,7 @@ export class WidgetManager {
      * @param cameraYaw Camera yaw in OSRS units (0-2048 = 360 degrees)
      */
     updateCompassAngle(cameraYaw: number): void {
-        if (!this.compassWidget) return;
+        if (!this.compassWidget || !this.isMinimapCompassVisible()) return;
 
         // Convert camera yaw (0-2048) to widget spriteAngle (0-65536)
         // Both represent 360 degrees, so multiply by 32
@@ -2411,7 +2569,7 @@ export class WidgetManager {
      */
     updateMinimap(): void {
         const minimap = this.minimapWidget;
-        if (!minimap || this.isEffectivelyHidden(minimap.uid)) return;
+        if (!minimap || !this.isMinimapMapVisible() || this.isEffectivelyHidden(minimap.uid)) return;
         this.invalidateWidgetRect(minimap);
     }
 }

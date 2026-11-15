@@ -11,10 +11,11 @@
  *   `maxCharges`.
  * - `pairs`: [[chargedId, unchargedId], ...]. Only these staves attack with the built-in spell.
  * - `maxHit(player)`, `attackSpeed`, `range` (Longrange adds `LONGRANGE_EXTRA`), `levelRequired`.
- * - `spell(core)`: the spell's look - `castAnimation`, `startGraphic`, `castSound` (sound id) and
+ * - `spell(core)`: the spell's look - `castAnimation`, `startGraphic`, `castSound` (sound id),
+ *   `impactSound` (sound id, an area sound at the target when the hit lands) and
  *   `castProjectile(cast, castOn)`.
  * - `hitDelay(attacker, target)`: ticks until the hit lands (default: the usual magic delay).
- * - `impact(attacker, target, accurate)`: when set, the impact (or splash) is sent with the cast,
+ * - `impact(attacker, target, accurate, hit)`: when set, the impact (or splash) is sent with the cast,
  *   delayed to the projectile's arrival, as live does; return { graphic, areaSound }. Otherwise
  *   `endGraphic` is shown when the hit lands, and a miss splashes, as for spellbook spells.
  * - `landSound`: a sound the caster hears when the hit lands.
@@ -24,7 +25,8 @@
  * - `canAttack(player, target)`: false refuses (after sending its own message).
  * - `useChargeAt`: "canAttack" (default) or "start".
  * - `noChargesMessage`, `ranOutMessage`, `chargeUsed(player, staff, left)`, `emptied(player)`.
- * - `methodFlags`: properties copied onto the combat method for other content to read.
+ * - `methodFlags`: properties copied onto the combat method for other content to read. Every
+ *   staff's method carries `poweredStaff: true` (the dwarf multicannon's accuracy reads it).
  * - `swapWhenEmpty`: false keeps an emptied staff charged (a revenant weapon keeps its deposit).
  */
 
@@ -65,6 +67,16 @@ function definePoweredStaff(api, config) {
     return charges;
   }
 
+  /**
+   * "item:fill-charges" { player, item, handled }: content that hands out a staff ready to use
+   * (the PvP Arena's load-outs) asks for a full one: charged, at its most charges.
+   */
+  function fillCharges(event) {
+    if (!isStaff(event.item?.getId?.())) return;
+    setCharges(event.item, config.maxCharges);
+    event.handled = true;
+  }
+
   function spellFor(player) {
     let spell = spells.get(player);
     if (spell) return spell;
@@ -78,6 +90,7 @@ function definePoweredStaff(api, config) {
       // Sent with the cast when the staff times its own impact.
       endGraphic: config.impact ? () => null : (look.endGraphic ?? (() => null)),
       castSound: look.castSound,
+      impactSound: look.impactSound,
       // Powered staves pay only the damage-based experience.
       baseExperience: () => 0,
       levelRequired: () => config.levelRequired ?? 1,
@@ -92,9 +105,13 @@ function definePoweredStaff(api, config) {
     const staff = weaponOf(player);
     if (!staff) return;
     // Content may spare the charge (a league relic): the question every powered staff asks.
-    const consume = { player, itemId: staff.getId(), skip: false };
+    // `extra`: charges given back on top (Demonic Pacts' Regenerate above 100%), up to the staff's most.
+    const consume = { player, itemId: staff.getId(), skip: false, extra: 0 };
     api.emitCustomEvent("combat:consume-charge", consume);
-    if (consume.skip) return;
+    if (consume.skip) {
+      if (consume.extra > 0) setCharges(staff, chargesOf(staff) + consume.extra);
+      return;
+    }
     const left = setCharges(staff, chargesOf(staff) - 1);
     config.chargeUsed?.(player, staff, left);
     if (left > 0 || config.swapWhenEmpty === false) return;
@@ -104,8 +121,8 @@ function definePoweredStaff(api, config) {
     if (config.ranOutMessage) player.sendMessage(config.ranOutMessage);
   }
 
-  function sendImpact(attacker, target, accurate) {
-    const impact = config.impact(attacker, target, accurate);
+  function sendImpact(attacker, target, accurate, hit) {
+    const impact = config.impact(attacker, target, accurate, hit);
     if (impact?.graphic) target.performGraphic(impact.graphic);
     const sound = impact?.areaSound;
     const at = target.getLocation?.();
@@ -152,7 +169,7 @@ function definePoweredStaff(api, config) {
         const hit = new PendingHit(character, target, this, { delay, ordinary: true }).setSpell(spell);
         spell.onHitCalc(hit);
         config.onHitCalc?.(hit);
-        if (config.impact) sendImpact(character, target, hit.isAccurate());
+        if (config.impact) sendImpact(character, target, hit.isAccurate(), hit);
         return [hit];
       }
 
@@ -190,7 +207,7 @@ function definePoweredStaff(api, config) {
 
   function getMethod() {
     // Flags other content reads off the method (the Wilderness plugin's warpedSceptreBuiltInSpell).
-    return method ?? (method = Object.assign(buildMethod(), config.methodFlags ?? {}));
+    return method ?? (method = Object.assign(buildMethod(), { poweredStaff: true }, config.methodFlags ?? {}));
   }
 
   function resolve(attacker) {
@@ -230,6 +247,7 @@ function definePoweredStaff(api, config) {
     useCharge,
     chargesOf,
     setCharges,
+    fillCharges,
     weaponOf,
     wields,
     isStaff,
@@ -239,9 +257,18 @@ function definePoweredStaff(api, config) {
   };
 }
 
-/** Projectile cycles from the caster's tile to the target's, the distance packets use. */
-function distance(from, to) {
-  return from.getLocation().getDistance(to.getLocation());
+/**
+ * Tiles from the caster to the target's nearest tile, the distance projectile packets use: a large target is
+ * not measured to its south-west corner (rsprox: seas trident on a size-2 lobster, Eye of Ayak on Tombs of
+ * Amascut bosses; the Sanguinesti staff, #2568). Zero inside the footprint; each caller applies its own minimum.
+ */
+function distance(from, to, CombatPosition) {
+  if (CombatPosition?.edgeDistance) return CombatPosition.edgeDistance(from, to);
+  const at = from.getLocation(), corner = to.getLocation();
+  const size = Math.max(1, to.getSize?.() ?? 1);
+  const dx = Math.max(0, corner.getX() - at.getX(), at.getX() - (corner.getX() + size - 1));
+  const dy = Math.max(0, corner.getY() - at.getY(), at.getY() - (corner.getY() + size - 1));
+  return Math.max(dx, dy);
 }
 
 /** Ticks until a hit lands with a projectile ending `endCycle` (30 cycles a tick). */
@@ -254,4 +281,71 @@ function isPoweredStaffSpell(spell) {
   return spell?.[POWERED_STAFF_SPELL] === true;
 }
 
-module.exports = { definePoweredStaff, distance, ticksFor, isPoweredStaffSpell, LONGRANGE_EXTRA, IMPACT_SOUND_RANGE };
+/** Whether every refund fits at once: a new stack takes a slot of its own, and a matching one needs room. */
+function refundsFit(inventory, refunds) {
+  const meta = (item) => JSON.stringify(item.getMeta?.() ?? null);
+  const newStacks = refunds.filter((refund) => !inventory.getItems().some((held) =>
+    held?.getId() === refund.getId() && meta(held) === meta(refund))).length;
+  return newStacks <= inventory.getFreeSlots() &&
+    refunds.every((refund) => inventory.getAddableAmount(refund) >= refund.getAmount());
+}
+
+const PRESET_TEXT = "Preset items cannot be used for this.";
+
+/** Preset (and other untradeable or unbankable) copies keep their restrictions, so they never pay for charges. */
+function restricted(item) {
+  return !!item && (item.isPresetItem?.() === true || item.isUntradeable?.() === true || item.isUnbankable?.() === true);
+}
+
+/** How many of `id` can pay for a charge: the unrestricted copies. */
+function plainAmount(inventory, id) {
+  // A container without slots (a test stand-in) holds no restricted copies.
+  if (typeof inventory.getItems !== "function") return inventory.getAmount(id);
+  return inventory.getItems().reduce((total, item) =>
+    (item?.getId() === id && !restricted(item) ? total + item.getAmount() : total), 0);
+}
+
+/** Takes `amount` of `id` from its unrestricted copies, leaving any restricted one alone. */
+function takePlain(inventory, id, amount) {
+  if (typeof inventory.getItems !== "function") {
+    inventory.deleteNumber(id, amount);
+    return;
+  }
+  let left = amount;
+  inventory.getItems().forEach((item, slot) => {
+    if (left <= 0 || item?.getId() !== id || restricted(item)) return;
+    const taken = Math.min(left, item.getAmount());
+    inventory.deleteAtSlot(slot, taken);
+    left -= taken;
+  });
+}
+
+/**
+ * The revenant ether weapons' Uncharge and Dismantle ask on the destroy prompt first (DestroyItem's
+ * "destroy-item:confirm"); Yes does the action without a chat message.
+ */
+const ETHER_PROMPT = Object.freeze({
+  UNCHARGE_QUESTION: "Are you sure you want to uncharge it?",
+  UNCHARGE_NOTE: "If you uncharge this weapon, all the revenant ether will be returned to your inventory.",
+  DISMANTLE_QUESTION: "Are you sure you want to dismantle this weapon?",
+  ETHER_NOTE: "Your weapon will be broken down for <col=ef1020>7500 Revenant ether</col>.",
+  COMPONENTS_NOTE: "You will receive its components back.",
+});
+/** The destroy sound, which a confirmed Uncharge plays too. */
+const UNCHARGE_SOUND = 2381;
+
+function askFirst(api, player, item, question, note, confirm) {
+  const slot = player.getInventory().getItems().indexOf(item);
+  api.emitCustomEvent("destroy-item:confirm", { player, item, slot, question, note, confirm });
+}
+
+/** Dismantling for ether: the weapon's objectbox (`text`, wrapped as live sends it) first, then the prompt. */
+function dismantleForEther(api, player, item, text, confirm) {
+  const core = api.core;
+  const chain = new core.DialogueChainBuilder()
+    .add(new core.ItemStatementDialogue(0, item.getId(), text))
+    .add(new core.ActionDialogue(1, { execute: () => askFirst(api, player, item, ETHER_PROMPT.DISMANTLE_QUESTION, ETHER_PROMPT.ETHER_NOTE, confirm) }));
+  player.getDialogueManager().startDialogues(chain);
+}
+
+module.exports = { ETHER_PROMPT, UNCHARGE_SOUND, askFirst, dismantleForEther, definePoweredStaff, refundsFit, restricted, plainAmount, takePlain, PRESET_TEXT, distance, ticksFor, isPoweredStaffSpell, LONGRANGE_EXTRA, IMPACT_SOUND_RANGE };

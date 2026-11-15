@@ -110,17 +110,25 @@ module.exports = function registerClientOfKourendQuest(api) {
   ]);
   const NARRATOR_NPC_ID = PISCARILIUS_VEOS_NPC_ID; // the orb/quill narration chathead
   const PISCARILIUS_LANDING = new Location(1825, 3691, 0);
-  const PORT_SARIM_LANDING = new Location(3054, 3245, 0);
-  const LANDS_END_LANDING = new Location(1504, 3401, 0);
   const ZEAH_VISITED_VARBIT = 4897; // zeah_playerhasvisited, set by the boat ride
+  /**
+   * Saved, since varbits are not: Veos has sailed the player to Great Kourend once. The Wiki's
+   * Wintertodt Camp teleport needs it ("provided they have already taken Veos's ship to Great
+   * Kourend once"); it is sent again at login for everything that reads the varbit.
+   */
+  const ZEAH_VISITED_ATTRIBUTE = "kourend:visited";
+  /** Ferries' routes that land in Great Kourend from Port Sarim or Piscarilius. */
+  const KOUREND_LANDINGS = new Set(["kourend-piscarilius", "kourend-landsend"]);
+  /** Great Kourend and Kebos on the surface (the house's own visit check, House.Construction). */
+  const inKourend = (location) => location.getX() >= 1024 && location.getX() < 2048 && location.getY() >= 3200 && location.getY() < 4096;
   const VEOS_SAIL_ACTION_ID = "WXJllC";
   const PORT_SARIM_DESTINATIONS = new Map([
-    ["I'd like to travel to Port Piscarilius, please.", PISCARILIUS_LANDING],
-    ["I'd like to travel to Land's End, please.", LANDS_END_LANDING],
+    ["I'd like to travel to Port Piscarilius, please.", "kourend-piscarilius"],
+    ["I'd like to travel to Land's End, please.", "kourend-landsend"],
   ]);
   const PISCARILIUS_DESTINATIONS = new Map([
-    ["Travel to Port Sarim.", PORT_SARIM_LANDING],
-    ["Travel to Land's End.", LANDS_END_LANDING],
+    ["Travel to Port Sarim.", "kourend-sarim"],
+    ["Travel to Land's End.", "kourend-landsend"],
   ]);
   const VEOS_DEPARTURE_LINES = new Set([
     "As you wish.",
@@ -372,7 +380,7 @@ module.exports = function registerClientOfKourendQuest(api) {
     if (inventory.get(slot) !== item) return null;
     const manager = player.getSkillManager();
     const before = manager.getExperience(skill);
-    manager.addExperience(skill, LAMP_XP, false);
+    manager.addExperience(skill, LAMP_XP, true);
     if (manager.getExperience(skill) === before) return null;
     inventory.deleteAtSlot(slot, 1);
     return `You have been awarded ${LAMP_XP} ${name ?? skill.getName()} XP!`;
@@ -462,9 +470,14 @@ module.exports = function registerClientOfKourendQuest(api) {
     if (quest.getStage(player) === 0) quest.setStage(player, STAGE_STARTED);
   }
 
+  function markZeahVisited(player) {
+    player.setAttribute(ZEAH_VISITED_ATTRIBUTE, true);
+    player.getPacketSender().sendVarbit(ZEAH_VISITED_VARBIT, 1);
+  }
+
   function landAtPiscarilius(player) {
     player.moveTo(new Location(PISCARILIUS_LANDING.getX(), PISCARILIUS_LANDING.getY(), 0));
-    player.getPacketSender().sendVarbit(ZEAH_VISITED_VARBIT, 1);
+    markZeahVisited(player);
   }
 
   /** X Marks' completed Port Sarim Veos still needs the canonical boat handoff. */
@@ -476,10 +489,10 @@ module.exports = function registerClientOfKourendQuest(api) {
   function rememberSailChoice({ npcId, player, option }) {
     if (!PORT_SARIM_VEOS_NPC_IDS.has(npcId) && !isPiscariliusVeos(npcId)) return;
     travelPending.delete(player);
-    const destination = (isPiscariliusVeos(npcId)
+    const route = (isPiscariliusVeos(npcId)
       ? PISCARILIUS_DESTINATIONS
       : PORT_SARIM_DESTINATIONS).get(option);
-    if (destination) travelPending.set(player, { npcId, destination });
+    if (route) travelPending.set(player, { npcId, route });
   }
 
   function finishSailLine(event) {
@@ -488,13 +501,17 @@ module.exports = function registerClientOfKourendQuest(api) {
     if (!pending || pending.npcId !== npcId || !VEOS_DEPARTURE_LINES.has(text ?? "")) return;
     event.after = () => {
       travelPending.delete(player);
-      player.moveTo(new Location(
-        pending.destination.getX(), pending.destination.getY(), pending.destination.getZ(),
-      ));
-      if (pending.destination === PISCARILIUS_LANDING) {
-        player.getPacketSender().sendVarbit(ZEAH_VISITED_VARBIT, 1);
-      }
+      const request = { player, route: pending.route, handled: false };
+      api.emitCustomEvent("ferries:travel", request);
     };
+  }
+
+  /**
+   * Veos's ship landing in Great Kourend, whoever sails it (Veos, or Cabin Boy Herbert once he
+   * takes over at Port Sarim) and however it was asked for (dialogue or right-click).
+   */
+  function shipArrived({ player, route }) {
+    if (KOUREND_LANDINGS.has(route)) markZeahVisited(player);
   }
 
   /** The post-quest lost-memoirs line has no item step in the dump. */
@@ -658,6 +675,12 @@ module.exports = function registerClientOfKourendQuest(api) {
   }
 
   function handleLogin({ player }) {
+    // Saves from before the visit was kept: Client of Kourend begins on the Piscarilius Veos, and
+    // a player logging in on Kourend got there, so both count as the trip made.
+    if (player.getAttribute(ZEAH_VISITED_ATTRIBUTE) !== true && (quest.getStage(player) > 0 || inKourend(player.getLocation()))) {
+      player.setAttribute(ZEAH_VISITED_ATTRIBUTE, true);
+    }
+    if (player.getAttribute(ZEAH_VISITED_ATTRIBUTE) === true) player.getPacketSender().sendVarbit(ZEAH_VISITED_VARBIT, 1);
     syncHouseVarbits(player);
     refreshQuestList(player);
   }
@@ -667,6 +690,7 @@ module.exports = function registerClientOfKourendQuest(api) {
   }
 
   api.persistAttribute(HOUSES_ATTRIBUTE);
+  api.persistAttribute(ZEAH_VISITED_ATTRIBUTE, false);
 
   quest = registerQuest(api, {
     key: "client_of_kourend",
@@ -704,5 +728,6 @@ module.exports = function registerClientOfKourendQuest(api) {
   api.onItemAction("Mysterious orb", { Activate: activateOrb });
   api.onItemAction("Antique lamp", { Rub: rubLamp });
   api.onPlayerLogin(handleLogin);
+  api.onCustomEvent("ferries:arrived", shipArrived);
   api.onPlayerLogout(handleLogout);
 };

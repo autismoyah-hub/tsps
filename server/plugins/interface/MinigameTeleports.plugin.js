@@ -16,6 +16,12 @@ const { startHomeTeleport, dateMinutes, BUSY_VARBIT } = require("../combat/HomeT
 
 const SPELL_NAME = "minigame teleport";
 const MINIGAMES_INTERFACE = 951;
+const GROUPING_INTERFACE = 76;
+const GROUPING_TELEPORT_CHILD = 32;
+const GROUPING_ACTIVITY_ENUM = 848;
+/** The Teleport button's slot with no activity chosen (client varc 64 is 0). */
+const NO_ACTIVITY_SLOT = 0;
+const NO_TELEPORT = "That activity doesn't have a teleport.";
 const COMPONENT_BY_POSITION_ENUM = 5924;
 const ROW_BY_POSITION_ENUM = 5923;
 const NAME_COLUMN = 1;
@@ -24,14 +30,7 @@ const LAST_MINIGAME_TELEPORT_VARP = 888;
 const LAST_MINIGAME_TELEPORT_ATTRIBUTE = "minigame-teleport:last-minute";
 const VISITED_KELDAGRIM_ATTRIBUTE = "minigame-teleport:visited-keldagrim";
 const VISITED_TITHE_FARM_ATTRIBUTE = "minigame-teleport:visited-tithe-farm";
-const QUEST_KEYS = {
-  "Temple of the Eye": "temple_of_the_eye",
-  "Children of the Sun": "children_of_the_sun",
-  Ratcatchers: "ratcatchers",
-  "Shades of Mort'ton": "shades_of_mort_ton",
-  "Prince Ali Rescue": "prince_ali_rescue",
-  "Cabin Fever": "cabin_fever",
-};
+const OSMAN_GARDEN_UNLOCK_EVENT = "sorceress-s-garden:osman-help-status";
 const VISITED_ATTRIBUTES = {
   Keldagrim: VISITED_KELDAGRIM_ATTRIBUTE,
   "Tithe Farm": VISITED_TITHE_FARM_ATTRIBUTE,
@@ -68,6 +67,19 @@ function minigameAt(childId) {
   return undefined;
 }
 
+/** The Grouping tab's activity at a slot (enum 848), or undefined for none. */
+function groupingActivity(slot) {
+  if (!Number.isInteger(slot) || slot <= 0) return;
+  const name = core.CacheDefinitions.getEnumValues(GROUPING_ACTIVITY_ENUM).get(slot);
+  return typeof name === "string" ? name : undefined;
+}
+
+function groupingMinigame(slot) {
+  const name = groupingActivity(slot);
+  if (!name) return;
+  return Object.entries(minigames).find(([label, entry]) => label === name || entry.groupingName === name)?.[1];
+}
+
 function minutesLeft(lastMinute, now = dateMinutes()) {
   if (!Number.isFinite(lastMinute) || lastMinute <= 0) return 0;
   return Math.max(0, COOLDOWN_MINUTES - (now - lastMinute));
@@ -87,10 +99,18 @@ function refusal(player, minigame) {
   if (minigame.combat && player.getSkillManager().getCombatLevel() < minigame.combat) {
     return `You need a combat level of ${minigame.combat} to go there.`;
   }
+  // By the quest's name, as the data and the quest runtime both spell it: a separate key map
+  // drifted ("shades_of_mort_ton" for the registered "shades_of_mortton", #4294).
   for (const questName of minigame.quests ?? []) {
-    const request = { player, key: QUEST_KEYS[questName], complete: false };
-    if (request.key) pluginApi.emitCustomEvent("quest:is-complete", request);
+    const request = { player, name: questName, complete: false };
+    pluginApi.emitCustomEvent("quest:is-complete", request);
     if (request.complete !== true) return `You need to complete ${questName} to go there.`;
+  }
+  const garden = minigames["Sorceress's Garden"];
+  if (garden && (minigame === garden || minigame?.groupingName === garden.groupingName)) {
+    const status = { player, unlocked: false };
+    pluginApi.emitCustomEvent(OSMAN_GARDEN_UNLOCK_EVENT, status);
+    if (status.unlocked !== true) return "You need to speak to Osman to go there.";
   }
   for (const place of minigame.visited ?? []) {
     const attribute = VISITED_ATTRIBUTES[place];
@@ -109,39 +129,59 @@ function markVisitedTitheFarm({ player }) {
   player.setAttribute(VISITED_TITHE_FARM_ATTRIBUTE, true);
 }
 
+function canStartTeleport(player) {
+  const left = minutesLeft(Number(player.getAttribute(LAST_MINIGAME_TELEPORT_ATTRIBUTE)));
+  if (left > 0) {
+    player.sendMessage(`You must wait another ${left} minutes before you can use the minigame teleports.`);
+    return false;
+  }
+  return core.TeleportHandler.checkReqs(player, player.getLocation());
+}
+
 function castMinigameTeleport(event) {
   if (spellName(event) !== SPELL_NAME) return;
   event.handled = true;
   const { player } = event;
-  const left = minutesLeft(Number(player.getAttribute(LAST_MINIGAME_TELEPORT_ATTRIBUTE)));
-  if (left > 0) {
-    player.sendMessage(`You must wait another ${left} minutes before you can use the minigame teleports.`);
-    return;
-  }
-  if (!core.TeleportHandler.checkReqs(player, player.getLocation())) return;
+  if (!canStartTeleport(player)) return;
   player.getPacketSender().sendVarbit(BUSY_VARBIT, 1).sendInterface(MINIGAMES_INTERFACE);
 }
 
-function teleportTo(player, x, y) {
+function teleportTo(player, x, y, minigameName) {
   const destination = new core.Location(x, y, 0);
   if (!core.TeleportHandler.checkReqs(player, destination)) {
     player.getPacketSender().sendVarbit(BUSY_VARBIT, 0);
     return;
   }
-  startHomeTeleport(core, player, destination, () => {
+  core.TeleportHandler.confirm(player, destination, () => startHomeTeleport(core, player, destination, () => {
     const minute = dateMinutes();
     player.setAttribute(LAST_MINIGAME_TELEPORT_ATTRIBUTE, minute);
     player.getPacketSender().sendConfig(LAST_MINIGAME_TELEPORT_VARP, minute);
-  });
+    if (minigameName) pluginApi.emitCustomEvent("minigame-teleport:arrived", { player, minigame: minigameName });
+  }), 20, { refused: () => player.getPacketSender().sendVarbit(BUSY_VARBIT, 0) });
+}
+
+/** The minigames data key of an entry, for the arrival event (Pest Control's diary task). */
+function minigameName(entry) {
+  return Object.entries(minigames).find(([, candidate]) => candidate === entry)?.[0];
 }
 
 function chooseMinigame(event) {
-  if (event.groupId !== MINIGAMES_INTERFACE) return;
-  const name = minigameAt(event.childId);
-  const minigame = name ? minigames[name] : undefined;
-  if (!minigame) return;
+  const grouping = event.groupId === GROUPING_INTERFACE && event.childId === GROUPING_TELEPORT_CHILD;
+  if (event.groupId !== MINIGAMES_INTERFACE && !grouping) return;
+  if (grouping && (event.opId ?? event.action) !== 1) return;
+  const minigame = grouping ? groupingMinigame(event.slot) : minigames[minigameAt(event.childId)];
+  if (!minigame) {
+    // Live (rev 242), for Tombs of Amascut, Shooting Stars and with no activity chosen (slot 0); the
+    // Wiki lists which have none. A slot past the activities can't be clicked and gets nothing.
+    if (grouping && (event.slot === NO_ACTIVITY_SLOT || groupingActivity(event.slot))) {
+      event.handled = true;
+      event.player.sendMessage(NO_TELEPORT);
+    }
+    return;
+  }
   event.handled = true;
   const { player } = event;
+  if (grouping && !canStartTeleport(player)) return;
   player.getPacketSender().sendInterfaceRemoval();
   const why = refusal(player, minigame);
   if (why) {
@@ -149,7 +189,7 @@ function chooseMinigame(event) {
     return;
   }
   if (!minigame.choices) {
-    teleportTo(player, minigame.x, minigame.y);
+    teleportTo(player, minigame.x, minigame.y, minigameName(minigame));
     return;
   }
   // Rat Pits: which pit, in the chatbox; busy stays set until the choice.
@@ -185,6 +225,7 @@ function attach(api) {
 
 module.exports = {
   name: "MinigameTeleports",
+  description: "Minigame Teleport spell: opens the minigame list, checks requirements, plays the home teleport cast and applies the 20-minute cooldown.",
   register(api) {
     attach(api);
     api.persistAttribute(LAST_MINIGAME_TELEPORT_ATTRIBUTE);

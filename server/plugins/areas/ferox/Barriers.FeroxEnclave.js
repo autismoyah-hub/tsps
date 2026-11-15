@@ -13,6 +13,8 @@ const INSIDE_VARBIT = 6549; // pvp_adjacent_area_client
 const BUFFER_VARBIT = 10530; // wildy_hub_buffer
 const WARNING_VARBIT = 10532; // wildy_hub_warning
 const DONT_ASK_ATTRIBUTE = "ferox:barrier-dont-ask";
+/** All Settings > Warnings: "Show warning on exiting Ferox Enclave", the barrier's own "don't ask again". */
+const WARNING_SETTING = 255;
 
 const CROSS_ANIMATION = 4282; // sos_security_door_drag
 const CROSS_SOUND = 4193;
@@ -30,6 +32,7 @@ function isTeleblocked(player) {
 function cross(player, crossing) {
   const sender = player.getPacketSender();
   const target = new Ferox.core.Location(crossing.target.x, crossing.target.y, crossing.target.z);
+  Ferox.releaseBusy(player);
   sender.sendVarbit(Ferox.BUSY_VARBIT, 1);
   player.setPositionToFace(target);
   player.performAnimation(new Ferox.core.Animation(CROSS_ANIMATION));
@@ -43,18 +46,17 @@ function cross(player, crossing) {
 
 function warnThenCross(player, crossing) {
   const { DialogueChainBuilder, StatementDialogue, ActionDialogue } = Ferox.core;
-  player.getPacketSender().sendVarbit(Ferox.BUSY_VARBIT, 1);
+  Ferox.holdBusy(player);
   player.getDialogueManager().startDialogues(new DialogueChainBuilder().add(
     new StatementDialogue(0, BARRIER_WARNING),
     new ActionDialogue(1, {
       execute: () => Ferox.api.sendMultiChatboxPrompt(player, "Continue through the Barrier?",
         "Yes.", () => cross(player, crossing),
         "Yes, and don't ask again.", () => {
-          player.setAttribute(DONT_ASK_ATTRIBUTE, true);
-          player.getPacketSender().sendVarbit(WARNING_VARBIT, 1);
+          setDontAsk(player, true);
           cross(player, crossing);
         },
-        "No.", () => player.getPacketSender().sendVarbit(Ferox.BUSY_VARBIT, 0)),
+        "No.", () => Ferox.clearBusy(player)),
     }),
   ));
 }
@@ -64,7 +66,7 @@ function passThrough({ player, object }) {
   if (!crossing) return true;
   if (crossing.entering) {
     if (isTeleblocked(player)) {
-      player.sendMessage("A magical force prevents you from entering the Ferox Enclave while teleblocked.");
+      player.sendMessage("<col=ef1020>You are currently teleblocked, it would be too dangerous to allow you into the Enclave.</col>");
       return true;
     }
     cross(player, crossing);
@@ -148,6 +150,17 @@ function registerEnclave(api) {
   api.registerArea(new Enclave([new api.core.Boundary(minX, maxX, minY, maxY, 0)]));
 }
 
+function setDontAsk(player, dontAsk) {
+  player.setAttribute(DONT_ASK_ATTRIBUTE, dontAsk);
+  player.getPacketSender().sendVarbit(WARNING_VARBIT, dontAsk ? 1 : 0);
+}
+
+function warningSettingClicked(request) {
+  if (request.settingId !== WARNING_SETTING) return;
+  request.handled = true;
+  setDontAsk(request.player, request.player.getAttribute(DONT_ASK_ATTRIBUTE) !== true);
+}
+
 function sendWarningVarbit({ player }) {
   if (player.getAttribute(DONT_ASK_ATTRIBUTE) === true) player.getPacketSender().sendVarbit(WARNING_VARBIT, 1);
 }
@@ -157,6 +170,7 @@ module.exports = function attachBarriers(api) {
   api.onObjectFirstClick(Bounds.BARRIER_IDS, passThrough);
   registerEnclave(api);
   api.onPlayerLogin(sendWarningVarbit);
+  api.onCustomEvent("settings:setting-clicked", warningSettingClicked);
 };
 
-Object.assign(module.exports, { passThrough, cross, denySafeZoneAttack, syncState, DONT_ASK_ATTRIBUTE, BARRIER_WARNING });
+Object.assign(module.exports, { passThrough, cross, denySafeZoneAttack, syncState, warningSettingClicked, DONT_ASK_ATTRIBUTE, BARRIER_WARNING });

@@ -1,6 +1,6 @@
 "use strict";
 
-const { CountdownTask, ItemIdentifiers, TaskManager } = require("./Core.Construction");
+const { CountdownTask, ItemIdentifiers, Skill, TaskManager } = require("./Core.Construction");
 const Ids = require("./Ids.Construction");
 const House = require("./House.Construction");
 
@@ -18,6 +18,10 @@ const FULL_KETTLE = Ids.obj("poh_kettle_water");
 const TEA_LEAVES = Ids.obj("poh_tea_leaves");
 const MILK = ItemIdentifiers.BUCKET_OF_MILK;
 const EMPTY_BUCKET = ItemIdentifiers.BUCKET;
+const TEA_COOKING_LEVEL = 20;
+// Wiki (Cup of tea (Player-owned house)): pouring the hot water onto the leaves gives 52 Cooking XP, the only XP in
+// the chain; rsprox_transcripts/229/00269.txt shows the 52 Cooking XP drop right after "You pour the water into the teapot."
+const TEA_COOKING_XP = 52;
 const BOIL_SOUND = 935;
 const BOIL_TICKS = 8;
 // Stove furniture -> its loc with a kettle on (poh_stove_<n>_kettle); the plain firepit has none.
@@ -88,6 +92,12 @@ function swap(player, from, to) {
   player.getInventory().adds(to, 1);
 }
 
+function canPrepareTea(player) {
+  if (player.getSkillManager().getCurrentLevel(Skill.COOKING) >= TEA_COOKING_LEVEL) return true;
+  player.sendMessage(`You need a Cooking level of ${TEA_COOKING_LEVEL} to make tea.`);
+  return false;
+}
+
 /** Item on item: leaves into a teapot, hot water onto the leaves, tea into a cup, milk into tea. */
 function brew(event) {
   const player = event.player;
@@ -97,14 +107,17 @@ function brew(event) {
   let done = false;
   for (const set of SETS) {
     if (has(TEA_LEAVES) && has(set.empty)) {
+      if (!canPrepareTea(player)) { event.handled = true; return; }
       player.getInventory().delete(TEA_LEAVES, 1);
       swap(player, set.empty, set.leaves);
       player.sendMessage("You add the leaves to the teapot.");
       done = true;
     } else if (has(HOT_KETTLE) && has(set.leaves)) {
+      if (!canPrepareTea(player)) { event.handled = true; return; }
       swap(player, HOT_KETTLE, KETTLE);
       swap(player, set.leaves, set.pots[3]);
       player.sendMessage("You pour the water into the teapot.");
+      player.getSkillManager().addExperiences(Skill.COOKING, TEA_COOKING_XP);
       done = true;
     } else if (has(HOT_KETTLE) && has(set.empty)) {
       player.sendMessage("You should add tea leaves to the teapot first.");

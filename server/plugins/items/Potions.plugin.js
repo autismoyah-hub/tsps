@@ -4,20 +4,27 @@ const {
   curePoison,
   boostSkill,
   lowerSkillByCurrent,
-  lowerSkillByMax,
   restoreSkillToBaseWithFormula,
 } = require("./ConsumableEffects");
 const { TimerKey } = require("../../src/main/typescript/elvarg/util/timers/TimerKey");
 const { Skill } = require("../../src/main/typescript/elvarg/game/model/Skill");
+const { ChatType } = require("../../src/main/typescript/elvarg/net/protocol/ClientProtocol");
 const { Sound } = require("../../src/main/typescript/elvarg/game/Sound");
 const { Sounds } = require("../../src/main/typescript/elvarg/game/Sounds");
 const { Animation } = require("../../src/main/typescript/elvarg/game/model/Animation");
+const { Graphic } = require("../../src/main/typescript/elvarg/game/model/Graphic");
+const { World } = require("../../src/main/typescript/elvarg/game/World");
 const { EffectTimer } = require("../../src/main/typescript/elvarg/game/model/EffectTimer");
 const { Item } = require("../../src/main/typescript/elvarg/game/model/Item");
 const { HitDamage } = require("../../src/main/typescript/elvarg/game/content/combat/hit/HitDamage");
 const { HitMask } = require("../../src/main/typescript/elvarg/game/content/combat/hit/HitMask");
 const { ItemIds } = require("../../src/main/typescript/elvarg/util/IdEnums");
 const { ItemIdentifiers: Items } = require("../../src/main/typescript/elvarg/util/ItemIdentifiers");
+const CameraShake = require("../interface/CameraShake.plugin");
+const PlayerHitSounds = require("../combat/PlayerHitSounds.plugin");
+const { allowsBlightedItems, isBlightedItem } = require("./BlightedItems");
+/** Each potion's recorded drink line, by its cache name without the dose (data/potion-drink-lines.json). */
+const DRINK_LINES = require("./data/potion-drink-lines.json").lines;
 const {
   DragonfireProtectionTier,
   processDragonfireProtection,
@@ -30,8 +37,18 @@ let pluginApi;
 const DRINK_ANIMATION = new Animation(829);
 const DEFAULT_EMPTY_ITEM = ItemIds.VIAL;
 const NO_EMPTY_ITEM = -1;
+/** Barcrawl reward: the guard's automatic vial-smashing toggle (barbarian guard). */
+const AUTO_SMASH_VIALS_VARBIT = 5668;
 const STAMINA_DURATION_MS = 2 * 60 * 1000;
+/** Extended stamina potion (Wiki): 40% run energy and a 4-minute drain cut per dose. */
+const EXTENDED_STAMINA_ENERGY = 40;
+const EXTENDED_STAMINA_DURATION_MS = 4 * 60 * 1000;
+/** A ring of endurance spends one charge per stamina dose and two per extended dose (Wiki). */
+const EXTENDED_STAMINA_RING_CHARGES = 2;
 const DIVINE_DURATION_MS = 5 * 60 * 1000;
+/** A divine potion's cost: a 10 hitsplat with the hurt voice, under an electric shock (skeleton_killerwatt_electricshock). */
+const DIVINE_DAMAGE = 10;
+const DIVINE_SHOCK_GRAPHIC = 560;
 const OVERLOAD_DURATION_MS = 5 * 60 * 1000;
 const OVERLOAD_REFRESH_MS = 15 * 1000;
 const OVERLOAD_DAMAGE_INTERVAL_MS = 600;
@@ -53,6 +70,8 @@ const ATTR_BOOST_CYCLE = "potions:boost-cycle";
 const ATTR_BOOST_CYCLE_PRESERVED = "potions:boost-cycle-preserved";
 /** When Preserve was last switched on. */
 const ATTR_PRESERVE_SINCE = "potions:preserve-since";
+/** The last time Preserve was on and past its 15-second warm-up: it still counts for 13 seconds after that. */
+const ATTR_PRESERVE_WARM_AT = "potions:preserve-warm-at";
 /** When the player logged out; timed effects are paused while offline. */
 const ATTR_PAUSED_AT = "potions:paused-at";
 const PERSISTED_ATTRIBUTES = [ATTR_STAMINA_END, ATTR_STAMINA_ACC, ATTR_DIVINE_STATE, ATTR_OVERLOAD_STATE, ATTR_MENAPHITE_STATE, ATTR_PRAYER_REGEN_STATE, ATTR_PRAYER_ENHANCE, ATTR_BOOST_CYCLE, ATTR_PAUSED_AT];
@@ -61,9 +80,11 @@ const BOOST_DECAY_MS = 60 * 1000;
 /** Wiki (Temporary skill boost): Preserve stretches the cycle to 90 seconds once it has been on 15. */
 const PRESERVE_EXTENSION_MS = 30 * 1000;
 const PRESERVE_WARMUP_MS = 15 * 1000;
+// Wiki (Preserve): "Players can turn off Preserve when there are less than 13 seconds left until the next buff
+// drain, and still keep the full effect."
+const PRESERVE_TURN_OFF_GRACE_MS = 13 * 1000;
 const MENAPHITE_DURATION_MS = 5 * 60 * 1000;
 const MENAPHITE_RESTORE_INTERVAL_MS = 15 * 1000;
-const PRAYER_REGEN_DURATION_MS = 8 * 60 * 1000;
 /** Wiki: one Prayer point every 12 ticks (7.2s) for 8 minutes, 66 points total. */
 const PRAYER_REGEN_INTERVAL_MS = 12 * 600;
 
@@ -106,7 +127,7 @@ function setCurrentLevel(player, skill, level) {
 function heal(player, amount, extraCap = 0) {
   const current = getCurrentLevel(player, Skill.HITPOINTS);
   const baseMax = getMaxLevel(player, Skill.HITPOINTS);
-  const max = baseMax + Math.max(0, extraCap);
+  const max = Math.max(current, baseMax + Math.max(0, extraCap));
   player.setHitpoints(clamp(current + amount, 0, max));
 }
 
@@ -116,10 +137,24 @@ function damageButKeepAlive(player, amount) {
   player.setHitpoints(next);
 }
 
-function applyPoisonImmunity(player, seconds, message = true, fullVenomCure = false) {
-  if (player.isVenomed() && !fullVenomCure) {
+/**
+ * The anti-venoms' spam lines (none for the antipoisons: 473 recorded drinks send only "You drink some of
+ * your antipoison potion."). Anti-venom: "It cures your venom." when venomed (rsprox_transcripts/235/03340.txt),
+ * else "It grants you immunity from poison." (234/00799.txt); anti-venom+ and extended: "It grants you immunity
+ * from venom." (226/01637.txt, 224/01439.txt).
+ */
+const ANTI_VENOM_LINE = (wasVenomed) => (wasVenomed ? "It cures your venom." : "It grants you immunity from poison.");
+const ANTI_VENOM_PLUS_LINE = () => "It grants you immunity from venom.";
+const ANTI_VENOM_DOSE_SOURCE = "potions:anti-venom";
+const ANTI_VENOM_PLUS_DOSE_SOURCE = "potions:anti-venom-plus";
+const EXTENDED_ANTI_VENOM_PLUS_DOSE_SOURCE = "potions:extended-anti-venom-plus";
+
+function applyPoisonImmunity(player, seconds, message = true, fullVenomCure = false, line = null, source) {
+  const wasVenomed = player.isVenomed();
+  if (wasVenomed && !fullVenomCure) {
+    // No line of its own: venomed antipoison drinks send only the drink line (rsprox 234/03280.txt:69820,
+    // 223/00014.txt:133172, 227/00572.txt:565041, 234/00787.txt:52834: venom to poison, then that line).
     curePoison(player);
-    if (message) player.sendMessage("The potion weakens the venom to poison.");
     return;
   }
   curePoisonAndVenom(player);
@@ -128,11 +163,20 @@ function applyPoisonImmunity(player, seconds, message = true, fullVenomCure = fa
   const timer = player.getCombat().getPoisonImmunityTimer();
   const remaining = timer.secondsRemaining();
   if (remaining < seconds) {
-    timer.start(seconds);
+    timer.start(seconds, source);
   }
-  if (message) {
-    player.sendMessage(`You are now immune to poison for another ${Math.max(remaining, seconds)} seconds.`);
+  if (message && line) {
+    player.getPacketSender().sendTypedMessage(ChatType.SPAM, line(wasVenomed));
   }
+}
+
+/** Read-only dose provenance/venom query; equipment's brief flag is deliberately separate. */
+function poisonProtection(request) {
+  request.antiVenomPlus = false;
+  const player = request.player;
+  if (!player?.isPlayer?.()) return;
+  const clock = player.getCombat().getPoisonClock();
+  request.antiVenomPlus = clock.getDoseSource() === ANTI_VENOM_PLUS_DOSE_SOURCE && clock.isDoseVenomImmune();
 }
 
 function applyAntifire(player, seconds, tier = DragonfireProtectionTier.ANTIFIRE, label = "antifire potion") {
@@ -159,11 +203,12 @@ function applyPrayerRestore(player, isSuperRestore) {
   restorePrayer(player, isSuperRestore ? 8 : 7, hasPrayerRestoreBonus(player) ? 0.27 : 0.25);
 }
 
+/** Drinking plays only the drink sound: prayer-restoring potions add no prayer recharge sound. */
 function restorePrayer(player, flat, percent) {
   const max = getMaxLevel(player, Skill.PRAYER);
   const restored = Math.floor(flat + max * percent);
-  getSkillManager(player).increaseCurrentLevel(Skill.PRAYER, restored, max);
-  Sounds.sendSound(player, Sound.PRAYER_RECHARGE);
+  const cap = Math.max(max, getCurrentLevel(player, Skill.PRAYER));
+  getSkillManager(player).increaseCurrentLevel(Skill.PRAYER, restored, cap);
 }
 
 /** Sanfew serum (Wiki): 4 + 30% to every stat, prayer 4 + 30% (32% with the bonus). */
@@ -178,10 +223,7 @@ function applySanfewRestore(player) {
 }
 
 function applyRestorePotion(player) {
-  for (const skill of Skill.values()) {
-    if (skill === Skill.HITPOINTS || skill === Skill.PRAYER) {
-      continue;
-    }
+  for (const skill of [Skill.ATTACK, Skill.DEFENCE, Skill.STRENGTH, Skill.RANGED, Skill.MAGIC]) {
     restoreSkillToBaseWithFormula(player, skill, 10, 0.3);
   }
 }
@@ -237,15 +279,20 @@ function applyJarOfCongealedBlood(player) {
   restoreRunEnergy(player, 100);
 }
 
-function applyZamorakBrew(player) {
+/**
+ * `hpDamage(currentHp)` is the brew's Hitpoints cost; the Zamorak mix passes its own (Wiki). The brew's (Wiki, Zamorak
+ * brew): it lowers "current Hitpoints by 12%, rounded down, though it will not lower a player's Hitpoints below the
+ * minimum of 1"; the page's formula and table give floor(Hitpoints x 12/100), with no flat part.
+ * Defence drops by 2 + 10% of the current level (Wiki; rsprox 234/00831 at base 99: 116 -> 103,
+ * 103 -> 91). Prayer gains 10% of the base level (rsprox 237/04060 at base 99: 71 -> 80, 79 -> 88).
+ */
+function applyZamorakBrew(player, hpDamage = (hp) => Math.floor(hp * 0.12)) {
   boostSkill(player, Skill.ATTACK, 2, 0.2);
   boostSkill(player, Skill.STRENGTH, 2, 0.12);
 
-  lowerSkillByMax(player, Skill.DEFENCE, 2, 0.1, 0);
+  lowerSkillByCurrent(player, Skill.DEFENCE, 2, 0.1, 0);
 
-  const hpCurrent = getCurrentLevel(player, Skill.HITPOINTS);
-  const hpDamage = Math.floor(2 + hpCurrent * 0.1);
-  damageButKeepAlive(player, hpDamage);
+  damageButKeepAlive(player, hpDamage(getCurrentLevel(player, Skill.HITPOINTS)));
 
   const maxPrayer = getMaxLevel(player, Skill.PRAYER);
   const prayerBoost = Math.floor(maxPrayer * 0.1);
@@ -267,7 +314,6 @@ function restorePrayerOverheal(player, flat, percent, overPercent = 0.05) {
   const cap = max + Math.floor(max * overPercent);
   const restored = Math.floor(flat + max * percent);
   getSkillManager(player).increaseCurrentLevel(Skill.PRAYER, restored, cap);
-  Sounds.sendSound(player, Sound.PRAYER_RECHARGE);
 }
 
 /** Ancient brew / forgotten brew (Wiki): Magic boost, prayer restore and an Attack/Strength/Defence drain. */
@@ -320,17 +366,56 @@ function processMenaphite(player) {
   }
 }
 
-/** Wiki: restores one Prayer point every 12 ticks for 8 minutes; never over max. */
+/**
+ * The potion's timer, as recorded (rsprox_transcripts/239/04269.txt, 239/04288.txt, 231/02990.txt, normal worlds):
+ * prayer_regeneration_potion_timer starts at 66 and steps down every 12 ticks, a Prayer point each step. At 3 steps
+ * left, "Your Prayer Regeneration potion has almost run out!"; at 0, "The effects of your Prayer Regeneration potion
+ * have worn off." A drink while it runs starts it again at 66. Dying zeroes it with the same worn-off line
+ * (239/04272.txt, 239/04288.txt).
+ */
+const PRAYER_REGEN_STEPS = 66;
+const PRAYER_REGEN_WARNING_STEPS = 3;
+const PRAYER_REGEN_WARNING = "<col=ff3045>Your Prayer Regeneration potion has almost run out!";
+const PRAYER_REGEN_WORN_OFF = "<col=ff3045>The effects of your Prayer Regeneration potion have worn off.";
+
+/**
+ * The client's timer for the potion: prayer_regeneration_potion_timer (11361) holds the steps left. Live sends it on
+ * every change: 0 -> 66 on a drink (rsprox_transcripts/231/02990.txt:8541), a step down every 12 ticks, 57 -> 66 on a
+ * re-drink (239/04272.txt:13136) and -> 0 on expiry or death (239/04272.txt:65174-65180), before the line.
+ */
+const PRAYER_REGEN_TIMER_VARBIT = "prayer_regeneration_potion_timer";
+
+function sendPrayerRegenerationTimer(player, steps) {
+  const id = pluginApi?.core?.CacheDefinitions?.getVarbitId?.(PRAYER_REGEN_TIMER_VARBIT);
+  if (Number.isInteger(id)) player.getPacketSender().sendVarbit(id, steps);
+}
+
+/** Wiki: restores one Prayer point every 12 ticks; never over max. */
 function applyPrayerRegeneration(player) {
   const now = Date.now();
   player.setAttribute(ATTR_PRAYER_REGEN_STATE, {
-    endsAt: now + PRAYER_REGEN_DURATION_MS,
+    left: PRAYER_REGEN_STEPS,
+    endsAt: now + PRAYER_REGEN_STEPS * PRAYER_REGEN_INTERVAL_MS,
     nextRestoreAt: now + PRAYER_REGEN_INTERVAL_MS,
   });
+  sendPrayerRegenerationTimer(player, PRAYER_REGEN_STEPS);
+}
+
+function endPrayerRegeneration(player) {
+  if (!player.getAttribute(ATTR_PRAYER_REGEN_STATE)) return;
+  player.setAttribute(ATTR_PRAYER_REGEN_STATE, null);
+  sendPrayerRegenerationTimer(player, 0);
+  player.sendMessage(PRAYER_REGEN_WORN_OFF);
+}
+
+/** On login the client's timer starts at 0: a potion still running shows its steps again. */
+function resumePrayerRegenerationTimer({ player }) {
+  const left = player.getAttribute(ATTR_PRAYER_REGEN_STATE)?.left;
+  if (Number.isInteger(left) && left > 0) sendPrayerRegenerationTimer(player, left);
 }
 
 function clearPrayerRegeneration({ player }) {
-  player.setAttribute(ATTR_PRAYER_REGEN_STATE, null);
+  endPrayerRegeneration(player);
 }
 
 function processPrayerRegeneration(player) {
@@ -339,8 +424,10 @@ function processPrayerRegeneration(player) {
     return;
   }
   const now = Date.now();
-  if (now >= state.endsAt) {
-    player.setAttribute(ATTR_PRAYER_REGEN_STATE, null);
+  // A state saved before the step count existed has only its end time: the steps that still allows.
+  const steps = Number.isInteger(state.left) ? state.left : Math.ceil((state.endsAt - now) / PRAYER_REGEN_INTERVAL_MS);
+  if (steps <= 0) {
+    endPrayerRegeneration(player);
     return;
   }
   if (now < state.nextRestoreAt) {
@@ -348,6 +435,14 @@ function processPrayerRegeneration(player) {
   }
   const max = getMaxLevel(player, Skill.PRAYER);
   getSkillManager(player).increaseCurrentLevel(Skill.PRAYER, 1, max);
+  const left = steps - 1;
+  if (left <= 0) {
+    endPrayerRegeneration(player);
+    return;
+  }
+  sendPrayerRegenerationTimer(player, left);
+  if (left === PRAYER_REGEN_WARNING_STEPS) player.sendMessage(PRAYER_REGEN_WARNING);
+  state.left = left;
   state.nextRestoreAt = now + PRAYER_REGEN_INTERVAL_MS;
   player.setAttribute(ATTR_PRAYER_REGEN_STATE, state);
 }
@@ -368,6 +463,8 @@ function timedEffectSkillIndexes(player) {
       }
     }
   }
+  // Other items can hold a boost (the saturated heart's Magic): "stats:boost-held" { player, held }.
+  pluginApi.emitCustomEvent("stats:boost-held", { player, held: pinned });
   return pinned;
 }
 
@@ -378,6 +475,7 @@ function timedEffectSkillIndexes(player) {
  * restored by the core (Player.processStatRestoration).
  */
 function processBoostDecay(player) {
+  notePreserveWarm(player, Date.now());
   // An area can hold temporary boosts indefinitely (Rogues' Den); the cycle resumes on leaving.
   const pause = { player, allowed: true };
   pluginApi.emitCustomEvent("stats:boost-decay", pause);
@@ -415,49 +513,149 @@ function processBoostDecay(player) {
   }
 }
 
-/** Preserve stretches a cycle once, when it has been on for 15 seconds as the cycle ends. */
-function preserveStretchesCycle(player, now) {
-  if (player.getAttribute(ATTR_BOOST_CYCLE_PRESERVED)) return false;
+/** `stat_boosts_hud_update_restore_down_timer`: (period, ticks left) of the boost drain cycle. */
+const RESTORE_DOWN_TIMER_SCRIPT = 4518;
+const BOOST_DECAY_TICKS = BOOST_DECAY_MS / 600;
+const PRESERVE_DECAY_TICKS = (BOOST_DECAY_MS + PRESERVE_EXTENSION_MS) / 600;
+
+/**
+ * The modified stats overlay's "Boosts draining" timer, sent alongside the restore timer: the ticks
+ * left in the boost cycle, over a 150-tick period while Preserve is on. With nothing boosted it
+ * shows a full period.
+ */
+function sendBoostDrainTimer({ player }) {
+  if (player?.isPlayerBot?.()) return;
+  const { PrayerHandler } = pluginApi.core;
+  const preserve = PrayerHandler.isActivated(player, PrayerHandler.PRESERVE);
+  const stretched = Boolean(player.getAttribute(ATTR_BOOST_CYCLE_PRESERVED));
+  const now = Date.now();
+  const nextDecayAt = Number(player.getAttribute(ATTR_BOOST_CYCLE));
+  const warmAt = Number(player.getAttribute(ATTR_PRESERVE_WARM_AT));
+  // Preserve, turned off under 13 seconds before this cycle ends, still stretches it.
+  const graceStretch = !preserve && !stretched && warmAt > 0 && nextDecayAt > now && nextDecayAt - warmAt < PRESERVE_TURN_OFF_GRACE_MS;
+  const period = preserve || stretched || graceStretch ? PRESERVE_DECAY_TICKS : BOOST_DECAY_TICKS;
+  // An area holding boosts (Rogues' Den) pauses the cycle: nothing is draining there.
+  const pause = { player, allowed: true };
+  pluginApi.emitCustomEvent("stats:boost-decay", pause);
+  let remaining = period;
+  if (pause.allowed && hasDecayingBoost(player) && Number.isFinite(nextDecayAt) && nextDecayAt > 0) {
+    let decayAt = nextDecayAt;
+    let cycleStretched = stretched;
+    // A cycle ending this tick, before the decay has run: Preserve stretches it, or the next one starts.
+    if (decayAt <= now) {
+      if (preserveStretchesCycle(player, now)) {
+        decayAt += PRESERVE_EXTENSION_MS;
+        cycleStretched = true;
+      } else {
+        decayAt += BOOST_DECAY_MS * (Math.floor((now - decayAt) / BOOST_DECAY_MS) + 1);
+        cycleStretched = false;
+      }
+    }
+    // A cycle Preserve is going to stretch ends 30 seconds later.
+    if (!cycleStretched && (graceStretch || preserve && decayAt - Number(player.getAttribute(ATTR_PRESERVE_SINCE)) >= PRESERVE_WARMUP_MS)) {
+      decayAt += PRESERVE_EXTENSION_MS;
+    }
+    remaining = clamp(Math.ceil((decayAt - now) / 600), 1, period);
+  }
+  player.getPacketSender().sendClientScript(RESTORE_DOWN_TIMER_SCRIPT, period, remaining);
+}
+
+/** Whether a stat sits above its resting level on the boost cycle (not Hitpoints, Prayer or a held boost). */
+function hasDecayingBoost(player) {
+  const pinned = timedEffectSkillIndexes(player);
+  for (const skill of Skill.values()) {
+    const index = skill.getIndex();
+    if (index === Skill.HITPOINTS.getIndex() || index === Skill.PRAYER.getIndex() || pinned.has(index)) continue;
+    if (getCurrentLevel(player, skill) > getSkillManager(player).getRestingLevel(skill)) return true;
+  }
+  return false;
+}
+
+/** Whether Preserve is on and has been for 15 seconds. */
+function preserveWarm(player, now) {
   const { PrayerHandler } = pluginApi.core;
   if (!PrayerHandler.isActivated(player, PrayerHandler.PRESERVE)) return false;
   return now - Number(player.getAttribute(ATTR_PRESERVE_SINCE)) >= PRESERVE_WARMUP_MS;
+}
+
+function notePreserveWarm(player, now) {
+  if (preserveWarm(player, now)) player.setAttribute(ATTR_PRESERVE_WARM_AT, now);
+}
+
+/**
+ * Preserve stretches a cycle once, when it has been on for 15 seconds as the cycle ends, or was
+ * turned off (after its warm-up) under 13 seconds before.
+ */
+function preserveStretchesCycle(player, now) {
+  if (player.getAttribute(ATTR_BOOST_CYCLE_PRESERVED)) return false;
+  if (preserveWarm(player, now)) return true;
+  const warmAt = Number(player.getAttribute(ATTR_PRESERVE_WARM_AT));
+  return warmAt > 0 && now - warmAt < PRESERVE_TURN_OFF_GRACE_MS;
 }
 
 function notePreserveActivated({ player, prayerId }) {
   if (prayerId === pluginApi.core.PrayerHandler.PRESERVE) player.setAttribute(ATTR_PRESERVE_SINCE, Date.now());
 }
 
+/**
+ * A stamina effect from something other than a stamina potion (the Egniol potion): the usual four minutes, no energy of
+ * its own here, and never doubled by a ring of endurance. It still goes through potions:stamina-effect, so the ring
+ * forgets an effect it doubled earlier and a later unequip leaves this one alone.
+ */
 function startStamina(player) {
-  player.setAttribute(ATTR_STAMINA_END, Date.now() + STAMINA_DURATION_MS);
-  player.setAttribute(ATTR_STAMINA_ACC, 0);
+  applyStaminaRequest({ player, energy: 0, ringDoubles: false });
 }
 
 function applyStamina(player) {
   applyStaminaRequest({player});
 }
 
-function applyStaminaRequest({player,energy=20,durationMs=STAMINA_DURATION_MS}) {
-  // Ring of endurance doubles this by mutating the payload (Wiki).
-  const request = { player, energy, durationMs };
+function applyExtendedStamina(player) {
+  applyStaminaRequest({
+    player, energy: EXTENDED_STAMINA_ENERGY, durationMs: EXTENDED_STAMINA_DURATION_MS,
+    charges: EXTENDED_STAMINA_RING_CHARGES,
+  });
+}
+
+function applyStaminaRequest({player,energy=20,durationMs=STAMINA_DURATION_MS,charges=1,ringDoubles=true}) {
+  // Ring of endurance doubles this by mutating the payload and spends `charges` (Wiki), unless the source says it
+  // doesn't (the Agility cape's Stamina Boost).
+  const request = { player, energy, durationMs, charges, ringDoubles };
   pluginApi.emitCustomEvent("potions:stamina-effect", request);
   restoreRunEnergy(player, request.energy);
   player.setAttribute(ATTR_STAMINA_END, Date.now() + request.durationMs);
   player.setAttribute(ATTR_STAMINA_ACC, 0);
+  // Send the effect's remaining time now, so the orb/plugin know before the next running tick.
+  player.getPacketSender().sendRunEnergy();
 }
 
-function applyDivine(player, baseEffect, affectedSkills, { damage = 10 } = {}) {
+/**
+ * Locks the boosted skills for five minutes. A locked Attack also keeps its level at the drink
+ * (`base`), which the client reads from divineattack_potion_base.
+ */
+function applyDivine(player, baseEffect, affectedSkills) {
   baseEffect(player);
-  if (damage > 0) damageButKeepAlive(player, damage);
 
-  const targets = affectedSkills
+  // Each divine potion keeps its own five minutes (Wiki: each lasts "for 5 minutes"): a second one (divine ranging after
+  // divine super combat) adds its skills with their own end, rather than dropping the first one's pinned boosts.
+  const now = Date.now();
+  const endsAt = now + DIVINE_DURATION_MS;
+  const fresh = affectedSkills
     .filter(Boolean)
     .map((skill) => ({
       skillIndex: skill.getIndex(),
       target: getCurrentLevel(player, skill),
+      endsAt,
+      ...(skill === Skill.ATTACK ? { base: getCurrentLevel(player, Skill.ATTACK) } : {}),
     }));
-
+  const previous = player.getAttribute(ATTR_DIVINE_STATE);
+  const kept = (previous && Array.isArray(previous.targets) ? previous.targets : [])
+    .filter((entry) => Number.isInteger(entry?.skillIndex) && !fresh.some((next) => next.skillIndex === entry.skillIndex))
+    .map((entry) => ({ ...entry, endsAt: Number.isFinite(entry.endsAt) ? entry.endsAt : previous.endsAt }))
+    .filter((entry) => entry.endsAt > now);
+  const targets = [...kept, ...fresh];
   player.setAttribute(ATTR_DIVINE_STATE, {
-    endsAt: Date.now() + DIVINE_DURATION_MS,
+    endsAt: Math.max(...targets.map((entry) => entry.endsAt)),
     targets,
   });
 }
@@ -470,7 +668,11 @@ function applyOverloadBoost(player, flat, percent) {
   }
 }
 
-function applyOverload(player, flat = 5, percent = 0.15) {
+/**
+ * `area`: where the effect lives (the raid's potions): it ends, silently, once the player is no longer there.
+ * `tier`: a raid overload's strength for the buff bar, 1 to 3 for (-), plain and (+).
+ */
+function applyOverload(player, flat = 5, percent = 0.15, area = null, tier = 0) {
   const now = Date.now();
   applyOverloadBoost(player, flat, percent);
   player.setAttribute(ATTR_OVERLOAD_STATE, {
@@ -480,10 +682,12 @@ function applyOverload(player, flat = 5, percent = 0.15) {
     damageHitsRemaining: 5,
     flat,
     percent,
+    ...(area ? { area } : {}),
+    ...(tier ? { tier } : {}),
   });
 }
 
-/** Barbarian mixes heal 6 Hitpoints, except antipoison and restore mixes which heal 3 (Wiki). */
+/** Barbarian mixes heal 6 Hitpoints a dose; the attack, antipoison, Relicym's, strength, restore, energy and combat mixes heal 3 (Wiki). */
 function applyMix(baseEffect, healAmount = 6) {
   return (player) => {
     baseEffect(player);
@@ -503,15 +707,43 @@ function canEat(player, itemId) {
  * Why `player` may not drink a dose of `entry` here, as the drink path decides it (the canDrink
  * hooks, the potion's area, food permission, content unlocks, its own canUse); null when they may.
  */
-function drinkRefusal(player, entry) {
+function drinkPermissionRefusal(player, entry) {
   const itemId = entry.itemId;
   if (!canDrink(player, itemId)) return "You cannot use potions here.";
+  // Wiki (Blighted super restore): blighted potions are refused wherever blighted items are not allowed.
+  if (isBlightedItem(pluginApi.core, itemId) && !allowsBlightedItems(pluginApi.core, player)) {
+    return "The blighted potion can be used only in the Wilderness.";
+  }
   if (entry.potion.area && !inArea(player, entry.potion.area)) return AREA_MESSAGES[entry.potion.area] ?? "You cannot use that here.";
   if (entry.potion.requiresFoodPermission && !canEat(player, itemId)) return "You cannot eat here.";
   const permission = { player, itemId, allowed: true, message: null };
   pluginApi.emitCustomEvent("potions:validate-drink", permission);
   if (permission.allowed === false) return permission.message ?? "You cannot use that here.";
-  if (entry.potion.canUse && !entry.potion.canUse(player)) return "You need more than 50 Hitpoints to drink this potion.";
+  return null;
+}
+
+function drinkCanUseRefusal(player, entry) {
+  if (entry.potion.canUse && !entry.potion.canUse(player)) {
+    // A content potion's refusal can depend on the player (the surge potion's time left).
+    const message = typeof entry.potion.canUseMessage === "function"
+      ? entry.potion.canUseMessage(player) : entry.potion.canUseMessage;
+    return message ?? "You need more than 50 Hitpoints to drink this potion.";
+  }
+  return null;
+}
+
+/** Every potion-specific restriction, including a potion's HP requirement. */
+function drinkRefusal(player, entry) {
+  const permissionRefusal = drinkPermissionRefusal(player, entry);
+  if (permissionRefusal) return permissionRefusal;
+  return drinkCanUseRefusal(player, entry);
+}
+
+/** Shared action timer and stun gates for ordinary drinks and the chugging barrel. */
+function drinkTimerRefusal(player) {
+  const timers = player.getTimers();
+  if (timers.has(TimerKey.STUN)) return { kind: "stun", message: "You're currently stunned and cannot use potions." };
+  if (timers.has(TimerKey.POTION)) return { kind: "potion", message: null };
   return null;
 }
 
@@ -524,9 +756,14 @@ function registerPotion(definition) {
     name: definition.name,
     effect: definition.effect,
     canUse: typeof definition.canUse === "function" ? definition.canUse : null,
+    canUseMessage: definition.canUseMessage ?? null,
     area: definition.area ?? null,
     requiresFoodPermission: Boolean(definition.requiresFoodPermission),
     shareable: definition.shareable !== false,
+    // false: the drink keeps the potions' 3-tick delay but doesn't hold up eating (Wiki: Hunter's mixes).
+    eatingDelay: definition.eatingDelay !== false,
+    // false: the chugging barrel won't store it (Wiki: Chugging barrel refuses hunter mixes).
+    chuggable: definition.chuggable !== false,
     // Drinks with their own animation and messages: { animation, messages(itemId) } in place of
     // the potion swig and "You have finished your potion.".
     drink: definition.drink ?? null,
@@ -608,6 +845,239 @@ registerPotion({ name: "Beer", chains: [[Items.BEER]], emptyItemId: Items.BEER_G
     lowerSkillByCurrent(player, Skill.ATTACK, 1, 0.06);
   } });
 
+// https://oldschool.runescape.wiki/w/Cider and /w/Brewing
+registerPotion({ name: "Cider", chains: [[Items.CIDER]], emptyItemId: Items.BEER_GLASS,
+  drink: { messages: () => ["You drink the cider. You feel slightly reinvigorated...", "...and slightly dizzy too."] },
+  requiresFoodPermission: true, shareable: false, effect: player => {
+    heal(player, 1);
+    boostSkill(player, Skill.FARMING, 1, 0);
+    lowerSkillByCurrent(player, Skill.ATTACK, 2, 0.02);
+    lowerSkillByCurrent(player, Skill.STRENGTH, 2, 0.02);
+  } });
+
+/** "You drink the <name>. You feel slightly reinvigorated..." / "...and slightly dizzy too." (spam). */
+const reinvigoratedLines = (drinkName) => () => [`You drink the ${drinkName}. You feel slightly reinvigorated...`, "...and slightly dizzy too."];
+
+// Brewed ales, from the Wiki's effects and rsprox captures of each drink (rec 3455 for Asgarnian ale,
+// rec 20261111T225402-5ab63b4 ticks 9-81 for the rest): human_eat, sound 2401, the lines, a beer glass.
+/** Asgarnian ale (Wiki): Strength +2, Attack -(2 + 5% of current). */
+function drinkAsgarnianAle(player) {
+  boostSkill(player, Skill.STRENGTH, 2, 0);
+  lowerSkillByCurrent(player, Skill.ATTACK, 2, 0.05);
+}
+/**
+ * Greenman's ale: Herblore +1, Attack, Strength and Defence -(2 + 4% of current). The Wiki says 3; two
+ * captures drain 4 at 55-57 (rec 20261111T225402-5ab63b4 tick 48) and 5 at 99 (rsprox_transcripts/229/00264.txt,
+ * the house ale), which 2 + 4% fits.
+ */
+function drinkGreenmansAle(player) {
+  boostSkill(player, Skill.HERBLORE, 1, 0);
+  for (const skill of [Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE]) lowerSkillByCurrent(player, skill, 2, 0.04);
+}
+/** Dragon bitter (Wiki): Strength +2, Attack -(2 + 5% of current); captured 54 -> 50 and 96 -> 90. */
+function drinkDragonBitter(player) {
+  boostSkill(player, Skill.STRENGTH, 2, 0);
+  lowerSkillByCurrent(player, Skill.ATTACK, 2, 0.05);
+}
+/** Chef's delight (Wiki): Cooking +(1 + 5%), Attack and Strength -(2 + 5% of current); captured 60 -> 64 Cooking. */
+function drinkChefsDelight(player) {
+  boostSkill(player, Skill.COOKING, 1, 0.05);
+  lowerSkillByCurrent(player, Skill.ATTACK, 2, 0.05);
+  lowerSkillByCurrent(player, Skill.STRENGTH, 2, 0.05);
+}
+for (const [name, id, heals, effect, lines] of [
+  ["Asgarnian ale", Items.ASGARNIAN_ALE, 1, drinkAsgarnianAle, reinvigoratedLines("ale")],
+  ["Greenman's ale", Items.GREENMANS_ALE, 1, drinkGreenmansAle, () => ["You drink the Greenman's Ale.", "It has a strange taste."]],
+  ["Dragon bitter", Items.DRAGON_BITTER, 1, drinkDragonBitter, reinvigoratedLines("Dragon Bitter")],
+  ["Chef's delight", Items.CHEFS_DELIGHT, 1, drinkChefsDelight, reinvigoratedLines("ale")],
+  // Grog (Wiki): heals 3, Strength +(1 + 4% of base), Attack -(3 + 5% of current); captured 50 -> 45, 54 -> 57.
+  ["Grog", Items.GROG, 3, (player) => {
+    boostSkill(player, Skill.STRENGTH, 1, 0.04);
+    lowerSkillByCurrent(player, Skill.ATTACK, 3, 0.05);
+  }, reinvigoratedLines("grog")],
+]) {
+  registerPotion({ name, chains: [[id]], emptyItemId: Items.BEER_GLASS, drink: { messages: lines },
+    requiresFoodPermission: true, shareable: false, effect: (player) => { heal(player, heals); effect(player); } });
+}
+
+// Keg of beer (Wiki): heals 15, Strength +(2 + 10% of base), Attack -(5 + 50% of current). rsprox captures
+// (rec 20261111T225402-5ab63b4 tick 139): viking_keg_drink_full, one spam line, sound 2401 twice, the keg
+// gone, Attack 29 -> 10, and a camera shake (3, 0, 20, 2) that a camera reset ends 50 ticks later.
+const KEG_SWAY_TICKS = 50;
+// The reset task has its own key per player: other systems call TaskManager.cancelTasks(player) (quest
+// boats, bots) and would otherwise drop the reset and leave the camera swaying.
+const KEG_SWAY_KEYS = new WeakMap();
+function kegSwayKey(player) {
+  if (!KEG_SWAY_KEYS.has(player)) KEG_SWAY_KEYS.set(player, {});
+  return KEG_SWAY_KEYS.get(player);
+}
+function drinkKegOfBeer(player) {
+  heal(player, 15);
+  boostSkill(player, Skill.STRENGTH, 2, 0.1);
+  lowerSkillByCurrent(player, Skill.ATTACK, 5, 0.5);
+  Sounds.sendSound(player, Sound.DRINK);
+  // Ours: the sway is filed under the atmospheric camera shake setting.
+  CameraShake.send(player.getPacketSender(), "atmospheric", 3, 0, 20, 2);
+  // Another keg first starts the sway again, replacing the earlier reset.
+  const { TaskManager, CountdownTask } = pluginApi.core;
+  const key = kegSwayKey(player);
+  TaskManager.cancelTasks(key);
+  TaskManager.submit(new CountdownTask(key, KEG_SWAY_TICKS, () => {
+    KEG_SWAY_KEYS.delete(player);
+    player.getPacketSender().sendCameraReset();
+  }));
+}
+/** Logout drops a pending keg reset; the client starts the next session with its camera reset. */
+function cancelKegSway({ player }) {
+  if (!KEG_SWAY_KEYS.has(player)) return;
+  pluginApi.core.TaskManager.cancelTasks(KEG_SWAY_KEYS.get(player));
+  KEG_SWAY_KEYS.delete(player);
+}
+registerPotion({ name: "Keg of beer", chains: [[Items.KEG_OF_BEER_2]], emptyItemId: null,
+  drink: { animation: 1330, messages: () => ["You chug the keg. You feel reinvigorated...<br>... but extremely drunk too."] },
+  requiresFoodPermission: true, shareable: false, effect: drinkKegOfBeer });
+
+// Spirits (Wiki: Karamjan rum, Vodka, Whisky, Gin, Brandy): heal 5, Strength +(1 + 5% of base),
+// Attack -(3 + 2% of current). rsprox captures (recs 4287, 4101, 4291): human_eat, sound 2401, the two
+// spam lines, nothing left in the slot, and at 99/99 Attack 95 and Strength 104.
+function drinkSpirit(player) {
+  heal(player, 5);
+  boostSkill(player, Skill.STRENGTH, 1, 0.05);
+  lowerSkillByCurrent(player, Skill.ATTACK, 3, 0.02);
+}
+registerPotion({ name: "Karamjan rum", chains: [[Items.KARAMJAN_RUM], [Items.RUM_5]], emptyItemId: null,
+  drink: { messages: () => ["You drink the rum. You feel slightly reinvigorated...", "...and slightly dizzy too."] },
+  requiresFoodPermission: true, shareable: false, effect: drinkSpirit });
+// rsprox captures (rec 20261111T225402-5ab63b4, ticks 94-129): "You drink the <name>. ..." and nothing left;
+// at base Strength 58, Attack 41 -> 38 and Strength 53 -> 56 (vodka), capped at 61 (whisky, gin).
+for (const [name, id, drinkName] of [["Vodka", Items.VODKA, "vodka"], ["Whisky", Items.WHISKY, "whisky"],
+  ["Gin", Items.GIN, "gin"], ["Brandy", Items.BRANDY, "brandy"]]) {
+  registerPotion({ name, chains: [[id]], emptyItemId: null,
+    drink: { messages: () => [`You drink the ${drinkName}. You feel slightly reinvigorated...`, "...and slightly dizzy too."] },
+    requiresFoodPermission: true, shareable: false, effect: drinkSpirit });
+}
+
+// Sailing drinks (Wiki pages of each; they heal nothing). rsprox captures (rec 237/04103, the same
+// session for all): human_eat, sound 2401, two spam lines, the glass left. The cocktails drain
+// Attack, Strength, Defence and Sailing 2 + 2% of current (captured 99 -> 96, 97 -> 94) and boost one
+// skill by 1; the keg ales are flat (Whirlpool surprise Sailing 96 -> 99, Cooking 99 -> 101, Agility
+// 99 -> 97; Horizon's lure Sailing +4, Thieving -2; Trawler's trust Fishing +2, Attack 98 -> 96;
+// Perildance bitter Strength and Ranged +2, Magic 99 -> 97; Kraken ink stout Magic 98 -> 100, Attack
+// 98 -> 96). Ours: Sailing +1 on Perildance bitter and Kraken ink stout, +2 on Trawler's trust (the
+// Wiki's values; the capture's Sailing was already boosted by another drink), and the Wiki's missing
+// Attack -2 on the stout (captured).
+function sailingCocktail(boosted) {
+  return (player) => {
+    boostSkill(player, boosted, 1, 0);
+    for (const skill of [Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE, Skill.SAILING]) lowerSkillByCurrent(player, skill, 2, 0.02);
+  };
+}
+function flatDrink(boosts, drains) {
+  return (player) => {
+    for (const [skill, amount] of boosts) boostSkill(player, skill, amount, 0);
+    for (const [skill, amount] of drains) lowerSkillByCurrent(player, skill, amount, 0);
+  };
+}
+for (const [name, id, emptyItemId, lines, effect] of [
+  ["Barnacle blaster", Items.BARNACLE_BLASTER, Items.COCKTAIL_GLASS,
+    ["You drink the Barnacle blaster.", "It has a bit of a crunch to it."], sailingCocktail(Skill.FISHING)],
+  ["Kraken colada", Items.KRAKEN_COLADA, Items.COCKTAIL_GLASS,
+    ["You drink the Kraken colada.", "You find yourself feeling rather woozy."], sailingCocktail(Skill.SLAYER)],
+  ["Sailor's mirage", Items.SAILORS_MIRAGE, Items.COCKTAIL_GLASS,
+    ["You drink the Sailor's mirage.", "You feel something sharp in your mouth."], sailingCocktail(Skill.HUNTER)],
+  ["Whirlpool surprise", Items.WHIRLPOOL_SURPRISE, Items.BEER_GLASS,
+    ["You drink the rum cocktail. It tastes great!", "You feel inspired to both cook and sail!"],
+    flatDrink([[Skill.COOKING, 2], [Skill.SAILING, 3]], [[Skill.AGILITY, 2]])],
+  ["Horizon's lure", Items.HORIZONS_LURE, Items.BEER_GLASS,
+    ["You drink the rich golden ale. It tastes like a fond memory.", "You feel optimistic about the future."],
+    flatDrink([[Skill.SAILING, 4]], [[Skill.THIEVING, 2]])],
+  ["Trawler's trust", Items.TRAWLERS_TRUST, Items.BEER_GLASS,
+    ["You drink the refreshing beer. It tastes foamy and salty.", "You feel at one with the sea!"],
+    flatDrink([[Skill.SAILING, 2], [Skill.FISHING, 2]], [[Skill.ATTACK, 2]])],
+  ["Perildance bitter", Items.PERILDANCE_BITTER, Items.BEER_GLASS,
+    ["You drink the deep red bitter. It tastes paradoxically sweet!", "You feel your muscles bulge and your sight become sharp!"],
+    flatDrink([[Skill.SAILING, 1], [Skill.STRENGTH, 2], [Skill.RANGED, 2]], [[Skill.MAGIC, 2]])],
+  ["Kraken ink stout", Items.KRAKEN_INK_STOUT, Items.BEER_GLASS,
+    ["You drink the rich stout. It thickly coats the back of your throat.", "Somehow you feel more adept at magic."],
+    flatDrink([[Skill.SAILING, 1], [Skill.MAGIC, 2]], [[Skill.ATTACK, 2]])],
+]) {
+  registerPotion({ name, chains: [[id]], emptyItemId, drink: { messages: () => lines },
+    requiresFoodPermission: true, shareable: false, effect });
+}
+
+// Varlamore wines (Wiki item pages): each heals 16, boosts one skill by 1 (Tonameyo white restores 1
+// Prayer instead) and drains Attack by 5 and one skill by 1. rsprox capture (rsprox.net 4101, tick
+// 1138, Blackbird red at 99s): human_eat, sound 2401, the Wiki's line as two spam messages, the glass
+// gone with nothing left, Attack 99 -> 94, Slayer 99 -> 98, Hunter 99 -> 100. The same recording
+// drinks a Chilhuac red (tick 2837: Attack 94, Cooking 98, Firemaking 100) and a Tonameyo white (tick
+// 3413: Attack 89 -> 84, a flat 5; Thieving 98; no Prayer change at full Prayer), with the same lines. Principum red, Fortis
+// ash white and Xochipaltic rosé have a Drink op but no known effect (the Wiki: not obtainable).
+function varlamoreWine(boosted, drained) {
+  return (player) => {
+    heal(player, 16);
+    if (boosted === Skill.PRAYER) restorePrayer(player, 1, 0);
+    else boostSkill(player, boosted, 1, 0);
+    lowerSkillByCurrent(player, Skill.ATTACK, 5, 0);
+    lowerSkillByCurrent(player, drained, 1, 0);
+  };
+}
+// Varlamore ales and liquor (Wiki item pages; no capture drinks them). Ours: their Wiki line is sent
+// as two spam messages, as the captured wines' are, and nothing is left, as the wines leave nothing.
+/** Sunbeam ale: heals 1, Agility and Strength +1, Attack -(1 + 5% of current). */
+function drinkSunbeamAle(player) {
+  heal(player, 1);
+  boostSkill(player, Skill.AGILITY, 1, 0);
+  boostSkill(player, Skill.STRENGTH, 1, 0);
+  lowerSkillByCurrent(player, Skill.ATTACK, 1, 0.05);
+}
+/** Steamforge brew: heals 1, Mining and Magic +1, Attack and Defence -(2 + 5% of current). */
+function drinkSteamforgeBrew(player) {
+  heal(player, 1);
+  boostSkill(player, Skill.MINING, 1, 0);
+  boostSkill(player, Skill.MAGIC, 1, 0);
+  lowerSkillByCurrent(player, Skill.ATTACK, 2, 0.05);
+  lowerSkillByCurrent(player, Skill.DEFENCE, 2, 0.05);
+}
+/** Moon-lite: heals 5, Strength +(1 + 5%), Attack -(1 + 5% of current). */
+function drinkMoonLite(player) {
+  heal(player, 5);
+  boostSkill(player, Skill.STRENGTH, 1, 0.05);
+  lowerSkillByCurrent(player, Skill.ATTACK, 1, 0.05);
+}
+/** Sun-shine: heals 5, Strength +(1 + 5%), Attack -4. */
+function drinkSunShine(player) {
+  heal(player, 5);
+  boostSkill(player, Skill.STRENGTH, 1, 0.05);
+  lowerSkillByCurrent(player, Skill.ATTACK, 4, 0);
+}
+for (const [name, id, lines, effect] of [
+  ["Blackbird red", Items.BLACKBIRD_RED, ["You drink the Blackbird red.", "Rich flavours flutter across your tongue."],
+    varlamoreWine(Skill.HUNTER, Skill.SLAYER)],
+  ["Chilhuac red", Items.CHILHUAC_RED, ["You drink the Chilhuac red.", "You feel a warmth spreading through you."],
+    varlamoreWine(Skill.FIREMAKING, Skill.COOKING)],
+  ["Eclipse red", Items.ECLIPSE_RED, ["You drink the Eclipse red.", "It tastes great, but maybe not 1,000 coins great."],
+    varlamoreWine(Skill.WOODCUTTING, Skill.FLETCHING)],
+  ["Ixcoztic white", Items.IXCOZTIC_WHITE, ["You drink the Ixcoztic white.", "The citrusy profile perfectly energises your palate."],
+    varlamoreWine(Skill.FARMING, Skill.HERBLORE)],
+  ["Metztonalli white", Items.METZTONALLI_WHITE, ["You drink the Metztonalli white.", "You find yourself feeling refreshed."],
+    varlamoreWine(Skill.RUNECRAFTING, Skill.FIREMAKING)],
+  ["Tonameyo white", Items.TONAMEYO_WHITE, ["You drink the Tonameyo white.", "You feel a divine warmth surround you."],
+    varlamoreWine(Skill.PRAYER, Skill.THIEVING)],
+  ["Chichilihui rosé", Items.CHICHILIHUI_ROS, ["You drink the Chichilihui rosé.", "A graceful calmness settles over you."],
+    varlamoreWine(Skill.HERBLORE, Skill.FARMING)],
+  ["Imperial rosé", Items.IMPERIAL_ROS, ["You drink the Imperial rosé.", "You find yourself captivated by the complex flavours."],
+    varlamoreWine(Skill.SLAYER, Skill.AGILITY)],
+  ["Sunbeam ale", Items.SUNBEAM_ALE, ["You drink the Sunbeam ale.", "It tastes wonderful and leaves you feeling energised."],
+    drinkSunbeamAle],
+  ["Steamforge brew", Items.STEAMFORGE_BREW, ["You drink the Steamforge brew.", "It has an odd metallic taste to it."],
+    drinkSteamforgeBrew],
+  ["Moon-lite", Items.MOON_LITE, ["You drink the Moonlite.", "It's very strong and leaves you feeling a bit dizzy."], drinkMoonLite],
+  ["Sun-shine", Items.SUN_SHINE, ["You drink the Sunshine.", "It's got quite the kick to it!"], drinkSunShine],
+]) {
+  registerPotion({ name, chains: [[id]], emptyItemId: null, drink: { messages: () => lines },
+    requiresFoodPermission: true, shareable: false, effect });
+}
+
 // POH refreshments use the same consumption, cooldown and stat-boost rules as potions, with the
 // cup's own drinking animation and messages (rsprox captures: human_drink_from_teacup_*, "You drink
 // the cup of (milky) tea.", "You feel refreshed and ready for more building.").
@@ -615,47 +1085,86 @@ for (const [id, cup, boost, animation] of [[Items.CUP_OF_TEA_9, Items.EMPTY_CUP_
   [Items.CUP_OF_TEA_11, Items.PORCELAIN_CUP_2, 2, 3703], [Items.CUP_OF_TEA_13, Items.PORCELAIN_CUP_3, 3, 3704]]) {
   registerPotion({ name: "Cup of tea", chains: [[id], [id + 1]], emptyItemId: cup,
     requiresFoodPermission: true, effect: player => boostSkill(player, Skill.CONSTRUCTION, boost, 0),
-    drink: { animation, messages: (itemId) => [itemId === id ? "You drink the cup of tea." : "You drink the cup of milky tea.", "You feel refreshed and ready for more building."] } });
+    // rsprox: the first line is a game message, the second spam.
+    drink: { animation, messages: (itemId) => [{ text: itemId === id ? "You drink the cup of tea." : "You drink the cup of milky tea.", game: true }, "You feel refreshed and ready for more building."] } });
 }
-for (const [id, effect] of [
-  [Items.BEER_3, player => { boostSkill(player, Skill.STRENGTH, 1, 0.02); lowerSkillByCurrent(player, Skill.ATTACK, 1, 0.06); }],
-  [Items.CIDER_3, player => { boostSkill(player, Skill.FARMING, 1, 0); lowerSkillByCurrent(player, Skill.ATTACK, 2, 0); lowerSkillByCurrent(player, Skill.STRENGTH, 2, 0); }],
-  [Items.ASGARNIAN_ALE_3, player => { boostSkill(player, Skill.STRENGTH, 2, 0); lowerSkillByCurrent(player, Skill.ATTACK, 2, 0.05); }],
-  [Items.GREENMANS_ALE_3, player => { boostSkill(player, Skill.HERBLORE, 1, 0); for (const skill of [Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE]) lowerSkillByCurrent(player, skill, 3, 0); }],
-  [Items.DRAGON_BITTER_3, player => { boostSkill(player, Skill.STRENGTH, 2, 0); lowerSkillByCurrent(player, Skill.ATTACK, 2, 0.05); }],
-  [Items.CHEFS_DELIGHT_3, player => { boostSkill(player, Skill.COOKING, 1, 0.05); lowerSkillByCurrent(player, Skill.ATTACK, 2, 0.05); lowerSkillByCurrent(player, Skill.STRENGTH, 2, 0.05); }],
+// The house's own ales (and the stock mind bomb and stout). The house Greenman's ale, Dragon bitter and
+// cider are captured (rsprox_transcripts/229/00264.txt); Ours: the house Beer, Asgarnian ale and Chef's
+// delight are taken to send their stock ale's lines, as the captured Greenman's ale and Dragon bitter do. Wizard's mind bomb's lines are captured (rec 20261111T225402-5ab63b4 tick 9: Magic 70 -> 73,
+// Attack 64 -> 60, Defence 61 -> 57, Strength 58 -> 55); Dwarven stout's are the Wiki's.
+for (const [id, effect, emptyItemId = Items.BEER_GLASS_4, lines = undefined] of [
+  [Items.BEER_3, player => { boostSkill(player, Skill.STRENGTH, 1, 0.02); lowerSkillByCurrent(player, Skill.ATTACK, 1, 0.06); }, undefined, reinvigoratedLines("beer")],
+  [Items.CIDER_3, player => { boostSkill(player, Skill.FARMING, 1, 0); lowerSkillByCurrent(player, Skill.ATTACK, 2, 0); lowerSkillByCurrent(player, Skill.STRENGTH, 2, 0); }, undefined,
+    // rsprox_transcripts/229/00264.txt (poh_cider): two spaces after the first sentence.
+    () => ["You drink the cider.  You feel slightly reinvigorated...", "...and slightly dizzy too."]],
+  [Items.ASGARNIAN_ALE_3, drinkAsgarnianAle, undefined, reinvigoratedLines("ale")],
+  [Items.GREENMANS_ALE_3, drinkGreenmansAle, undefined, () => ["You drink the Greenman's Ale.", "It has a strange taste."]],
+  [Items.DRAGON_BITTER_3, drinkDragonBitter, undefined, reinvigoratedLines("Dragon Bitter")],
+  [Items.CHEFS_DELIGHT_3, drinkChefsDelight, undefined, reinvigoratedLines("ale")],
   // Wiki: Wizard's mind bomb +2/+3 Magic, -1/-5 Attack, Strength and Defence.
-  [Items.WIZARDS_MIND_BOMB, player => { boostSkill(player, Skill.MAGIC, 2, 0.02); for (const skill of [Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE]) lowerSkillByCurrent(player, skill, 1, 0.05); }],
+  [Items.WIZARDS_MIND_BOMB, player => { boostSkill(player, Skill.MAGIC, 2, 0.02); for (const skill of [Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE]) lowerSkillByCurrent(player, skill, 1, 0.05); }, Items.BEER_GLASS,
+    () => ["You drink the Wizard's Mind Bomb.", "You feel very strange."]],
   // Wiki: Dwarven stout +1 Mining and Smithing, -4% - 2 Attack, Strength and Defence.
-  [Items.DWARVEN_STOUT, player => { boostSkill(player, Skill.MINING, 1, 0); boostSkill(player, Skill.SMITHING, 1, 0); for (const skill of [Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE]) lowerSkillByCurrent(player, skill, 2, 0.04); }],
+  [Items.DWARVEN_STOUT, player => { boostSkill(player, Skill.MINING, 1, 0); boostSkill(player, Skill.SMITHING, 1, 0); for (const skill of [Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE]) lowerSkillByCurrent(player, skill, 2, 0.04); }, Items.BEER_GLASS,
+    () => ["You drink the Dwarven Stout. It tastes foul.", "It tastes pretty strong too."]],
   // Wiki: Axeman's folly +1 Woodcutting, -3 Attack and Strength.
-  [Items.AXEMANS_FOLLY, player => { boostSkill(player, Skill.WOODCUTTING, 1, 0); for (const skill of [Skill.ATTACK, Skill.STRENGTH]) lowerSkillByCurrent(player, skill, 3, 0); }],
+  [Items.AXEMANS_FOLLY, player => { boostSkill(player, Skill.WOODCUTTING, 1, 0); for (const skill of [Skill.ATTACK, Skill.STRENGTH]) lowerSkillByCurrent(player, skill, 3, 0); }, Items.BEER_GLASS],
   // Wiki: Bandit's brew +1 Thieving and Attack, -6% - 3 Strength and Defence.
-  [Items.BANDITS_BREW, player => { boostSkill(player, Skill.THIEVING, 1, 0); boostSkill(player, Skill.ATTACK, 1, 0); for (const skill of [Skill.STRENGTH, Skill.DEFENCE]) lowerSkillByCurrent(player, skill, 3, 0.06); }],
+  [Items.BANDITS_BREW, player => { boostSkill(player, Skill.THIEVING, 1, 0); boostSkill(player, Skill.ATTACK, 1, 0); for (const skill of [Skill.STRENGTH, Skill.DEFENCE]) lowerSkillByCurrent(player, skill, 3, 0.06); }, Items.BEER_GLASS],
 ]) {
-  registerPotion({ name: "House ale", chains: [[id]], emptyItemId: Items.BEER_GLASS_4,
+  registerPotion({ name: "House ale", chains: [[id]], emptyItemId, drink: lines ? { messages: lines } : undefined,
     requiresFoodPermission: true, effect: player => { heal(player, 1); effect(player); } });
 }
 
 // Wiki: Moonlight mead heals 4 (mature 6) with no boosts or drains.
-registerPotion({ name: "Moonlight mead", chains: [[Items.MOONLIGHT_MEAD]], emptyItemId: Items.BEER_GLASS_4,
+registerPotion({ name: "Moonlight mead", chains: [[Items.MOONLIGHT_MEAD]], emptyItemId: Items.BEER_GLASS,
   requiresFoodPermission: true, effect: (player) => heal(player, 4) });
-registerPotion({ name: "Moonlight mead(m)", chains: [[Items.MOONLIGHT_MEAD_M_]], emptyItemId: Items.BEER_GLASS_4,
+registerPotion({ name: "Moonlight mead(m)", chains: [[Items.MOONLIGHT_MEAD_M_]], emptyItemId: Items.BEER_GLASS,
   requiresFoodPermission: true, effect: (player) => heal(player, 6) });
 // Wiki: Slayer's respite boosts Slayer by 2 (mature 4) and drains Attack and
 // Strength by floor(current * 0.02) + 2 (mature + 3); it heals 1 (mature 2).
-registerPotion({ name: "Slayer's respite", chains: [[Items.SLAYERS_RESPITE]], emptyItemId: Items.BEER_GLASS_4,
+registerPotion({ name: "Slayer's respite", chains: [[Items.SLAYERS_RESPITE]], emptyItemId: Items.BEER_GLASS,
   requiresFoodPermission: true, effect: (player) => {
     heal(player, 1);
     boostSkill(player, Skill.SLAYER, 2, 0);
     for (const skill of [Skill.ATTACK, Skill.STRENGTH]) lowerSkillByCurrent(player, skill, 2, 0.02);
   } });
-registerPotion({ name: "Slayer's respite(m)", chains: [[Items.SLAYERS_RESPITE_M_]], emptyItemId: Items.BEER_GLASS_4,
+registerPotion({ name: "Slayer's respite(m)", chains: [[Items.SLAYERS_RESPITE_M_]], emptyItemId: Items.BEER_GLASS,
   requiresFoodPermission: true, effect: (player) => {
     heal(player, 2);
     boostSkill(player, Skill.SLAYER, 4, 0);
     for (const skill of [Skill.ATTACK, Skill.STRENGTH]) lowerSkillByCurrent(player, skill, 3, 0.02);
   } });
+
+// Mature brews (Wiki: Brewing's table): one more of the boost and healing than the young brew, and one
+// more drain at the base, except Dragon bitter(m), whose drain is the young one's. No recording drinks
+// one, so each keeps its young brew's lines.
+const DRAIN_ATTACK_STRENGTH = [Skill.ATTACK, Skill.STRENGTH];
+const DRAIN_MELEE = [Skill.ATTACK, Skill.STRENGTH, Skill.DEFENCE];
+for (const [name, id, effect, lines] of [
+  ["Asgarnian ale(m)", Items.ASGARNIAN_ALE_M_, player => { boostSkill(player, Skill.STRENGTH, 3, 0); lowerSkillByCurrent(player, Skill.ATTACK, 3, 0.05); },
+    reinvigoratedLines("ale")],
+  ["Greenman's ale(m)", Items.GREENMANS_ALE_M_, player => { boostSkill(player, Skill.HERBLORE, 2, 0); for (const skill of DRAIN_MELEE) lowerSkillByCurrent(player, skill, 3, 0.04); },
+    () => ["You drink the Greenman's Ale.", "It has a strange taste."]],
+  ["Dragon bitter(m)", Items.DRAGON_BITTER_M_, player => { boostSkill(player, Skill.STRENGTH, 3, 0); lowerSkillByCurrent(player, Skill.ATTACK, 2, 0.05); },
+    reinvigoratedLines("Dragon Bitter")],
+  ["Dwarven stout(m)", Items.DWARVEN_STOUT_M_, player => {
+    boostSkill(player, Skill.MINING, 2, 0);
+    boostSkill(player, Skill.SMITHING, 2, 0);
+    for (const skill of DRAIN_MELEE) lowerSkillByCurrent(player, skill, 3, 0.04);
+  }, () => ["You drink the Dwarven Stout. It tastes foul.", "It tastes pretty strong too."]],
+  ["Axeman's folly(m)", Items.AXEMANS_FOLLY_M_, player => { boostSkill(player, Skill.WOODCUTTING, 2, 0); for (const skill of DRAIN_ATTACK_STRENGTH) lowerSkillByCurrent(player, skill, 3, 0.02); },
+    undefined],
+  ["Chef's delight(m)", Items.CHEFS_DELIGHT_M_, player => { boostSkill(player, Skill.COOKING, 2, 0.05); for (const skill of DRAIN_ATTACK_STRENGTH) lowerSkillByCurrent(player, skill, 3, 0.05); },
+    reinvigoratedLines("ale")],
+  ["Mature wmb", Items.MATURE_WMB, player => { boostSkill(player, Skill.MAGIC, 3, 0.02); for (const skill of DRAIN_MELEE) lowerSkillByCurrent(player, skill, 2, 0.05); },
+    () => ["You drink the Wizard's Mind Bomb.", "You feel very strange."]],
+  ["Mature cider", Items.MATURE_CIDER, player => { boostSkill(player, Skill.FARMING, 2, 0); for (const skill of DRAIN_ATTACK_STRENGTH) lowerSkillByCurrent(player, skill, 3, 0.02); },
+    () => ["You drink the cider. You feel slightly reinvigorated...", "...and slightly dizzy too."]],
+]) {
+  registerPotion({ name, chains: [[id]], emptyItemId: Items.BEER_GLASS, drink: lines ? { messages: lines } : undefined,
+    requiresFoodPermission: true, shareable: false, effect: player => { heal(player, 2); effect(player); } });
+}
 
 // Core combat/stat potions.
 registerPotion({
@@ -716,6 +1225,8 @@ registerPotion({
   chains: [doseChain("RANK_FROTHY_POTION_4_", "RANK_FROTHY_POTION_3_", "RANK_FROTHY_POTION_2_", "RANK_FROTHY_POTION_1_")],
   emptyItemId: null,
   area: "vampyrium",
+  // Its one recorded spam line, and nothing after it: no doses left or finished line (rsprox 239/04272.txt).
+  drink: { messages: () => ["You drink the rank frothy potion. You feel oddly powerful."] },
   effect: applyRankFrothyPotion,
 });
 registerPotion({
@@ -723,6 +1234,8 @@ registerPotion({
   chains: [doseChain("FOUL_CHUNKY_POTION_4_", "FOUL_CHUNKY_POTION_3_", "FOUL_CHUNKY_POTION_2_", "FOUL_CHUNKY_POTION_1_")],
   emptyItemId: null,
   area: "vampyrium",
+  // Its one recorded spam line, and nothing after it: no doses left or finished line (rsprox 239/04272.txt).
+  drink: { messages: () => ["You drink the foul chunky potion. You feel oddly reinvigorated."] },
   effect: applyFoulChunkyPotion,
 });
 registerPotion({
@@ -730,6 +1243,8 @@ registerPotion({
   chains: [doseChain("RANCID_SLIMY_POTION_4_", "RANCID_SLIMY_POTION_3_", "RANCID_SLIMY_POTION_2_", "RANCID_SLIMY_POTION_1_")],
   emptyItemId: null,
   area: "vampyrium",
+  // Its one recorded spam line, and nothing after it: no doses left or finished line (rsprox 239/04272.txt).
+  drink: { messages: () => ["You drink the rancid slimy potion. You feel oddly robust."] },
   effect: applyRancidSlimyPotion,
 });
 registerPotion({
@@ -737,6 +1252,8 @@ registerPotion({
   chains: [[Items.JAR_OF_CONGEALED_BLOOD]],
   emptyItemId: null,
   area: "vampyrium",
+  // Its one recorded spam line, and nothing after it: no doses left or finished line (rsprox 239/04272.txt).
+  drink: { messages: () => ["You eat the congealed blood. It tastes better than expected and leaves you feeling fully refreshed."] },
   effect: applyJarOfCongealedBlood,
 });
 registerPotion({
@@ -846,6 +1363,19 @@ registerPotion({
   chains: [doseChain("HUNTER_POTION_4_", "HUNTER_POTION_3_", "HUNTER_POTION_2_", "HUNTER_POTION_1_")],
   effect: (player) => boostSkill(player, Skill.HUNTER, 3, 0),
 });
+// Wiki (Super fishing potion, Pillar coral; Super hunter potion, Crystal impling: 80 Hunter or 74
+// with one): a flat +6 a dose. rsprox.net rec 4100 (rev 237) tick 953 drinks a super fishing
+// potion(3): human_eat, sound 2401, the drink and doses-left lines, a (2) left.
+registerPotion({
+  name: "Super fishing potion",
+  chains: [doseChain("SUPER_FISHING_POTION_4_", "SUPER_FISHING_POTION_3_", "SUPER_FISHING_POTION_2_", "SUPER_FISHING_POTION_1_")],
+  effect: (player) => boostSkill(player, Skill.FISHING, 6, 0),
+});
+registerPotion({
+  name: "Super hunter potion",
+  chains: [doseChain("SUPER_HUNTER_POTION_4_", "SUPER_HUNTER_POTION_3_", "SUPER_HUNTER_POTION_2_", "SUPER_HUNTER_POTION_1_")],
+  effect: (player) => boostSkill(player, Skill.HUNTER, 6, 0),
+});
 registerPotion({
   name: "Agility potion",
   chains: [doseChain("AGILITY_POTION_4_", "AGILITY_POTION_3_", "AGILITY_POTION_2_", "AGILITY_POTION_1_")],
@@ -854,7 +1384,8 @@ registerPotion({
 registerPotion({
   name: "Energy potion",
   chains: [doseChain("ENERGY_POTION_4_", "ENERGY_POTION_3_", "ENERGY_POTION_2_", "ENERGY_POTION_1_")],
-  effect: (player) => restoreRunEnergy(player, 10),
+  // Wiki: 15% a dose since 19 August 2026 (was 10%); the energy mix follows it.
+  effect: (player) => restoreRunEnergy(player, 15),
 });
 registerPotion({
   name: "Super energy",
@@ -863,6 +1394,12 @@ registerPotion({
     doseChain("SUPER_ENERGY_4__2", "SUPER_ENERGY_3__2", "SUPER_ENERGY_2__2", "SUPER_ENERGY_1__2"),
   ],
   effect: (player) => restoreRunEnergy(player, 20),
+});
+// Wiki: 40% run energy a dose and nothing else (no stamina effect).
+registerPotion({
+  name: "Extreme energy potion",
+  chains: [doseChain("EXTREME_ENERGY_POTION_4_", "EXTREME_ENERGY_POTION_3_", "EXTREME_ENERGY_POTION_2_", "EXTREME_ENERGY_POTION_1_")],
+  effect: (player) => restoreRunEnergy(player, 40),
 });
 // The Gauntlet's potion (Wiki): restores prayer like a prayer potion, 40% run energy, and works
 // as a stamina potion. Made with 3 doses; the guides' one vial per potion suggests no vial is left.
@@ -880,6 +1417,11 @@ registerPotion({
   name: "Stamina potion",
   chains: [doseChain("STAMINA_POTION_4_", "STAMINA_POTION_3_", "STAMINA_POTION_2_", "STAMINA_POTION_1_")],
   effect: applyStamina,
+});
+registerPotion({
+  name: "Extended stamina potion",
+  chains: [doseChain("EXTENDED_STAMINA_POTION_4_", "EXTENDED_STAMINA_POTION_3_", "EXTENDED_STAMINA_POTION_2_", "EXTENDED_STAMINA_POTION_1_")],
+  effect: applyExtendedStamina,
 });
 
 registerPotion({
@@ -916,17 +1458,17 @@ registerPotion({
 registerPotion({
   name: "Anti-venom",
   chains: [doseChain("ANTI_VENOM_4_", "ANTI_VENOM_3_", "ANTI_VENOM_2_", "ANTI_VENOM_1_")],
-  effect: (player) => applyPoisonImmunity(player, 738, true, true),
+  effect: (player) => applyPoisonImmunity(player, 738, true, true, ANTI_VENOM_LINE, ANTI_VENOM_DOSE_SOURCE),
 });
 registerPotion({
   name: "Anti-venom+",
   chains: [doseChain("ANTI_VENOM_4__3", "ANTI_VENOM_3__3", "ANTI_VENOM_2__3", "ANTI_VENOM_1__3")],
-  effect: (player) => applyPoisonImmunity(player, 900, true, true),
+  effect: (player) => applyPoisonImmunity(player, 900, true, true, ANTI_VENOM_PLUS_LINE, ANTI_VENOM_PLUS_DOSE_SOURCE),
 });
 registerPotion({
   name: "Extended anti-venom+",
   chains: [doseChain("EXTENDED_ANTI_VENOM_4_", "EXTENDED_ANTI_VENOM_3_", "EXTENDED_ANTI_VENOM_2_", "EXTENDED_ANTI_VENOM_1_")],
-  effect: (player) => applyPoisonImmunity(player, 1062, true, true),
+  effect: (player) => applyPoisonImmunity(player, 1062, true, true, ANTI_VENOM_PLUS_LINE, EXTENDED_ANTI_VENOM_PLUS_DOSE_SOURCE),
 });
 
 registerPotion({
@@ -1035,7 +1577,7 @@ function applyMoonlightPotion(player) {
   boostSkill(player, Skill.ATTACK, ...tier(45));
   boostSkill(player, Skill.STRENGTH, ...tier(55));
   if (herblore >= 70) {
-    applyDivine(player, (p) => boostSkill(p, Skill.DEFENCE, 7, 0.2), [Skill.DEFENCE], { damage: 0 });
+    applyDivine(player, (p) => boostSkill(p, Skill.DEFENCE, 7, 0.2), [Skill.DEFENCE]);
   } else {
     boostSkill(player, Skill.DEFENCE, ...tier(66));
   }
@@ -1046,32 +1588,70 @@ registerPotion({
   chains: [doseChain("MOONLIGHT_POTION_4_", "MOONLIGHT_POTION_3_", "MOONLIGHT_POTION_2_", "MOONLIGHT_POTION_1_")],
   effect: applyMoonlightPotion,
 });
-registerPotion({
+/**
+ * The shock every divine potion gives on the drink: the graphic, and 10 damage as a real hit (hitsplat
+ * and health bar) that the drinker hears in their own hit voice.
+ */
+function divineShock(player) {
+  player.performGraphic(new Graphic(DIVINE_SHOCK_GRAPHIC));
+  const cycle = World.getProcessCycle();
+  const pending = PENDING_SHOCKS.get(player);
+  PENDING_SHOCKS.set(player, { cycle, damage: (pending?.cycle === cycle ? pending.damage : 0) + DIVINE_DAMAGE });
+  const hit = new HitDamage(DIVINE_DAMAGE, HitMask.RED).onApplied((taken) => {
+    PENDING_SHOCKS.delete(player);
+    if (taken > 0) PlayerHitSounds.playOwnHurtSound(player);
+  });
+  player.getCombat().getHitQueue().addPendingDamage([hit]);
+}
+
+/** Divine shocks queued this tick and not landed yet: they land on the player's own hit phase. */
+const PENDING_SHOCKS = new WeakMap();
+
+function pendingShockDamage(player) {
+  const pending = PENDING_SHOCKS.get(player);
+  return pending?.cycle === World.getProcessCycle() ? pending.damage : 0;
+}
+
+function registerDivinePotion(definition) {
+  registerPotion({
+    ...definition,
+    effect: (player) => {
+      definition.effect(player);
+      divineShock(player);
+    },
+    // An earlier dose's shock that hasn't landed yet counts: a chugging barrel's second divine dose can't take
+    // the last Hitpoints. Other incoming hits don't.
+    canUse: (player) => getCurrentLevel(player, Skill.HITPOINTS) - pendingShockDamage(player) > DIVINE_DAMAGE,
+    canUseMessage: "You need more than 10 hitpoints to survive the power of a divine potion.",
+  });
+}
+
+registerDivinePotion({
   name: "Divine super attack potion",
   chains: [doseChain("DIVINE_SUPER_ATTACK_POTION_4_", "DIVINE_SUPER_ATTACK_POTION_3_", "DIVINE_SUPER_ATTACK_POTION_2_", "DIVINE_SUPER_ATTACK_POTION_1_")],
   effect: (player) => applyDivine(player, (p) => boostSkill(p, Skill.ATTACK, 5, 0.15), [Skill.ATTACK]),
 });
-registerPotion({
+registerDivinePotion({
   name: "Divine super strength potion",
   chains: [doseChain("DIVINE_SUPER_STRENGTH_POTION_4_", "DIVINE_SUPER_STRENGTH_POTION_3_", "DIVINE_SUPER_STRENGTH_POTION_2_", "DIVINE_SUPER_STRENGTH_POTION_1_")],
   effect: (player) => applyDivine(player, (p) => boostSkill(p, Skill.STRENGTH, 5, 0.15), [Skill.STRENGTH]),
 });
-registerPotion({
+registerDivinePotion({
   name: "Divine super defence potion",
   chains: [doseChain("DIVINE_SUPER_DEFENCE_POTION_4_", "DIVINE_SUPER_DEFENCE_POTION_3_", "DIVINE_SUPER_DEFENCE_POTION_2_", "DIVINE_SUPER_DEFENCE_POTION_1_")],
   effect: (player) => applyDivine(player, (p) => boostSkill(p, Skill.DEFENCE, 5, 0.15), [Skill.DEFENCE]),
 });
-registerPotion({
+registerDivinePotion({
   name: "Divine ranging potion",
   chains: [doseChain("DIVINE_RANGING_POTION_4_", "DIVINE_RANGING_POTION_3_", "DIVINE_RANGING_POTION_2_", "DIVINE_RANGING_POTION_1_")],
   effect: (player) => applyDivine(player, (p) => boostSkill(p, Skill.RANGED, 4, 0.1), [Skill.RANGED]),
 });
-registerPotion({
+registerDivinePotion({
   name: "Divine magic potion",
   chains: [doseChain("DIVINE_MAGIC_POTION_4_", "DIVINE_MAGIC_POTION_3_", "DIVINE_MAGIC_POTION_2_", "DIVINE_MAGIC_POTION_1_")],
   effect: (player) => applyDivine(player, (p) => boostSkill(p, Skill.MAGIC, 4, 0), [Skill.MAGIC]),
 });
-registerPotion({
+registerDivinePotion({
   name: "Divine bastion potion",
   chains: [doseChain("DIVINE_BASTION_POTION_4_", "DIVINE_BASTION_POTION_3_", "DIVINE_BASTION_POTION_2_", "DIVINE_BASTION_POTION_1_")],
   effect: (player) =>
@@ -1084,7 +1664,7 @@ registerPotion({
       [Skill.RANGED, Skill.DEFENCE]
     ),
 });
-registerPotion({
+registerDivinePotion({
   name: "Divine battlemage potion",
   chains: [doseChain("DIVINE_BATTLEMAGE_POTION_4_", "DIVINE_BATTLEMAGE_POTION_3_", "DIVINE_BATTLEMAGE_POTION_2_", "DIVINE_BATTLEMAGE_POTION_1_")],
   effect: (player) =>
@@ -1097,7 +1677,7 @@ registerPotion({
       [Skill.MAGIC, Skill.DEFENCE]
     ),
 });
-registerPotion({
+registerDivinePotion({
   name: "Divine super combat potion",
   chains: [doseChain("DIVINE_SUPER_COMBAT_POTION_4_", "DIVINE_SUPER_COMBAT_POTION_3_", "DIVINE_SUPER_COMBAT_POTION_2_", "DIVINE_SUPER_COMBAT_POTION_1_")],
   effect: (player) =>
@@ -1134,6 +1714,54 @@ registerPotion({
   chains: [doseChain("MENAPHITE_REMEDY_4_", "MENAPHITE_REMEDY_3_", "MENAPHITE_REMEDY_2_", "MENAPHITE_REMEDY_1_")],
   effect: applyMenaphiteRemedy,
 });
+
+// Relicym's balm can be drunk for the Nightmare parasite. Player disease itself is not modelled.
+registerPotion({
+  name: "Relicym's balm",
+  chains: [doseChain("RELICYMS_BALM_4_", "RELICYMS_BALM_3_", "RELICYMS_BALM_2_", "RELICYMS_BALM_1_")],
+  effect: () => {},
+});
+
+// ---------------------------------------------------------------- barbarian mixes of the potions above
+// Wiki (Barbarian Training's mix table): a mix drinks as its potion and heals 3 or 6 per dose.
+// Relicym's and magic essence mixes are left out; their mix effects are not implemented.
+
+/** A mix drinking as the registered potion `potionName` (or `effect`), healing `healAmount` per dose. */
+function registerMix(name, potionName, healAmount, twoDose, oneDose, effect) {
+  const potion = REGISTERED_POTIONS.find((candidate) => candidate.name === potionName);
+  if (!potion) return;
+  registerPotion({
+    name,
+    chains: [doseChain(twoDose, oneDose)],
+    requiresFoodPermission: true,
+    canUse: potion.canUse ?? undefined,
+    canUseMessage: potion.canUseMessage ?? undefined,
+    area: potion.area ?? undefined,
+    effect: applyMix(effect ?? potion.effect, healAmount),
+  });
+}
+
+/** Wiki (Zamorak mix): the brew's boosts and Prayer, but floor((HP - 1) / 8) damage, then the 6 heal. */
+const zamorakMix = (player) => applyZamorakBrew(player, (hp) => Math.floor((hp - 1) / 8));
+
+for (const [name, potionName, healAmount, key, effect] of [
+  ["Attack mix", "Attack potion", 3, "ATTACK_MIX"],
+  ["Strength mix", "Strength potion", 3, "STRENGTH_MIX"],
+  ["Energy mix", "Energy potion", 3, "ENERGY_MIX"],
+  ["Defence mix", "Defence potion", 6, "DEFENCE_MIX"],
+  ["Agility mix", "Agility potion", 6, "AGILITY_MIX"],
+  ["Combat mix", "Combat potion", 3, "COMBAT_MIX"],
+  ["Prayer mix", "Prayer potion", 6, "PRAYER_MIX"],
+  ["Superattack mix", "Super attack", 6, "SUPERATTACK_MIX"],
+  ["Fishing mix", "Fishing potion", 6, "FISHING_MIX"],
+  ["Hunting mix", "Hunter potion", 6, "HUNTING_MIX"],
+  ["Super str. mix", "Super strength", 6, "SUPER_STR_MIX"],
+  ["Super def. mix", "Super defence", 6, "SUPER_DEF_MIX"],
+  ["Ranging mix", "Ranging potion", 6, "RANGING_MIX"],
+  ["Magic mix", "Magic potion", 6, "MAGIC_MIX"],
+  ["Zamorak mix", "Zamorak brew", 6, "ZAMORAK_MIX", zamorakMix],
+  ["Ancient mix", "Ancient brew", 6, "ANCIENT_MIX"],
+]) registerMix(name, potionName, healAmount, `${key}_2_`, `${key}_1_`, effect);
 
 // ---------------------------------------------------------------- Chambers of Xeric gourd potions
 // Not on the Wiki (to check against a capture): the boosts by strength (weak / normal / strong). Wiki:
@@ -1182,16 +1810,18 @@ GOURD_STRENGTHS.forEach((strength, tier) => {
   });
   registerGourd(`Prayer enhance${suffix}`, GOURD_FIRST_DOSE.prayerEnhance[tier], (player) => {
     const now = Date.now();
-    player.setAttribute(ATTR_PRAYER_ENHANCE, { endsAt: now + strength.enhanceTicks * 600, nextAt: now + PRAYER_ENHANCE_INTERVAL_MS });
+    player.setAttribute(ATTR_PRAYER_ENHANCE, { endsAt: now + strength.enhanceTicks * 600, nextAt: now + PRAYER_ENHANCE_INTERVAL_MS, area: RAID_AREA, tier: tier + 1 });
   });
   registerGourd(`Xeric's aid${suffix}`, GOURD_FIRST_DOSE.xericsAid[tier], (player) => applyXericsAid(player, strength.aid));
   const antipoison = suffix ? `Antipoison${suffix}` : "Antipoison potion";
   registerGourd(antipoison, GOURD_FIRST_DOSE.antipoison[tier], (player) => applyPoisonImmunity(player, GOURD_ANTIPOISON_SECONDS[tier]));
   registerGourd(`Overload${suffix} (Chambers of Xeric)`, GOURD_FIRST_DOSE.overload[tier],
-    (player) => applyOverload(player, strength.overload[0], strength.overload[1]),
-    (player) => getCurrentLevel(player, Skill.HITPOINTS) >= 50);
+    (player) => applyOverload(player, strength.overload[0], strength.overload[1], RAID_AREA, tier + 1),
+    // Wiki (Overload (Chambers of Xeric)): more than 50 Hitpoints, as Overload (+) and the refusal text say.
+    (player) => getCurrentLevel(player, Skill.HITPOINTS) > 50);
 });
 
+/** Wiki: the stamina effect only slows the drain; MovementQueue applies the 30% modifier. */
 function processStamina(player) {
   const endsAt = player.getAttribute(ATTR_STAMINA_END);
   if (!Number.isFinite(endsAt)) {
@@ -1201,33 +1831,55 @@ function processStamina(player) {
   if (Date.now() >= endsAt) {
     player.setAttribute(ATTR_STAMINA_END, null);
     player.setAttribute(ATTR_STAMINA_ACC, 0);
-    return;
-  }
-
-  if (!player.isRunningReturn() || !player.getMovementQueue().isMovings()) {
-    return;
-  }
-
-  let acc = Number(player.getAttribute(ATTR_STAMINA_ACC));
-  if (!Number.isFinite(acc)) {
-    acc = 0;
-  }
-  acc += 0.7;
-
-  let gained = 0;
-  while (acc >= 1) {
-    acc -= 1;
-    if (player.getRunEnergy() < 100) {
-      player.setRunEnergy(player.getRunEnergy() + 1);
-      gained++;
-    }
-  }
-
-  player.setAttribute(ATTR_STAMINA_ACC, acc);
-
-  if (gained > 0) {
+    // Clear the client's stamina marker even if the player is standing still at full energy.
     player.getPacketSender().sendRunEnergy();
   }
+}
+
+/** Wiki: with a stamina potion active, run energy drains at 30% of its normal rate. */
+function staminaDrainModifier(entity, amount) {
+  if (!entity?.isPlayer?.()) {
+    return amount;
+  }
+  const endsAt = Number(entity.getAsPlayer().getAttribute(ATTR_STAMINA_END));
+  return Number.isFinite(endsAt) && Date.now() < endsAt ? Math.floor(amount * 0.3) : amount;
+}
+
+/** Tells the client how long the stamina effect has left, so the run orb and Run Energy plugin agree. */
+function staminaStatus(entity, status) {
+  if (!entity?.isPlayer?.()) {
+    return;
+  }
+  const endsAt = Number(entity.getAsPlayer().getAttribute(ATTR_STAMINA_END));
+  const remainingMs = endsAt - Date.now();
+  if (Number.isFinite(endsAt) && remainingMs > 0) {
+    status.staminaTicks = Math.max(1, Math.ceil(remainingMs / 600));
+    status.staminaMultiplier = 1;
+  }
+}
+
+/** Remember drains as they happen, before the player's next restoration phase. */
+function noteDivineDrain({ player, skill, previous, current }) {
+  const state = player?.getAttribute(ATTR_DIVINE_STATE);
+  if (!(current < previous) || !(state?.endsAt > Date.now()) || !Array.isArray(state.targets)) return;
+  const entry = state.targets.find((target) => target?.skillIndex === skill?.getIndex());
+  if (entry && current < entry.target) entry.target = current;
+}
+
+/**
+ * The divine potions' lines, as recorded from revision 230 on (rsprox_transcripts/239/04263.txt, a normal world; 800
+ * times over the recordings): at 30 ticks left "Your divine potion effect is about to expire." (a divine ranging
+ * potion: "Your divine ranging potion is about to expire."), and at the end "The effects of the divine potion have worn
+ * off." (no closing tag). One line for a potion's skills together. Dying clears the effect with no line
+ * (237/01148.txt and seven more: the timers go to 0 after "Oh dear, you are dead!").
+ */
+const DIVINE_WARNING_MS = 30 * 600;
+const DIVINE_WARNING = "<col=ff3045>Your divine potion effect is about to expire.</col>";
+const DIVINE_RANGING_WARNING = "<col=ff3045>Your divine ranging potion is about to expire.</col>";
+const DIVINE_WORN_OFF = "<col=ff3045>The effects of the divine potion have worn off.";
+
+function clearDivineOnDeath({ player }) {
+  if (player?.getAttribute(ATTR_DIVINE_STATE)) player.setAttribute(ATTR_DIVINE_STATE, null);
 }
 
 function processDivine(player) {
@@ -1236,22 +1888,39 @@ function processDivine(player) {
     return;
   }
 
-  if (Date.now() >= state.endsAt) {
-    player.setAttribute(ATTR_DIVINE_STATE, null);
-    for (const entry of state.targets) {
+  // Each skill ends at its own potion's time (an older save holds one endsAt for all of them).
+  const now = Date.now();
+  const endOf = (entry) => (Number.isFinite(entry?.endsAt) ? entry.endsAt : state.endsAt);
+  const expired = state.targets.filter((entry) => now >= endOf(entry));
+  if (expired.length > 0) {
+    for (const entry of expired) {
       const skill = Skill.values()[entry?.skillIndex];
       if (skill) {
         setCurrentLevel(player, skill, getMaxLevel(player, skill));
       }
     }
-    player.sendMessage("Your divine potion effect has worn off.");
-    return;
+    state.targets = state.targets.filter((entry) => now < endOf(entry));
+    if (state.targets.length === 0) player.setAttribute(ATTR_DIVINE_STATE, null);
+    else player.setAttribute(ATTR_DIVINE_STATE, { ...state, endsAt: Math.max(...state.targets.map(endOf)) });
+    player.sendMessage(DIVINE_WORN_OFF);
+    if (state.targets.length === 0) return;
+  }
+
+  const warned = state.targets.filter((entry) => !entry.warned && now >= endOf(entry) - DIVINE_WARNING_MS);
+  if (warned.length > 0) {
+    for (const entry of warned) entry.warned = true;
+    const rangingOnly = warned.every((entry) => entry.skillIndex === Skill.RANGED.getIndex());
+    player.sendMessage(rangingOnly ? DIVINE_RANGING_WARNING : DIVINE_WARNING);
   }
 
   for (const entry of state.targets) {
     const skill = Skill.values()[entry?.skillIndex];
     if (skill) {
-      setCurrentLevel(player, skill, entry.target);
+      const current = getCurrentLevel(player, skill);
+      if (current !== entry.target) {
+        // Drains, restoration and later boosts change the level being maintained.
+        entry.target = current;
+      }
     }
   }
 }
@@ -1266,13 +1935,28 @@ function inArea(player, area) {
   return request.inside === true;
 }
 
+/**
+ * The raid's timed potions end when the player leaves it: both timers go to 0 with no line as raids_client_indungeon
+ * does (rsprox_transcripts/234/03285.txt:288134, 234/00820.txt:321992).
+ */
+const RAID_AREA = "chambers-of-xeric";
+
+function leftItsArea(player, state) {
+  return typeof state.area === "string" && !inArea(player, state.area);
+}
+
 function processPrayerEnhance(player) {
   const state = player.getAttribute(ATTR_PRAYER_ENHANCE);
   if (!state) return;
+  if (leftItsArea(player, state)) {
+    player.setAttribute(ATTR_PRAYER_ENHANCE, null);
+    return;
+  }
   const now = Date.now();
   if (now >= state.endsAt) {
     player.setAttribute(ATTR_PRAYER_ENHANCE, null);
-    player.sendMessage("<col=ef1020>Your prayer enhance effect has worn off.</col>");
+    // rsprox_transcripts/234/03285.txt:265414.
+    player.sendMessage("<col=ff0000>Your prayer enhance effect has worn off.</col>");
     return;
   }
   if (now < state.nextAt) return;
@@ -1287,6 +1971,11 @@ function processOverload(player) {
     return;
   }
 
+  if (leftItsArea(player, state)) {
+    player.setAttribute(ATTR_OVERLOAD_STATE, null);
+    return;
+  }
+
   const now = Date.now();
   if (now >= state.endsAt) {
     player.setAttribute(ATTR_OVERLOAD_STATE, null);
@@ -1294,7 +1983,8 @@ function processOverload(player) {
       setCurrentLevel(player, skill, getMaxLevel(player, skill));
     }
     heal(player, 50);
-    player.sendMessage("The effects of the overload have worn off, and you feel normal again.");
+    // rsprox_transcripts/234/00820.txt:199330 (four times in revision 234; no closing tag).
+    player.sendMessage("<col=ef1020>The effects of overload have worn off, and you feel normal again.");
     return;
   }
 
@@ -1325,62 +2015,67 @@ function handlePotionDrink(player, itemId, slot) {
     return true;
   }
 
-  if (!canDrink(player, itemId)) {
-    player.sendMessage("You cannot use potions here.");
+  const permissionRefusal = drinkPermissionRefusal(player, entry);
+  if (permissionRefusal) {
+    player.sendMessage(permissionRefusal);
     return true;
   }
 
-  if (entry.potion.area && !inArea(player, entry.potion.area)) {
-    player.sendMessage(AREA_MESSAGES[entry.potion.area] ?? "You cannot use that here.");
+  const timerRefusal = drinkTimerRefusal(player);
+  if (timerRefusal) {
+    if (timerRefusal.message) player.sendMessage(timerRefusal.message);
     return true;
   }
 
-  if (entry.potion.requiresFoodPermission && !canEat(player, itemId)) {
-    player.sendMessage("You cannot eat here.");
-    return true;
-  }
-
-  // Quest and content plugins can explain an item-specific unlock before a
-  // drink consumes a dose, starts a cooldown or applies any effect.
-  const permission = { player, itemId, allowed: true, message: null };
-  pluginApi.emitCustomEvent("potions:validate-drink", permission);
-  if (permission.allowed === false) {
-    if (permission.message) player.sendMessage(permission.message);
+  const canUseRefusal = drinkCanUseRefusal(player, entry);
+  if (canUseRefusal) {
+    player.sendMessage(canUseRefusal);
     return true;
   }
 
   const timers = player.getTimers();
-  if (timers.has(TimerKey.STUN)) {
-    player.sendMessage("You're currently stunned and cannot use potions.");
-    return true;
-  }
-
-  if (timers.has(TimerKey.POTION)) {
-    return true;
-  }
-
-  if (entry.potion.canUse && !entry.potion.canUse(player)) {
-    player.sendMessage("You need more than 50 Hitpoints to drink this potion.");
-    return true;
-  }
 
   timers.extendOrRegister(TimerKey.POTION, 3);
-  timers.extendOrRegister(TimerKey.FOOD, 3);
+  if (entry.potion.eatingDelay) timers.extendOrRegister(TimerKey.FOOD, 3);
 
   player.getPacketSender().sendInterfaceRemoval();
   player.performAnimation(entry.potion.drink?.animation ? new Animation(entry.potion.drink.animation) : DRINK_ANIMATION);
   Sounds.sendSound(player, Sound.DRINK);
 
   const meta = inventory.getItems()[slot]?.getMeta();
-  inventory.setItem(slot, new Item(entry.replacementId, entry.replacementId === NO_EMPTY_ITEM ? 0 : 1, meta)).refreshItems();
+  const smashVial = entry.replacementId === ItemIds.VIAL
+    && entry.replacementId === entry.potion.emptyItemId
+    && player.getPacketSender().getVarbit?.(AUTO_SMASH_VIALS_VARBIT) === 1;
+  const replacement = smashVial ? NO_EMPTY_ITEM : entry.replacementId;
+  inventory.setItem(slot, new Item(replacement, replacement === NO_EMPTY_ITEM ? 0 : 1, meta)).refreshItems();
+  // Live sends the drink lines as spam (filterable): rsprox has "You drink some of your goading
+  // potion." and its doses-left lines, the beer and cider lines, "You have finished your potion."
+  // and the vial-smash line all as type=spam. A `{ text, game: true }` line is a game message
+  // (the house's "You drink the cup of tea.").
+  const spam = (text) => player.getPacketSender().sendTypedMessage(ChatType.SPAM, text);
+  // The potion's own line comes first, then its effect's lines, then the doses left (rsprox: e.g.
+  // "You drink some of your antivenom potion." / "It grants you immunity from poison.").
+  const line = entry.potion.drink?.messages ? null : drinkLine(itemId);
+  if (line) spam(line);
   entry.potion.effect(player);
 
   if (entry.potion.drink?.messages) {
-    for (const message of entry.potion.drink.messages(itemId)) player.sendMessage(message);
+    for (const message of entry.potion.drink.messages(itemId)) {
+      if (message?.game === true) player.sendMessage(message.text);
+      else spam(String(message?.text ?? message));
+    }
+  } else if (smashVial) {
+    // The finished line, then the smash (rsprox 236/03932.txt:72353-72354, 237/01104.txt:464410; 62 recorded).
+    spam("You have finished your potion.");
+    spam("You quickly smash the empty vial using the trick a Barbarian taught you.");
   } else if (entry.replacementId === entry.potion.emptyItemId) {
-    player.sendMessage(entry.potion.area === "chambers-of-xeric"
-      ? "You have finished your potion. The gourd vial disintegrates."
-      : "You have finished your potion.");
+    // The gourd line is not captured; it stays a game message.
+    if (entry.potion.area === "chambers-of-xeric") player.sendMessage("You have finished your potion. The gourd vial disintegrates.");
+    else spam("You have finished your potion.");
+  } else {
+    // rsprox: "You have 3 doses of potion left." / "You have 1 dose of potion left." (5,000+ recorded, spam).
+    const left = dosesOf(entry.replacementId);
+    if (left > 0) spam(`You have ${left} ${left === 1 ? "dose" : "doses"} of potion left.`);
   }
   pluginApi.emitCustomEvent("potions:drunk", { player, itemId, name: entry.potion.name, meta });
 
@@ -1467,6 +2162,19 @@ function doseFamily(itemId) {
   return { key: entry.chain, byDose: [entry.potion.emptyItemId, ...[...entry.chain].reverse()], doses: entry.doses, max: 4 };
 }
 
+const PRESET_REFUSAL = "Preset items cannot be used for this.";
+
+/** Preset, untradeable and unbankable copies carry restrictions that pouring must neither shed nor invent. */
+function restrictedVessel(item) {
+  const { Item } = pluginApi.core;
+  return item.isPresetItem?.() === true
+    || item.getMetaValue?.(Item.PRESET_META) === true
+    || item.getMetaValue?.(Item.UNTRADEABLE_META) === true
+    || item.getMetaValue?.(Item.UNBANKABLE_META) === true;
+}
+
+const sameMeta = (a, b) => JSON.stringify(a.getMeta() ?? null) === JSON.stringify(b.getMeta() ?? null);
+
 function pourMessage(player, text) {
   player.getPacketSender().sendSound(POUR_SOUND, 1, 0).sendTypedMessage(pluginApi.core.ChatType.SPAM, text);
 }
@@ -1491,8 +2199,16 @@ function pourPotion(event) {
   const emptySlot = source ? usedWithItemSlot : usedItemSlot;
   if (potion && potion.max > 1 && potion.doses >= 2 && inventory.getItems()[emptySlot].getId() === potion.byDose[0]) {
     event.handled = true;
-    inventory.setItem(potionSlot, new Item(potion.byDose[Math.ceil(potion.doses / 2)], 1));
-    inventory.setItem(emptySlot, new Item(potion.byDose[Math.floor(potion.doses / 2)], 1));
+    // Both halves carry the potion's marks, as drinking does. An empty vessel with marks of its own
+    // would lose them, so only an unmarked one (or one marked alike) takes part.
+    const potionItem = inventory.getItems()[potionSlot];
+    const vessel = inventory.getItems()[emptySlot];
+    if ((restrictedVessel(potionItem) || restrictedVessel(vessel)) && vessel.getMeta() != null && !sameMeta(potionItem, vessel)) {
+      player.sendMessage(PRESET_REFUSAL);
+      return;
+    }
+    inventory.setItem(potionSlot, new Item(potion.byDose[Math.ceil(potion.doses / 2)], 1, potionItem.getMeta()));
+    inventory.setItem(emptySlot, new Item(potion.byDose[Math.floor(potion.doses / 2)], 1, potionItem.getMeta()));
     inventory.refreshItems();
     pourMessage(player, "You divide the liquid between the vessels.");
     return;
@@ -1501,14 +2217,29 @@ function pourPotion(event) {
   event.handled = true;
   const transferred = Math.min(source.doses, source.max - target.doses);
   if (transferred === 0) return;
-  inventory.setItem(usedItemSlot, new Item(source.byDose[source.doses - transferred], 1));
-  inventory.setItem(usedWithItemSlot, new Item(target.byDose[target.doses + transferred], 1));
+  // Doses from a marked vessel into an unmarked one (or the reverse) would shed or invent marks.
+  if ((restrictedVessel(sourceItem) || restrictedVessel(targetItem)) && !sameMeta(sourceItem, targetItem)) {
+    player.sendMessage(PRESET_REFUSAL);
+    return;
+  }
+  inventory.setItem(usedItemSlot, new Item(source.byDose[source.doses - transferred], 1, sourceItem.getMeta()));
+  inventory.setItem(usedWithItemSlot, new Item(target.byDose[target.doses + transferred], 1, targetItem.getMeta()));
   inventory.refreshItems();
   pourMessage(player, `You have combined the liquid into ${DOSE_WORDS[target.doses + transferred]} doses.`);
 }
 
 /** Vials of water, coconut milk and blood empty to a vial too, though no dose enum lists them. */
 const EMPTYABLE_VIALS = ["vial_water", "vial_coconut_milk", "vial_blood"];
+
+/**
+ * A registered drink whose "Drink" is not its first op (Karamjan rum's is its fourth, rsprox rec
+ * 4287: inventory:items op6). The first op stays with the onItemFirstAction hook.
+ */
+function drinkFromLaterOp(event) {
+  const { player, itemId, slot, clickType } = event;
+  if (clickType === 1 || pluginApi.core.CacheDefinitions.getItem(itemId)?.inventoryActions?.[clickType - 1] !== "Drink") return;
+  if (handlePotionDrink(player, itemId, slot) !== false) event.handled = true;
+}
 
 /** "Empty" on a potion or a filled vial: the empty vessel, "You empty the vial." (rsprox captures). */
 function emptyVessel(event) {
@@ -1521,7 +2252,7 @@ function emptyVessel(event) {
   const inventory = player.getInventory();
   if (empty <= 0 || inventory.getItems()[slot]?.getId() !== itemId) return;
   event.handled = true;
-  inventory.setItem(slot, new Item(empty, 1)).refreshItems();
+  inventory.setItem(slot, new Item(empty, 1, inventory.getItems()[slot].getMeta())).refreshItems();
   player.getPacketSender().sendTypedMessage(pluginApi.core.ChatType.SPAM, "You empty the vial.");
 }
 
@@ -1544,6 +2275,10 @@ function resumeTimedEffects({ player }) {
     if (!state || typeof state !== "object") continue;
     for (const field of ["endsAt", "nextBoostAt", "nextDamageAt", "nextRestoreAt", "nextAt"]) {
       if (Number.isFinite(state[field])) state[field] += offline;
+    }
+    // A divine state's skills each carry their own end.
+    for (const entry of Array.isArray(state.targets) ? state.targets : []) {
+      if (Number.isFinite(entry?.endsAt)) entry.endsAt += offline;
     }
     player.setAttribute(key, state);
   }
@@ -1573,15 +2308,38 @@ const CURE_POTIONS = new Map([
  * Consumption still uses the ordinary drink handler and its restrictions.
  */
 function cureFromHealthOrb({ player }) {
-  if (!player || (!player.isPoisoned?.() && !player.isVenomed?.())) return;
+  if (!player) return;
+  const poisoned = player.isPoisoned?.() || player.isVenomed?.();
+  const parasite = { player, active: false };
+  pluginApi.emitCustomEvent("nightmare:parasite-orb-eligible", parasite);
   const items = player.getInventory().getItems();
+  if (parasite.active) {
+    // The Wiki supports either remedy; balm-first is the TSPS selection policy.
+    let selected = null;
+    for (let slot = 0; slot < items.length; slot++) {
+      const itemId = items[slot]?.getId?.() ?? -1;
+      const entry = POTION_BY_ITEM_ID.get(itemId);
+      if (!entry || pluginApi.core.ItemDefinition.forId(itemId).isNoted()) continue;
+      const priority = entry.potion.name === "Relicym's balm" ? 2 : entry.potion.name === "Sanfew serum" ? 1 : 0;
+      if (!priority) continue;
+      if (!selected || priority > selected.priority ||
+          (entry.potion === selected.entry.potion && entry.doses < selected.entry.doses)) {
+        selected = { entry, priority, itemId, slot };
+      }
+    }
+    if (selected) {
+      handlePotionDrink(player, selected.itemId, selected.slot);
+      return;
+    }
+  }
+  if (!poisoned) return;
   let selected = null;
   for (let slot = 0; slot < items.length; slot++) {
     const itemId = items[slot]?.getId?.() ?? -1;
     if (itemId <= 0) continue;
     const entry = POTION_BY_ITEM_ID.get(itemId);
     const strength = entry && CURE_POTIONS.get(entry.potion.name);
-    if (strength === undefined || !entry) continue;
+    if (strength === undefined || !entry || pluginApi.core.ItemDefinition.forId(itemId).isNoted()) continue;
     if (!selected || strength > selected.strength ||
         (entry.potion === selected.entry.potion && entry.doses < selected.entry.doses)) {
       selected = { entry, strength, itemId, slot };
@@ -1607,16 +2365,34 @@ function answerDoseFamily(request) {
   request.family = { byDose: [...family.byDose], doses: family.doses, max: family.max };
 }
 
+/** The recorded "You drink some of ..." line for a potion item, or null where none is recorded. */
+function drinkLine(itemId) {
+  const name = pluginApi?.core?.CacheDefinitions?.getItem?.(itemId)?.name;
+  return name ? DRINK_LINES[name.replace(/\(\d+\)$/, "")] ?? null : null;
+}
+
+/** The doses a potion item holds, from its name's "(N)"; 0 when it has none. */
+function dosesOf(itemId) {
+  const name = pluginApi?.core?.CacheDefinitions?.getItem?.(itemId)?.name ?? "";
+  const match = /\((\d+)\)$/.exec(name);
+  return match ? Number(match[1]) : 0;
+}
+
 module.exports = {
   name: "Potions",
+  drinkLine,
+  description: "Handles drinking potions: dose items, stat boosts and drains, antidotes, restores, stamina, anti-fire and other effects, and their timers.",
   isPotionItem(itemId) {
     return POTION_BY_ITEM_ID.has(itemId);
   },
   _test: {
-    applyPrayerRestore, applySanfewRestore, applyAncientBrew, restorePrayerOverheal, applyDivine, processDivine,
+    applyPrayerRestore, applySanfewRestore, applyAncientBrew, restorePrayerOverheal, applyDivine, divineShock, processDivine,
     applyMenaphiteRemedy, processMenaphite, applyPrayerRegeneration, processPrayerRegeneration, clearPrayerRegeneration,
+    resumePrayerRegenerationTimer,
+    clearDivineOnDeath,
     applyRankFrothyPotion, applyFoulChunkyPotion, applyRancidSlimyPotion, applyJarOfCongealedBlood,
-    processBoostDecay, notePreserveActivated, curePoisonAndVenom, pauseTimedEffects, resumeTimedEffects,
+    processBoostDecay, notePreserveActivated, sendBoostDrainTimer, curePoisonAndVenom, pauseTimedEffects, resumeTimedEffects,
+    processStamina, staminaDrainModifier, staminaStatus,
     findPotionEntry: (itemId) => POTION_BY_ITEM_ID.get(itemId) ?? null,
     registerCopy,
     cureFromHealthOrb,
@@ -1624,27 +2400,53 @@ module.exports = {
   getPotionName(itemId) {
     return POTION_BY_ITEM_ID.get(itemId)?.potion?.name ?? null;
   },
+  /** `{ potion, entry, doses, emptyItemId }` for a dose item; `emptyItemId` respects copied potions. */
+  doseOf(itemId) {
+    const entry = POTION_BY_ITEM_ID.get(itemId);
+    if (!entry) return null;
+    const lastDose = POTION_BY_ITEM_ID.get(entry.chain[entry.chain.length - 1]);
+    return {
+      potion: entry.potion,
+      entry,
+      doses: entry.doses,
+      emptyItemId: lastDose?.replacementId ?? entry.potion.emptyItemId,
+    };
+  },
+  drinkRefusal,
+  drinkPermissionRefusal,
+  drinkCanUseRefusal,
+  drinkTimerRefusal,
   register(api) {
+    api.registerRunEnergyDrainModifier(staminaDrainModifier);
+    api.registerRunEnergyStatusModifier(staminaStatus);
     api.onCustomEvent("potions:apply-stamina", applyStaminaRequest);
     api.onCustomEvent("potions:dose-family", answerDoseFamily);
     api.onCustomEvent("potions:register-copy", registerCopy);
     api.onCustomEvent("potions:register", registerContentPotion);
+    api.onCustomEvent("potions:poison-protection", poisonProtection);
     api.onCustomEvent("potions:share", sharePotion);
     api.onCustomEvent("prayer:activated", notePreserveActivated);
+    api.onCustomEvent("stats:restore-timer-sent", sendBoostDrainTimer);
     pluginApi = api;
     initDragonfireProtectionCoreAccess(api);
     PERSISTED_ATTRIBUTES.forEach((key) => api.persistAttribute(key));
     api.persistAttribute(ATTR_PRAYER_REGEN_STATE, null);
     api.onPlayerLogout(pauseTimedEffects);
+    api.onPlayerLogout(cancelKegSway);
     api.onPlayerLogin(resumeTimedEffects);
-    api.onPlayerDeath(clearPrayerRegeneration);
+    api.onPlayerLogin(resumePrayerRegenerationTimer);
+    // "player:died" reaches every death; `onPlayerDeath` stops at the first handler (a quest's own respawn).
+    api.onCustomEvent("player:died", clearPrayerRegeneration);
+    api.onCustomEvent("player:died", clearDivineOnDeath);
     api.onItemOnItem(pourPotion, { noted: false });
+    api.onItemAction(drinkFromLaterOp);
     api.onItemAction(emptyVessel);
     api.onItemFirstAction((event) => {
       const { player, itemId, slot } = event;
       return handlePotionDrink(player, itemId, slot);
     });
     api.onInterfaceActionButton(componentIds(api, HEALTH_ORB_CURE_COMPONENTS), cureFromHealthOrb);
+    api.onCustomEvent("skills:current-level-changed", noteDivineDrain);
 
     api.onPlayerProcess(({ player }) => {
       if (player?.isPlayerBot?.()) {

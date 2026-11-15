@@ -132,9 +132,28 @@ function rememberTeleport(player, entry) {
   player.setAttribute(RECENT_ATTRIBUTE, keys.slice(0, RECENT_LIMIT));
 }
 
+/** Messages for a destination's admission check ("entrana:check-items": the monks' and the balloon's rule). */
+const ADMISSION_REFUSED = { "entrana:check-items": "You cannot take weapons, armour or other forbidden items to Entrana." };
+const ADMISSION_UNANSWERED = "You can't go there right now.";
+
 function go(player, entry, tile) {
   const destination = Destinations.location(tile);
   if (!core.TeleportHandler.checkReqs(player, destination)) return;
+  // A destination with its own entry rule asks it first: Entrana takes no weapons or armour by any route. With
+  // nothing to answer (the rule's plugin is off, as on a free-to-play world) the player can't be checked, so the
+  // destination is refused rather than let anything through.
+  if (entry.admission) {
+    const request = { player, allowed: false, reason: null, handled: false };
+    pluginApi.emitCustomEvent(entry.admission, request);
+    if (!request.handled) {
+      player.getPacketSender().sendMessage(ADMISSION_UNANSWERED);
+      return;
+    }
+    if (request.allowed === false) {
+      player.getPacketSender().sendMessage(ADMISSION_REFUSED[entry.admission] ?? ADMISSION_UNANSWERED);
+      return;
+    }
+  }
   // A destination's own plugin can prepare the arrival (Count Draynor's crypt instance).
   if (entry.arrival) pluginApi.emitCustomEvent(entry.arrival, { player });
   rememberTeleport(player, entry);
@@ -146,7 +165,7 @@ function tileOf(player, entry) {
   if (!entry.live) return entry.tile;
   const request = { player };
   pluginApi.emitCustomEvent(entry.live, request);
-  return request.tile;
+  return request.tile === undefined ? entry.tile : request.tile;
 }
 
 function confirmWilderness(player, entry, tile, level) {
@@ -188,7 +207,7 @@ function select(player, entry) {
   player.setAttribute(SELECTED_ATTRIBUTE, entry.key);
 }
 
-function openTeleports({ player, parts }) {
+function openTeleports({ player, parts = [] }) {
   if (parts[1]?.toLowerCase() === "last") {
     const entry = Destinations.byKey(recent(player)[0]);
     if (entry) teleport(player, entry);
@@ -235,6 +254,7 @@ function clickFavouriteButton({ player }) {
 
 module.exports = {
   name: "TeleportInterface",
+  description: "Adds the ::teleports command, a searchable teleport list with tabs, favourites, recent teleports and a Wilderness warning.",
   register(api) {
     pluginApi = api;
     core = api.core;
@@ -243,7 +263,8 @@ module.exports = {
     api.persistAttribute(FAVOURITES_ATTRIBUTE, []);
     api.persistAttribute(RECENT_ATTRIBUTE, []);
     api.persistAttribute(SKIP_WILDERNESS_WARNING_ATTRIBUTE, false);
-    api.registerCommand("teleports", openTeleports, undefined, "Browse teleport destinations (optional search text, or 'last')");
+    api.registerCommand("teleports", openTeleports, undefined, "Browse teleport destinations (Ctrl+;, optional search text, or 'last')");
+    api.onCustomEvent("teleports:open", openTeleports);
     api.onInterfaceActionButton(TAB_UIDS, clickTab);
     api.onInterfaceActionButton(ROW_UIDS, clickRow);
     api.onInterfaceActionButton([uid(COMPONENT.TELEPORT_BUTTON), uid(COMPONENT.TELEPORT_LABEL)], clickTeleportButton);

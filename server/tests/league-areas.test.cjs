@@ -32,6 +32,8 @@ const emitted = [];
 let inCombat = false;
 /** world.json pluginConfig "league:type": a Trailblazer Reloaded world, 5 while a Raging Echoes character is made. */
 let worldLeague = 4;
+/** The characters whose first grave's tutorial with Death is running. */
+const inDeathTutorial = new Set();
 
 before(async () => {
   await CachePipeline.initialize(path.resolve(__dirname, ".."));
@@ -61,16 +63,20 @@ before(async () => {
     onInterfaceActionButton: (ids, handler) => {
       for (const id of [].concat(ids)) on(`button:${id}`)(handler);
     },
+    onObjectFirstClick: (id, handler) => (hooks[`object:${id}`] = handler),
     onCustomEvent: (name, handler) => (custom[name] = (custom[name] ?? []).concat(handler)),
     emitCustomEvent: (name, payload) => {
       emitted.push([name, payload]);
       for (const handler of custom[name] ?? []) handler(payload);
     },
   }, { get: (target, key) => (key in target ? target[key] : on(String(key))) });
-  require("../plugins/modes/LeagueMode.plugin").register(api);
-  require("../plugins/modes/LeaguePoints.plugin").register(api);
-  require("../plugins/modes/LeagueRelics.plugin").register(api);
-  require("../plugins/modes/LeagueAreaUnlocks.plugin").register(api);
+  require("../plugins/modes/Base.LeagueMode").register(api);
+  require("../plugins/modes/Points.LeagueMode").register(api);
+  require("../plugins/modes/Relics.LeagueMode").register(api);
+  require("../plugins/modes/AreaUnlocks.LeagueMode").register(api);
+  require("../plugins/areas/DeathsOffice.plugin").register(api);
+  // The Gravestones plugin's answer, as far as Death's Office asks it here.
+  api.onCustomEvent("gravestones:state", (state) => (state.inTutorial = inDeathTutorial.has(state.player)));
 });
 
 /** A real player whose packets are recorded; logged in as a new character of `profile`. */
@@ -195,7 +201,8 @@ test("both supported area leagues initialize defaults and restore saved unlocks 
     for (const type of [4, 5]) {
       worldLeague = type;
       const player = character(`area-mode-${type}`);
-      assert.deepEqual(player.getAttribute("league:areas"), [MISTHALIN, KARAMJA]);
+      // Raging Echoes' Karamja comes from the tutorial's pick, not the defaults.
+      assert.deepEqual(player.getAttribute("league:areas"), type === 5 ? [MISTHALIN] : [MISTHALIN, KARAMJA]);
       player.setAttribute("league:areas", [MISTHALIN, KARAMJA, MORYTANIA]);
       player.setLocation(at(3495, 3491));
       const restored = character(`area-mode-${type}`, "league", { restore: PlayerSave.fromPlayer(player) });
@@ -237,7 +244,32 @@ test("the map squares follow the Wiki's areas; instances and the places open to 
   assert.equal(query("league:area-at", { x: 3222, y: 3218 }).name, "Misthalin");
   assert.equal(areaAt(1200, 3350), KOUREND, "the Stranglewood counts as Kourend in Trailblazer Reloaded");
   assert.equal(areaAt(1200, 3350, { league: 5 }), VARLAMORE, "and as Varlamore in Raging Echoes");
+  // The Dagannoth Kings' lair is on no surface square: open by default, Fremennik in Raging Echoes,
+  // whose Fremennik Province (Wiki) lists Waterbirth Island Dungeon and has the Kings as its echo boss.
+  assert.equal(areaAt(2926, 4375), null, "the Kings' lair is open in Trailblazer Reloaded");
+  assert.equal(areaAt(2926, 4375, { league: 5 }), FREMENNIK, "and Fremennik in Raging Echoes");
   assert.equal(areaAt(3000, 3000, { league: 99 }), null, "no league, no areas");
+});
+
+test("the Citharede Abbey's square (53,49) is the desert; the Abandoned Mine in the square below stays Morytania", () => {
+  // Wiki (Citharede Abbey, leagueRegion = Desert): the abbey and the Giants' Plateau east of Al
+  // Kharid, map square 53,49, tiles 3392-3455 by 3136-3199. That square's cabbage field is the
+  // abbey task's own "in the Citharede Abbey", so the whole square must be the desert.
+  for (const [x, y] of [[3413, 3178], [3400, 3140], [3392, 3136], [3455, 3199]]) {
+    assert.equal(areaAt(x, y), DESERT, `the Giants' Plateau square (${x}, ${y})`);
+  }
+  // The Abandoned Mine is in the surface square below (53,50; its entrance 3451, 3233, the Wiki's
+  // shooting-star pin) and stays Morytania, as do its underground levels: map y + 6400 takes the
+  // surface square (3422, 9625 is Haunted Mine's upper level, square 53,150 -> surface 53,50).
+  assert.equal(areaAt(3451, 3233), MORYTANIA, "the Abandoned Mine's entrance square");
+  assert.equal(areaAt(3422, 9625), MORYTANIA, "the Haunted Mine's levels under that square");
+  assert.equal(areaAt(3413, 3240), MORYTANIA, "the square just south of the plateau");
+  // Every league moves it: it was Morytania before this square was reassigned.
+  for (const league of [4, 5, 6]) {
+    assert.equal(areaAt(3413, 3178, { league }), DESERT, `league ${league}: the abbey`);
+    assert.equal(areaAt(3451, 3233, { league }), MORYTANIA, `league ${league}: the mine`);
+    assert.equal(areaAt(3422, 9625, { league }), MORYTANIA, `league ${league}: the mine's levels`);
+  }
 });
 
 test("a locked area refuses a walk, a teleport and a respawn; open ground and a main character are untouched", () => {
@@ -473,7 +505,7 @@ test("the details' Teleport casts to an unlocked area's hub (the cache's coord),
   worldLeague = 4;
   echoes.setRegistered(true);
   openAreas(echoes);
-  viewArea(echoes, KARAMJA);
+  viewArea(echoes, MISTHALIN);
   assert.equal(hooks[`button:${uid(AREAS, 84)}`]({ player: echoes }), true);
   const from = echoes.getLocation().clone();
   core.TaskManager.process();
@@ -485,6 +517,29 @@ test("the details' Teleport casts to an unlocked area's hub (the cache's coord),
   core.TaskManager.process();
   assert.ok(!echoes.getLocation().equals(from), "landed at +21");
   echoes.setRegistered(false);
+});
+
+test("Raging Echoes: Misthalin to start, Karamja the free tutorial pick that ends the areas page's wait (Wiki, 227/00196)", () => {
+  worldLeague = 5;
+  const echoes = character("echoesfirstpick");
+  worldLeague = 4;
+  assert.deepEqual(echoes.getAttribute("league:areas"), [MISTHALIN], "Wiki: 'All players will begin the league restricted to Misthalin'");
+  assert.equal(echoes.sent.varbits.get(SELECTION[1]) ?? 0, 0, "league_area_selection_1 is still 0, so the tutorial's areas page waits");
+  const areas = query("league:areas", { player: echoes });
+  assert.deepEqual([areas.next, areas.available], [{ slot: 1, tasks: 0 }, true], "the first pick needs no tasks");
+  openAreas(echoes);
+  viewArea(echoes, ASGARNIA);
+  assert.deepEqual(echoes.sent.scripts.at(-1)[1].slice(11, 12), [3], "only Karamja may be the first pick");
+  assert.equal(hooks[`button:${uid(AREAS, 62)}`]({ player: echoes }), true);
+  assert.deepEqual(echoes.getAttribute("league:areas"), [MISTHALIN]);
+  viewArea(echoes, KARAMJA);
+  assert.equal(echoes.sent.scripts.at(-1)[1][11], 2, "Karamja can be unlocked");
+  assert.equal(hooks[`button:${uid(AREAS, 62)}`]({ player: echoes }), true);
+  const event = emitted.find(([name, payload]) => name === "league:area-unlocked" && payload.player === echoes)?.[1];
+  assert.deepEqual([event?.area, event?.slot], [KARAMJA, 1], "league:area-unlocked moves the tutorial on");
+  for (let tick = 0; tick < 14; tick++) core.TaskManager.process();
+  assert.equal(echoes.sent.varbits.get(SELECTION[1]), KARAMJA, "league_area_selection_1 0 -> 2, as recorded");
+  assert.deepEqual(query("league:areas", { player: echoes }).next, { slot: 2, tasks: 90 }, "then 90 tasks, as before");
 });
 
 test("Demonic Pacts: Varlamore to start, Misthalin shut but Zanaris and the Abyss open, Karamja first at 80 tasks, its own cast", () => {
@@ -572,6 +627,8 @@ test("Yama's stepping stones: a jump a tick, the stone left on fire, a burn on a
   const ObstacleRunner = require("../plugins/skills/agility/ObstacleRunner.Agility");
   ObstacleRunner.init({ core, getTaskManager: () => core.TaskManager });
   const YamaStones = require("../plugins/modes/leagueareas/YamaStones.LeagueAreaUnlocks");
+  // The map, as the server indexes it at start: the stones are the loc's placements in it.
+  if (core.RegionManager.regions.size === 0) core.RegionManager.init();
   worldLeague = 6;
   const jumper = character("stonejumper");
   worldLeague = 4;
@@ -645,6 +702,26 @@ test("Yama's stepping stones: a jump a tick, the stone left on fire, a burn on a
   assert.equal(jumper.sent.messages.at(-1), "Your Yama's stepping stone count is: <col=ff0000>10</col>.");
   assert.deepEqual({ course: laps().at(-1).course, laps: laps().at(-1).laps }, { course: "yama-stepping-stones", laps: 10 });
 
+  // Every stone the cache places is one, not just those the recording jumped on: the south row.
+  ticks(7);
+  jumper.moveTo(at(1508, 5580));
+  jumper.sent.messages.length = 0;
+  assert.equal(YamaStones.jump(stone(1511, 5579)), true);
+  ticks(3);
+  assert.ok(!jumper.sent.messages.includes("I can't reach that!"), "a stone jumps on to the next");
+  assert.ok(jumper.getLocation().equals(at(1511, 5579)), "on the south row's stone");
+
+  // Clicked from further off, the walk is to the shore beside the stone clicked, not a fixed entry.
+  const walkable = (x, y) => !core.RegionManager.blocked(at(x, y), null);
+  for (const [from, [sx, sy]] of [[[1503, 5577], [1511, 5579]], [[1503, 5590], [1529, 5599]], [[1500, 5600], [1480, 5592]]]) {
+    jumper.moveTo(at(...from));
+    const far = { ...stone(sx, sy), destination: { x: sx, y: sy, z: 0 } };
+    YamaStones.route(far);
+    const { x, y } = far.destination;
+    assert.ok(Math.max(Math.abs(x - sx), Math.abs(y - sy)) <= 4, `to ${x}, ${y}: in the shore's reach of ${sx}, ${sy}`);
+    assert.ok(walkable(x, y), `to ${x}, ${y}: a tile to stand on`);
+  }
+
   const echoes = character("echoesjumper");
   assert.equal(YamaStones.jump({ ...stone(1486, 5598), player: echoes }), false, "only a Demonic Pacts character's");
   jumper.setRegistered(false);
@@ -687,6 +764,95 @@ test("Demonic Pacts' League Home Teleport: Civitas with the league's cast and it
   const event = { player: echoes, spellName: "League Home Teleport", opId: 3, handled: false };
   hooks.onSpellCast(event);
   assert.equal(event.handled, false, "another league's character is not handled here");
+});
+
+/** A character in its copy of Death's Office, whose moves report their map square as World.onPlayerMoved does. */
+function inDeathsOffice(name, profile, league = 4) {
+  worldLeague = league;
+  const player = character(name, profile);
+  worldLeague = 4;
+  player.moveTo = function (destination) {
+    const previous = this.getLocation().clone();
+    Player.prototype.moveTo.call(this, destination);
+    const location = this.getLocation();
+    if ((previous.getX() >> 6) !== (location.getX() >> 6) || (previous.getY() >> 6) !== (location.getY() >> 6)) {
+      hooks.onPlayerMapSquareChange({ player: this, previous, location });
+    }
+    return this;
+  };
+  require("../plugins/areas/deathsoffice/Instance.DeathsOffice").enter(player, [3173, 5726, 0]);
+  return player;
+}
+
+/** The exit portal's click, and the two ticks to the move. */
+function leaveDeathsOffice(player) {
+  const Instance = require("../plugins/areas/deathsoffice/Instance.DeathsOffice");
+  assert.equal(Instance.inOffice(player), true, "in the office before the click");
+  player.sent.messages.length = 0;
+  assert.equal(hooks[`object:${core.CacheDefinitions.getLocId("death_office_exitportal")}`]({ player }), true);
+  core.TaskManager.process();
+  core.TaskManager.process();
+  assert.equal(Instance.inOffice(player), false, "the copy is gone");
+  assert.deepEqual(player.sent.messages, [], "the portal has nothing to refuse");
+  return player.getLocation();
+}
+
+test("Death's Office's exit portal: a locked destination leads to the league home, an open one is unchanged", () => {
+  const heardEverything = 31;
+  const Enforcement = require("../plugins/modes/leagueareas/Enforcement.LeagueAreaUnlocks");
+  const homeOf = (player, league) => Enforcement.home(league, player);
+  const spawn = core.WorldDefinition.WORLD_SPAWN;
+  assert.equal(areaAt(spawn.getX(), spawn.getY()), WILDERNESS, "(the tutorial's exit, the world's spawn, is locked for a new character)");
+
+  // The first death's tutorial leads to the respawn point: the respawn rule's league home here.
+  const tutorial = inDeathsOffice("tutorialexit");
+  inDeathTutorial.add(tutorial);
+  tutorial.setAttribute("deaths-office:tutorial-heard", heardEverything);
+  const afterTutorial = leaveDeathsOffice(tutorial);
+  inDeathTutorial.delete(tutorial);
+  assert.ok(afterTutorial.equals(homeOf(tutorial, 4)), `Trailblazer's home, not the office: ${afterTutorial}`);
+  assert.equal(areaAt(afterTutorial.getX(), afterTutorial.getY()), MISTHALIN);
+
+  // No entrance on record falls back to Lumbridge, which Demonic Pacts never opens.
+  const pacts = inDeathsOffice("pactsexit", "league", 6);
+  const fromLumbridge = leaveDeathsOffice(pacts);
+  assert.ok(fromLumbridge.equals(homeOf(pacts, 6)), `Demonic Pacts' home, not the office: ${fromLumbridge}`);
+  assert.equal(areaAt(fromLumbridge.getX(), fromLumbridge.getY(), { league: 6 }), VARLAMORE);
+
+  // Logged out inside: the new copy's portal behaves the same.
+  const relogged = inDeathsOffice("pactsrelog", "league", 6);
+  const Instance = require("../plugins/areas/deathsoffice/Instance.DeathsOffice");
+  Instance.leave(relogged, at(1653, 3135));
+  relogged.setAttribute("deaths-office:inside", true);
+  hooks.onPlayerLogin({ player: relogged, username: "pactsrelog", isNewAccount: false, profile: "league" });
+  assert.ok(leaveDeathsOffice(relogged).equals(homeOf(relogged, 6)), "home from the login's copy too");
+
+  // An entrance whose outside is locked (a saved character's old visit), until its area is unlocked.
+  const falador = [2976, 9737, 0];
+  const stale = inDeathsOffice("staleexit");
+  stale.setAttribute("deaths-office:entrance", "death_office_access_whitecoffin");
+  assert.ok(leaveDeathsOffice(stale).equals(homeOf(stale, 4)), "Falador's entrance is locked: home");
+
+  // Controls: an open destination is exactly what it was.
+  const unlocked = inDeathsOffice("openfalador");
+  unlocked.setAttribute("league:areas", [MISTHALIN, KARAMJA, ASGARNIA]);
+  unlocked.setAttribute("deaths-office:entrance", "death_office_access_whitecoffin");
+  assert.ok(leaveDeathsOffice(unlocked).equals(at(...falador)), "outside Falador's entrance once Asgarnia is unlocked");
+  assert.equal(unlocked.getAttribute("deaths-office:entrance"), null);
+
+  const lumbridge = inDeathsOffice("openlumbridge");
+  assert.ok(leaveDeathsOffice(lumbridge).equals(at(3238, 3194)), "no entrance on record: Lumbridge, open to Trailblazer");
+
+  const civitas = inDeathsOffice("opencivitas", "league", 6);
+  civitas.setAttribute("deaths-office:entrance", "civitas_death_entrance");
+  assert.ok(leaveDeathsOffice(civitas).equals(at(1653, 3135)), "Civitas's own entrance, as captured");
+
+  const main = inDeathsOffice("mainexit", "main");
+  inDeathTutorial.add(main);
+  main.setAttribute("deaths-office:tutorial-heard", heardEverything);
+  const mainExit = leaveDeathsOffice(main);
+  inDeathTutorial.delete(main);
+  assert.ok(mainExit.equals(spawn), "a main character's tutorial still leads to the world's spawn");
 });
 
 test("a reload restores the unlocks and their varbits", () => {

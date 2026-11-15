@@ -90,13 +90,38 @@ function shotTicks(shape) {
   return core.Projectile.ticksToLand(shape.end);
 }
 
+/** Captured (rsprox 4060): a landed hit takes 9% of the level rounded down (77 -> 71, 86 -> 79, 95 -> 87). */
 function drainSkill(player, skill, factor) {
   const skills = player?.getSkillManager?.();
   if (!skills) return;
   const current = skills.getCurrentLevel?.(skill);
   if (!Number.isFinite(current) || current <= 0) return;
-  skills.setCurrentLevels?.(skill, Math.max(0, current - Math.ceil(current * factor)));
+  skills.setCurrentLevels?.(skill, Math.max(0, current - Math.floor(current * factor)));
 }
+
+function wearsAraneaBoots(player) {
+  const boots = player?.getEquipment?.()?.get?.(core.Equipment.FEET_SLOT);
+  const id = boots?.getId?.() ?? -1;
+  const { ARANEA_BOOTS, ARANEA_BOOTS_2, ARANEA_BOOTS_3, ARANEA_BOOTS_4, ARANEA_BOOTS_5 } = core.ItemIdentifiers;
+  return [ARANEA_BOOTS, ARANEA_BOOTS_2, ARANEA_BOOTS_3, ARANEA_BOOTS_4, ARANEA_BOOTS_5].includes(id);
+}
+
+/**
+ * Aranea boots negate an attack that would have damaged the player, at most once per cooldown
+ * (captured: a miss in between leaves the boots ready). Tells the player and starts the cooldown.
+ */
+function araneaNegates(target, attribute, cooldownTicks, damage) {
+  if (damage <= 0 || !target?.isPlayer?.()) return false;
+  const player = target.getAsPlayer();
+  if (!wearsAraneaBoots(player)) return false;
+  const now = core.World.getProcessCycle();
+  if (now < (player.getAttribute?.(attribute) ?? 0)) return false;
+  player.setAttribute(attribute, now + cooldownTicks);
+  player.getPacketSender().sendTypedMessage(core.ChatType.SPAM, Shared.ARANEA_MESSAGE);
+  return true;
+}
+
+const ENRAGE_RAISES = [["DEFENCE", 35], ["MAGIC", 28], ["RANGED", 31]];
 
 /** Hits that would take Araxxor past the threshold flip her into the enrage. */
 function checkEnrage(npc, incomingDamage = 0) {
@@ -109,6 +134,16 @@ function checkEnrage(npc, incomingDamage = 0) {
   if (projected <= 0) return;
   if (projected > Math.floor(Shared.MAX_HITPOINTS * Shared.ENRAGE_THRESHOLD)) return;
   npc.setAttribute(Shared.ATTR_ENRAGED, true);
+  // Wiki (Araxxor/Strategies): the enrage "will additionally increase his Defence level by 35, Magic by 28 and Ranged
+  // by 31" (infobox: 135 -> 170, 190 -> 218, 210 -> 241).
+  // The raise goes on her base level (NPC.setMaxLevelBoost: setCurrentLevels alone clamps to the definition's), and a
+  // stat drained before the enrage comes up by the same amount.
+  for (const [skill, raise] of ENRAGE_RAISES) {
+    const id = core.Skill[skill];
+    const current = npc.getCurrentLevel(id);
+    npc.setMaxLevelBoost(id, raise);
+    npc.setCurrentLevels(id, current + raise);
+  }
   // Captured: 11488, then 11489 two ticks later with the body change (the two front legs
   // coat in venom). The screech is in the animations themselves: no sound packet goes out.
   npc.performAnimation(new core.Animation(BOSS_ANIMATIONS.enrage));
@@ -145,7 +180,9 @@ function startCleave(npc, target) {
         const protect = protections(target).melee;
         const rolled = core.Misc.getRandom(Shared.MELEE_MAX);
         const damage = protect ? Math.floor(rolled * Shared.CLEAVE_PROTECT_FACTOR) : rolled;
-        if (damage > 0) {
+        // Captured: the message arrives with the blow, two ticks after the swing, and no hit lands.
+        const negated = araneaNegates(target, Shared.ARANEA_CLEAVE_ATTRIBUTE, Shared.ARANEA_CLEAVE_COOLDOWN_TICKS, damage);
+        if (damage > 0 && !negated) {
           target.getCombat().getHitQueue().addPendingDamage([new core.HitDamage(damage, core.HitMask.RED)]);
           // Perfect Araxxor forbids melee taken off prayer; the cleave is her melee.
           if (!protect && target.isPlayer?.()) CombatAchievements.avoidableDamage(target.getAsPlayer(), damage);
@@ -216,19 +253,24 @@ function combatClass() {
       if (!character || !target) return [];
       if (!this.attack || this.attack === Shared.Attack.CLEAVE) return [];
       const protect = protections(target);
+      // The Wiki's protect-prayer reductions are applied here, so the engine must not apply the prayer
+      // again (at the roll or at impact): that would zero every hit through the matching prayer.
       if (this.attack === Shared.Attack.MELEE) {
-        const hit = new core.PendingHit(character, target, this, 0);
+        const hit = new core.PendingHit(character, target, this, { delay: 0, bypassProtectionPrayer: true });
         const rolled = Math.min(Shared.MELEE_MAX, hit.getTotalDamage());
         hit.setTotalDamage(protect.melee ? Math.min(rolled, Shared.PROTECT_MELEE_CAP) : rolled);
         return [hit];
       }
       const ranged = this.attack === Shared.Attack.RANGED;
       const delay = this.shotDelay ?? 1;
-      const hit = new core.PendingHit(character, target, this, { delay });
+      const hit = new core.PendingHit(character, target, this, { delay, bypassProtectionPrayer: true });
       const rolled = Math.min(ranged ? Shared.RANGED_MAX : Shared.MAGIC_MAX, hit.getTotalDamage());
       const factor = ranged ? protect.ranged : protect.magic;
       const prayerReduced = ranged ? Shared.PROTECT_RANGED_FACTOR : Shared.PROTECT_MAGIC_FACTOR;
-      hit.setTotalDamage(factor ? Math.floor(rolled * prayerReduced) : rolled);
+      const reduced = factor ? Math.floor(rolled * prayerReduced) : rolled;
+      // Captured: the boots' message goes out with the shot, and the splat that lands is a 0.
+      const negated = ranged && araneaNegates(target, Shared.ARANEA_RANGED_ATTRIBUTE, Shared.ARANEA_RANGED_COOLDOWN_TICKS, reduced);
+      hit.setTotalDamage(negated ? 0 : reduced);
       hit.araxxorKind = this.attack;
       return [hit];
     }
@@ -237,6 +279,8 @@ function combatClass() {
       const target = hit?.getTarget?.();
       if (!target?.isPlayer?.()) return;
       const player = target.getAsPlayer();
+      // Captured: a 0 (a miss, or a shot the boots negated) drains nothing.
+      if (!(hit.getTotalDamage?.() > 0)) return;
       if (hit.araxxorKind === Shared.Attack.RANGED) drainSkill(player, core.Skill.DEFENCE, Shared.DRAIN_RANGED_DEFENCE);
       else if (hit.araxxorKind === Shared.Attack.MAGIC) drainSkill(player, core.Skill.PRAYER, Shared.DRAIN_MAGIC_PRAYER);
     }
@@ -347,5 +391,5 @@ module.exports = {
   checkEnrage,
   startCleave,
   drainSkill,
-  _test: { isAdjacent, protections, chooseDistantAttack, shotTicks },
+  _test: { isAdjacent, protections, chooseDistantAttack, shotTicks, araneaNegates, wearsAraneaBoots },
 };

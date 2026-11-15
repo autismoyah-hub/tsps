@@ -40,8 +40,11 @@ minnows, karambwan vessels). Tests: `server/tests/fishing.test.cjs`.
   Messages (rsprox): "You cast out your net...", "You catch # Karambwanji."
 - **Karambwan (vessel, 65 Fishing):** chart 5/160, 50 XP. A baited vessel holds one raw
   karambwanji, and every attempt uses it, caught or not; the vessel then reloads from the
-  inventory, and an empty vessel loads itself on the click. Fishing stops when no karambwanji
-  are left. The spots never move, so a session runs until the inventory is full.
+  inventory, and an empty vessel loads itself on the click. The [27 October 2016 update](https://oldschool.runescape.wiki/w/Update:Deadman_Changes_%26_QOL)
+  says an emptied vessel automatically refills while bait remains; the loop applies this even
+  if another vessel is already baited. The exact retail slot order has not been captured.
+  Fishing stops when no karambwanji are left. The spots never move, so a session runs until
+  the inventory is full.
 - **Messages (rsprox):** "You lower the Karambwan vessel." on the click, "You catch a Karambwan!",
   "A Karambwan deftly snatches the Karambwanji from your vessel!" on a miss, and the message box
   "You need a Karambwan vessel to fish here." without a vessel.
@@ -80,6 +83,65 @@ roll at the Wiki's tick lengths, so their timing is used; the others are used fo
   left." (barbarian rod) without bait; "You need to be at least level # Fishing to harpoon these
   fish." and "You need at least level # Fishing to bait these fish." below the level.
   Tempoross uses the same full-inventory box.
+
+## Civitas illa Fortis park pond
+
+- **Spot:** `civitas_park_fishingspot_hmm` (NPC 13329, "Fishing spot", option Cast), stationary.
+  [Fishing spot (Civitas illa Fortis)](https://oldschool.runescape.wiki/w/Fishing_spot_(Civitas_illa_Fortis)):
+  a big fishing net, level 1, 7.5 XP a catch whatever it lands.
+- **Table (Wiki):** jade 1/100 and red topaz 1/505 first, else broken glass 3, old boot 2, big
+  fishing net 2, casket 2, house keys 1 (out of 10); a moon key loop half 1/1014 on top.
+- **rsprox (237/01098, 7 casts):** `human_largenet` every tick, "You cast out your net...",
+  catches 4-10 ticks apart ("You find some broken glass.", "You find a casket.", "You find a big
+  fishing net.", "You find some house keys."), and "This is the wrong size net for fishing here."
+  in the chat without the net. The other items' lines follow that pattern (ours); the catch rate
+  (21/256 a tick) is the recording's, the Wiki gives none.
+- The park has its own clue-bottle base (152,120). Rada's blessing and spirit flakes do
+  not double its table items (they are not fish).
+
+## Clue bottles (supported methods)
+
+Fishing rolls each eligible tier independently after a supported ordinary catch, using the
+[Wiki formula](https://oldschool.runescape.wiki/w/Clue_bottle), the visible Fishing level and
+the applicable Combat Achievement points threshold. The ordinary catch batch supplies one
+roll set, even when a big net lands several supported fish; this is the implementation's
+interpretation of a successful action, not a captured multi-fish observation. Rada's extra
+fish do not add a roll set. Fortis park has its own documented base. Inventory, bank and
+scroll-case capacity, X Marks the Spot boxes, full-inventory ground placement and league
+vessel modifiers use the shared clue services. A worn imbued ring of wealth doubles the
+non-beginner bottle rate in the Wilderness; [beginner bottles](https://oldschool.runescape.wiki/w/Clue_bottle_%28beginner%29) are excluded.
+
+Arthur's vessel opt-out suppresses new bottles, geodes and clue nests from their supported
+skilling sources without blocking an already held vessel from being opened. TSPS defaults
+existing accounts to receiving vessels until they opt out; that compatibility default is
+not a captured retail fresh-account observation.
+
+The initial source scope covers the ordinary catches whose existing heron bases are
+explicitly listed in Fishing, plus Fortis park. Tutorial Island's separate pond, frog
+spawn, slimy eels, lava eels and an ordinary big-net batch containing only non-fish items
+retain their prior behavior: their bottle rules are unverified here, not asserted to be
+ineligible. Exact drop feedback has not been captured. Spirit-flake extra fish are covered
+separately below; their interaction with clue bottle rolls has not been captured.
+
+## Extra fish: Rada's blessing and spirit flakes
+
+Wiki ([Spirit flakes](https://oldschool.runescape.wiki/w/Spirit_flakes),
+[Fishing enhancers](https://oldschool.runescape.wiki/w/Fishing_enhancers)): carried spirit flakes
+give a 50% chance of an extra fish for no extra experience, a flake is lost for every fish caught
+whether the catch is single or double, they stack with Rada's blessing (2-8%), and they cannot
+activate with only one empty inventory slot left. Tempoross, Fishing Trawler, drift nets, Chambers
+of Xeric and Leechfin are excluded; those do not run through this loop.
+
+- One roll per landed fish: the first 50% of the roll is the flakes, the blessing's chance sits on
+  top of it, so a flaked fish with Rada's blessing 4 has a 58% chance of one extra fish (the Wiki
+  says the effects stack; adding them is our reading). The extra is never a third fish.
+- A flake is used for each landed fish, also when the roll fails or there is no room for the
+  extra. Big net junk (seaweed, boots, gloves, oysters, caskets) also uses a flake and can double (Wiki: non-fish catches are eligible); Rada's blessing stays fish-only. Park finds are left out.
+- Only flakes in the inventory count. The Wiki does not say a tackle box feeds them, so those are
+  not used.
+- The flakes have no message; the blessing keeps "Rada's blessing enabled you to catch an extra
+  fish." No recording shows the flake consumption outside Leagues Tempoross, so the numbers are
+  the Wiki's.
 
 ## Not covered
 

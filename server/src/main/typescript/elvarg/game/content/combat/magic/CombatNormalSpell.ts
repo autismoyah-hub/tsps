@@ -23,6 +23,12 @@ export interface CombatNormalSpellOptions {
     members?: boolean
     /** Its own cast sound id (a built-in staff spell has no spellbook id to look it up by). */
     castSound?: () => number
+    /** Its own impact sound id, for a built-in staff spell with no spellbook id in the impact table. */
+    impactSound?: () => number
+    /** Whether it accepts this target before runes are spent (Crumble Undead: the undead only). */
+    canCastOnTarget?: (cast: Mobile, target: Mobile) => boolean
+    /** Its own line for a cast without the required equipment (the god spells name their staves). */
+    missingEquipmentMessage?: string
   }
 
 export class CombatNormalSpell extends CombatSpell {
@@ -34,11 +40,22 @@ export class CombatNormalSpell extends CombatSpell {
         this.members = options.members === true;
     }
 
+    public canCastOnTarget(cast: Mobile, target: Mobile): boolean {
+        return this.options.canCastOnTarget ? this.options.canCastOnTarget(cast, target) : true;
+    }
+
+    public missingEquipmentMessage(player: Player): string {
+        return this.options.missingEquipmentMessage ?? super.missingEquipmentMessage(player);
+    }
+
     spellId(): number {
         return this.options.spellId()
     }
     castSound(): Sound | null {
         return this.options.castSound ? new Sound(this.options.castSound(), 1, 0, 0) : null;
+    }
+    impactSound(): Sound | null {
+        return this.options.impactSound ? new Sound(this.options.impactSound(), 1, 0, 0) : null;
     }
     maximumHit(): number {
         return this.options.maximumHit()

@@ -104,12 +104,20 @@ function attackRoll(player) {
   return attackRollOverride ? attackRollOverride(player) : core.AccuracyFormulasDpsCalc.attackRangedRoll(player);
 }
 
+/**
+ * Room for the judge's 10 plain bronze arrows: a free slot or a plain stack they join. A preset
+ * (or other meta) arrow stack doesn't take them, so it doesn't count as room.
+ */
+function hasArrowRoom(player) {
+  return player.getInventory().getAddableAmount(new core.Item(core.ItemIdentifiers.BRONZE_ARROW, ARROWS_PER_ROUND)) >= ARROWS_PER_ROUND;
+}
+
 function canStart(player) {
   const session = sessions.get(player);
   if (session && !session.finished) return false;
   if (level(player) < RANGED_LEVEL) return false;
   if (coins(player) < ENTRY_FEE) return false;
-  return player.getInventory().getFreeSlots() > 0 || player.getInventory().contains(core.ItemIdentifiers.BRONZE_ARROW);
+  return hasArrowRoom(player);
 }
 
 function startRound(player) {
@@ -121,12 +129,33 @@ function startRound(player) {
   return true;
 }
 
+/**
+ * Takes `amount` bronze arrows, plain copies first: the judge's arrows are plain, so a preset (untradeable,
+ * unbankable) arrow is never spent while his are kept.
+ */
+function takeArrows(inventory, amount) {
+  if (typeof inventory.getItems !== "function") {
+    inventory.deleteNumber(core.ItemIdentifiers.BRONZE_ARROW, amount);
+    return;
+  }
+  const restricted = (item) => item.isPresetItem?.() === true || item.isUntradeable?.() === true || item.isUnbankable?.() === true;
+  const slots = inventory.getItems().map((item, slot) => (item?.getId() === core.ItemIdentifiers.BRONZE_ARROW ? slot : -1)).filter((slot) => slot >= 0);
+  slots.sort((a, b) => Number(restricted(inventory.getItems()[a])) - Number(restricted(inventory.getItems()[b])));
+  let left = amount;
+  for (const slot of slots) {
+    if (left <= 0) break;
+    const taken = Math.min(left, inventory.getItems()[slot].getAmount());
+    inventory.deleteAtSlot(slot, taken);
+    left -= taken;
+  }
+}
+
 /** One shot: consumes an arrow, adds the ring's score and XP share. Null when it can't shoot. */
 function takeShot(player, random = randomOverride ?? Math.random) {
   const session = sessions.get(player);
   if (!session || session.finished) return null;
   if (player.getInventory().getAmount(core.ItemIdentifiers.BRONZE_ARROW) <= 0) return null;
-  player.getInventory().deleteNumber(core.ItemIdentifiers.BRONZE_ARROW, 1);
+  takeArrows(player.getInventory(), 1);
   const shot = scoreShot(attackRoll(player), random);
   session.shots++;
   session.score += shot.score;
@@ -145,6 +174,8 @@ function claimTickets(player) {
   if (tickets > 0) {
     player.getInventory().forceAdd(player, new core.Item(core.ItemIdentifiers.ARCHERY_TICKET, tickets));
   }
+  // "archery-competition:score" { player, score, tickets }: the round's score, for a league's "Get 250/750/1000 Target points".
+  api.emitCustomEvent("archery-competition:score", { player, score: session.score, tickets });
   return tickets;
 }
 
@@ -155,7 +186,7 @@ function endRound(player) {
   sessions.delete(player);
   const inventory = player.getInventory();
   const remove = Math.min(session.provided, inventory.getAmount(core.ItemIdentifiers.BRONZE_ARROW));
-  if (remove > 0) inventory.deleteNumber(core.ItemIdentifiers.BRONZE_ARROW, remove);
+  if (remove > 0) takeArrows(inventory, remove);
 }
 
 function leave({ player }) {
@@ -187,6 +218,7 @@ Object.assign(module.exports, {
   markPlayed,
   bowEquipped,
   attackRoll,
+  hasArrowRoom,
   canStart,
   startRound,
   takeShot,

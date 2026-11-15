@@ -20,10 +20,13 @@ const { PendingHit } = require("../dist/game/content/combat/hit/PendingHit");
 const { SpecialAttackTargetingResolver } = require("../dist/game/content/combat/SpecialAttackTargeting");
 const { CombatType } = require("../dist/game/content/combat/CombatType");
 const { RangedWeapon } = require("../dist/game/content/combat/ranged/RangedData");
+const { Mobile } = require("../dist/game/entity/impl/Mobile");
+const { Sounds } = require("../dist/game/Sounds");
 const { TimerKey } = require("../dist/util/timers/TimerKey");
 const { TaskManager } = require("../dist/game/task/TaskManager");
 const { PluginManager } = require("../dist/plugins/PluginManager");
 const { World } = require("../dist/game/World");
+const { AreaManager } = require("../dist/game/model/areas/AreaManager");
 const { ItemIdentifiers } = require("../dist/util/ItemIdentifiers");
 
 const items = JSON.parse(
@@ -32,10 +35,12 @@ const items = JSON.parse(
 
 /** Death, logout and hit-roll handlers the specials register, by hook name. */
 const hooks = {};
+const burnRequests = [];
 
 before(() => {
   // Only the specials registry and the death/logout/hit-roll hooks matter here; other hooks are no-ops.
   const api = {
+    emitCustomEvent: (name, data) => { if (name === "combat:burn") burnRequests.push(data); },
     onCombatHitRoll: (handler) => (hooks.onCombatHitRoll ??= []).push(handler),
     onPlayerDefeated: (handler) => (hooks.onPlayerDefeated ??= []).push(handler),
     onPlayerLogout: (handler) => (hooks.onPlayerLogout ??= []).push(handler),
@@ -43,6 +48,7 @@ before(() => {
     core: PluginManager.getCoreApi(),
     registerCombatSpecial: CombatSpecial.register,
     getBonusManager: () => require("../dist/game/model/equipment/BonusManager").BonusManager,
+    getAreaManager: () => AreaManager,
   };
   require("../plugins/combat/SpecialAttacks.plugin").register(
     new Proxy(api, { get: (target, key) => (key in target ? target[key] : () => {}) }),
@@ -171,7 +177,7 @@ test("each melee special costs the wiki energy and carries its roll traits", () 
 test("ornament and (cr) variants share their base weapon's special", () => {
   const shared = {
     dragon_claws: [ItemIdentifiers.DRAGON_CLAWS, ItemIdentifiers.DRAGON_CLAWS_OR_, ItemIdentifiers.DRAGON_CLAWS_CR_],
-    dragon_sword: [ItemIdentifiers.DRAGON_SWORD, ItemIdentifiers.DRAGON_SWORD_CR_],
+    dragon_sword: [ItemIdentifiers.DRAGON_SHORTSWORD, ItemIdentifiers.DRAGON_SHORTSWORD_CR_],
     dragon_longsword: [ItemIdentifiers.DRAGON_LONGSWORD, ItemIdentifiers.DRAGON_LONGSWORD_CR_],
     dragon_halberd: [ItemIdentifiers.DRAGON_HALBERD, ItemIdentifiers.DRAGON_HALBERD_CR_],
     shove: [
@@ -226,13 +232,95 @@ test("Favour plays the mace's special animation and graphic", () => {
   assert.deepEqual(attacker.log.drains, [100]);
 });
 
+test("special attack animations use the cache's own sequences", () => {
+  const cases = [
+    ["voidwaker", 11275, "human_special02_voidwaker"], // 11240 is not sent by the live game
+    ["statius_warhammer_bh", 1378, "dragon_warhammer_sa_player"],
+  ];
+  for (const [id, expected, name] of cases) {
+    const animations = [];
+    const attacker = fakeFighter();
+    attacker.getEquipment = () => ({ get: () => ({ getId: () => ItemIdentifiers.DRAGON_HASTA }) });
+    attacker.performAnimation = (animation) => animations.push(animation.getId());
+    special(id).getCombatMethod().start(attacker, fakeTarget());
+    assert.equal(animations.at(-1), expected, `${id}: ${name}`);
+  }
+});
+
+test("Dragon Hasta Unleash replaces the normal swing through real animation arbitration", async () => {
+  await CachePipeline.initialize(path.resolve(__dirname, ".."));
+
+  const attacker = fakeFighter();
+  attacker.animation = null;
+  attacker.animationGeneration = 0;
+  attacker.getUpdateFlag = () => ({ flag() {} });
+  attacker.performAnimation = (animation) => Mobile.prototype.performAnimation.call(attacker, animation);
+  attacker.getAttackAnim = () => 2080; // ordinary hasta stab; cache forced priority 6
+  const attackSound = {};
+  attacker.getAttackSound = () => attackSound;
+
+  const sentSounds = [];
+  const realSendSound = Sounds.sendSound;
+  Sounds.sendSound = (character, sound) => sentSounds.push([character, sound]);
+  try {
+    special("dragon_hasta").getCombatMethod().start(attacker, fakeTarget());
+  } finally {
+    Sounds.sendSound = realSendSound;
+  }
+
+  assert.equal(attacker.animation.getId(), 11171, "Unleash replaces the ordinary hasta swing");
+  assert.deepEqual(sentSounds, [[attacker, attackSound]], "the ordinary attack sound is retained once");
+  assert.deepEqual(attacker.log.drains, [100], "Unleash consumes all available special energy");
+});
+
+test("Dragon Hasta Unleash scales accuracy 5% and damage 2.5% per 5% of energy spent", () => {
+  const hasta = special("dragon_hasta");
+  for (const [energy, accuracy, damage] of [[100, 2, 1.5], [60, 1.6, 1.3], [5, 1.05, 1.025]]) {
+    const attacker = fakeFighter({ special: energy });
+    attacker.getCombatSpecial = () => hasta;
+    hasta.getCombatMethod().start(attacker, fakeTarget());
+    assert.equal(attacker.special, 0, `${energy}%: all the energy is spent`);
+    const traits = CombatSpecial.activeTraitsFor(attacker);
+    assert.ok(Math.abs(traits.accuracyMultiplier - accuracy) < 1e-9, `${energy}%: accuracy x${accuracy}`);
+    assert.ok(Math.abs(traits.damageMultiplier - damage) < 1e-9, `${energy}%: damage x${damage}`);
+    assert.equal(traits.meleeAttackBonusIndex, 0, "rolls against stab defence");
+    hasta.getCombatMethod().handleAfterHitEffects({ isAccurate: () => false, getAttacker: () => attacker });
+  }
+});
+
+test("Dragon Hasta Unleash damage scaling is integral: 80% energy on a 45 max hit is 63", () => {
+  const { DamageFormulas } = require("../dist/game/content/combat/formula/DamageFormulas");
+  const hasta = special("dragon_hasta");
+  const attacker = fakeFighter({ special: 80 });
+  attacker.getCombatSpecial = () => hasta;
+  hasta.getCombatMethod().start(attacker, fakeTarget());
+  const traits = CombatSpecial.activeTraitsFor(attacker);
+  // floor(45 * 1.4); in floats 45 * (1 + 80 * 0.005) is 62.99999999999999.
+  assert.equal(DamageFormulas.applyDamageMultiplierTraits(45, traits, 1), 63);
+  hasta.getCombatMethod().handleAfterHitEffects({ isAccurate: () => false, getAttacker: () => attacker });
+});
+
+// Wiki: Unleash "ignores the 40% damage reduction from Protect from Melee" (a player's prayer); a demonic
+// gorilla's prayers "cannot be bypassed with special attacks".
+test("Dragon Hasta Unleash ignores a player's Protect from Melee, not an NPC's protection prayer", () => {
+  const hasta = special("dragon_hasta");
+  for (const [target, ignores] of [[fakeFighter(), true], [fakeTarget(), false]]) {
+    const attacker = fakeFighter();
+    attacker.getCombatSpecial = () => hasta;
+    attacker.getCombat = () => ({ setAttackDelay() {}, getTarget: () => target });
+    hasta.getCombatMethod().start(attacker, target);
+    assert.equal(CombatSpecial.activeTraitsFor(attacker).ignoreProtectionPrayer, ignores, target.isPlayer() ? "a player" : "an NPC");
+    hasta.getCombatMethod().handleAfterHitEffects({ isAccurate: () => false, getAttacker: () => attacker });
+  }
+});
+
 test("the ancient mace and dragon sword specials pierce NPC melee prayers; the hasta's doesn't", () => {
   assert.equal(hitRoll(wielding(ItemIdentifiers.ANCIENT_MACE)), true, "Favour");
-  assert.equal(hitRoll(wielding(ItemIdentifiers.DRAGON_SWORD)), true, "Wild Stab");
-  assert.equal(hitRoll(wielding(ItemIdentifiers.DRAGON_SWORD_CR_)), true, "Wild Stab (cr)");
+  assert.equal(hitRoll(wielding(ItemIdentifiers.DRAGON_SHORTSWORD)), true, "Wild Stab");
+  assert.equal(hitRoll(wielding(ItemIdentifiers.DRAGON_SHORTSWORD_CR_)), true, "Wild Stab (cr)");
   assert.equal(hitRoll(wielding(ItemIdentifiers.DRAGON_HASTA)), false, "Unleash only ignores player prayers");
   assert.equal(hitRoll(wielding(ItemIdentifiers.ANCIENT_MACE, false)), false, "a normal mace hit");
-  assert.equal(hitRoll(wielding(ItemIdentifiers.DRAGON_SWORD, false)), false, "a normal sword hit");
+  assert.equal(hitRoll(wielding(ItemIdentifiers.DRAGON_SHORTSWORD, false)), false, "a normal sword hit");
   assert.equal(hitRoll(wielding(ItemIdentifiers.ANCIENT_MACE), CombatType.RANGED), false, "melee only");
   assert.equal(hitRoll(fakeTarget()), false, "an NPC attacker");
 });
@@ -306,14 +394,22 @@ test("a weapon with no registered special has no special state", () => {
 
 // --- Shove: knockback, stun and immunity ---------------------------------------------------
 
-test("Shove stuns a normal target for 5 ticks, costs 25% once and sets the 5-tick swing", () => {
-  const attacker = fakeFighter();
-  const target = fakeTarget();
-  special("shove").getCombatMethod().start(attacker, target);
-  assert.deepEqual(attacker.log.drains, [25]);
-  assert.equal(target.log.stunned, true);
-  assert.equal(attacker.attackDelay, 5, "Shove takes 5 ticks against the spear's 4");
-  assert.equal(attacker.activated, false);
+test("every Shove weapon puts its stun graphic on the target and drains 25% once", () => {
+  for (const weaponId of special("shove").getIdentifiers()) {
+    const attacker = fakeFighter();
+    const target = fakeTarget();
+    const targetGraphics = [];
+    target.performGraphic = graphic => targetGraphics.push(graphic);
+    CombatSpecial.getForWeaponId(weaponId).getCombatMethod().start(attacker, target);
+    assert.equal(attacker.log.graphics, 0, `weapon ${weaponId} has no attacker graphic`);
+    assert.equal(targetGraphics.length, 1, `weapon ${weaponId} retains its target stun graphic`);
+    assert.equal(attacker.log.animations, 1);
+    assert.equal(target.log.animations, 1);
+    assert.deepEqual(attacker.log.drains, [25]);
+    assert.equal(target.log.stunned, true);
+    assert.equal(attacker.attackDelay, 5, "Shove takes 5 ticks against the spear's 4");
+    assert.equal(attacker.activated, false);
+  }
 });
 
 test("Shove leaves large, stunned and stun-immune targets untouched and spends no energy", () => {
@@ -437,122 +533,29 @@ test("burning claws split the first landing roll over three hitsplats and name t
   assert.ok(missed.hits.reduce((a, b) => a + b, 0) <= 2);
 });
 
-/** A burn victim whose queued burn damage is counted, with Math.random scripted per hitsplat. */
-function burnVictim() {
-  // Earlier tests leave Shove tasks aimed at fakes; they would abort every TaskManager.process().
-  TaskManager.activeTasks.length = 0;
-  while (TaskManager.pendingTasks.shift()) { /* drop */ }
-  const queued = [];
-  return {
-    queued,
-    hitpoints: 100,
-    isRegistered: () => true,
-    getHitpoints() { return this.hitpoints; },
-    getCombat: () => ({ getHitQueue: () => ({ addPendingDamage: (hits) => queued.push(...hits) }) }),
-  };
-}
-
-function burn(index, randoms, victim) {
+test("Burning claws requests shared normal burns at each accuracy roll's per-hitsplat chance", () => {
   const method = special("burning_claws").getCombatMethod();
-  const hit = { getFirstSuccessfulRangeIndex: () => index, getHits: () => [0, 0, 0], getTarget: () => victim };
+  const attacker = {}, target = {};
   const realRandom = Math.random;
-  let call = 0;
-  Math.random = () => randoms[call++ % randoms.length];
   try {
-    method.handleAfterHitEffects(hit);
+    for (const [index, below, boundary] of [[0, 0.149, 0.15], [1, 0.299, 0.3], [2, 0.449, 0.45]]) {
+      burnRequests.length = 0;
+      let calls = 0;
+      Math.random = () => calls++ === 0 ? below : boundary;
+      method.handleAfterHitEffects({
+        getFirstSuccessfulRangeIndex: () => index, getHits: () => [0, 0, 0],
+        getAttacker: () => attacker, getTarget: () => target,
+      });
+      assert.deepEqual(burnRequests, [{ attacker, target, damage: 10, severity: "normal" }]);
+    }
+    burnRequests.length = 0;
+    Math.random = () => 0;
+    method.handleAfterHitEffects({ getFirstSuccessfulRangeIndex: () => -1 });
+    assert.deepEqual(burnRequests, [], "a full miss never burns");
   } finally {
     Math.random = realRandom;
   }
-}
-
-function runTicks(count) {
-  for (let i = 0; i < count; i++) TaskManager.process();
-}
-
-test("each burning claws hitsplat burns with the chance of the roll that landed, and a burn is 10 damage over 40 ticks", () => {
-  const cases = [
-    [0, 0.149, 0.15], // 15% on the first roll
-    [1, 0.299, 0.3], // 30% on the second
-    [2, 0.449, 0.45], // 45% on the third
-  ];
-  for (const [index, below, atChance] of cases) {
-    const victim = burnVictim();
-    burn(index, [below, atChance, atChance], victim);
-    runTicks(45);
-    assert.equal(victim.queued.length, 10, `roll ${index + 1}: one burn is ten 1-damage ticks`);
-    assert.ok(victim.queued.every((hitsplat) => hitsplat.getDamage() === 1));
-  }
 });
-
-test("a burn ticks every 4 ticks and a full miss never burns", () => {
-  const victim = burnVictim();
-  burn(0, [0], victim);
-  runTicks(3);
-  assert.equal(victim.queued.length, 0, "nothing in the first 3 ticks");
-  runTicks(1);
-  assert.equal(victim.queued.length, 3, "the three burns each deal 1 on tick 4");
-  runTicks(45);
-  assert.equal(victim.queued.length, 30);
-
-  const missed = burnVictim();
-  burn(-1, [0], missed);
-  burn(undefined, [0], missed);
-  runTicks(45);
-  assert.equal(missed.queued.length, 0);
-});
-
-test("burns stack up to five at once and a finished burn frees its slot", () => {
-  const victim = burnVictim();
-  burn(2, [0], victim); // three burns
-  burn(2, [0], victim); // three more: only two fit
-  runTicks(4);
-  assert.equal(victim.queued.length, 5, "five burns tick, not six");
-  runTicks(45);
-  assert.equal(victim.queued.length, 50);
-  burn(2, [0], victim);
-  runTicks(4);
-  assert.equal(victim.queued.length, 53, "all three new burns start once the old ones ended");
-  runTicks(45);
-});
-
-test("burns end with the target's life: a death before the next burn tick, a logout, an npc death", () => {
-  // PlayerDeathTask restores hitpoints on its third run, before the burn's 4-tick check sees 0.
-  const player = burnVictim();
-  burn(2, [0], player);
-  runTicks(4);
-  assert.equal(player.queued.length, 3);
-  player.hitpoints = 0; // killed on tick 5
-  runTicks(2);
-  // Respawned on tick 7: the restore emits onPlayerDefeated. onPlayerDeath is never reached here,
-  // as when a safe-death respawn (Ferox free-for-all) handles it first.
-  player.hitpoints = 99;
-  hooks.onPlayerDefeated.forEach((handler) => handler({ killer: null, victim: player }));
-  runTicks(45);
-  assert.equal(player.queued.length, 3, "no burn damage after respawn");
-  burn(2, [0], player);
-  runTicks(4);
-  assert.equal(player.queued.length, 6, "a new life burns afresh with all five slots free");
-  runTicks(45);
-
-  const leaver = burnVictim();
-  burn(2, [0], leaver);
-  hooks.onPlayerLogout.forEach((handler) => handler({ player: leaver, username: "leaver" }));
-  runTicks(45);
-  assert.equal(leaver.queued.length, 0, "a logout ends the burns");
-
-  const npc = burnVictim();
-  burn(2, [0], npc);
-  hooks.onNpcDeath.forEach((handler) => handler({ npc, killer: null }));
-  runTicks(45);
-  assert.equal(npc.queued.length, 0, "an npc death ends the burns");
-
-  const dying = burnVictim();
-  dying.isDyingFunction = () => true; // killed with no killer: no onNpcDeath
-  burn(2, [0], dying);
-  runTicks(45);
-  assert.equal(dying.queued.length, 0, "a dying target takes no burns");
-});
-
 // --- Saradomin's lightning -----------------------------------------------------------------
 
 function lightningHit({ accurate, splashed = false }) {
@@ -691,4 +694,97 @@ test("broken dragon hastas are crafting items that cannot be equipped", async ()
     assert.notEqual(CacheDefinitions.getItem(id).wearPos, WEAPON_SLOT, `${id} is not wieldable in the cache`);
     assert.equal(CombatSpecial.getForWeaponId(id), null, `${id} has no special`);
   }
+});
+
+// --- Dinh's bulwark: Shield Bash -------------------------------------------------------------
+
+/** A mobile with levels, for the bulwark's drain; `npc` serves levels from the mobile itself. */
+function levelled(kind, levels) {
+  const current = new Map(levels);
+  const manager = {
+    getCurrentLevel: (skill) => current.get(skill),
+    setCurrentLevels: (skill, level) => { current.set(skill, level); },
+  };
+  return {
+    current,
+    isPlayer: () => kind === "player",
+    isNpc: () => kind === "npc",
+    getAsPlayer() { return { getSkillManager: () => manager }; },
+    getAsNpc() { return manager; },
+  };
+}
+
+test("Shield Bash rolls crush against crush and sweeps ten targets within five tiles, in multicombat only", () => {
+  const traits = special("dinhs_bulwark").getTraits();
+  assert.equal(traits.meleeAttackBonusIndex, 2, "crush attack bonuses");
+  assert.equal(traits.meleeDefenceBonusIndex, 2, "against crush defence");
+  assert.equal(traits.accuracyMultiplier, 1.2);
+  assert.equal(traits.hitCount, undefined, "the double hit is the primary target's alone, in multicombat");
+  assert.deepEqual(traits.targeting, {
+    pattern: "surrounding", radius: 5, width: 1, maxTargets: 10, maxPlayerTargets: 10, requiresMultiCombat: true,
+  });
+});
+
+test("Shield Bash hits the primary target twice in multicombat, everything else once", () => {
+  const method = special("dinhs_bulwark").getCombatMethod();
+  const realAccuracy = AccuracyFormulasDpsCalc.rollAccuracy;
+  const realDamage = CombatFactory.getHitDamage;
+  const realIsMulti = AreaManager.inMulti;
+  AccuracyFormulasDpsCalc.rollAccuracy = () => true;
+  CombatFactory.getHitDamage = () => new HitDamage(7, 1);
+  const bulwark = fakeFighter();
+  const primary = { ...fakeTarget(), getHitpoints: () => 99 };
+  const bystander = { ...fakeTarget(), getHitpoints: () => 99 };
+  bulwark.getCombat = () => ({ getTarget: () => primary });
+  bulwark.getCombatSpecial = () => special("dinhs_bulwark");
+  const splats = (target) => method.hits(bulwark, target)[0].getHits().length;
+  try {
+    AreaManager.inMulti = () => true;
+    assert.equal(splats(primary), 2, "primary, multicombat");
+    assert.equal(splats(bystander), 1, "other targets");
+    AreaManager.inMulti = () => false;
+    assert.equal(splats(primary), 1, "single combat");
+  } finally {
+    AccuracyFormulasDpsCalc.rollAccuracy = realAccuracy;
+    CombatFactory.getHitDamage = realDamage;
+    AreaManager.inMulti = realIsMulti;
+  }
+});
+
+test("Shield Bash drains 5% of a monster's or player's highest offensive stat once, only on a damaging hit", () => {
+  const { Skill } = PluginManager.getCoreApi();
+  const method = special("dinhs_bulwark").getCombatMethod();
+  const after = (target, ...splats) => method.handleAfterHitEffects({
+    getHits: () => splats.map((damage) => ({ getDamage: () => damage })),
+    getTarget: () => target,
+  });
+  const levels = (attack, strength, ranged, magic) => [
+    [Skill.ATTACK, attack], [Skill.STRENGTH, strength], [Skill.RANGED, ranged], [Skill.MAGIC, magic],
+  ];
+
+  const meleeMonster = levels(200, 200, 100, 1);
+  const monster = levelled("npc", meleeMonster);
+  after(monster, 0);
+  assert.deepEqual([...monster.current], meleeMonster, "no damage, no drain");
+  after(monster, 0, 9);
+  assert.deepEqual([...monster.current], meleeMonster, "a miss then a hit (the doubled hit) does not drain");
+  after(monster, 12, 0);
+  assert.equal(monster.current.get(Skill.ATTACK), 190, "Attack and Strength first");
+  assert.equal(monster.current.get(Skill.STRENGTH), 190);
+  assert.equal(monster.current.get(Skill.RANGED), 100);
+
+  const archer = levelled("npc", levels(1, 1, 120, 90));
+  after(archer, 5);
+  assert.equal(archer.current.get(Skill.RANGED), 114, "then Ranged");
+  const mage = levelled("player", levels(1, 1, 80, 99));
+  after(mage, 5);
+  assert.equal(mage.current.get(Skill.MAGIC), 95, "then Magic");
+  const tied = levelled("npc", levels(60, 60, 120, 120));
+  after(tied, 5);
+  assert.equal(tied.current.get(Skill.ATTACK), 57, "melee wins a tie with Ranged");
+  assert.equal(tied.current.get(Skill.RANGED), 120);
+  const rangedTie = levelled("npc", levels(1, 1, 120, 120));
+  after(rangedTie, 5);
+  assert.equal(rangedTie.current.get(Skill.RANGED), 114, "Ranged wins a tie with Magic");
+  assert.equal(rangedTie.current.get(Skill.MAGIC), 120);
 });

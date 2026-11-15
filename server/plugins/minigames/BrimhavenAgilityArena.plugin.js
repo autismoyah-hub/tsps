@@ -17,6 +17,7 @@ const Store = require("./brimhavenagilityarena/Store.BrimhavenAgilityArena");
 
 module.exports = {
   name: "BrimhavenAgilityArena",
+  description: "Adds the Brimhaven Agility Arena: pay Cap'n Izzy, cross the obstacles and tag the marked pillar for arena tickets and vouchers.",
   members: true,
   _test: {
     init: Shared.init,
@@ -65,6 +66,9 @@ module.exports = {
     logout: Dispensers.logout,
     login: Dispensers.login,
     death: Dispensers.death,
+    reentryCooldownRemaining: Dispensers.reentryCooldownRemaining,
+    markReentryCooldown: Dispensers.markReentryCooldown,
+    teleportLanded: Dispensers.teleportLanded,
     obstacleXp: Obstacles.obstacleXp,
     familyAt: Obstacles.familyAt,
     crossingTarget: Obstacles.crossingTarget,
@@ -73,6 +77,8 @@ module.exports = {
     lineAt: Obstacles.lineAt,
     crossing: Obstacles.crossing,
     crossingSteps: Obstacles.crossingSteps,
+    advancePlanks: Obstacles.advancePlanks,
+    plankFailureSteps: Obstacles.plankFailureSteps,
     LINES: Obstacles.LINES,
   },
   register(api) {

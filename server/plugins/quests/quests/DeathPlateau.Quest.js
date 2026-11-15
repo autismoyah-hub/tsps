@@ -74,6 +74,12 @@ module.exports = function registerDeathPlateauQuest(api) {
   // Wiki: continue east past the second goat. Quest Helper marks the endpoint at 2865,3609.
   const SCOUT_BOUNDS = new Boundary(2864, 2870, 3608, 3612, 0);
   const COMBINATION_ITEM_ID = ItemIdentifiers.COMBINATION;
+  const COMBINATION_SCROLL = "messagescroll_handwriting";
+  const COMBINATION_LINES = [
+    "Red is North of Blue. Yellow is South of Purple.",
+    "Green is North of Purple. Blue is West of",
+    "Yellow. Purple is East of Red.",
+  ];
   const IOU_ITEM_ID = ItemIdentifiers.IOU;
   const SECRET_WAY_MAP_ITEM_ID = ItemIdentifiers.SECRET_WAY_MAP;
   const CLIMBING_BOOTS_ITEM_ID = ItemIdentifiers.CLIMBING_BOOTS;
@@ -81,6 +87,13 @@ module.exports = function registerDeathPlateauQuest(api) {
   const CERTIFICATE_ITEM_ID = ItemIdentifiers.CERTIFICATE_2;
   const COINS_ITEM_ID = ItemIdentifiers.COINS;
   const HAROLD_DOOR_ID = ObjectIdentifiers.DOOR_115;
+  // RSProx 3252 (castle) and 3247 (inn): these stairs change floors without a climb animation.
+  const STAIRS = new Map([
+    [ObjectIdentifiers.STAIRS_23, { from: [2897, 3566, 0], to: [2897, 3569, 1] }],
+    [ObjectIdentifiers.STAIRS_22, { from: [2897, 3567, 1], to: [2897, 3565, 0] }],
+    [ObjectIdentifiers.STAIRCASE_79, { from: [2914, 3539, 0], to: [2914, 3542, 1] }],
+    [ObjectIdentifiers.STAIRCASE_82, { from: [2914, 3540, 1], to: [2914, 3538, 0] }],
+  ]);
   const CLIMBING_BOOTS_PRICE = 12;
   const BUY_CLIMBING_BOOTS_IDS = new Set(["FgkYXO", "7mwtJo"]);
 
@@ -400,7 +413,7 @@ module.exports = function registerDeathPlateauQuest(api) {
         if (hasCertificate(player)) return "new-route-up-death-plateau-talking-to-dunstan-while-holding-the-certificate";
         return "new-route-up-death-plateau-talking-to-dunstan-again";
       }
-      if (stage >= STAGE_CLIMBING_BOOTS && hasBoots(player)) quest.setStage(player, STAGE_DUNSTAN);
+      if (stage >= STAGE_CLIMBING_BOOTS) quest.setStage(player, STAGE_DUNSTAN);
       return "new-route-up-death-plateau-talking-to-dunstan";
     }
     if (ARCHER_NPC_IDS.has(npcId)) {
@@ -572,8 +585,11 @@ module.exports = function registerDeathPlateauQuest(api) {
           return;
         }
         player.getInventory().deleteNumber(IRON_BAR_ITEM_ID, 1);
-        player.getInventory().deleteNumber(CLIMBING_BOOTS_ITEM_ID, 1);
-        player.getInventory().adds(SPIKED_BOOTS_ITEM_ID, 1);
+        // In place (setId keeps the boots' meta: preset climbing boots make preset spiked boots).
+        const converted = player.getInventory().getItems?.().find((item) => item?.getId() === CLIMBING_BOOTS_ITEM_ID);
+        if (converted) converted.setId(SPIKED_BOOTS_ITEM_ID);
+        else { player.getInventory().deleteNumber(CLIMBING_BOOTS_ITEM_ID, 1); player.getInventory().adds(SPIKED_BOOTS_ITEM_ID, 1); }
+        player.getInventory().refreshItems?.();
       }
       if (quest.getStage(player) < STAGE_BOOTS) quest.setStage(player, STAGE_BOOTS);
       return;
@@ -594,7 +610,12 @@ module.exports = function registerDeathPlateauQuest(api) {
 
   function readCombination({ player, itemId }) {
     if (itemId !== COMBINATION_ITEM_ID || !hasCombination(player)) return false;
-    for (const line of ["Red is north of Blue.", "Yellow is south of Purple.", "Green is north of Purple.", "Blue is west of Yellow.", "Purple is east of Red."]) player.sendMessage(line);
+    const sender = player.getPacketSender();
+    sender.sendInterface(CacheDefinitions.getInterfaceId(COMBINATION_SCROLL));
+    // The handwritten note centers its three lines in the middle of the parchment.
+    COMBINATION_LINES.forEach((line, index) => {
+      sender.sendString(line, CacheDefinitions.getComponentId(`${COMBINATION_SCROLL}:messagescroll${index + 5}_hw`));
+    });
     return true;
   }
 
@@ -694,15 +715,46 @@ module.exports = function registerDeathPlateauQuest(api) {
     return true;
   }
 
+  const HAROLD_DOOR_TILE = { x: 2906, y: 3543, z: 1 };
+  const HAROLD_KNOCK_SOUND = 1735;
+
   function guardQuestDoors(request) {
     if (request.objectId === EQUIPMENT_DOOR_ID && quest.getStage(request.player) < STAGE_ROOM) {
       request.player.sendMessage("The equipment room door is locked. I should read the combination and arrange the stone balls.");
       request.handled = true;
       return;
     }
-    if (request.objectId !== HAROLD_DOOR_ID || quest.getStage(request.player) >= STAGE_EOHRIC) return;
-    request.player.sendMessage("I'd better not go into someone's bedroom without a reason!");
+    if (request.objectId !== HAROLD_DOOR_ID) return;
+    const { player } = request;
+    const { DialogueChainBuilder, StatementDialogue, NpcDialogue, PlayerDialogue, ActionDialogue, EndDialogue } = api.core;
+    if (quest.getStage(player) < STAGE_EOHRIC) {
+      // Transcript:Death_Plateau "Trying to enter Harold's room before talking to Eohric": the player's line.
+      player.getDialogueManager().startDialogues(new DialogueChainBuilder()
+        .add(new PlayerDialogue(0, "I'd better not go into someone's bedroom without a reason!")).add(new EndDialogue(1)));
+      request.handled = true;
+      return;
+    }
+    // Leaving the room (233/03247.txt:5755) is no knock: the door's pass-through opens it.
+    if (player.getLocation().getY() < HAROLD_DOOR_TILE.y) return;
+    // "Entering Harold's room": the knock box (with synth 1735), "Harold: Come in!", then in (233/03247.txt:4659-4744).
     request.handled = true;
+    const { object } = request;
+    player.getPacketSender().sendSound(HAROLD_KNOCK_SOUND, 1, 0);
+    player.getDialogueManager().startDialogues(new DialogueChainBuilder()
+      .add(new StatementDialogue(0, "You knock on the door."))
+      .add(new NpcDialogue(1, HAROLD_NPC_ID, "Come in!"))
+      .add(new ActionDialogue(2, { execute: () => api.emitCustomEvent("door:open", { player, object, handled: false }) })));
+  }
+
+  function walkQuestStairs(request) {
+    const stairs = STAIRS.get(request.objectId);
+    const location = request.object?.getLocation();
+    if (request.handled || !stairs || !location?.equals(new Location(...stairs.from))) return;
+    request.handled = true;
+    const direction = stairs.to[2] > stairs.from[2] ? "ladders:climbUp" : "ladders:climbDown";
+    api.emitCustomEvent(direction, {
+      player: request.player, object: request.object, destination: new Location(...stairs.to), animate: false,
+    });
   }
 
   function handleLogin({ player }) {
@@ -748,6 +800,7 @@ module.exports = function registerDeathPlateauQuest(api) {
   api.onInterfaceActionClick(gambleClick);
   api.onCustomEvent("interface:closed", closeGamble);
   api.onCustomEvent("door:toggle", guardQuestDoors);
+  api.onCustomEvent("ladders:climb", walkQuestStairs);
   api.onPlayerLogin(handleLogin);
   api.onPlayerLogout(forgetGamble);
   api.onPlayerDisconnect(forgetGamble);

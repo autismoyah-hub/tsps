@@ -33,12 +33,17 @@ const MACROS = {
   hops: builders.hops,
   pipe: builders.pipe,
   tunnel: builders.tunnel,
+  underwall: builders.underwall,
+  hole: builders.hole,
   crevice: builders.crevice,
   crawlDown: builders.crawlDown,
   crawlUp: builders.crawlUp,
   ropeSwing: builders.ropeSwing,
   hurdle: builders.hurdle,
   climb,
+  /** Puts out every lit light the player carries (a fall into water). */
+  // Required when it runs: the item plugin pulls in the world/cooking plugins.
+  extinguishLights: () => ({ run: (context) => require("../../../items/LightSources.plugin").extinguishAll(context.player) }),
 };
 const ANIMATION_NAME = /^[A-Z][A-Z0-9_]*$/;
 const COORDINATES = {
@@ -50,13 +55,13 @@ const COORDINATES = {
   "object.z": (scope) => scope.obj.z,
 };
 const ENTRY_KEYS = new Set([
-  "name", "object", "at", "level", "xp", "start", "end", "render", "route", "refuse",
+  "name", "object", "at", "level", "levelMessage", "xp", "option", "start", "end", "render", "route", "refuse", "keepAnimation",
   "steps", "between", "stile", "script", "params", "fail", "requires", "unverified", "note",
 ]);
 const FAIL_KEYS = new Set([
-  "low", "high", "baseChance", "neverFailLevel", "fromLevel", "xp", "start", "end", "render", "steps", "cross", "hit",
+  "low", "high", "baseChance", "neverFailLevel", "fromLevel", "xp", "start", "end", "render", "steps", "cross", "hit", "hits",
 ]);
-const REQUIREMENT_KEYS = new Set(["skills", "equipped", "items", "quest", "diary", "steps", "cross", "start", "end"]);
+const REQUIREMENT_KEYS = new Set(["method", "skills", "equipped", "items", "quest", "diary", "slayerTask", "slayerTaskMessage", "steps", "cross", "params", "start", "end"]);
 
 function animation(name, where) {
   const id = ANIMATIONS[name];
@@ -168,10 +173,11 @@ function failOf(spec, where) {
  */
 function crossingFail(fail, steps) {
   if (!fail?.cross) return fail;
-  const hit = { hit: fail.hit ?? [1, 4] };
+  // `hits`: how many hitsplats the fall is (the Wiki's Rock slide page: two).
+  const hits = Array.from({ length: fail.hits ?? 1 }, () => ({ hit: fail.hit ?? [1, 4] }));
   return {
     ...fail,
-    steps: (context) => [...(typeof steps === "function" ? steps(context) : steps), hit],
+    steps: (context) => [...(typeof steps === "function" ? steps(context) : steps), ...hits],
   };
 }
 
@@ -200,6 +206,19 @@ function refusalOf(spec, where) {
   };
 }
 
+/**
+ * The message a player below `level` gets instead of the generic one: a game message, `{ spam }`,
+ * `{ mesbox }` or `{ itembox: { item, text } }`, played by ObstacleRunner.sendMessage.
+ */
+function levelMessageOf(spec, where) {
+  const valid = typeof spec === "string"
+    || typeof spec?.spam === "string"
+    || typeof spec?.mesbox === "string"
+    || (Number.isInteger(spec?.itembox?.item) && typeof spec.itembox.text === "string");
+  if (!valid) throw new Error(`agility-shortcuts.json: "${where}" levelMessage needs a message, spam, mesbox or itembox { item, text }`);
+  return spec;
+}
+
 function build(raw, index) {
   const where = raw.name ?? `entry ${index}`;
   for (const key of Object.keys(raw)) {
@@ -215,10 +234,19 @@ function build(raw, index) {
     level: raw.level,
     xp: raw.xp ?? 0,
   };
+  if (raw.option != null) {
+    if (typeof raw.option !== "string" || !raw.option.trim()) {
+      throw new Error(`agility-shortcuts.json: "${where}" option must be a non-empty string`);
+    }
+    entry.option = raw.option;
+  }
+  if (raw.levelMessage != null) entry.levelMessage = levelMessageOf(raw.levelMessage, where);
   if (raw.start != null) entry.start = raw.start;
   if (raw.end != null) entry.end = raw.end;
   if (raw.render != null) entry.render = animation(raw.render, where);
   if (raw.route != null) entry.route = template(raw.route, where);
+  // The last animation plays out after the crossing instead of being reset on landing.
+  if (raw.keepAnimation === true) entry.keepAnimation = true;
   const fail = failOf(raw.fail, where);
   if (fail) entry.fail = fail;
   const requires = requirementsOf(raw.requires, where);
@@ -249,6 +277,14 @@ function build(raw, index) {
   if (raw.between && built.requires) {
     built.requires = built.requires.map((alternative) => (alternative.cross
       ? { ...alternative, steps: betweenEntry({}, { ...raw.between, cross: alternative.cross }, where).steps }
+      : alternative));
+  }
+
+  // A scripted entry's alternative with its own `params` (the Strong Tree's barehanded crossing): the script's steps
+  // made again with them.
+  if (raw.script && built.requires) {
+    built.requires = built.requires.map((alternative) => (alternative.params
+      ? { ...alternative, steps: SCRIPTS[raw.script]({ ...(raw.params ?? {}), ...alternative.params }, raw).steps }
       : alternative));
   }
 

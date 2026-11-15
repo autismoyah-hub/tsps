@@ -32,8 +32,27 @@ function enterCorrupted(event) {
   return startRun(event.player, true);
 }
 
+/**
+ * A league character carrying the echo orb is asked before anything else, items and all
+ * ("echo-boss:entry"); No goes on with the usual checks.
+ */
 function startRun(player, corrupted) {
   if (Run.runOf(player)) return true;
+  if (!corrupted) return tryStart(player, corrupted);
+  const entry = { player, boss: "corrupted-hunllef", enter: () => tryStart(player, corrupted), handled: false };
+  Shared.api().emitCustomEvent("echo-boss:entry", entry);
+  if (!entry.handled) entry.enter();
+  return true;
+}
+
+function tryStart(player, corrupted) {
+  if (Run.runOf(player)) return true;
+  const quest = { player, key: "song_of_the_elves", complete: null };
+  Shared.api().emitCustomEvent("quest:is-complete", quest);
+  if (quest.complete !== true) {
+    Shared.statement(player, "You need to complete Song of the Elves to enter the Gauntlet.");
+    return true;
+  }
   if (player.getAttribute(ATTR_SPOKEN_TO_BRYN) !== true) {
     Shared.npcSay(player, Shared.NPC.BRYN, BRYN.NOT_SPOKEN);
     return true;

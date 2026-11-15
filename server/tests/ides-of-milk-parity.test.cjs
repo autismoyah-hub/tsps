@@ -13,28 +13,31 @@ const core = PluginManager.getCoreApi();
 const I = core.ItemIdentifiers, N = core.NpcIdentifiers, O = core.ObjectIdentifiers;
 const noop = () => {};
 
-function harness({ npcDrops = false } = {}) {
-  const hooks = {}, events = {}, eventCounts = new Map(), tasks = [], transcripts = [], objects = [], npcs = [];
+function harness({ npcDrops = false, nativeNpc = false, refuseNpcId = null, pendingHit = null } = {}) {
+  const hooks = {}, events = {}, eventCounts = new Map(), tasks = [], transcripts = [], objects = [], npcs = [], prompts = [];
   const groundDrops = [];
   class PrivateArea {
     constructor(boundaries) { this.boundaries = boundaries; this.entities = []; this.destroyed = false; }
     add(actor) { this.entities.push(actor); actor.setArea(this); }
+    detach(actor) { this.entities = this.entities.filter(value => value !== actor); actor.setArea(null); }
     enter(actor) { this.add(actor); }
     leave(actor, logout) { this.postLeave(actor, logout); }
     postLeave(actor) { this.entities = this.entities.filter(value => value !== actor); actor.setArea(null); this.destroy(); }
     destroy() { this.destroyed = true; }
     isDestroyed() { return this.destroyed; }
+    countsAsMainWorld() { return false; }
     getObjects() { return objects.filter(object => object.getArea() === this); }
     getBoundaries() { return this.boundaries; }
   }
   const api = new Proxy({
-    core: { ...core, PrivateArea, TaskManager: {
+    core: { ...core, PrivateArea, ...(pendingHit ? { PendingHit: pendingHit } : {}), TaskManager: {
       submit: task => { task.setRunning(true); tasks.push(task); },
       cancelTasks: key => tasks.filter(task => task.key === key).forEach(task => task.stop()),
     }, ObjectManager: { register: object => objects.push(object) },
       MapObjects: { getType: core.MapObjects.getType.bind(core.MapObjects),
         get: (id, location) => new core.GameObject(id, location, 0, id === O.GATE_319 || id === O.GATE_322 ? 1 : 0, null) } },
     persistAttribute: noop,
+    sendMultiChatboxPrompt: (...args) => prompts.push(args),
     onCustomEvent: (name, handler) => (events[name] ??= []).push(handler),
     emitCustomEvent: (name, event) => {
       eventCounts.set(name, (eventCounts.get(name) ?? 0) + 1);
@@ -42,13 +45,21 @@ function harness({ npcDrops = false } = {}) {
     },
     registerNpcCombatMethodProvider: (ids, method) => { api.combat = method; },
     spawnNpc: definition => {
+      if (definition.id === refuseNpcId) return null;
+      if (nativeNpc) {
+        const npc = new core.NPC(definition.id, new core.Location(definition.x, definition.y, definition.z));
+        npc.getPrivateArea = () => npc.getArea();
+        npcs.push(npc);
+        return npc;
+      }
       let area, at = new core.Location(definition.x, definition.y, definition.z);
       const npc = { ...definition, getId: () => definition.id, getArea: () => area, setArea: value => { area = value; },
         getSize: () => 3, isPlayer: () => false,
         getMovementQueue: () => ({ reset() { return this; }, setBlockMovement: noop }),
-        getHitpoints: () => 58, getLocation: () => at, moveTo: value => { at = value; },
+        getHitpoints: () => 58, getLocation: () => at, moveTo: value => { at = value; }, exactMove: value => { at = value; },
+        setFlag: noop, removeFlag: noop, setMobileInteraction: noop, setNeedsPlacement: noop,
         getCombat: () => ({ reset: noop, getTarget: () => area?.player }), getDefinition: () => ({ getRespawn: () => 36 }),
-        setCombatXpMultiplier: value => { npc.xpMultiplier = value; }, setPositionToFace: noop, performAnimation: noop, performGraphic: noop, forceChat: noop };
+        setCombatXpMultiplier: value => { npc.xpMultiplier = value; }, setStatDrainImmune: value => { npc.statDrainImmune = value; }, setPositionToFace: noop, performAnimation: noop, performGraphic: noop, forceChat: noop };
       npcs.push(npc); return npc;
     },
     getItemOnGroundManager: () => ({ registerLocation: (player, item) => groundDrops.push({ player, item }) }),
@@ -63,11 +74,12 @@ function harness({ npcDrops = false } = {}) {
   runtime.startTranscript = (...args) => { transcripts.push(args); return true; };
   try { require('../plugins/quests/quests/IdesOfMilk.Quest')(api); }
   finally { runtime.startTranscript = original; }
-  return { api, hooks, tasks, transcripts, objects, npcs, groundDrops, eventCounts, quest: runtime.getRegisteredQuests().at(-1),
+  return { api, hooks, tasks, transcripts, objects, npcs, prompts, groundDrops, eventCounts, quest: runtime.getRegisteredQuests().at(-1),
     emit: (name, event) => (events[name] ?? []).forEach(handler => handler(event)),
     line(player, npcId, text) { const event = { player, npcId, text }; this.emit('npc-dialogue:line', event); event.before?.(); },
     action(player, npcId, stepId) { const event = { player, npcId, stepId }; this.emit('npc-dialogue:action', event); return event; },
     item(player, itemId, option, item, slot) { const event = { player, itemId, option, item, slot }; hooks.onItemAction[0](event); return event; },
+    itemOnNpc(player, target, itemId) { const event = { player, target, itemId }; hooks.onItemOnNpc[0](event); return event; },
     tick(count) { while (count-- > 0) [...tasks].forEach(task => task.tick()); },
   };
 }
@@ -107,7 +119,7 @@ test('the low-combat recommendation is a start-menu warning, not a transcript bo
   const lowMenu = { player: low, prompt: 'Start The Ides of Milk quest?', warning: null };
   h.emit('npc-dialogue:menu', lowMenu);
   assert.equal(lowMenu.warning, 'Before starting this quest, be aware that your combat level is lower than the recommended level of 15.');
-  assert.equal(h.action(low, N.CASSIUS_2, 'bkgpn5').handled, true);
+  assert.equal(h.action(low, N.CASSIUS_2, 'kbEA-p').handled, true);
 
   const high = player();
   const highMenu = { player: high, prompt: 'Start The Ides of Milk quest?', warning: null };
@@ -192,6 +204,52 @@ test('leaving a post-quest fight restores the cow-field gates so Brutus can be r
     .sort((a, b) => a[0] - b[0]),
   [[O.GATE_18, 3253, 3266, 0], [O.GATE_20, 3253, 3267, 0], [O.GATE_319, 3263, 3294, 1], [O.GATE_322, 3262, 3294, 1]],
   'each actionless private leaf is replaced by the map gate it hid, so "Release" is back');
+});
+
+test('Demonic Brutus is a post-quest, Desert Treasure II-gated potato upgrade in the private encounter', () => {
+  const h = harness(), p = player(); h.quest.setStage(p, 22); p.items.set(I.ABYSSAL_POTATO, 1);
+  h.action(p, N.BULL, 'mKQNRL'); h.tick(4);
+  const arena = p.getArea(), regular = h.npcs[0];
+  assert.equal(regular.getId(), N.BRUTUS);
+  const refused = h.itemOnNpc(p, regular, I.ABYSSAL_POTATO);
+  assert.equal(refused.handled, true);
+  assert.equal(h.prompts.length, 0);
+  assert.equal(p.items.get(I.ABYSSAL_POTATO), 1, 'the Desert Treasure II gate must not consume the potato');
+
+  h.api.onCustomEvent('quest:is-complete', request => {
+    if (request.key === 'desert_treasure_ii') request.complete = true;
+  });
+  const accepted = h.itemOnNpc(p, regular, I.ABYSSAL_POTATO);
+  assert.equal(accepted.handled, true);
+  assert.equal(p.items.get(I.ABYSSAL_POTATO), 1, 'consume only after the player confirms');
+  assert.match(h.prompts[0][1], /Demonic Brutus/);
+  h.prompts[0][3]();
+  const demonic = h.npcs.at(-1);
+  assert.equal(p.items.get(I.ABYSSAL_POTATO), 0);
+  assert.equal(regular.removed, true);
+  assert.equal(demonic.getId(), N.DEMONIC_BRUTUS);
+  assert.equal(demonic.getArea(), arena);
+
+  h.hooks.onNpcDeath[0]({ killer: p, npc: demonic, npcId: N.DEMONIC_BRUTUS });
+  assert.equal(h.eventCounts.get('combat-achievements:kill') ?? 0, 0, 'the hard variant does not report a standard Brutus kill');
+  h.tick(35);
+  assert.equal(h.npcs.length, 2, 'the hard variant uses the encounter respawn timer');
+  h.tick(1);
+  assert.equal(h.npcs.at(-1).getId(), N.BRUTUS, 'the standard encounter returns for the next attempt');
+});
+
+test('a refused Demonic Brutus spawn keeps the regular fight and does not consume the potato', () => {
+  const h = harness({ refuseNpcId: N.DEMONIC_BRUTUS }), p = player(); h.quest.setStage(p, 22); p.items.set(I.ABYSSAL_POTATO, 1);
+  h.api.onCustomEvent('quest:is-complete', request => {
+    if (request.key === 'desert_treasure_ii') request.complete = true;
+  });
+  h.action(p, N.BULL, 'mKQNRL'); h.tick(4);
+  const regular = h.npcs[0];
+  h.itemOnNpc(p, regular, I.ABYSSAL_POTATO);
+  h.prompts[0][3]();
+  assert.equal(regular.removed, undefined);
+  assert.equal(p.items.get(I.ABYSSAL_POTATO), 1);
+  assert.match(p.messages.at(-1), /potato was not used/);
 });
 
 test('private gates hide moved world leaves and restore the current world state on exit or logout', () => {
@@ -316,13 +374,13 @@ test('the Groats book opens the captured four-page book without advancing quest 
   assert.equal(spreads.length, 2); assert.equal(spreads[1][48], 'Always squirrel money away');
 });
 
-function fight(stage = 18) {
-  const h = harness(), p = player(); h.quest.setStage(p, stage);
+function fight(stage = 18, options) {
+  const h = harness(options), p = player(); h.quest.setStage(p, stage);
   h.action(p, N.BULL, 'mKQNRL'); h.tick(4);
   return { h, p, npc: h.npcs[0], arena: p.getArea(), method: new h.api.combat() };
 }
 
-test('stomp freezes the captured L footprint and misses a player who steps back', () => {
+test('each stomp retargets its captured footprint, then freezes it during the windup', () => {
   const { h, p, npc, arena, method } = fight();
   npc.moveTo(new core.Location(3260, 3286, 0));
   p.moveTo(new core.Location(3260, 3289, 0));
@@ -332,10 +390,14 @@ test('stomp freezes the captured L footprint and misses a player who steps back'
   assert.ok(p.damage[0].getDamage() >= 3 && p.damage[0].getDamage() <= 4, 'low-level quest damage scales to base Hitpoints');
   p.damage.length = 0; p.graphics.length = 0;
   arena.stompsRemaining = 1;
+  // rsprox 4153 ticks 602/606: the third snort turns east after the bull and player move.
+  npc.moveTo(new core.Location(3261, 3286, 0));
   p.moveTo(new core.Location(3263, 3289, 0));
   method.start(npc, p); h.tick(4);
-  assert.equal(p.damage.length, 0, 'later stomps retain the selected footprint after the player moves');
-  assert.ok(p.graphics.some(([x, y]) => x === 3259 && y === 3287));
+  assert.deepEqual(p.graphics.slice().sort(), [[3262, 3289], [3263, 3289], [3264, 3287], [3264, 3288], [3264, 3289]].sort());
+  assert.equal(p.damage.length, 1, 'the next snort hits its new footprint');
+  p.damage.length = 0;
+  npc.moveTo(new core.Location(3260, 3286, 0));
   arena.stompsRemaining = 0; arena.meleeRemaining = 0; arena.nextSpecial = 'stomp';
   p.moveTo(new core.Location(3261, 3289, 0));
   method.start(npc, p); p.moveTo(new core.Location(3261, 3290, 0)); h.tick(4);
@@ -419,6 +481,8 @@ test('a valid sidestep cannot pull Brutus out of his charge windup', () => {
   assert.deepEqual([npc.getLocation().getX(), npc.getLocation().getY()], [3261, 3287], 'hold the telegraphed origin');
   h.tick(4);
   assert.deepEqual([npc.getLocation().getX(), npc.getLocation().getY()], [3261, 3283], 'land at the original charge endpoint');
+  assert.equal(movement.getMobility().canMove(), false, 'hold pursuit through the two-tick glide');
+  h.tick(2);
   assert.equal(movement.getMobility().canMove(), true, 'ordinary pursuit resumes after the charge');
 });
 
@@ -436,4 +500,261 @@ test('postquest kills preserve the private field and Ring restarts respawn witho
   h.tick(13); assert.equal(h.npcs.length, 3);
   h.hooks.onPlayerLogout[0]({ player: p });
   assert.equal(arena.isDestroyed(), true);
+});
+
+// Keep the quest hooks/tasks, with a cached NPC and the real local-list/session sync.
+function nativeFight(stage = 22) {
+  const { World } = require('../dist/game/World');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const protocol = require('../dist/net/protocol/ClientProtocol');
+  const { h, p, npc, arena, method } = fight(stage, { nativeNpc: true });
+  npc.moveTo(new core.Location(3260, 3290, 0));
+  p.moveTo(new core.Location(3261, 3289, 0));
+  npc.resetUpdating(); npc.setNeedsPlacement(false);
+  npc.getCombat().target = p;
+  npc.setMobileInteraction(p);
+  const localNpcs = [];
+  Object.assign(p, {
+    getIndex: () => 1, isPlayer: () => true, isNpc: () => false,
+    getPrivateArea: () => p.getArea(), getLocalNpcs: () => localNpcs, getLocalPlayers: () => [],
+    getAudioSettings: () => ({ 18: 1 }), getForceMovement: () => null,
+  });
+  assert.ok(World.getNpcs().add(npc, true));
+  const session = new PlayerSession({ isOpen: true }); session.setPlayer(p);
+  const at = p.getLocation(), region = ((at.getX() >> 6) << 8) | (at.getY() >> 6);
+  Object.assign(session, {
+    hasReplayedScene: true, replayedSceneBaseX: (at.getX() - 48) & ~7,
+    replayedSceneBaseY: (at.getY() - 48) & ~7, replayedSceneLevel: 0,
+    lastGroundItemRegion: region, lastGroundItemLevel: 0, lastMusicArea: require('../dist/game/Music').Music.tracksAt(at.getX(), at.getY(), 0), lastMusicMode: 1,
+  });
+  const packets = []; let tick = 0;
+  session.sendClientPacket = packet => { packets.push(packet); return true; };
+  function sync() {
+    World.updateLocalNpcs(p, [npc]);
+    packets.length = 0; session.playerSyncState = undefined;
+    let views;
+    const encode = protocol.encodeNpcSync;
+    protocol.encodeNpcSync = (...args) => { views = args[2]; return encode(...args); };
+    try { session.flush(++tick); } finally { protocol.encodeNpcSync = encode; }
+    const packet = packets.find(packet => packet[0] === 21);
+    assert.ok(packet, 'native NPC_INFO sent');
+    const result = { view: views.find(view => view.index === npc.getIndex()), packet };
+    npc.resetUpdating(); npc.setNeedsPlacement(false);
+    return result;
+  }
+  function advance(ticks) {
+    const frames = [];
+    while (ticks-- > 0) {
+      // The combat loop attempts to renew facing while cooling down.
+      npc.getCombat().faceTarget(npc.getCombat().getTarget());
+      h.tick(1); frames.push(sync());
+    }
+    return frames;
+  }
+  sync();
+  return { h, p, npc, arena, method, sync, advance, close: () => World.getNpcs().remove(npc) };
+}
+
+function stationaryMask(frame) {
+  // One retained, stationary NPC followed by the 0xffff addition terminator.
+  const bytes = frame.packet.subarray(14);
+  if (bytes.equals(Buffer.from([1, 0x7f, 0xff, 0x80]))) return 0;
+  assert.deepEqual([...bytes.subarray(0, 4)], [1, 0x9f, 0xff, 0xe0]);
+  return bytes[4] | (bytes[4] & 0x80 ? bytes[5] << 8 : 0);
+}
+
+test('Brutus charge stays in native NPC_INFO with the captured two-tick glide and restores tracking', () => {
+  for (const [stage, windup] of [[18, 4], [22, 3]]) {
+    const f = nativeFight(stage);
+    try {
+      f.arena.meleeRemaining = 0; f.arena.nextSpecial = 'charge';
+      f.method.start(f.npc, f.p); f.sync();
+      const moving = f.advance(windup).at(-1).view;
+      assert.ok(moving, 'Brutus remains in the real local NPC list on the charge tick');
+      assert.deepEqual(moving.exactMove, { startDeltaX: 0, startDeltaY: 4, endDeltaX: 0, endDeltaY: 0,
+        startCycleOffset: 0, endCycleOffset: 60, direction: 0 });
+      assert.deepEqual([moving.x, moving.y], [3260, 3286]);
+      assert.equal(moving.interactionIndex, -1, 'the glide owns its heading');
+      assert.equal(f.advance(1)[0].view.interactionIndex, -1);
+      const recovered = f.advance(1)[0];
+      assert.equal(recovered.view.interactionIndex, 65537);
+      assert.ok(stationaryMask(recovered) & 0x08, 'native entity-facing mask restores tracking');
+    } finally { f.close(); }
+  }
+});
+
+test('each stomp holds its telegraph then sends an entity-face recovery before normal melee', () => {
+  const f = nativeFight();
+  try {
+    for (const x of [3260, 3262]) {
+      f.p.moveTo(new core.Location(x, 3293, 0));
+      f.arena.stompsRemaining = 0; f.arena.meleeRemaining = 0; f.arena.nextSpecial = 'stomp';
+      f.method.start(f.npc, f.p);
+      const telegraph = f.sync();
+      assert.equal(telegraph.view.interactionIndex, -1);
+      assert.deepEqual(telegraph.view.faceTile, { x, y: 3293 });
+      assert.equal(stationaryMask(telegraph) & 0x808, 0x808, 'coordinate facing replaces entity tracking');
+      assert.ok(f.advance(5).every(frame => frame.view.interactionIndex === -1), 'combat renewal cannot turn the telegraph');
+      const recovered = f.advance(1)[0];
+      assert.equal(recovered.view.interactionIndex, 65537);
+      assert.equal(recovered.view.faceTile, undefined);
+      assert.ok(stationaryMask(recovered) & 0x08);
+    }
+    f.arena.stompsRemaining = 0; f.arena.meleeRemaining = 1;
+    f.p.moveTo(new core.Location(3261, 3289, 0));
+    f.method.start(f.npc, f.p);
+    assert.equal(f.npc.hasFlag('combat:keep-facing'), false);
+    assert.equal(f.npc.getInteractingMobile(), f.p);
+    assert.equal(f.npc.getAnimation().getId(), 13783, 'ordinary melee resumes');
+  } finally { f.close(); }
+});
+
+test('special recovery never reattaches a dead, replaced, abandoned or retargeted fight', () => {
+  for (const change of ['dead', 'replaced', 'left', 'retargeted', 'cancelled']) {
+    const f = nativeFight();
+    try {
+      f.p.moveTo(new core.Location(3261, 3293, 0));
+      f.arena.meleeRemaining = 0; f.arena.nextSpecial = 'stomp';
+      f.method.start(f.npc, f.p); f.sync();
+      if (change === 'dead') f.npc.setHitpoints(0);
+      if (change === 'replaced') f.arena.bull = null;
+      if (change === 'left') f.p.setArea(null);
+      const nextTarget = player();
+      if (change === 'retargeted') f.npc.getCombat().target = nextTarget;
+      if (change === 'cancelled') f.arena.destroy();
+      f.h.tick(6);
+      assert.notEqual(f.npc.getInteractingMobile(), f.p, change);
+      if (change === 'retargeted') {
+        f.npc.getCombat().faceTarget(nextTarget);
+        assert.equal(f.npc.getInteractingMobile(), nextTarget, 'the next engagement can turn normally');
+      }
+    } finally { f.close(); }
+  }
+});
+
+test('the charge survives real combat validation before its facing recovery', () => {
+  const f = nativeFight(22);
+  try {
+    Object.assign(f.p, {
+      isRegistered: () => true, isUntargetable: () => false, isNeedsPlacement: () => false,
+      isTeleportingReturn: () => false, getAsPlayer: () => f.p, isDyingReturn: () => false,
+      getSize: () => 1, getDueling: () => null,
+    });
+    const { Player } = require('../dist/game/entity/impl/player/Player');
+    const playerCombat = new Player(null).getCombat();
+    f.p.getCombat = () => playerCombat;
+    f.arena.isMulti = () => false;
+    f.arena.meleeRemaining = 0; f.arena.nextSpecial = 'charge';
+    f.method.start(f.npc, f.p); f.sync();
+    f.h.tick(3); // World processes quest tasks before NPC combat and before sync clears placement.
+    assert.equal(core.CombatFactory.validTarget(f.npc, f.p), true);
+    f.npc.getCombat().preMovementProcess();
+    assert.equal(f.npc.getCombat().getTarget(), f.p);
+    assert.equal(f.npc.getMovementQueue().getMobility().canMove(), false);
+    f.h.tick(2);
+    assert.equal(f.npc.getInteractingMobile(), f.p);
+    assert.equal(f.npc.getMovementQueue().getMobility().canMove(), true);
+  } finally { f.close(); }
+});
+
+test('Brutus counts once through Combat Achievements and answers the stored best', () => {
+  const Kills = require('../plugins/achievements/combatachievements/Kills.CombatAchievements');
+  const originalCycle = core.World.getProcessCycle;
+  let cycle = 100;
+  core.World.getProcessCycle = () => cycle;
+  const { h, p, npc } = fight(22);
+  try {
+    require('../plugins/achievements/combatachievements/Data.CombatAchievements')(h.api);
+    Kills(h.api);
+    cycle = 130;
+    for (const handler of h.hooks.onNpcDeath) handler({ killer: p, npc });
+    const count = { player: p, monster: 'Brutus' };
+    h.emit('combat-achievements:count', count);
+    assert.equal(count.total, 1);
+    assert.ok(p.messages.some(text => text.includes('Your Brutus kill count is: <col=ff0000>1</col>')));
+    assert.ok(p.messages.some(text => text.includes('0:18.00') && text.includes('new personal best')));
+    const best = { player: p, monster: 'Brutus', best: null };
+    h.emit('combat-achievements:personal-best', best);
+    assert.equal(best.best, 30);
+    assert.equal(p.getAttribute('ides-of-milk:brutus-best-ticks'), 30);
+  } finally {
+    h.hooks.onPlayerLogout[0]({ player: p });
+    core.World.getProcessCycle = originalCycle;
+  }
+});
+
+// Demonic Brutus's Wiki numbers on the existing quest-plugin fight (docs/ides-of-milk.md): his specials hit for 45-56 (the
+// quest's 30-40% of Hitpoints scaling is Brutus'), his basic melee ignores Protect from Melee and the quest's cap of 3, and
+// he is immune to stat drains. His ghosts, orbs and faster specials are not modelled; the Wiki gives no tick counts for them.
+function demonicFight() {
+  const f = nativeFight(22);
+  f.h.api.onCustomEvent('quest:is-complete', request => { if (request.key === 'desert_treasure_ii') request.complete = true; });
+  f.p.items.set(I.ABYSSAL_POTATO, 1);
+  f.h.itemOnNpc(f.p, f.npc, I.ABYSSAL_POTATO);
+  f.h.prompts.at(-1)[3]();
+  const demonic = f.h.npcs.at(-1);
+  assert.equal(demonic.getId(), N.DEMONIC_BRUTUS);
+  return { ...f, demonic };
+}
+
+test('Demonic Brutus is immune to stat drains, which the regular Brutus is not', () => {
+  const f = demonicFight();
+  try {
+    assert.equal(f.npc.statDrainImmune ?? false, false);
+    assert.equal(f.demonic.statDrainImmune, true, 'setStatDrainImmune(true) on the upgrade');
+  } finally { f.close(); }
+});
+
+function stompRolls(f, bull, count = 60) {
+  const rolls = new Set();
+  for (let i = 0; i < count; i++) {
+    f.arena.meleeRemaining = 0; f.arena.nextSpecial = 'stomp'; f.arena.stompsRemaining = 0;
+    bull.moveTo(new core.Location(3260, 3286, 0));
+    f.p.moveTo(new core.Location(3260, 3289, 0));
+    f.p.damage.length = 0;
+    f.method.start(bull, f.p); f.h.tick(4);
+    for (const hit of f.p.damage) rolls.add(hit.getDamage());
+  }
+  return rolls;
+}
+
+test('each bull of a Demonic Brutus special deals 45-56, where the regular specials stay at 19 or less', () => {
+  const regular = nativeFight(22);
+  try {
+    const rolls = stompRolls(regular, regular.npc);
+    assert.ok(rolls.size > 0, 'a regular stomp landed');
+    for (const value of rolls) assert.ok(value <= 19, `regular damage ${value}`);
+  } finally { regular.close(); }
+  const f = demonicFight();
+  try {
+    const rolls = stompRolls(f, f.demonic);
+    assert.ok(rolls.size > 0, 'a stomp landed');
+    for (const value of rolls) assert.ok(value >= 45 && value <= 56, `damage ${value}`);
+    assert.ok(Math.max(...rolls) > 45, 'the range is rolled, not fixed');
+  } finally { f.close(); }
+});
+
+test("Demonic Brutus's basic melee ignores Protect from Melee and the quest's cap of 3; the regular Brutus' hit keeps the cap", () => {
+  const built = [];
+  class RecordedHit {
+    constructor(attacker, target, method, config) { built.push({ attacker, config }); this.damage = 9; }
+    getTotalDamage() { return this.damage; }
+    setTotalDamage(value) { this.damage = value; }
+  }
+  // The arena and the quest plugin are the real ones; only the hit constructor is recorded.
+  const h = harness({ nativeNpc: true, pendingHit: RecordedHit }), p = player(); h.quest.setStage(p, 22);
+  h.action(p, N.BULL, 'mKQNRL'); h.tick(4);
+  h.api.onCustomEvent('quest:is-complete', request => { if (request.key === 'desert_treasure_ii') request.complete = true; });
+  const regularNpc = h.npcs[0], arena = p.getArea(), method = new h.api.combat();
+  arena.special = null;
+  const regular = method.hits(regularNpc, p);
+  assert.equal(built.at(-1).config, undefined, 'the regular hit is an ordinary one');
+  assert.equal(regular[0].getTotalDamage(), 3, 'capped at 3 after the quest');
+  p.items.set(I.ABYSSAL_POTATO, 1);
+  h.itemOnNpc(p, regularNpc, I.ABYSSAL_POTATO);
+  h.prompts.at(-1)[3]();
+  const demonicNpc = h.npcs.at(-1);
+  const demonic = method.hits(demonicNpc, p);
+  assert.deepEqual(built.at(-1).config, { bypassProtectionPrayer: true });
+  assert.equal(demonic[0].getTotalDamage(), 9, 'not held to the quest cap of 3');
 });

@@ -105,11 +105,10 @@ function createMaledictus(api, core, { inCaves, surge }) {
       later(SPECIAL_LAND_TICKS, () => {
         if (boss.getHitpoints() <= 0 || !player.getLocation().equals(tile)) return;
         const hit = new PendingHit(boss, player, MAGIC_HIT, 0);
+        // Blood heals half of what lands: Protect from Magic is read in the victim's turn, after this.
+        if (spell === "blood") for (const part of hit.getHits()) part.onApplied((taken) => boss.heal(Math.floor(taken / 2)));
         CombatFactory.addPendingHit(hit);
-        if (spell === "blood") {
-          boss.heal(Math.floor(hit.getTotalDamage() / 2));
-          return;
-        }
+        if (spell === "blood") return;
         player.sendMessage("You have been frozen in place by the Revenant Maledictus' attack!");
         player.performGraphic(new Graphic(ICE.impact));
         player.getPacketSender().sendSound(ICE.impactSound, 1, 10);
@@ -279,6 +278,7 @@ function createMaledictus(api, core, { inCaves, surge }) {
     const where = player.getLocation().clone();
     if (stackable) core.ItemOnGroundManager.registerLocation(player, new core.Item(id, amount), where);
     else for (let i = 0; i < amount; i++) core.ItemOnGroundManager.registerLocation(player, new core.Item(id, 1), where);
+    api.emitCustomEvent("collection-log:obtain", { player, itemId, amount });
     announce(watchers, player, itemId, amount);
   }
 
@@ -305,7 +305,7 @@ function createMaledictus(api, core, { inCaves, surge }) {
     }
   }
 
-  return { MaledictusCombat, onRevenantKilled, spawn, rememberDamagers, dropLoot, nextAttack };
+  return { MaledictusCombat, onRevenantKilled, spawn, rememberDamagers, dropLoot, nextAttack, tileSpell };
 }
 
 let maledictus = null;

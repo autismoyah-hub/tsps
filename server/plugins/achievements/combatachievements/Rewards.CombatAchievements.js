@@ -10,7 +10,7 @@
  * are from the Wiki, not established by that recording.
  *
  * The lamps, as captured: rubbing opens xpreward with the lamp's level (varp 261), and the
- * chosen skill's experience comes with "<col=0000ff>Your wish has been granted!</col> You have
+ * chosen skill's experience comes with "<col=0000ff>Your wish has been granted!</col><br>You have
  * been awarded 5,000 Runecraft experience!". Experience and level per tier from the Wiki.
  */
 const Data = require("./Data.CombatAchievements");
@@ -234,7 +234,7 @@ function grantLamp(player, request, skill, name = skill.getName()) {
   const manager = player.getSkillManager();
   if (manager.getMaxLevel(skill) < request.minLevel) return null;
   const before = manager.getExperience(skill);
-  manager.addExperience(skill, request.experience, false);
+  manager.addExperience(skill, request.experience, true);
   if (manager.getExperience(skill) === before) {
     player.sendMessage("You cannot gain experience in that skill right now.");
     return null;
@@ -244,7 +244,7 @@ function grantLamp(player, request, skill, name = skill.getName()) {
     player,
     reason: "combat-achievement-lamp",
   });
-  return `<col=0000ff>Your wish has been granted!</col> You have been awarded ${request.experience.toLocaleString("en-GB")} ${name} experience!`;
+  return `<col=0000ff>Your wish has been granted!</col><br>You have been awarded ${request.experience.toLocaleString("en-GB")} ${name} experience!`;
 }
 
 module.exports = function attachRewards(api) {

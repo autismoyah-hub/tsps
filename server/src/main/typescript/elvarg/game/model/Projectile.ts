@@ -1,4 +1,5 @@
 import { Location } from "./Location";
+import { CrossFloor } from "../CrossFloor";
 import { World } from '../World';
 import { Mobile } from "../entity/impl/Mobile";
 import { PrivateArea } from "./areas/impl/PrivateArea";
@@ -68,7 +69,11 @@ export class Projectile {
      * cross a boss's whole range as fast as it crosses one tile, which reads as teleporting.
      */
     public static arrivalCycles(from: Mobile | Location, to: Mobile | Location, delay: number = 40, perTile: number = 10): number {
-        return delay + Projectile.locationOf(from).getDistance(Projectile.locationOf(to)) * perTile;
+        return delay + Projectile.flightDistance(
+            Projectile.locationOf(from),
+            Projectile.locationOf(to),
+            typeof (to as Mobile)?.getLocation === "function" ? to as Mobile : undefined,
+        ) * perTile;
     }
 
     /**
@@ -93,6 +98,21 @@ export class Projectile {
      * sendProjectile: launched at 51 and landing at 46 + 10 per tile.
      */
     public static readonly LEGACY_MAGIC_END_BASE = 46;
+
+    /**
+     * Horizontal tiles a projectile flies to the nearest tile of the target, ignoring floor delta.
+     * The end point is the target's centre tile (rsprox: magic projectiles land against a large target's
+     * nearest tile, not its south-west corner).
+     */
+    public static flightDistance(start: Location, end: Location, victim?: Mobile | null): number {
+        const size = Math.max(1, victim?.getSize?.() ?? 1);
+        const offset = (size - 1) >> 1;
+        const west = end.getX() - offset;
+        const south = end.getY() - offset;
+        const dx = Math.max(0, west - start.getX(), start.getX() - (west + size - 1));
+        const dy = Math.max(0, south - start.getY(), start.getY() - (south + size - 1));
+        return Math.max(dx, dy);
+    }
 
     private static locationOf(at: Mobile | Location): Location {
         return at instanceof Location ? at : Projectile.centreOf(at);
@@ -128,8 +148,12 @@ export class Projectile {
      * the projectile from where the mobile is drawn: a caster that attacks on the tick it steps
      * into range is still walking there on screen.
      */
-    public withSource(source: Mobile): Projectile {
-        this.sourceIndex = Projectile.resolveLockonTargetIndex(source);
+    public withSource(source: Mobile | null): Projectile {
+        // rsprox: a player's projectile never names its caster (0 of ~450,000 map_projanim
+        // sources); live starts it from the caster's tile. NPCs keep theirs (some are recorded so).
+        // Checked here, so plugins that build their own projectile from a player (the bone staff,
+        // Nex's Soul Split) send none either.
+        this.sourceIndex = source && !source.isPlayer?.() ? Projectile.resolveLockonTargetIndex(source) : 0;
         return this;
     }
 
@@ -148,25 +172,31 @@ export class Projectile {
         return this;
     }
 
-    public sendProjectile(): void {
-        let resolvedDelay = this.delay;
-        let resolvedSpeed = this.speed;
+    /** Client cycles added to where it lands, its start unchanged (a slower second shot). */
+    private endDelay = 0;
 
-        // Most combat spells use Java ProjectileBuilder defaults:
-        // start=43, end=31, delay=51, duration=-5, span=10.
-        // Older TS spell ports still pass (delay=0, speed=20), which makes
-        // spell travel/desync look off versus Java. Normalize only this legacy
-        // magic shape and keep all custom/ranged projectiles untouched.
-        if (
-            this.delay === 0 &&
-            this.speed === 20 &&
-            this.startHeight === 43 &&
-            this.endHeight === 31
-        ) {
-            const distance = this.start.getDistance(this.end);
-            resolvedDelay = 51;
-            resolvedSpeed = Projectile.LEGACY_MAGIC_END_BASE + distance * 10;
-        }
+    public withEndDelay(cycles: number): Projectile {
+        this.endDelay = Math.max(0, Math.trunc(cycles));
+        return this;
+    }
+
+    /** The exact relative client-cycle deadlines used by sendProjectile. */
+    public getTiming(): { startCycleOffset: number; endCycleOffset: number; legacyMagic: boolean } {
+        const legacyMagic = this.delay === 0 && this.speed === 20
+            && this.startHeight === 43 && this.endHeight === 31;
+        return {
+            startCycleOffset: legacyMagic ? 51 : this.delay,
+            endCycleOffset: (legacyMagic
+                ? Projectile.LEGACY_MAGIC_END_BASE + Projectile.flightDistance(this.start, this.end, this.lockon) * 10
+                : this.speed) + this.endDelay,
+            legacyMagic,
+        };
+    }
+
+    public sendProjectile(): void {
+        const timing = this.getTiming();
+        const resolvedDelay = timing.startCycleOffset;
+        const resolvedSpeed = timing.endCycleOffset;
 
         let recipients = 0;
         let scannedNetworkPlayers = 0;
@@ -185,14 +215,14 @@ export class Projectile {
             const viewer = sameArea ? player.getLocation() : BoatManager.rootLocation(player);
             // Seen as far as NPCs are: an area that widens that shows their projectiles too.
             const range = Math.max(15, player.getNpcViewDistance?.() ?? 15);
-            if (!this.start.isViewableFromWithin(viewer, range)) {
+            if (!CrossFloor.projectileVisible(viewer, this.start, range)) {
                 skippedView++;
                 return;
             }
             if (
                 this.lockon &&
                 typeof this.lockon.getLocation === "function" &&
-                !(sameArea ? this.lockon.getLocation() : BoatManager.rootLocation(this.lockon)).isViewableFromWithin(viewer, range)
+                !CrossFloor.projectileVisible(viewer, sameArea ? this.lockon.getLocation() : BoatManager.rootLocation(this.lockon), range)
             ) {
                 skippedTargetView++;
                 return;

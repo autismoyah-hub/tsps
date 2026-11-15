@@ -71,12 +71,16 @@
       "overrides": [{ "rect": [17, 51, 20, 52], "area": 20 }]
     },
     "5": {
-      "_comment": "Raging Echoes (Wiki): the same start, picks at 90, 200 and 400 tasks, Varlamore among them; the Stranglewood counts as Varlamore. The area teleport's cast as captured (227/00070): home_teleport_human_echoes_1..5 with vfx_league_5_home_teleport_01..05 at +1, +4, +9, +14 and +18 ticks, movement locked from +18, landing at +21.",
-      "defaults": [1, 2],
-      "thresholds": [90, 200, 400],
+      "_comment": "Raging Echoes (Wiki): Misthalin to start (Wiki Raging_Echoes_League/Areas: 'All players will begin the league restricted to Misthalin'), Karamja unlocked free during the tutorial (as recorded, 227/00196: the tutorial's areas page waits until Karamja is picked through the confirm, league_area_selection_1 0 -> 2), then picks at 90, 200 and 400 tasks, Varlamore among them; the Stranglewood counts as Varlamore. The area teleport's cast as captured (227/00070): home_teleport_human_echoes_1..5 with vfx_league_5_home_teleport_01..05 at +1, +4, +9, +14 and +18 ticks, movement locked from +18, landing at +21.",
+      "defaults": [1],
+      "thresholds": [0, 90, 200, 400],
+      "firstPick": 2,
       "areas": [1, 2, 3, 4, 5, 6, 7, 8, 11, 20, 21],
       "spotanimPrefix": "league_5_area_unlock_emote_spotanim_",
-      "overrides": [{ "rect": [17, 53, 19, 53], "area": 21 }],
+      "overrides": [
+        { "rect": [17, 53, 19, 53], "area": 21 },
+        { "_comment": "The Dagannoth Kings' lair below Waterbirth Island, on no surface square and so open to everyone otherwise. The Wiki's Raging Echoes Fremennik Province lists Waterbirth Island Dungeon and has the Dagannoth Kings as its echo boss.", "rect": [45, 68, 45, 69], "area": 8 }
+      ],
       "teleportCast": {
         "steps": [
           { "tick": 1, "animation": 11875, "graphic": 3180 },
@@ -94,13 +98,11 @@
       "_start": "Where a new character begins: Yama's Lair, by its exit to Civitas illa Fortis (Wiki 'Players began in Yama's Lair'; recording 237/01098 moves the new character there, to 1503, 5602, before its tutorial starts). A locked square or a respawn still goes to the starting area's hub.",
       "start": { "x": 1503, "y": 5602, "z": 0 },
       "_exit": "Yama's Lair's Glowing portal (league_6_yama_exit), Leave, as recorded (237/01098): on arrival busy, mahjarrat_human_disappear_01_noheld_quick with vfx_mahjarrat_human_teleport_shadow_quick and the fade out (overlay 174, script 948 [0, 255, 0, 0, 50]); +2 minimap_state 2; +3 to Civitas illa Fortis (1665-1667, 3136-3137); +6 minimap back, busy cleared and the fade in ([0, 0, 0, 255, 50]).",
-      "_stones": "Yama's stepping stones (league_6_yama_steppingstone, 'Jump'), the lair's agility course, as recording 237/01098 plays it (673 jumps) and the Wiki's Yama's_Lair describes it: no start or end, no laps, a count of stones jumped on. A jump is to a stone 2-3 tiles off (Chebyshev; 4 from the shore), else 'I can't reach that!'; human_yama_shortjump01 with a 27-cycle slide and sound 2461 at 5. The stone left catches fire: league_6_yama_agil_fire_npc (size 3, on it) for six ticks, six at most (the oldest goes). Onto a burning stone: the spam message and a 1 hit, no experience; it still counts. Otherwise 3.6 Agility experience, as the recording's level-ups give at the starting 5x (about 18 a jump; the Wiki says 8). Every tenth stone the count message. The recording walked on at 1488, 5598 and 1479, 5598 and jumped on from 1490, 5598, 1479, 5598 and 1479, 5597.",
+      "_stones": "Yama's stepping stones (league_6_yama_steppingstone, 'Jump'), the lair's agility course, as recording 237/01098 plays it (673 jumps) and the Wiki's Yama's_Lair describes it: no start or end, no laps, a count of stones jumped on. A jump is to a stone 2-3 tiles off (Chebyshev; 4 from the shore), else 'I can't reach that!'; human_yama_shortjump01 with a 27-cycle slide and sound 2461 at 5. The stone left catches fire: league_6_yama_agil_fire_npc (size 3, on it) for six ticks, six at most (the oldest goes). Onto a burning stone: the spam message and a 1 hit, no experience; it still counts. Otherwise 3.6 Agility experience, as the recording's level-ups give at the starting 5x (about 18 a jump; the Wiki says 8). Every tenth stone the count message. The stones are where the cache places the loc (72 in the lair: `yarn dump:loc 13621`), the shore any other tile that can be walked on; the recording walked on at 1488, 5598 and 1479, 5598 and jumped on from 1490, 5598, 1479, 5598 and 1479, 5597. Clicked from further off, the player walks to the nearest shore tile (by path) within the shore's reach of the stone.",
       "stones": {
         "loc": "league_6_yama_steppingstone", "fire": "league_6_yama_agil_fire_npc", "animation": "human_yama_shortjump01",
         "cycles": 27, "sound": { "id": 2461, "delay": 5 }, "reach": 3, "shoreReach": 4,
-        "fireTicks": 6, "maxFires": 6, "burnDamage": 1, "experience": 3.6, "announceEvery": 10, "course": "yama-stepping-stones",
-        "tiles": [[1477, 5605], [1477, 5608], [1478, 5602], [1478, 5611], [1479, 5599], [1479, 5605], [1479, 5608], [1479, 5614], [1480, 5602], [1480, 5611], [1481, 5597], [1481, 5605], [1481, 5608], [1484, 5596], [1486, 5598]],
-        "shore": [[1488, 5598], [1490, 5598], [1479, 5598], [1479, 5597]]
+        "fireTicks": 6, "maxFires": 6, "burnDamage": 1, "experience": 3.6, "announceEvery": 10, "course": "yama-stepping-stones"
       },
       "exit": {
         "loc": "league_6_yama_exit", "to": { "x": 1666, "y": 3136, "spread": 1 },
@@ -147,7 +149,7 @@
       }
     }
   },
-  "regionRules": "A map square belongs to the lowest-numbered area that names it in `squares` or `rects`, then a league's `overrides` reassign squares. An underground square (map y >= 100) named by no area takes its surface square's area (y - 100): the Wiki's 'underground areas with an entrance in X'. A square named by no area is open to everyone: instances, Death's Office, the POH, random events, the essence mine, Tutorial Island, the sea. An area the league does not offer (Varlamore on a Trailblazer Reloaded world) is locked for good. Known approximations of the 64-tile grid: the four-tile strip between Lumbridge and the Al Kharid gate and the Catherby beach east of x 2816 fall with Al Kharid / Asgarnia; the River Salve's east bank at Paterdomus with Misthalin; Tutorial Island's easternmost tiles with the desert.",
+  "regionRules": "A map square belongs to the lowest-numbered area that names it in `squares` or `rects`, then a league's `overrides` reassign squares. An underground square (map y >= 100) named by no area takes its surface square's area (y - 100): the Wiki's 'underground areas with an entrance in X'. A square named by no area is open to everyone: instances, Death's Office, the POH, random events, the essence mine, Tutorial Island, the sea. An area the league does not offer (Varlamore on a Trailblazer Reloaded world) is locked for good. Known approximations of the 64-tile grid: the four-tile strip between Lumbridge and the Al Kharid gate and the Catherby beach east of x 2816 fall with Al Kharid / Asgarnia; the River Salve's east bank at Paterdomus with Misthalin; the Citharede Abbey and the Giants' Plateau east of Al Kharid (map square 53,49, whose Cabbage field the abbey's task wants) with the desert while the Abandoned Mine below it stays Morytania; Tutorial Island's easternmost tiles with the desert.",
   "open": {
     "_comment": "Open from everywhere (Wiki); listed for the record and the tests, since squares named by no area are open anyway.",
     "deathsOffice": [49, 89],
@@ -179,13 +181,13 @@
     },
     "5": {
       "key": "morytania",
-      "_comment": "Morytania (Canifis, the Slayer Tower, Mort Myre, Mort'ton, Barrows, Burgh de Rott, Meiyerditch, Darkmeyer, Slepe, Port Phasmatys, the Haunted Woods, Fenkenstrain's Castle), Dragontooth Island, Mos Le'Harmless with its caves, Harmony Island and Braindeath Island.",
-      "rects": [[54, 49, 60, 57], [53, 49, 53, 52], [53, 55, 53, 57], [57, 45, 60, 47], [58, 43, 59, 44], [32, 79, 33, 79], [57, 147, 59, 149]]
+      "_comment": "Morytania (Canifis, the Slayer Tower, Mort Myre, Mort'ton, Barrows, Burgh de Rott, Meiyerditch, Darkmeyer, Slepe, Port Phasmatys, the Haunted Woods, Fenkenstrain's Castle), Dragontooth Island, Mos Le'Harmless with its caves, Harmony Island and Braindeath Island, and the Abandoned Mine below the Giants' Plateau.",
+      "rects": [[54, 49, 60, 57], [53, 50, 53, 52], [53, 55, 53, 57], [57, 45, 60, 47], [58, 43, 59, 44], [32, 79, 33, 79], [57, 147, 59, 149]]
     },
     "6": {
       "key": "kharidian_desert",
-      "_comment": "The Kharidian Desert (Al Kharid and its mine, the Emir's Arena, the Mage Training Arena, the Shantay Pass, the Bedabin and Bandit camps, the Desert Mining Camp, Pollnivneach, Nardah, the Ruins of Uzer, Sophanem, Menaphos, the Necropolis, the Ruins of Unkah, the Kalphite Lair).",
-      "rects": [[49, 42, 55, 47], [50, 48, 55, 48], [51, 49, 52, 51]]
+      "_comment": "The Kharidian Desert (Al Kharid and its mine, the Emir's Arena, the Mage Training Arena, the Shantay Pass, the Bedabin and Bandit camps, the Desert Mining Camp, Pollnivneach, Nardah, the Ruins of Uzer, Sophanem, Menaphos, the Necropolis, the Ruins of Unkah, the Kalphite Lair), and the Citharede Abbey on the Giants' Plateau east of Al Kharid.",
+      "rects": [[49, 42, 55, 47], [50, 48, 55, 48], [51, 49, 52, 51], [53, 49, 53, 49]]
     },
     "7": {
       "key": "tirannwn",

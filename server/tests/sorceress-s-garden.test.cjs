@@ -21,9 +21,11 @@ const PESTLE = 233;
 const BEER_GLASS = 1919;
 
 let questComplete = true;
+const petRolls = [];
 plugin._test.setApi({
   emitCustomEvent(name, request) {
     if (name === "quest:is-complete") request.complete = questComplete;
+    if (name === "pets:skilling-roll") petRolls.push(request);
   },
   // The Apprentice's cast is delayed; here it lands at once.
   getTaskManager: () => ({ submit: (task) => task.execute() }),
@@ -47,6 +49,8 @@ function player({ level = 99, items = {}, name = "tester" } = {}) {
       contains: (id) => (inventory.get(id) ?? 0) > 0,
       delete: (id, amount) => inventory.set(id, (inventory.get(id) ?? 0) - amount),
       adds: (id, amount) => inventory.set(id, (inventory.get(id) ?? 0) + amount),
+      add: (item) => inventory.set(item.getId(), (inventory.get(item.getId()) ?? 0) + item.getAmount()),
+      getAddableAmount: (item) => item.getAmount(),
       refreshItems: () => {},
     }),
     getSkillManager: () => ({
@@ -139,6 +143,8 @@ test("a safe pick grants exactly one sq'irk, its Farming XP and sends the player
   assert.equal(xpOf(p, core.Skill.FARMING), 30);
   assert.equal(xpOf(p, core.Skill.THIEVING), 0);
   assert.deepEqual(p.moves.map((at) => [at.getX(), at.getY()]), [[2911, 5470]]);
+  // Wiki (Rocky): Sq'irk tree 10,339, rolled on picking a fruit.
+  assert.deepEqual(petRolls.filter((r) => r.player === p).map((r) => [r.skill, r.petBase]), [[core.Skill.THIEVING, 10339]]);
 
   const low = player({ level: 24 });
   plugin._test.pickFruit({ player: low, objectId: SPRING_TREE });
@@ -213,7 +219,19 @@ test("the apprentice's transcript: variant by past teleports, Osman and follower
   assert.equal(t.answerCondition({ player: locked, npcId: 1808, text: "If the player has not talked to Osman about the Sorceress's Garden:" }), true);
   assert.equal(t.answerCondition({ player: locked, npcId: 1808, text: "If the player has talked to Osman about the Sorceress's Garden:" }), false);
   questComplete = true;
+  assert.equal(t.answerCondition({ player: locked, npcId: 1808, text: "If the player has talked to Osman about the Sorceress's Garden:" }), false,
+    "quest completion alone does not count as asking Osman");
+  assert.equal(t.answerCondition({ player: locked, npcId: 1808, text: "If the player has not talked to Osman about the Sorceress's Garden:" }), true);
+  t.recordOsmanHelp({ player: locked });
+  assert.equal(locked.getAttribute(t.OSMAN_HELPED_ATTRIBUTE), true);
   assert.equal(t.answerCondition({ player: locked, npcId: 1808, text: "If the player has talked to Osman about the Sorceress's Garden:" }), true);
+  questComplete = false;
+  assert.equal(t.answerCondition({ player: locked, npcId: 1808, text: "If the player has talked to Osman about the Sorceress's Garden:" }), false,
+    "asking Osman does not bypass the quest requirement");
+
+  const status = { player: locked, asked: false };
+  t.osmanHelpStatus(status);
+  assert.equal(status.asked, true, "Prince Ali Rescue can query the persisted ask state");
 
   const followed = player();
   followed.setAttribute(t.PET_ATTRIBUTE, { isRegistered: () => true });
@@ -253,6 +271,7 @@ test("the Teleport option works once she has teleported you, and the fountain go
 
   const p = player();
   p.setAttribute(t.TELEPORTED_ATTRIBUTE, true);
+  p.setAttribute(t.OSMAN_HELPED_ATTRIBUTE, true);
   const npc = apprenticeNpc();
   t.teleportByApprentice({ player: p, npc, npcId: 1808 });
   assert.deepEqual(npc.chats, ["Senventior Disthinte Molesko!"]);
@@ -262,6 +281,21 @@ test("the Teleport option works once she has teleported you, and the fountain go
   t.drinkFromFountain({ player: leaver, objectId: FOUNTAIN });
   assert.deepEqual(leaver.moves.map((at) => [at.getX(), at.getY()]), [[3321, 3141]]);
   assert.equal(t.drinkFromFountain({ player: leaver, objectId: 12940 }), false);
+});
+
+test("an existing Apprentice teleport remains unlocked without the new Osman ask flag", () => {
+  const t = plugin._test;
+  const existingSave = player();
+  existingSave.setAttribute(t.TELEPORTED_ATTRIBUTE, true);
+  assert.equal(t.isUnlocked(existingSave), true);
+
+  const status = { player: existingSave };
+  t.osmanHelpStatus(status);
+  assert.equal(status.asked, false);
+  assert.equal(status.unlocked, true);
+
+  t.teleportByApprentice({ player: existingSave, npc: apprenticeNpc(), npcId: 1808 });
+  assert.deepEqual(existingSave.moves.map((at) => [at.getX(), at.getY()]), [[2912, 5474]]);
 });
 
 test("gates check the maze's level before opening", () => {

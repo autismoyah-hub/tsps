@@ -5,6 +5,7 @@
  * captures (recordings 75, 564, 1858). None of these steps plays an animation or sound.
  */
 const Common = require("./Common.Cooking");
+const FreeToPlay = require("../../modes/FreeToPlay.plugin");
 
 /** The dough menu (rsprox captures): all four doughs, whatever the player's level. */
 const DOUGH_TITLE = "What sort of dough do you wish to make?";
@@ -18,14 +19,26 @@ const MAKE_MENU_MODE = 0;
  */
 const DOUGH_TIMING = [1, 1, 2];
 const NO_SPACE_FOR_DOUGH_MESSAGE = "You don't have enough inventory space to make any dough.";
+/** Half made bowl (chocolate bomb), whose cache gameval name is shared by other bowls. */
+const CHOCOLATE_BOMB_BOWL = 9563;
 
 function hasIngredients(inventory, recipe) {
   return recipe.ingredients.every(({ id, count }) => inventory.getAmount(id) >= count);
 }
 
 /** Room for what one item gives back: the dough, its pot and the emptied container need a slot more than flour and water. */
+function freedSlots(inventory, ingredient) {
+  const held = inventory.getAmount(ingredient.id);
+  if (held <= 0) return 0;
+  // A stack keeps its slot unless the recipe takes the whole stack. Treating every
+  // ingredient as freeing one slot loses the returned pot when swamp tar is stacked.
+  if (Common.core.ItemDefinition.forId(ingredient.id)?.isStackable?.()) return held <= ingredient.count ? 1 : 0;
+  return Math.min(ingredient.count, held);
+}
+
 function hasRoom(inventory, recipe) {
-  return inventory.getFreeSlots() >= 1 + recipe.returns.length - recipe.ingredients.length;
+  const freed = recipe.ingredients.reduce((slots, ingredient) => slots + freedSlots(inventory, ingredient), 0);
+  return inventory.getFreeSlots() >= 1 + recipe.returns.length - freed;
 }
 
 /** How many of the recipe the inventory holds the ingredients for. */
@@ -37,8 +50,25 @@ function productName(recipe) {
   return Common.core.ItemDefinition.forId(recipe.productId).getName().toLowerCase();
 }
 
-/** Whether the player has the level; says why not in a message box. */
+/**
+ * A recipe is members-only when its product is (cache definition), so a first step made only from
+ * free items (a trout on a pie shell) is refused on a free world too. A row's own `members` field
+ * overrides the cache when the two disagree.
+ */
+function isMembersRecipe(recipe) {
+  return recipe.members ?? Common.core.CacheDefinitions.getItem(recipe.productId).isMembers === true;
+}
+
+function availableOnWorld(recipe) {
+  return Common.core.WorldDefinition.isMembersWorld() || !isMembersRecipe(recipe);
+}
+
+/** Whether the player can make the recipe; says why not when it is members-only here or the level is too low. */
 function canMake(player, recipe) {
+  if (!availableOnWorld(recipe)) {
+    player.sendMessage(FreeToPlay.ITEM_MESSAGE);
+    return false;
+  }
   if (Common.level(player) >= recipe.level) return true;
   Common.mesbox(player, `You need a Cooking level of ${recipe.level} to make ${Common.withArticle(productName(recipe))}.`);
   return false;
@@ -48,7 +78,11 @@ function canMake(player, recipe) {
 function makeOne(player, recipe) {
   const { Item, Skill } = Common.core;
   const inventory = player.getInventory();
-  if (!hasIngredients(inventory, recipe) || !hasRoom(inventory, recipe)) return false;
+  if (!availableOnWorld(recipe) || !hasIngredients(inventory, recipe)) return false;
+  if (!hasRoom(inventory, recipe)) {
+    inventory.full();
+    return false;
+  }
   for (const { id, count } of recipe.ingredients) inventory.deleteNumber(id, count);
   inventory.addItem(new Item(recipe.productId, 1));
   for (const { id, count } of recipe.returns) inventory.addItem(new Item(id, count));
@@ -60,11 +94,13 @@ function makeOne(player, recipe) {
 
 /**
  * Makes `amount` on the recipe's timing. `hooks.cycle(remaining)` runs as each item is started
- * (the choice, then each item that has another after it), `hooks.made()` after each item and
+ * (the choice, then each item that has another after it), `hooks.canMake()` before spending
+ * each item's ingredients, `hooks.made()` after each item and
  * `hooks.done()` after the last one made.
  */
 function start(player, recipe, amount, hooks = {}) {
   Common.core.TaskManager.cancelTasks(player.getIndex());
+  if (hooks.canMake?.() === false) return;
   let remaining = amount;
   let made = 0;
   let wait = recipe.timing[0];
@@ -73,7 +109,7 @@ function start(player, recipe, amount, hooks = {}) {
     if (--wait > 0) return true;
     const actions = Common.actionsPerCycle(player, "make");
     for (let done = 0; done < actions && remaining > 0; done++) {
-      if (!makeOne(player, recipe)) {
+      if (hooks.canMake?.() === false || !makeOne(player, recipe)) {
         if (made > 0) hooks.done?.();
         return false;
       }
@@ -81,7 +117,7 @@ function start(player, recipe, amount, hooks = {}) {
       remaining--;
       hooks.made?.();
     }
-    if (remaining <= 0 || !hasIngredients(player.getInventory(), recipe)) {
+    if (remaining <= 0 || !hasIngredients(player.getInventory(), recipe) || hooks.canMake?.() === false) {
       hooks.done?.();
       return false;
     }
@@ -97,6 +133,10 @@ function start(player, recipe, amount, hooks = {}) {
  */
 function offer(player, recipe, hooks) {
   if (!canMake(player, recipe)) return;
+  if (!hasRoom(player.getInventory(), recipe)) {
+    player.getInventory().full();
+    return;
+  }
   const most = makeable(player.getInventory(), recipe);
   if (most <= 0) return;
   if (most === 1) {
@@ -116,6 +156,7 @@ function offer(player, recipe, hooks) {
 function doughRecipe(dough, water, product) {
   return {
     productId: product.productId,
+    members: product.members,
     level: product.level,
     xp: 0,
     message: product.message,
@@ -174,6 +215,15 @@ function useItemOnItem(event) {
   offer(player, recipe);
 }
 
+/** A half baked gnomebowl's Prepare option opens the same chocolate-bomb recipe its bars make. */
+function prepareGnomebowl(event) {
+  const recipe = Common.recipeForProduct(CHOCOLATE_BOMB_BOWL);
+  if (!recipe || event.itemId !== Common.gameval("obj", "half_baked_bowl")) return;
+  event.handled = true;
+  offer(event.player, recipe);
+}
+
 module.exports = Object.assign(function attachRecipes(api) {
   api.onItemOnItem(useItemOnItem, { noted: false });
+  api.onItemAction("Half baked bowl", { Prepare: prepareGnomebowl });
 }, { offer, makeable });

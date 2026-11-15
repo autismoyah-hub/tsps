@@ -31,6 +31,9 @@ const Thieving = require("../plugins/skills/Thieving.plugin");
 
 let core;
 const hooks = {};
+/** Quests the loc gates read as done (`quest:is-complete`). */
+const questsDone = new Set();
+PluginManager.createApi("LocQuestState").onCustomEvent("quest:is-complete", (query) => { if (questsDone.has(query.key)) query.complete = true; });
 const prompts = [];
 const emitted = [];
 
@@ -44,6 +47,7 @@ before(async () => {
   LocTeleports.register({
     core,
     persistAttribute() {},
+    onPlayerLogin: (handler) => (hooks.login = handler),
     onObjectInteraction: (handler) => { hooks.object = handler; native.onObjectInteraction(handler); },
     onObjectRoute: (handler) => (hooks.route = handler),
     onItemOnObject: (handler) => (hooks.itemOnObject = handler),
@@ -95,6 +99,27 @@ test("an entry keeps the captured move, with whole ticks and a destination per s
   assert.deepEqual(stairs.sides, [{ from: [3, 3, 0], to: [1, 2, 1] }, { from: [9, 9, 0], to: [5, 6, 1] }]);
 });
 
+// The sync records the first sound a capture heard around the climb, and with a fight nearby that is the fight's
+// (#2595: a hurt sound on stairs). loc-teleport-sync.json's ignoreSounds lists the Wiki-named attack, hit, block and
+// weapon sounds; toEntry skips them and takes the first sound that is not one, or none.
+test("an entry skips a fight's sound and takes the first one that is not (loc-teleport-sync.json ignoreSounds)", () => {
+  const entry = (sounds) => toEntry(captured({ sounds }), { display: "Ladder", option: "Climb" });
+  assert.equal(entry([[1615, 2], [2454, 3]]).sound, 2454, "dagannoth_attack, then the climbing loop");
+  assert.equal(entry([[519, 1], [2454, 3]]).sound, 2454, "human_hit_2, then the climbing loop");
+  assert.equal(entry([[2454, 1], [1615, 2]]).sound, 2454, "the first non-fight sound still wins");
+  assert.equal("sound" in entry([[1615, 2]]), false, "only a fight's sound: silent");
+  assert.equal("sound" in entry([[400, 0], [2958, 1], [2811, 1]]), false, "demon_attack and the hits around it: silent");
+});
+
+test("no entry carries a sound the sync ignores, and every ignored sound says what it is", () => {
+  const ignored = decisions.ignoreSounds ?? {};
+  assert.ok(Object.keys(ignored).length >= 30, "the ignore list exists");
+  for (const [id, name] of Object.entries(ignored)) assert.match(String(name), /\w/, `sound ${id} has its Wiki name`);
+  const carrying = data.locs.filter((entry) => entry.sound !== undefined && Object.hasOwn(ignored, String(entry.sound)))
+    .map((entry) => `${entry.name} ${entry.x},${entry.y} ${entry.sound} ${ignored[entry.sound]}`);
+  assert.deepEqual(carrying, [], "these entries play a fight's sound");
+});
+
 test("every entry is a placed loc with that option in the rev 241 cache, once per tile and option", () => {
   const keys = new Set();
   for (const entry of data.locs) {
@@ -104,13 +129,17 @@ test("every entry is a placed loc with that option in the rev 241 cache, once pe
     const cached = CacheDefinitions.getObject(entry.id);
     const variants = cached.transforms ? cached.transforms.filter((id) => id !== -1).map((id) => CacheDefinitions.getObject(id)) : [cached];
     assert.ok(variants.some((variant) => variant?.actions?.[entry.op - 1]), `${entry.name} (${entry.id}) has no option ${entry.op}`);
-    assert.ok(entry.to || entry.sides?.length, `${entry.name} goes nowhere`);
+    // A Toggle-warning option only flips its warning.
+    assert.ok(entry.to || entry.sides?.length || entry.toggle, `${entry.name} goes nowhere`);
   }
   // Left to their own work: the shipyard, spirit trees, the magic mushtree.
   assert.ok(!data.locs.some((entry) => /^(sailing_|spirittree|fossil_magic_mushtree)/.test(entry.name)));
 });
 
-test("every Prifddinas gate leaf can be clicked from its walkable side and crosses the city boundary", () => {
+test("every Prifddinas gate leaf can be clicked from its walkable side and crosses the city boundary", (t) => {
+  // Entering needs Song of the Elves (Wiki, Prifddinas).
+  questsDone.add("song_of_the_elves");
+  t.after(() => questsDone.delete("song_of_the_elves"));
   const gates = data.locs.filter((entry) => /^prif_wall_gate_(left|right)(_exit)?$/.test(entry.name));
   assert.equal(gates.length, 16, "both leaves, inside and outside, at all four gates");
   const emitRoute = PluginManager.emitObjectRoute;
@@ -268,6 +297,25 @@ test("the Underground Pass south-wall cave links to the dwarf camp and back", ()
   hooks.object({ player: lower.player, object: upObject, objectId: up.id, clickType: 1, handled: false });
   runTicks(lower, 2);
   assert.deepEqual([lower.player.getLocation().getX(), lower.player.getLocation().getY(), lower.player.getLocation().getZ()], up.to);
+});
+
+test("the Old Nite's cave stairs and the Ferox Enclave dungeon's opening link both ways (#2834)", () => {
+  const down = data.locs.find((loc) => loc.name === "wildy_hub_stairs_cave");
+  const up = data.locs.find((loc) => loc.name === "wildy_hub_grotto_exit");
+  for (const [entry, from] of [[down, [3152, 3644, 0]], [up, [3158, 10027, 0]]]) {
+    const visit = explorer(from);
+    const object = locAt(entry.id, entry.x, entry.y, entry.z);
+    const request = { player: visit.player, object, objectId: entry.id, clickType: entry.op, handled: false };
+    hooks.object(request);
+    assert.equal(request.handled, true, `${entry.name} is handled`);
+    runTicks(visit, 2);
+    const at = visit.player.getLocation();
+    assert.deepEqual([at.getX(), at.getY(), at.getZ()], entry.to);
+    assert.equal(core.RegionManager.blocked(at, null), false, `${entry.name} lands on a walkable tile`);
+  }
+  const route = new RsmodRouteFinding((x, y, z, area) => core.RegionManager.getClipping(x, y, z, area));
+  const path = route.findRoute({ level: 0, srcX: 3158, srcY: 10027, srcSize: 1, destX: down.to[0], destY: down.to[1], privateArea: null, moveNear: false });
+  assert.equal(path.success && !path.alternative, true, "the Soul Wars portal's landing walks to the opening");
 });
 
 test("the Ancient Cavern whirlpool requires Barbarian firemaking and pyre-ship training", () => {
@@ -636,7 +684,8 @@ test("a failed native H.A.M. attempt retries; an optional lockpick improves the 
   nativeTicks(player, 1);
   assert.equal(thievingXp(player), 0.5);
   assert.equal(player.getPacketSender().getVarbit(235), 0);
-  assert.equal(player.getSkillManager().getCurrentLevel(core.Skill.THIEVING), 1, "no invented numb-finger roll");
+  // #4523: each failure numbs the fingers (Wiki), but not below 1, so the attempt retries.
+  assert.equal(player.getSkillManager().getCurrentLevel(core.Skill.THIEVING), 1, "a level-one picker stays at 1");
   assert.deepEqual(sounds, [sound(2402), sound(2402), sound(2581)], "failure does not duplicate the next retry sound");
   player.getInventory().add(new core.Item(core.ItemIdentifiers.LOCKPICK, 1), false);
   nativeTicks(player, 1);
@@ -695,7 +744,9 @@ test("H.A.M. diary credit requires the exact entrance and landing, and a complet
     runTicks(visit, 3);
     assert.equal(done(visit), 0, "blocked, logged-out or interrupted travel gives no diary credit");
   }
-  const other = explorer([3077, 3492, 0]);
+  // Evil Dave's trapdoor, already open (varbit 1888), so option 1 is its Go-down.
+  const other = varbitExplorer([3077, 3492, 0]);
+  other.player.getPacketSender().sendVarbit(1888, 1);
   hooks.object({ player: other.player, object: locAt(12266, 3077, 3493, 0), clickType: 1, handled: false });
   runTicks(other, 6);
   assert.equal(other.player.getLocation().getY(), 9893, "another real trapdoor route still works");
@@ -748,6 +799,86 @@ test("the Tlati dragon nest cave plays as captured: crawl, sound and fade, then 
     [],
     ["close overlay"],
   ]);
+});
+
+test("Araxxor's lair web tunnel out crawls, fades and teleports out of the instance, then fades back in", () => {
+  // Captured: crawl (844), sound 2454 and the fade out a tick after arriving, the minimap off a tick
+  // later, the teleport to (3658, 9815) on tick 3, the fade back in a tick after it.
+  const object = locAt(54274, 3648, 9814, 0);
+  const visit = explorer([3649, 9815, 0]);
+  // The lair is the player's own instance, which the move takes them out of.
+  let area = {};
+  visit.player.getPrivateArea = () => area;
+  const moveTo = visit.player.moveTo;
+  visit.player.moveTo = (location) => { area = null; return moveTo(location); };
+  const event = { player: visit.player, object, objectId: object.getId(), clickType: 1, handled: false };
+  hooks.object(event);
+  assert.equal(event.handled, true);
+  runTicks(visit, 6);
+  assert.deepEqual(visit.ticks, [
+    ["anim 844", "sound 2454", "open 174"],
+    ["varbit 6719=2"],
+    ["move 3658,9815,0"],
+    ["varbit 6719=0", "open 174"],
+    [],
+    ["close overlay"],
+    [],
+  ]);
+  assert.equal(visit.player.getMovementQueue().isMovementBlocked(), false);
+});
+
+test("Araxxor's lair web tunnel in needs 92 Slayer, Priest in Peril and a spider task, then crawls in with its box", (t) => {
+  const object = locAt(54161, 3655, 9814, 0);
+  const entry = data.locs.find((loc) => loc.id === 54161);
+  const visit = explorer([3658, 9814, 0]);
+  const messages = [];
+  const boxes = [];
+  visit.player.sendMessage = (message) => messages.push(message);
+  visit.player.getDialogueManager().startDialogues = (chain) => boxes.push([...chain.getDialogues().values()].map((line) => line.text).join(" / "));
+  let task = null;
+  let answering = true;
+  const slayer = PluginManager.createApi("AraxxorTunnelSlayer");
+  slayer.onCustomEvent("slayer:current-task", (query) => { if (answering) query.task = task; });
+  t.after(() => { questsDone.delete("priest_in_peril"); answering = false; });
+  const click = () => {
+    const event = { player: visit.player, object, objectId: object.getId(), clickType: 1, handled: false };
+    hooks.object(event);
+    assert.equal(event.handled, true);
+  };
+  visit.player.getSkillManager().setCurrentLevel(core.Skill.SLAYER, 91, false);
+  click();
+  visit.player.getSkillManager().setCurrentLevel(core.Skill.SLAYER, 92, false);
+  click();
+  questsDone.add("priest_in_peril");
+  task = { name: "Kalphite" };
+  click();
+  assert.deepEqual(messages, entry.requires.map((gate) => gate.refuse.message));
+  assert.deepEqual(visit.ticks.flat(), [], "a refusal plays nothing");
+  task = { name: "Spiders" };
+  click();
+  runTicks(visit, 6);
+  assert.deepEqual(boxes, ["You crawl through the webbed tunnel."]);
+  assert.deepEqual(visit.ticks, [
+    ["anim 844", "sound 2454", "open 174"],
+    ["varbit 6719=2"],
+    ["move 3647,9815,0"],
+    ["varbit 6719=0", "open 174"],
+    [],
+    ["close overlay"],
+    [],
+  ]);
+});
+
+test("Araxxor's outer web tunnels crawl with sound 2454 both ways; only 54271 long-crawls", () => {
+  const tunnels = data.locs.filter((loc) => loc.name.startsWith("araxxor_cave_outer_tunnel_multi") && loc.id !== 54274);
+  assert.equal(tunnels.length, 6);
+  for (const tunnel of tunnels) {
+    assert.equal(tunnel.sound, 2454, `${tunnel.name} at ${tunnel.x},${tunnel.y}`);
+    assert.equal(tunnel.anim, tunnel.id === 54271 ? 2796 : 844, `${tunnel.name} at ${tunnel.x},${tunnel.y}`);
+  }
+  // The east link's reverse: crawl and sound two ticks after arriving, the move a tick later.
+  const eastBack = tunnels.find((tunnel) => tunnel.id === 54272 && tunnel.x === 3693);
+  assert.deepEqual([eastBack.animTick, eastBack.tick, eastBack.recordings], [2, 3, 1]);
 });
 
 test("a Climb that Ladders would ask about goes the captured way: the Arceuus library stairs go up", () => {
@@ -848,6 +979,69 @@ test("Lletya's north and south tree passes cross the western wall from either si
   }
 });
 
+test("every Cam Torum squeeze door crosses straight to the opposite tile, from either side (#2449)", () => {
+  // Captured (237/1098, 1102, 1105, 1135; 226/1693): the player keeps the row or column they
+  // clicked from. Doors without a capture take the same rule from their cache rotation.
+  const doors = data.locs.filter((entry) => entry.id === 51005);
+  // The cache places the door at ten tiles; the one at 1465,9582 opens onto solid map and is left out.
+  assert.equal(doors.length, 9, "every placement of the door with a walkable far side");
+  assert.ok(!doors.some((door) => door.x === 1465 && door.y === 9582));
+  // The 2x1 door turned a quarter (rotation 1 or 3) is one tile wide and crossed east-west.
+  const mirror = (from, door, face) => {
+    const [x, y, z] = from;
+    return face % 2 === 1 ? [2 * door.x - x, y, z] : [x, 2 * door.y - y, z];
+  };
+  for (const door of doors) {
+    const object = locAt(door.id, door.x, door.y, door.z);
+    assert.equal(door.sides.length, 4, `${door.x},${door.y} has a side for each of its two tiles, both ways`);
+    for (const side of door.sides) {
+      assert.deepEqual(side.to, mirror(side.from, door, object.getFace()), `${door.x},${door.y}: ${side.from} crosses straight over`);
+      for (const [x, y, z] of [side.from, side.to]) {
+        assert.equal(core.RegionManager.getClipping(x, y, z, null) & 0x200100, 0, `${x},${y} beside ${door.x},${door.y} is walkable`);
+      }
+      assert.ok(object.isWithinInteractionDistance(new core.Location(...side.from)), `${side.from} reaches the door at ${door.x},${door.y}`);
+      const visit = explorer(side.from);
+      const event = { player: visit.player, object, objectId: object.getId(), clickType: 1, handled: false };
+      hooks.object(event);
+      assert.equal(event.handled, true);
+      runTicks(visit, 4);
+      const at = visit.player.getLocation();
+      assert.deepEqual([at.getX(), at.getY(), at.getZ()], side.to, `${door.x},${door.y} from ${side.from}`);
+    }
+  }
+});
+
+test("a Cam Torum squeeze door says you squeeze through, as spam on the move's tick (#2449)", () => {
+  // Captured (226/1693 tick 1706; 237/1098, 1102, 1105, 1135): every crossing gets the spam
+  // "You manage to squeeze through the tiny door." on the teleport's tick, before the move.
+  for (const door of data.locs.filter((entry) => entry.id === 51005)) {
+    assert.equal(door.message, "You manage to squeeze through the tiny door.", `${door.x},${door.y}`);
+    assert.equal(door.messageType, "spam", `${door.x},${door.y}`);
+    assert.equal(requirementFor(door, decisions), null, "no gate decision, so a sync keeps the entry as it is");
+  }
+  const object = locAt(51005, 1431, 9567, 1);
+  const visit = explorer([1432, 9568, 1]);
+  const sender = visit.player.getPacketSender();
+  const said = new Proxy({}, {
+    get: (target, key) => key === "sendTypedMessage"
+      ? (type, text) => (visit.ticks[visit.ticks.length - 1].push(`message ${type} ${text}`), said)
+      : (...args) => (sender[key](...args), said),
+  });
+  visit.player.getPacketSender = () => said;
+  visit.player.sendMessage = (text) => visit.ticks[visit.ticks.length - 1].push(`message game ${text}`);
+  const event = { player: visit.player, object, objectId: object.getId(), clickType: 1, handled: false };
+  hooks.object(event);
+  assert.equal(event.handled, true);
+  runTicks(visit, 4);
+  assert.deepEqual(visit.ticks, [
+    [],
+    [],
+    ["anim 6103", "sound 2452"],
+    [`message ${core.ChatType.SPAM} You manage to squeeze through the tiny door.`, "move 1430,9568,1"],
+    [],
+  ]);
+});
+
 test("trapdoor swaps: each loc has its option, and becomes the other state", () => {
   const swaps = require("../plugins/world/data/loc-swaps.json").swaps;
   for (const swap of swaps) {
@@ -870,6 +1064,65 @@ test("Draynor's trapdoor opens as captured, into the open trapdoor Ladders climb
   assert.deepEqual(visit.ticks, [["message You open the trapdoor."], ["anim 536", "sound 91"], []]);
   assert.ok(MapObjects.get(6435, new core.Location(3084, 3272, 0), null), "the open trapdoor is in place");
   assert.equal(MapObjects.get(6434, new core.Location(3084, 3272, 0), null), null, "the closed one is gone");
+});
+
+/** An explorer whose client varbits are kept, as a real PacketSender keeps them. */
+function varbitExplorer(at) {
+  const visit = explorer(at);
+  const varbits = new Map();
+  const sender = visit.player.getPacketSender();
+  visit.player.getPacketSender = () => new Proxy(sender, {
+    get: (target, key) => {
+      if (key === "sendVarbit") return (id, value) => (varbits.set(id, value), target.sendVarbit(id, value));
+      if (key === "getVarbit") return (id) => varbits.get(id) ?? 0;
+      return target[key];
+    },
+  });
+  return { ...visit, varbits };
+}
+
+test("Evil Dave's trapdoor opens and closes per player by its varbit, and only the open one goes down", () => {
+  // Captured (rec 3212, rev 232; the user's Edgeville capture): Open sets varbit 1888
+  // hundred_dave_trapdoor 0 -> 1 with synth sound 89, Close sets it back with 88, on the tick
+  // the open trapdoor's Go-down plays its animation. Going down leaves it open.
+  const varbit = CacheDefinitions.getVarbitId("hundred_dave_trapdoor");
+  assert.equal(varbit, 1888);
+  const trapdoor = locAt(12266, 3077, 3493, 0);
+  const click = (visit, clickType) => {
+    const event = { player: visit.player, object: trapdoor, objectId: trapdoor.getId(), clickType, handled: false };
+    hooks.object(event);
+    return event.handled;
+  };
+
+  const visit = varbitExplorer([3078, 3493, 0]);
+  assert.equal(click(visit, 2), false, "the closed trapdoor has no Close");
+  assert.equal(click(visit, 1), true);
+  runTicks(visit, 2);
+  assert.deepEqual(visit.ticks, [[], ["sound 89", "varbit 1888=1"], []], "Open opens it in place");
+  assert.equal(visit.varbits.get(varbit), 1);
+  assert.deepEqual(visit.player.getAttribute(LocTeleports._test.TOGGLED_ATTRIBUTE), { hundred_dave_trapdoor: 1 });
+  assert.deepEqual([visit.player.getLocation().getX(), visit.player.getLocation().getY()], [3078, 3493], "Open doesn't go down");
+
+  const closing = visit.ticks.length - 1;
+  assert.equal(click(visit, 2), true);
+  runTicks(visit, 2);
+  assert.deepEqual(visit.ticks.slice(closing), [[], ["sound 88", "varbit 1888=0"], []], "Close closes it");
+  assert.deepEqual(visit.player.getAttribute(LocTeleports._test.TOGGLED_ATTRIBUTE), { hundred_dave_trapdoor: 0 });
+
+  click(visit, 1);
+  runTicks(visit, 2);
+  const down = visit.ticks.length - 1;
+  assert.equal(click(visit, 1), true, "the open trapdoor's option 1 is Go-down");
+  runTicks(visit, 4);
+  assert.deepEqual(visit.ticks.slice(down), [[], ["anim 827"], [], ["move 3077,9893,0"], []]);
+  assert.equal(visit.varbits.get(varbit), 1, "it stays open");
+});
+
+test("a toggled trapdoor is sent again at login, as live sends varbit 1888 on login", () => {
+  const visit = varbitExplorer([3078, 3493, 0]);
+  visit.player.setAttribute(LocTeleports._test.TOGGLED_ATTRIBUTE, { hundred_dave_trapdoor: 1 });
+  hooks.login({ player: visit.player });
+  assert.deepEqual(visit.ticks[0], ["varbit 1888=1"]);
 });
 
 test("Monk's Friend keeps its cave ladder; other cellar ladders of that id go where the captures show", () => {
@@ -953,8 +1206,9 @@ test("the Lumbridge Swamp Caves dark hole needs a rope tied once, as the game's 
     emitCustomEvent: (name, payload) => (listeners.get(name) ?? []).forEach((handler) => handler(payload)),
     onPlayerLogin: (handler) => logins.push(handler),
     getTaskManager: () => core.TaskManager,
-    sendMultiChatboxPrompt: () => true,
+    sendMultiChatboxPrompt: (player, title, ...pairs) => { ropePrompts.push({ title, pairs }); return true; },
   };
+  const ropePrompts = [];
   require("../plugins/objects/Ladders.plugin").register(api);
   const Misthalin = require("../plugins/areas/Misthalin.plugin");
   Misthalin.register(api);
@@ -983,6 +1237,19 @@ test("the Lumbridge Swamp Caves dark hole needs a rope tied once, as the game's 
   const rope = { player: visit.player, object, objectId: 5947, itemId: 954, location: { x: 3169, y: 3172, z: 0 }, handled: false };
   assert.equal(itemOnObject.get("Rope:Dark hole")(rope), true);
   assert.equal(rope.handled, true);
+  // rsprox 227/00075.txt:174556: the game asks first; No leaves the rope.
+  const [asked] = ropePrompts.splice(0);
+  assert.deepEqual([asked.title, asked.pairs[0], asked.pairs[2]], ["Attach a rope to the top of the hole?", "Yes.", "No."]);
+  asked.pairs[3]();
+  assert.ok(visit.player.getAttribute(Misthalin._test.SWAMP_CAVE_ROPED_ATTRIBUTE) !== true, "No: not tied");
+  assert.equal(visit.player.getInventory().getAmount(954), 1);
+  itemOnObject.get("Rope:Dark hole")(rope);
+  let box = null;
+  visit.player.getDialogueManager().startDialogues = (chain) => { box = [...chain.getDialogues().values()][0]; };
+  ropePrompts.splice(0)[0].pairs[1]();
+  assert.ok(box instanceof core.ItemStatementDialogue, "Yes: the line in an item box");
+  assert.ok(JSON.stringify(box).includes("You tie the rope to the top of the hole and throw it down."));
+  assert.ok(visit.ticks.flat().includes("anim 827") && visit.ticks.flat().includes("sound 1774"), JSON.stringify(visit.ticks.flat()));
   assert.equal(visit.player.getAttribute(Misthalin._test.SWAMP_CAVE_ROPED_ATTRIBUTE), true, "the rope stays tied");
   assert.equal(visit.player.getInventory().getAmount(954), 0, "the rope is used up");
   assert.ok(visit.ticks.flat().includes(`varbit ${Misthalin._test.SWAMP_CAVE_ROPED_VARBIT}=1`));
@@ -1103,5 +1370,145 @@ test("hand-added gates are decisions, so a sync keeps them", () => {
   for (const entry of data.locs.filter((loc) => loc.requires || loc.mesbox)) {
     const gate = requirementFor(entry, decisions);
     assert.deepEqual(entry.requires, gate?.requires, `${entry.name} ${entry.x},${entry.y}`);
+  }
+});
+
+// Wiki (Prifddinas): "All methods of entering the city require completion of Song of the Elves"; (Dorgesh-Kaan): "It
+// can only be accessed after completion of the Death to the Dorgeshuun quest". The gates moved anyone in.
+test("the Prifddinas gates and Dorgesh-Kaan's doors need their quests done", () => {
+  for (const [name, key, from] of [
+    ["prif_wall_gate_left", "song_of_the_elves", [2181, 3329, 0]],
+    ["dorgesh_city_entrance_left", "death_to_the_dorgeshuun", [3317, 9600, 0]],
+  ]) {
+    const entry = data.locs.find((loc) => loc.name === name);
+    assert.deepEqual(entry.requires?.map((r) => r.quest), [key], `${name} asks for ${key}`);
+    const object = locAt(entry.id, entry.x, entry.y, entry.z);
+    const visit = explorer(from);
+    const messages = [];
+    visit.player.sendMessage = (message) => messages.push(message);
+    const click = () => {
+      const event = { player: visit.player, object, objectId: object.getId(), clickType: entry.op, handled: false };
+      hooks.object(event);
+      assert.equal(event.handled, true);
+    };
+    click();
+    runTicks(visit, 4);
+    assert.deepEqual(messages, [entry.requires[0].refuse.message], `${name}: refused without ${key}`);
+    assert.deepEqual([visit.player.getLocation().getX(), visit.player.getLocation().getY()], from.slice(0, 2), `${name}: not moved`);
+    questsDone.add(key);
+    click();
+    runTicks(visit, 4);
+    const at = visit.player.getLocation();
+    assert.deepEqual([at.getX(), at.getY(), at.getZ()], entry.to, `${name}: in after ${key}`);
+    questsDone.delete(key);
+  }
+});
+
+test("the Trahaearn mine cave entrance in Prifddinas leads in and its steps lead back out (#3823)", () => {
+  const where = (visit) => { const at = visit.player.getLocation(); return [at.getX(), at.getY(), at.getZ()]; };
+  const enter = data.locs.find((loc) => loc.name === "prif_mine_entrance");
+  const exit = data.locs.find((loc) => loc.name === "prif_mine_exit");
+  const cave = locAt(36556, 3269, 6047, 0);
+  assert.equal(CacheDefinitions.getObject(36556).actions[0], "Enter");
+  const inside = explorer([3271, 6051, 0]);
+  const request = { player: inside.player, object: cave, objectId: 36556, clickType: 1, handled: false };
+  hooks.object(request);
+  assert.equal(request.handled, true, "the cave entrance takes the click");
+  runTicks(inside, enter.tick + 3);
+  assert.deepEqual(where(inside), enter.to);
+
+  const steps = locAt(36215, 3301, 12455, 0);
+  assert.equal(CacheDefinitions.getObject(36215).actions[0], "Exit");
+  const out = explorer([3302, 12454, 0]);
+  const leave = { player: out.player, object: steps, objectId: 36215, clickType: 1, handled: false };
+  hooks.object(leave);
+  assert.equal(leave.handled, true, "the steps take the click");
+  runTicks(out, exit.tick + 3);
+  assert.deepEqual(where(out), exit.to);
+});
+
+test("the Mos Le'Harmless cave: Cavey Davey's warning, its toggle, and the way in and out (#4091)", () => {
+  const where = (visit) => { const at = visit.player.getLocation(); return [at.getX(), at.getY(), at.getZ()]; };
+  const cave = locAt(3650, 3748, 2973, 0);
+  assert.deepEqual(CacheDefinitions.getObject(3650).actions.slice(0, 2), ["Enter", "Toggle-warning"]);
+  const warningVarbit = CacheDefinitions.getVarbitId("cave_horror_warning");
+  assert.equal(warningVarbit, 4331);
+  /** An explorer whose warning varbit is kept, and whose conversations are collected. */
+  const visitor = (at) => {
+    const visit = explorer(at);
+    const sender = visit.player.getPacketSender();
+    const varbits = new Map();
+    const kept = new Proxy(sender, {
+      get: (target, key) => {
+        if (key === "getVarbit") return (id) => varbits.get(id) ?? 0;
+        if (key === "sendVarbit") return (id, value) => (varbits.set(id, value), target.sendVarbit(id, value), kept);
+        return target[key];
+      },
+    });
+    visit.player.getPacketSender = () => kept;
+    visit.said = [];
+    visit.player.getDialogueManager().startDialogues = (chain) => visit.said.push([...chain.getDialogues().values()]);
+    return visit;
+  };
+  const click = (visit, object, clickType) => {
+    const request = { player: visit.player, object, objectId: object.getId(), clickType, handled: false };
+    hooks.object(request);
+    return request.handled;
+  };
+
+  // Captured (4066): the warning plays before anything moves, and ends on the question.
+  const wary = visitor([3749, 2973, 0]);
+  assert.equal(click(wary, cave, 1), true, "the cave entrance takes the click");
+  const lines = wary.said.pop();
+  assert.equal(lines[0].text, "Be ye mad? There be Horrors in this cave!");
+  assert.equal(lines[0].getNpcId(), 1052);
+  assert.equal(lines.length, 16, "fifteen captured lines, then the question");
+  runTicks(wary, 3);
+  assert.deepEqual(where(wary), [3749, 2973, 0], "nobody goes in while Davey talks");
+  lines.at(-1).action.execute();
+  const proceed = prompts.pop();
+  assert.deepEqual([proceed.title, proceed.options], ["Do you still want to proceed?",
+    ["Yes, I am not afraid to be killed in nasty ways.", "No, I think I need to go get one of these Icon things."]]);
+  proceed.pick("No, I think I need to go get one of these Icon things.");
+  runTicks(wary, 3);
+  assert.deepEqual(where(wary), [3749, 2973, 0], "No stays outside");
+  click(wary, cave, 1);
+  wary.said.pop().at(-1).action.execute();
+  prompts.pop().pick("Yes, I am not afraid to be killed in nasty ways.");
+  runTicks(wary, 2);
+  assert.deepEqual(where(wary), [3748, 9373, 0], "Yes goes in");
+
+  // Captured (1846, 4066): Toggle-warning asks "Disable warnings?", and after Yes. Enter goes straight in.
+  const bold = visitor([3749, 2973, 0]);
+  assert.equal(click(bold, cave, 2), true, "Toggle-warning takes the click");
+  const disable = prompts.pop();
+  assert.deepEqual([disable.title, disable.options], ["Disable warnings?", ["Yes.", "No."]]);
+  disable.pick("No.");
+  assert.equal(bold.player.getPacketSender().getVarbit(warningVarbit), 0, "No. leaves the warning on");
+  click(bold, cave, 2);
+  prompts.pop().pick("Yes.");
+  assert.equal(bold.player.getPacketSender().getVarbit(warningVarbit), 1);
+  // A login starts with every varbit clear; the saved choice sends it again.
+  bold.player.getPacketSender().sendVarbit(warningVarbit, 0);
+  hooks.login({ player: bold.player });
+  assert.equal(bold.player.getPacketSender().getVarbit(warningVarbit), 1, "the choice outlasts a login");
+  click(bold, cave, 1);
+  assert.equal(bold.said.length, 0, "no warning once it is off");
+  runTicks(bold, 2);
+  assert.deepEqual(where(bold), [3748, 9373, 0], "in on the captured tick (1638)");
+  click(bold, cave, 2);
+  const enable = prompts.pop();
+  assert.equal(enable.title, "Enable warnings?");
+  enable.pick("Yes.");
+  assert.equal(bold.player.getPacketSender().getVarbit(warningVarbit), 0);
+
+  // Both halves of the way out lead to the tile beside the entrance (1638 for the north half).
+  for (const [id, y, from] of [[6702, 9374, [3748, 9374, 0]], [5553, 9373, [3748, 9373, 0]]]) {
+    const exit = locAt(id, 3749, y, 0);
+    assert.equal(CacheDefinitions.getObject(id).actions[0], "Exit");
+    const leaving = visitor(from);
+    assert.equal(click(leaving, exit, 1), true, `exit ${id} takes the click`);
+    runTicks(leaving, 2);
+    assert.deepEqual(where(leaving), [3749, 2973, 0]);
   }
 });

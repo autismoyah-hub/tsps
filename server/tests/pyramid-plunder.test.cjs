@@ -20,6 +20,7 @@ const spawned = [];
 const removed = [];
 const prompts = [];
 let questStarted = true;
+const petRolls = [];
 
 /** Lets the last action's ticks pass, so the next click is taken. */
 function next() {
@@ -49,6 +50,7 @@ before(async () => {
     core,
     emitCustomEvent(name, payload) {
       if (name === "quest:is-started") payload.started = questStarted;
+      if (name === "pets:skilling-roll") petRolls.push(payload);
       if (name === "npc-dialogue:start") {
         payload.handled = true;
         startedVariants.push(payload.variant);
@@ -116,6 +118,7 @@ function player({ thieving = 99, strength = 99, items = {}, at = { x: 3289, y: 2
     getInventory: () => ({
       getAmount: (id) => inventory.get(id) ?? 0,
       addItem: (item) => inventory.set(item.getId(), (inventory.get(item.getId()) ?? 0) + item.getAmount()),
+      forceAdd: (_player, item) => inventory.set(item.getId(), (inventory.get(item.getId()) ?? 0) + item.getAmount()),
       deleteNumber: (id, amount) => inventory.set(id, (inventory.get(id) ?? 0) - amount),
       getFreeSlots: () => 28 - [...inventory.values()].filter((amount) => amount > 0).length,
       getAddableAmount: (item) => Math.min(item.getAmount(), 0x7fffffff - (inventory.get(item.getId()) ?? 0)),
@@ -328,7 +331,7 @@ test("a failed urn search bites and poisons; a charmed snake makes it safe", () 
   T.Containers.searchUrn(urn, never);
   flush(5);
   assert.equal(p.hits.length, 1);
-  assert.ok(p.poisoned >= 1 && p.poisoned <= 4);
+  assert.equal(p.poisoned, 6, "the recorded severity 6, not the bite's 1-4");
   assert.equal(artefactCount(p), 0);
   next();
   T.Containers.checkUrn(urn, always);
@@ -360,8 +363,11 @@ test("the chest always gives its artefact; a scarab swarm takes the XP instead",
   T.Containers.searchChest({ player: q, ...objectAt(1, ids().chest) }, () => 0.9);
   flush(1);
   assert.equal(q.xp.THIEVING, 0, "the swarm takes the XP");
+  // Wiki (Rocky): room 1's chest is base 41,355, "rolled upon opening ... even if a scarab swarm appears".
+  assert.deepEqual(petRolls.filter((r) => r.player === p || r.player === q).map((r) => [r.player === p ? "p" : "q", r.skill?.getName?.() ?? r.skill, r.petBase]),
+    [["p", "Thieving", 41355], ["q", "Thieving", 41355]]);
   assert.equal(artefactCount(q), 1);
-  assert.deepEqual(q.hits, [3]);
+  assert.deepEqual(q.hits, [4], "the trap deals 1-4, not a fixed 3");
   assert.equal(spawned[0].definition.id, ids().npc.scarabs);
   assert.equal(spawned[0].attacked, q);
   C.endRun(q);
@@ -408,6 +414,20 @@ test("the sarcophagus opens on Strength and gives Strength XP", () => {
   T.Containers.openSarcophagus({ player: p, ...objectAt(1, ids().sarcophagus) }, () => 0.5);
   assert.equal(artefactCount(p), 1, "opens once");
   C.endRun(p);
+});
+
+test("a failed sarcophagus push still rolls the sceptre, which ends the run", () => {
+  const p = player({ thieving: 99, strength: 1 });
+  T.Entrance.tryStart(p, () => 0);
+  let rolls = 0;
+  // Push 1 only pushes. Push 2: the Strength roll fails (0.999), then the sceptre roll hits (0).
+  const sceptreRoll = () => (++rolls === 1 ? 0.999 : 0);
+  T.Containers.openSarcophagus({ player: p, ...objectAt(1, ids().sarcophagus) }, sceptreRoll);
+  flush(6);
+  assert.equal(p.inventory.get(ids().item.sceptre), 1, "the failed push found the sceptre");
+  assert.equal(C.sessionOf(p), null, "finding it ends the run");
+  assert.equal(artefactCount(p), 0, "no artefact: the lid never moved");
+  assert.equal(p.xp.STRENGTH ?? 0, 0);
 });
 
 test("containers in another room do nothing", () => {
@@ -497,6 +517,16 @@ test("Simon takes every artefact, noted or not, and pays his prices", () => {
   assert.equal(T.Simon.onDialogueVariant({ player: p, npcId: 5786 }), T.Simon.VARIANT.firstTalk, "nothing left: his introduction");
 });
 
+test("logging out between handing Simon the artefacts and his payment still pays them", () => {
+  const noted = ids().item.noted;
+  const p = player({ items: { [noted.goldenStatuette]: 3 } });
+  T.Simon.onDialogueAction({ player: p, npcId: 5786, stepId: "Kn2FnM", handled: false });
+  assert.equal(p.inventory.get(noted.goldenStatuette), 0, "the statuettes are handed over");
+  assert.equal(p.inventory.get(ids().item.coins) ?? 0, 0, "not paid yet: the next line pays");
+  T.Simon.forget({ player: p }); // the logout and disconnect hook, which runs before the save
+  assert.equal(p.inventory.get(ids().item.coins), 3 * 1250, "paid on the way out");
+});
+
 test("an artefact used on Simon sells just that one", () => {
   const p = player({ items: { [art("goldSeal")]: 2 } });
   const event = { player: p, npcId: 5786, itemId: art("goldSeal"), target: {}, handled: false };
@@ -506,6 +536,32 @@ test("an artefact used on Simon sells just that one", () => {
   T.Simon.onDialogueAction({ player: p, npcId: 5786, stepId: "dFDQfD", handled: false });
   assert.equal(p.inventory.get(art("goldSeal")), 1);
   assert.equal(p.inventory.get(ids().item.coins), 750);
+});
+
+test("Simon refuses an artefact invoice larger than a new coin stack", () => {
+  const noted = ids().item.noted.goldenStatuette;
+  const count = Math.floor(0x7fffffff / 1250) + 1;
+  const p = player({ items: { [noted]: count } });
+  const request = { player: p, npcId: 5786, stepId: "Kn2FnM", handled: false };
+  T.Simon.onDialogueAction(request);
+  assert.equal(request.end, true);
+  assert.equal(p.inventory.get(noted), count);
+  assert.equal(p.inventory.get(ids().item.coins) ?? 0, 0);
+  assert.equal(T.Simon.owed.has(p), false);
+});
+
+test("Simon explains when an artefact payment cannot fit", () => {
+  for (const route of ["one", "all"]) {
+    const p = player({ items: { [art("goldSeal")]: 1, [ids().item.coins]: 0x7fffffff } });
+    if (route === "one") T.Simon.onItemOnNpc({ player: p, npcId: 5786, itemId: art("goldSeal"), target: {}, handled: false });
+    const request = { player: p, npcId: 5786, stepId: route === "one" ? "0egJhg" : "Kn2FnM", handled: false };
+    T.Simon.onDialogueAction(request);
+    assert.equal(request.end, true);
+    assert.equal(p.inventory.get(art("goldSeal")), 1);
+    assert.equal(p.inventory.get(ids().item.coins), 0x7fffffff);
+    assert.equal(T.Simon.owed.has(p), false);
+    assert.deepEqual(p.messages, ["You do not have enough room to carry all of those coins."]);
+  }
 });
 
 test("Simon: his introduction first, then the pyramid top lines, before and after the first sale (Wiki transcript)", () => {
@@ -553,7 +609,7 @@ test("Simon keeps the tops when the coin stack cannot take the whole payment", (
   assert.equal(request.end, true);
   assert.equal(p.inventory.get(ids().item.pyramidTop), 1);
   assert.equal(p.inventory.get(ids().item.coins), 0x7fffffff - 5000);
-  assert.deepEqual(p.messages, ["You don't have enough inventory space."]);
+  assert.deepEqual(p.messages, ["You do not have enough room to carry all of those coins."]);
 });
 
 test("Simon's payment can take the slot the tops leave in a full inventory", () => {
@@ -766,8 +822,8 @@ test("captured sarcophagus: a push every tick, the lid with area sound 1218 and 
   const p = player({ thieving: 99, strength: 99 });
   T.Entrance.tryStart(p, () => 0);
   let rolls = 0;
-  // Two failed rolls, then the lid moves; 0.5 afterwards: no mummy, no sceptre.
-  const random = () => (++rolls <= 2 ? 0.999 : 0.5);
+  // Two failed pushes (each also rolls the sceptre), then the lid moves; 0.5 afterwards: no mummy, no sceptre.
+  const random = () => (++rolls <= 4 ? 0.999 : 0.5);
   T.Containers.openSarcophagus({ player: p, ...objectAt(1, ids().sarcophagus) }, random);
   const ticks = watch(p, 10);
   assert.ok(has(ticks[0], ids().varbit.busy, 1));
@@ -796,4 +852,124 @@ test("captured panel search: three pulls a tick apart, synth 1220 on the first a
   assert.deepEqual(t2.sounds, [1220]);
   assert.deepEqual(t3.messages, ["You find a door! You open it successfully."]);
   assert.ok(has(t3, ids().varbit.outerPanels[2], 2) && has(t3, ids().varbit.busy, 0));
+});
+
+
+// Native registered Simon offers, without the legacy inventory/dialogue/task stand-ins above.
+test("native Simon artefact sales preserve the full payment at the coin limit", async t => {
+  process.env.DISABLE_PLAYER_BOTS = "1";
+  const { Player } = require("../dist/game/entity/impl/player/Player");
+  const { PlayerSession } = require("../dist/net/PlayerSession");
+  const { ClientConnection } = require("../dist/net/NetworkBuilder");
+  const native = PluginManager.getCoreApi();
+  PluginManager.loadFromDirectory(path.resolve(__dirname, "../plugins"));
+  native.RegionManager.init(); native.RegionManager.loadMapFiles(3226, 3218);
+  PluginManager.emitServerStartup({});
+  t.after(() => PluginManager.emitServerShutdown({}));
+  assert.equal(C.getCore().World, native.World); assert.equal(C.getCore().TaskManager, native.TaskManager);
+  const MAX = 0x7fffffff, PRICE = 750, COINS = native.ItemIdentifiers.COINS;
+  const GOLD = native.CacheDefinitions.getObjId("ntk_seal_gold");
+  assert.equal(GOLD, 9040); assert.equal(C.DATA.artefacts.goldSeal.coins, PRICE);
+  assert.equal(native.ItemDefinition.forId(GOLD).isStackable(), false);
+  assert.equal(native.ItemDefinition.forId(GOLD).isNoted(), false);
+  assert.equal(native.ItemDefinition.forId(COINS).isStackable(), true);
+  let nextIndex = 1960;
+  const cases = [
+    { name: "one-item ordinary payment", route: "item", held: 0, seals: 2, moved: 1 },
+    { name: "Talk-to ordinary all-artefact payment", route: "talk", held: 0, seals: 2, moved: 2 },
+    { name: "one-item exact payment headroom", route: "item", held: MAX - PRICE, seals: 1, moved: 1 },
+    { name: "payment uses the consumed artefact slot", route: "item", held: 0, seals: 1, moved: 1, full: true },
+    { name: "declined one-item offer", route: "item", held: 1000, seals: 1, moved: 0, decline: true },
+    { name: "one-item insufficient payment headroom", route: "item", held: MAX - PRICE + 1, seals: 1, moved: 0, near: true },
+    { name: "one-item capped coin stack", route: "item", held: MAX, seals: 1, moved: 0, capped: true },
+    { name: "Talk-to capped coin stack", route: "talk", held: MAX, seals: 2, moved: 0, capped: true },
+  ];
+  for (const row of cases) await t.test(row.name, async t => {
+    const channel = { kind: "test", remoteAddress: "127.0.0.1", isOpen: () => true, send: () => true,
+      close() {}, onData() {}, onError() {}, onClose() {} };
+    const player = new Player(new PlayerSession(channel));
+    player.setIndex(nextIndex++); player.setUsername("simonbuyer" + player.getIndex());
+    player.setRegistered(true); player.setLocation(new native.Location(3226, 3218, 0)); player.needsPlacement = false;
+    const connection = new ClientConnection(channel); connection.player = player;
+    const npc = native.NPC.create(native.CacheDefinitions.getNpcId("agility_pyramid_simon"), new native.Location(3227, 3218, 0));
+    assert.equal(native.World.getNpcs().add(npc), true);
+    assert.equal(npc.getId(), 5786); assert.equal(npc.getCurrentDefinition(player).getName(), "Simon Templeton");
+    t.after(() => {
+      player.closeInterruptibleInterfaces();
+      PluginManager.emitPlayerDisconnect({ player, username: player.getUsername() });
+      PluginManager.emitPlayerLogout({ player, username: player.getUsername() });
+      player.setRegistered(false); native.TaskManager.cancelTasks(player.getIndex()); native.TaskManager.cancelTasks(player);
+      native.World.getNpcs().remove(npc);
+      for (const ground of native.World.getItems().filter(g => g.getOwner() === player.getUsername())) native.ItemOnGroundManager.deregister(ground);
+    });
+    const inv = player.getInventory();
+    for (let n = 0; n < row.seals; n++) inv.add(new native.Item(GOLD), false);
+    if (row.held) inv.add(new native.Item(COINS, row.capped ? MAX - 1 : row.held), false);
+    if (row.full) while (inv.getFreeSlots() > 0) inv.add(new native.Item(native.ItemIdentifiers.LOGS), false);
+    const logsBefore = inv.getAmount(native.ItemIdentifiers.LOGS), gains = [];
+    const skills = player.getSkillManager(), addXp = skills.addExperiences.bind(skills);
+    t.mock.method(skills, "addExperiences", (skill, amount) => { gains.push({ skill, amount }); return addXp(skill, amount); });
+    const floor = id => native.World.getItems().filter(g => !g.isPendingRemoval() && g.getOwner() === player.getUsername()
+      && g.getPrivateArea() === player.getPrivateArea() && g.getItem().getId() === id).reduce((n, g) => n + g.getItem().getAmount(), 0);
+    const stores = id => ({ inventory: inv.getAmount(id), equipment: player.getEquipment().getAmount(id),
+      bank: player.getBanks().reduce((n, b, tab) => n + (b && tab !== native.Bank.BANK_SEARCH_TAB_INDEX ? b.getAmount(id) : 0), 0), floor: floor(id) });
+    const owned = id => Object.values(stores(id)).reduce((n, amount) => n + amount, 0);
+    const state = () => ({ name: row.name, coins: stores(COINS), seals: stores(GOLD), owed: T.Simon.owed.get(player) ?? 0, gains: [...gains] });
+    let turns = 0;
+    const turn = () => {
+      assert.ok(++turns <= 32, "bounded native phase budget"); player.resetUpdating();
+      native.World.processCycle = (native.World.processCycle + 1) & MAX; native.TaskManager.process();
+      connection.processTurnPackets(); const queue = player.getMovementQueue();
+      queue.beginCycle(); queue.processEntityPursuit(); if (queue.hasPendingWork()) queue.process();
+      native.TaskManager.processWalkTo(player.getIndex());
+    };
+    const send = async packet => { await connection.dispatch([packet]); turn(); };
+    const observeLine = () => {
+      const current = player.getDialogueManager().getCurrent(), sender = player.getPacketSender(), group = sender.getChatboxGroupId();
+      assert.ok(current instanceof native.NpcDialogue || current instanceof native.PlayerDialogue, "actual native speech must own this continuation");
+      assert.ok(group === 231 || group === 217);
+      const mount = sender.subInterfaceTargets.get(group); assert.ok(mount); assert.equal(sender.getSubInterfaceAt(mount.targetUid), mount);
+      return { current, group };
+    };
+    const continueLine = async () => { const { group } = observeLine(); await send({ type: "dialogue_continue", widgetId: (group << 16) | 5, childIndex: -1 }); };
+    if (row.capped) {
+      const at = player.getLocation(); native.ItemOnGroundManager.registerLocation(player, new native.Item(COINS), at.clone());
+      assert.equal(floor(COINS), 1);
+      await send({ type: "ground_item_action", itemId: COINS, x: at.getX(), y: at.getY(), option: "Take", optionIndex: 3 });
+      for (let n = 0; n < 6 && floor(COINS); n++) turn();
+      assert.equal(inv.getAmount(COINS), MAX, "real native pickup fills the ordinary coin stack"); assert.equal(floor(COINS), 0);
+    }
+    assert.equal(owned(COINS), row.held); assert.equal(owned(GOLD), row.seals); assert.equal(T.Simon.owed.has(player), false);
+    const addable = inv.getAddableAmount(new native.Item(COINS, PRICE * (row.route === "talk" ? row.seals : 1)));
+    if (row.capped) assert.equal(addable, 0, "native output precondition, with real artefacts still present");
+    if (row.near) assert.equal(addable, PRICE - 1, "native output cannot accept the entire invoice");
+    if (row.name === "one-item exact payment headroom") assert.equal(addable, PRICE);
+    const before = state(), valueBefore = owned(COINS) + PRICE * owned(GOLD);
+    if (row.route === "item") await send({ type: "item_on_npc", widgetId: 149 << 16, targetIndex: npc.getIndex(),
+      itemId: GOLD, slot: inv.getSlotForItemId(GOLD) });
+    else {
+      const talk = npc.getCurrentDefinition(player).getActions().indexOf("Talk-to") + 1; assert.ok(talk > 0);
+      await send({ type: "npc_option", index: npc.getIndex(), clickType: talk });
+    }
+    for (let n = 0; n < 8 && !native.MultiChatboxPrompt.getPending(player); n++) {
+      const current = player.getDialogueManager().getCurrent();
+      if (current) {
+        assert.match(current.getText(), /You wanna sell that mate|interesting artefacts|Bonzer|flog the lot/); await continueLine();
+      } else turn();
+    }
+    const menu = native.MultiChatboxPrompt.getPending(player); assert.ok(menu, "actual registered offer must produce its native choice");
+    assert.equal(player.getDialogueManager().isActive(), false, "real MultiChatboxPrompt owns the options");
+    const choice = menu.options.indexOf(row.decline ? "No, I think I'll keep it." : "Yes, show me the money.") + 1; assert.ok(choice > 0);
+    await send({ type: "dialogue_continue", widgetId: native.MultiChatboxPrompt.OPTIONS_WIDGET_ID, childIndex: choice });
+    assert.equal(observeLine().current.getText(), row.decline ? "No, I think I'll keep it." : "Yes, show me the money.");
+    assert.deepEqual(state(), before, "resources remain intact until the real player's line is continued");
+    await continueLine();
+    const after = state(), details = JSON.stringify({ before, after });
+    // First target assertion: a sold artefact must remain owned or be paid in full; floor credit counts.
+    assert.equal(owned(COINS) + PRICE * owned(GOLD), valueBefore, "artefact/payment conservation: " + details);
+    assert.equal(owned(GOLD), row.seals - row.moved, details);
+    assert.equal(owned(COINS), row.held + row.moved * PRICE, details);
+    assert.equal(T.Simon.owed.has(player), false, "no transient unpaid invoice remains after the synchronous transaction");
+    assert.equal(inv.getAmount(native.ItemIdentifiers.LOGS), logsBefore); assert.deepEqual(gains, []);
+  });
 });

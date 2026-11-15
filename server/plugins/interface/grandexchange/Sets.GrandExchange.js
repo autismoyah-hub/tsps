@@ -1,10 +1,20 @@
 /** Native itemsets (451) / itemsets_side (430); recipes come from cache enums 1033/1034. */
 const SETS = 451;
-const MAIN_ITEMS = (SETS << 16) | 3;
+// itemsets:itemlist, the layer script 822 fills with the set list.
+const MAIN_ITEMS = (SETS << 16) | 2;
 const SIDE = 430;
+// The exchange's own screens, closed when item sets open over them.
+const GE_OFFERS = 465;
+const GE_COLLECT = 402;
+const GE_HISTORY = 383;
 const SIDE_ITEMS = SIDE << 16;
 const RECIPE_LIST = 1033;
 const RECIPE_BY_ITEM = 1034;
+const PRESET_TEXT = "Preset items cannot be used for this.";
+// Both lists take a click (op 1) and Examine (op 10).
+const ITEM_EVENTS = (1 << 1) | (1 << 10);
+// The Grand Exchange Clerk's Talk-to: "Can you help me with item sets?"
+const SETS_TARGET = "Item Sets";
 let api;
 
 function recipe(enumId) {
@@ -20,7 +30,7 @@ function allowedRecipe(value) {
 }
 
 function openSets({ player }) {
-  if ([SETS, 465, 402].includes(player.getInterfaceId())) player.getPacketSender().sendInterfaceRemoval();
+  if ([SETS, GE_OFFERS, GE_COLLECT, GE_HISTORY].includes(player.getInterfaceId())) player.getPacketSender().sendInterfaceRemoval();
   if (player.busy()) {
     player.sendMessage("Finish what you are doing before opening item sets.");
     return true;
@@ -31,10 +41,19 @@ function openSets({ player }) {
   player.getPacketSender()
     .sendSubInterface((161 << 16) | 16, SETS, 0)
     .sendSubInterface((161 << 16) | 74, SIDE, 3)
-    .sendInterfaceFlagsRange(MAIN_ITEMS, 0, api.core.CacheDefinitions.getEnumValues(RECIPE_LIST).size - 1, 1 << 1)
-    .sendInterfaceFlagsRange(SIDE_ITEMS, 0, player.getInventory().capacity() - 1, 1 << 1);
+    .sendInterfaceFlagsRange(MAIN_ITEMS, 0, api.core.CacheDefinitions.getEnumValues(RECIPE_LIST).size - 1, ITEM_EVENTS)
+    .sendInterfaceFlagsRange(SIDE_ITEMS, 0, player.getInventory().capacity() - 1, ITEM_EVENTS);
   player.getInventory().refreshItems();
   return true;
+}
+
+function dialogueAction(action) {
+  if (action.action !== "open_interface" || action.target !== SETS_TARGET) return;
+  action.handled = true;
+  // No current dialogue tells transcript playback to stop here.
+  action.player.getDialogueManager().reset();
+  action.player.getPacketSender().sendInterfaceRemoval();
+  openSets({ player: action.player });
 }
 
 function counts(ids) {
@@ -43,9 +62,33 @@ function counts(ids) {
   return result;
 }
 
+/** Preset (and other untradeable or unbankable) copies keep their restrictions, so they never pack. */
+function restricted(item) {
+  const { Item } = api.core;
+  return item.isPresetItem() || item.getMetaValue(Item.UNTRADEABLE_META) === true
+    || item.getMetaValue(Item.UNBANKABLE_META) === true;
+}
+
+/** How many of `id` can go into an exchange: the unrestricted copies, the ones it would consume. */
+function plainAmount(inventory, id) {
+  return inventory.getItems().reduce((total, item) =>
+    (item.getId() === id && !restricted(item) ? total + item.getAmount() : total), 0);
+}
+
 function holds(inventory, ids) {
   return ids.every((id) => Number.isInteger(id) && id >= 0)
-    && [...counts(ids)].every(([id, amount]) => inventory.getAmount(id) >= amount);
+    && [...counts(ids)].every(([id, amount]) => plainAmount(inventory, id) >= amount);
+}
+
+/** Takes `amount` of `id` from its unrestricted copies, leaving any restricted one alone. */
+function takePlain(inventory, id, amount) {
+  let left = amount;
+  inventory.getItems().forEach((item, slot) => {
+    if (left <= 0 || item.getId() !== id || restricted(item)) return;
+    const taken = Math.min(left, item.getAmount());
+    inventory.deleteAtSlot(slot, taken, false);
+    left -= taken;
+  });
 }
 
 /** Check the complete result on a copy, then commit once so a full inventory loses nothing. */
@@ -53,7 +96,7 @@ function exchange(player, inputs, outputs) {
   const inventory = player.getInventory();
   if (!holds(inventory, inputs)) return false;
   const next = new api.core.Inventory(player).setItems(inventory.getCopiedItems());
-  for (const [id, amount] of counts(inputs)) next.deleted(id, amount, false);
+  for (const [id, amount] of counts(inputs)) takePlain(next, id, amount);
   for (const [id, amount] of counts(outputs)) {
     if (!Number.isInteger(id) || id < 0) return false;
     const item = new api.core.Item(id, amount);
@@ -86,6 +129,7 @@ function pack(event) {
   } else {
     const noted = value.pieces.map((id) => api.core.ItemDefinition.forId(id).getNoteId());
     if (holds(inventory, noted)) exchange(player, noted, [api.core.ItemDefinition.forId(value.set).getNoteId()]);
+    else if ([...counts(value.pieces)].every(([id, amount]) => inventory.getAmount(id) >= amount)) player.sendMessage(PRESET_TEXT);
     else player.sendMessage(`Contents: ${value.pieces.map((id) => api.core.ItemDefinition.forId(id).getName()).join(", ")}.`);
   }
   return true;
@@ -118,4 +162,5 @@ module.exports = function attach(pluginApi) {
   api.onObjectInteraction("Grand Exchange booth", { Sets: openSets });
   api.onInterfaceActionButton(MAIN_ITEMS, pack);
   api.onInterfaceActionButton(SIDE_ITEMS, unpack);
+  api.onCustomEvent("npc-dialogue:action", dialogueAction);
 };

@@ -4,7 +4,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { test, beforeEach, afterEach } = require('node:test');
+const { test, before, beforeEach, afterEach } = require('node:test');
+// Accounts writes its file to this path; set it before `dist` is required.
+process.env.TSPS_ACCOUNTS_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'accounts-')), 'accounts.json');
 const { Server } = require('../dist/Server');
 Server.installProductionPathResolver();
 
@@ -12,6 +14,11 @@ const { DisplayNames } = require('../dist/game/entity/impl/player/DisplayNames')
 const { GameConstants } = require('../dist/game/GameConstants');
 const { ClientConnection } = require('../dist/net/NetworkBuilder');
 const { World } = require('../dist/game/World');
+const { CachePipeline } = require('../dist/game/cache/CachePipeline');
+const { PluginManager } = require('../dist/plugins/PluginManager');
+const { Player } = require('../dist/game/entity/impl/player/Player');
+const { PlayerSession } = require('../dist/net/PlayerSession');
+const { MultiChatboxPrompt } = require('../dist/game/model/menu/MultiChatboxPrompt');
 const DisplayName = require('../plugins/commands/DisplayName.plugin');
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -26,6 +33,10 @@ let command;
 let config;
 let prompts;
 let events;
+let interfaceHookCount;
+let customHookCounts = [];
+
+before(() => CachePipeline.initialize(path.resolve(__dirname, '..')));
 
 /** Accounts with a save; the keys are what the login screen makes of a name. */
 function persistence(...names) {
@@ -72,11 +83,16 @@ beforeEach(() => {
   config = {};
   prompts = [];
   events = [];
+  interfaceHookCount = PluginManager.interfaceActionClickHooks.length;
+  customHookCounts = ['network:plugin-message', 'interface:closed'].map(key => [key, PluginManager.customEventHooks.get(key)?.length ?? 0]);
+  const api = PluginManager.createApi('DisplayNameTest');
   DisplayName.register({
+    ...api,
     getPluginConfig: (key, fallback) => (key in config ? config[key] : fallback),
     registerCommand: (name, handler) => { assert.equal(name, 'displayname'); command = handler; },
-    emitCustomEvent: (name, payload) => events.push({ name, ...payload }),
+    emitCustomEvent: (type, payload) => events.push({ type, ...payload }),
     sendMultiChatboxPrompt: (who, title, yes, onYes, no, onNo) => {
+      if (who instanceof Player) return api.sendMultiChatboxPrompt(who, title, yes, onYes, no, onNo);
       prompts.push({ title, answer: (option) => (option === yes ? onYes : onNo)(who) });
       return true;
     },
@@ -84,11 +100,120 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  PluginManager.interfaceActionClickHooks.splice(interfaceHookCount);
+  for (const [key, count] of customHookCounts) PluginManager.customEventHooks.get(key)?.splice(count);
   GameConstants.PLAYER_PERSISTENCE = originalPersistence;
   World.getPlayerByName = originalGetPlayerByName;
   delete process.env[DisplayNames.FILE_ENV];
   DisplayNames.reset();
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+function nativePlayer(t) {
+  const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true,
+    send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+  const who = new Player(new PlayerSession(channel)).setUsername('Alice').setIndex(201);
+  const connection = new ClientConnection(channel);
+  connection.player = who;
+  const scripts = [], messages = [], sender = who.getPacketSender();
+  t.mock.method(sender, 'sendClientScript', (id, ...args) => { scripts.push([id, ...args]); return sender; });
+  t.mock.method(sender, 'sendMessage', text => { messages.push(text); return sender; });
+  return { who, scripts, messages, async input(packet) {
+    await connection.dispatch([packet]);
+    connection.processTurnPackets();
+  } };
+}
+
+const openNameChanger = f => f.input({ type: 'widget_action', widgetId: (109 << 16) | 51,
+  groupId: 109, childId: 51, buttonNum: 1, opId: 1, itemId: -1, slot: -1 });
+
+/**
+ * The cache's display name screen (displayname_menu, 980): the client's displaynames_* ops arrive
+ * as "display-names" plugin messages and each reply is that op's *_result values (script10213,
+ * script10202, script10234).
+ */
+function nameScreen(t, f) {
+  const replies = [], interfaces = [], strings = new Map();
+  const sender = f.who.getPacketSender();
+  t.mock.method(sender, 'sendInterface', id => { interfaces.push(id); return sender; });
+  t.mock.method(sender, 'sendString', (text, uid) => { strings.set(uid, text); return sender; });
+  t.mock.method(f.who.getSession(), 'sendClientPacket', frame => {
+    const text = Buffer.from(frame).toString('utf8');
+    const at = text.indexOf('{"channel":"display-names"');
+    if (at >= 0) replies.push(JSON.parse(text.slice(at)).data);
+    return true;
+  });
+  const ask = (op, name) => f.input({ type: 'plugin_message', channel: 'display-names', data: name === undefined ? { op } : { op, name } });
+  const last = op => replies.filter(reply => reply.op === op).at(-1)?.result;
+  return { replies, interfaces, strings, ask, last };
+}
+
+test('the Account Name Changer opens the cache display name screen with its info rows', async t => {
+  const f = nativePlayer(t);
+  const screen = nameScreen(t, f);
+  await openNameChanger(f);
+  assert.deepEqual(screen.interfaces, [980], 'displayname_menu');
+  assert.equal(screen.strings.get((980 << 16) | 7), 'Now', 'next free change');
+  assert.equal(screen.strings.get((980 << 16) | 9), '0', 'extra changes');
+  assert.deepEqual(screen.last('status'), [0, 0, '', false, 0, 0], 'a reopened screen starts at its first panel');
+  assert.equal(f.who.getEnteredSyntaxAction() ?? null, null, 'no chatbox text prompt any more');
+});
+
+test('Look up names, a check and Change name go through the rules, the save and the social event', async t => {
+  const f = nativePlayer(t);
+  const screen = nameScreen(t, f);
+  await openNameChanger(f);
+  await screen.ask('status');
+  const [state, , , , checks, seconds] = screen.last('status');
+  assert.deepEqual([state, checks, seconds], [200, 250, 600], 'a session: 250 checks, 10 minutes');
+  for (const [name, code] of [['Bob!', 2], ['Carol', 1], ['Moderator', 3], ['Queen of Art', 0]]) {
+    await screen.ask('check', name);
+    const result = screen.last('check');
+    assert.equal(result[0], 200, name);
+    assert.equal(result[3], code, `${name}: availability code`);
+    assert.equal(result[4], code === 0, `${name}: available`);
+  }
+  assert.deepEqual(screen.last('check').slice(5), [4, 250], 'four checks used of 250');
+  await screen.ask('claim', 'Queen of Art');
+  assert.deepEqual(screen.last('claim'), [200, 0, '', 0], 'claim_result success');
+  assert.equal(f.who.getDisplayName(), 'Queen of Art');
+  assert.equal(f.who.getUsername(), 'Alice', 'the login account is unchanged');
+  assert.deepEqual(events.map(event => event.type), ['display-names:changed']);
+  DisplayNames.reset();
+  assert.equal(DisplayNames.nameOf('Alice'), 'Queen of Art', 'the registry reloads the new name');
+
+  await screen.ask('check', 'Second');
+  assert.deepEqual(screen.last('check').slice(0, 5),
+    [403, 7, 'You can change your display name again in 28 days.', 0, true], 'available, but not eligible now');
+  await screen.ask('claim', 'Second');
+  assert.deepEqual(screen.last('claim').slice(0, 2), [403, 7]);
+  assert.equal(f.who.getDisplayName(), 'Queen of Art');
+});
+
+test('End session, closing the screen and the session running out all end it', async t => {
+  const f = nativePlayer(t);
+  const screen = nameScreen(t, f);
+  await openNameChanger(f);
+  await screen.ask('status');
+  await screen.ask('cancel');
+  assert.deepEqual(screen.replies.slice(-3).map(reply => [reply.op, reply.result[0]]),
+    [['cancel', 1], ['status', 0], ['cancel', 0]], 'disconnecting, then back to the first panel');
+  await screen.ask('check', 'Wonderland');
+  assert.equal(screen.last('check')[0], 429, 'no session, no checks');
+
+  await screen.ask('status');
+  PluginManager.emitCustomEvent('interface:closed', { player: f.who, interfaceId: 980 });
+  await screen.ask('claim', 'Wonderland');
+  assert.equal(screen.last('claim')[0], 429, 'closing the screen ends the session');
+
+  config['DisplayName:sessionMinutes'] = 1;
+  await screen.ask('status');
+  const realNow = Date.now;
+  t.mock.method(Date, 'now', () => realNow() + 61_000);
+  await screen.ask('check', 'Wonderland');
+  assert.equal(screen.last('check')[0], 429, 'the session ran out');
+  assert.equal(f.who.getDisplayName(), 'Alice');
+  assert.equal(events.length, 0);
 });
 
 test('an account shows its login name until it picks another', () => {
@@ -140,6 +265,24 @@ test("nobody takes another account's login name, display name or held name, onli
   online.add('newbie');
   assert.equal(DisplayNames.refusal('Alice', 'Newbie', now), taken, 'a new account online, not saved yet');
   assert.equal(DisplayNames.refusal('Alice', 'Free Name', now), null);
+});
+
+test("a name a live bot shows can't be taken by ::displayname or a new account, though it is never saved", (t) => {
+  const now = Date.now();
+  // A bot online, and one still in the add queue, each showing a generated name for its own login name.
+  const bot = player('PvpBot1'); bot.displayName = 'Gilded Owl';
+  const queued = player('PvpBot2'); queued.displayName = 'Quiet Fern';
+  t.mock.method(World, 'getPlayers', () => [bot]);
+  t.mock.method(World, 'getAddPlayerQueue', () => [queued]);
+  const taken = 'That name is not available.';
+  assert.equal(DisplayNames.refusal('Alice', 'Gilded Owl', now), taken, 'the online bot shows it');
+  assert.equal(DisplayNames.refusal('Alice', 'quiet_fern', now), taken, 'the queued bot shows it');
+  assert.equal(DisplayNames.refusal('PvpBot1', 'Gilded Owl', now), null, 'the bot itself keeps it');
+  assert.equal(DisplayNames.shownByAnother('Gilded Owl', 'NewAccount'), true, 'a new account is refused the same way');
+  const alice = player('Alice');
+  run(alice, 'displayname Gilded Owl');
+  assert.equal(alice.last(), taken, '::displayname refuses it');
+  assert.equal(prompts.length, 0, 'no confirmation is offered');
 });
 
 test('an account may go back to its login name or take back a held name', () => {
@@ -204,7 +347,7 @@ test('::displayname asks first, then changes the name and tells the social plugi
   assert.equal(alice.getDisplayName(), 'Queen of Art');
   assert.equal(DisplayNames.nameOf('alice'), 'Queen of Art');
   assert.equal(alice.last(), 'Your display name is now Queen of Art.');
-  assert.deepEqual(events, [{ name: 'display-names:changed', player: alice, previous: 'Alice', name: 'Queen of Art' }]);
+  assert.deepEqual(events, [{ type: 'display-names:changed', player: alice, previous: 'Alice', name: 'Queen of Art' }]);
 });
 
 test('answering No changes nothing', () => {
@@ -315,4 +458,13 @@ test('a write that fails leaves the old name and says so', () => {
   assert.equal(alice.getDisplayName(), 'Alice');
   assert.equal(events.length, 0);
   assert.equal(errors.length, 1);
+});
+
+test('a name belonging to an account character is in use even without a save', () => {
+  const { Accounts } = require('../dist/game/entity/impl/player/Accounts');
+  Accounts.reset(); Accounts.ensure('Owner', 1); Accounts.addCharacter('owner', 'Unentered', 2);
+  GameConstants.PLAYER_PERSISTENCE = { ...GameConstants.PLAYER_PERSISTENCE, exists: () => false };
+  assert.equal(DisplayNames.loginNameInUse('unentered'), true);
+  assert.equal(DisplayNames.refusal('someone', 'Unentered'), 'That name is not available.');
+  assert.equal(DisplayNames.loginNameInUse('nobody'), false);
 });

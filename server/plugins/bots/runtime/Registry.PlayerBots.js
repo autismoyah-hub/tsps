@@ -15,9 +15,19 @@ const {
 } = require("./PersistenceConstants.PlayerBots");
 const { SPAWNS_PER_BATCH, SPAWN_BATCH_DELAY_MS, runPaced } = require("./SpawnPacing.PlayerBots");
 
+// The crater keeps its own BhBot population; PvP-world roamers stay out of it.
+const BOUNTY_HUNTER_ARENA = require("../../minigames/bountyhunter/data/crater.json").arena;
+
+const { generateBotName } = require("../lib/BotNames.PlayerBots");
+const { normalizeRegionDensity } = require("../behaviours/pvp/RegionDensity.PlayerBots");
+
 const WILDERNESS_SPAWN_TILE_PROBE_LIMIT = 256;
 const WILDERNESS_REGION_SIZE = 64;
 const WILDERNESS_REGION_DESPAWN_DELAY_MS = 30000;
+/** Underground maps sit 6400 tiles north of the surface they lie under. */
+const UNDERGROUND_MIN_Y = 6400;
+/** RsmodRouteFinding searches 128x128 tiles centred on its source. */
+const ROUTE_SEARCH_RADIUS = 63;
 
 function createBotRegistry(options) {
   const {
@@ -25,7 +35,9 @@ function createBotRegistry(options) {
     botCount,
     wildernessRoamerBotCount = 0,
     wildernessActiveRegionBotsPerRegion = 0,
+    wildernessActiveRegionBotsByRegion,
     wildernessActiveRegionInset = 0,
+    pvpAllowed = () => true,
     botBaseCooldownMs,
     spawn,
     spawnOffsets,
@@ -49,6 +61,7 @@ function createBotRegistry(options) {
     randomInRange,
     startupLogger,
     onActiveRegionsUpdated,
+    onPlayerMapSquareChange,
     getActiveRegionSnapshot,
     botStatesByName: providedBotStatesByName,
     botmeUsernames: providedBotmeUsernames,
@@ -57,6 +70,8 @@ function createBotRegistry(options) {
     entriesByUsername: providedEntriesByUsername,
   } = options;
   const RegionManager = botApi.getRegionManager();
+  const regionalTargets = normalizeRegionDensity(wildernessActiveRegionBotsByRegion, wildernessRoamerBotCount);
+  let routeFinder = null;
   const applyForcedModeForDiagnosis =
     typeof applyForcedModeForDiagnosisFn === "function"
       ? applyForcedModeForDiagnosisFn
@@ -291,6 +306,10 @@ function createBotRegistry(options) {
     if (!bounds) {
       return false;
     }
+    const a = BOUNTY_HUNTER_ARENA;
+    if (bounds.z === 0 && bounds.minX <= a.maxX && bounds.maxX >= a.minX && bounds.minY <= a.maxY && bounds.maxY >= a.minY) {
+      return false;
+    }
     return Wilderness.intersectsArea(
       bounds.minX,
       bounds.maxX,
@@ -350,7 +369,7 @@ function createBotRegistry(options) {
   function buildRegionalWildernessPlans(snapshot, hotspotCountsByRegion = null) {
     if (
       wildernessRoamerBotCount <= 0 ||
-      wildernessActiveRegionBotsPerRegion <= 0 ||
+      !pvpAllowed() ||
       !Array.isArray(snapshot?.regions) ||
       snapshot.regions.length === 0
     ) {
@@ -370,7 +389,8 @@ function createBotRegistry(options) {
     for (const region of activeRegions) {
       const hotspotCount = hotspotCountsByRegion?.get?.(region.key) ?? 0;
       // One target for every PvP region, levelled Wilderness or not, so the setting means what it says.
-      const desiredCount = Math.max(0, wildernessActiveRegionBotsPerRegion - hotspotCount);
+      const target = regionalTargets[region.key] ?? wildernessActiveRegionBotsPerRegion;
+      const desiredCount = Math.max(0, target - hotspotCount);
       desiredCountsByRegion.set(region.key, desiredCount);
       totalDesired += desiredCount;
     }
@@ -407,7 +427,7 @@ function createBotRegistry(options) {
   }
 
   function buildPersistentHotspotPlans() {
-    if (wildernessRoamerBotCount <= 0) {
+    if (wildernessRoamerBotCount <= 0 || !pvpAllowed()) {
       return [];
     }
     const plans = [];
@@ -431,6 +451,17 @@ function createBotRegistry(options) {
       }
     }
     return plans;
+  }
+
+  /** Whether a bot may not show `name`: an account's name or save, or an online player's name. */
+  function botNameTaken(username, name) {
+    if (botApi.core.DisplayNames.refusal(username, name)) return true;
+    const key = name.toLowerCase();
+    // Newly spawned bots share a batch before the world drains its add-player queue.
+    for (const online of [...botApi.core.World.getPlayers(), ...botApi.core.World.getAddPlayerQueue()]) {
+      if (online.getUsername() !== username && online.getDisplayName().toLowerCase() === key) return true;
+    }
+    return false;
   }
 
   function claimAvailableWildernessUsername() {
@@ -462,6 +493,13 @@ function createBotRegistry(options) {
     if (!player) {
       assignmentMap?.delete?.(username);
       wildernessRegionalPendingDespawn.delete(username);
+      return false;
+    }
+    if (entry.manuallyControlled || entry.behaviorPaused) return false;
+    const combat = player.getCombat?.();
+    // Culling a bot mid-fight makes it vanish on the player; retry on the next reconcile.
+    if (combat?.getTarget?.() || combat?.getAttacker?.() || player.getCombatFollowing?.() ||
+        combat?.getHitQueue?.()?.hasPendingWork?.()) {
       return false;
     }
     wildernessRegionalPendingDespawn.add(username);
@@ -512,6 +550,8 @@ function createBotRegistry(options) {
       return false;
     }
     bot.setPlayerBot?.(true);
+    const displayName = generateBotName(username, (name) => botNameTaken(username, name));
+    if (displayName) bot.setDisplayName(displayName);
     if (!persistent) {
       bot.setAttribute?.(ATTR_SKIP_PERSISTENCE, true);
     }
@@ -633,7 +673,7 @@ function createBotRegistry(options) {
   }
 
   function reconcilePersistentHotspotBots() {
-    if (wildernessRoamerBotCount <= 0) {
+    if (wildernessRoamerBotCount <= 0 || !pvpAllowed()) {
       return;
     }
     const plans = buildPersistentHotspotPlans();
@@ -706,7 +746,7 @@ function createBotRegistry(options) {
   }
 
   function reconcileRegionalWildernessBots(snapshot = null) {
-    if (wildernessRoamerBotCount <= 0 || wildernessActiveRegionBotsPerRegion <= 0) {
+    if (wildernessRoamerBotCount <= 0 || !pvpAllowed()) {
       return;
     }
     const nextSnapshot =
@@ -726,17 +766,17 @@ function createBotRegistry(options) {
 
     const liveRegionalRegionKeys = getLiveRegionalBotRegionKeys();
     const currentAssignedUsernamesByRegion = new Map();
-    for (const [username, assignment] of wildernessRegionalAssignments.entries()) {
+    for (const [username] of wildernessRegionalAssignments.entries()) {
       if (!entriesByUsername.has(username)) {
         continue;
       }
       const liveRegionKey = liveRegionalRegionKeys.get(username);
-      if (liveRegionKey !== assignment.regionKey) {
+      if (!liveRegionKey) {
         continue;
       }
-      const bucket = currentAssignedUsernamesByRegion.get(assignment.regionKey) ?? [];
+      const bucket = currentAssignedUsernamesByRegion.get(liveRegionKey) ?? [];
       bucket.push(username);
-      currentAssignedUsernamesByRegion.set(assignment.regionKey, bucket);
+      currentAssignedUsernamesByRegion.set(liveRegionKey, bucket);
     }
 
     const cancelRegionalDespawnTimer = (username) => {
@@ -764,7 +804,7 @@ function createBotRegistry(options) {
           typeof getActiveRegionSnapshot === "function"
             ? getActiveRegionSnapshot()
             : null;
-        const livePlans = buildRegionalWildernessPlans(liveSnapshot);
+        const livePlans = buildRegionalWildernessPlans(liveSnapshot, countLiveHotspotBotsByRegion());
         const desiredCountsByRegion = new Map();
         for (const plan of livePlans) {
           desiredCountsByRegion.set(
@@ -772,19 +812,17 @@ function createBotRegistry(options) {
             (desiredCountsByRegion.get(plan.regionKey) ?? 0) + 1
           );
         }
-        const desiredCount = desiredCountsByRegion.get(assignment.regionKey) ?? 0;
+        const liveRegionKey = getRegionKeyForLocation(entriesByUsername.get(username)?.player?.getLocation?.());
+        const desiredCount = desiredCountsByRegion.get(liveRegionKey) ?? 0;
         const aliveInRegion = [];
-        for (const [otherUsername, otherAssignment] of wildernessRegionalAssignments.entries()) {
-          if (otherAssignment?.regionKey !== assignment.regionKey) {
-            continue;
-          }
+        for (const [otherUsername] of wildernessRegionalAssignments.entries()) {
           if (!entriesByUsername.has(otherUsername)) {
             continue;
           }
           const otherLiveRegionKey = getRegionKeyForLocation(
             entriesByUsername.get(otherUsername)?.player?.getLocation?.()
           );
-          if (otherLiveRegionKey !== assignment.regionKey) {
+          if (otherLiveRegionKey !== liveRegionKey) {
             continue;
           }
           aliveInRegion.push(otherUsername);
@@ -963,7 +1001,46 @@ function createBotRegistry(options) {
         reconcileRegionalWildernessBots(snapshot);
       });
     }
+    // Bots do not keep map squares active. Their movement can still change how many
+    // bots occupy an overridden square; batch those changes without changing activation.
+    if (Object.keys(regionalTargets).length > 0 && typeof onPlayerMapSquareChange === "function") {
+      onPlayerMapSquareChange(regionalBotMoved);
+    }
     setTimeout(() => spawnConfiguredBots(), 0);
+  }
+
+  function regionalBotMoved({ player }) {
+    const username = player?.getUsername?.();
+    if (!wildernessRegionalAssignments.has(username) && !wildernessHotspotAssignments.has(username)) return;
+    scheduleTopUp("regional", () => reconcileRegionalWildernessBots());
+  }
+
+  /**
+   * Cave maps leave the void beyond their walls unflagged, so an underground tile that is not
+   * blocked can still be one no player can walk to (#2834). Underground, a roamer only spawns
+   * where it can walk to the nearest real player within route-finding range.
+   * Without a nearby player, the tile cannot be verified and is skipped.
+   */
+  function reachesNearestPlayer(candidate) {
+    if (candidate.getY() < UNDERGROUND_MIN_Y) return true;
+    let nearest = null;
+    let nearestDistance = ROUTE_SEARCH_RADIUS;
+    for (const player of botApi.core.World.getPlayers()) {
+      const at = player?.getLocation?.();
+      if (!at || player.isPlayerBot?.() || at.getZ() !== candidate.getZ()) continue;
+      const distance = Math.max(Math.abs(at.getX() - candidate.getX()), Math.abs(at.getY() - candidate.getY()));
+      if (distance < nearestDistance) {
+        nearest = at;
+        nearestDistance = distance;
+      }
+    }
+    if (!nearest) return false;
+    routeFinder ??= new botApi.core.RsmodRouteFinding((x, y, z, area) => RegionManager.getClipping(x, y, z, area));
+    const route = routeFinder.findRoute({
+      level: candidate.getZ(), srcX: candidate.getX(), srcY: candidate.getY(), srcSize: 1,
+      destX: nearest.getX(), destY: nearest.getY(), privateArea: null, moveNear: false,
+    });
+    return route.success && !route.alternative;
   }
 
   function createWildernessRoamerSpawn(baseSpawn, bounds, index) {
@@ -999,7 +1076,8 @@ function createBotRegistry(options) {
       const candidate = new Location(minX + offsetX, minY + offsetY, z);
       if (Wilderness.isInLocation(candidate) && isOutsideWildernessHotspots(candidate) &&
           !isMembersArea(candidate.getX(), candidate.getY()) &&
-          !RegionManager.blocked(candidate, null) && !RegionManager.isWater(candidate)) {
+          !RegionManager.blocked(candidate, null) && !RegionManager.isWater(candidate) &&
+          reachesNearestPlayer(candidate)) {
         return candidate;
       }
     }
@@ -1180,6 +1258,7 @@ function createBotRegistry(options) {
         pvpMetadata: options.pvpMetadata,
       });
     },
+    botNameTaken,
     scheduleInitialSpawn,
     enableControllerForPlayer,
     disableControllerForPlayer,

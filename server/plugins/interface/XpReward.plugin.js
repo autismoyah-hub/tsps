@@ -4,11 +4,13 @@
  * the main modal with its 24 skill slots (240:0) as pause buttons and writes the title. Picking a
  * skill and pressing Confirm are the cache's own scripts (3804/3806); only the confirmed slot
  * reaches the server, as a resume on 240:0 whose sub is the slot (enum 681, key = slot + 1, gives the stat). The
- * reward's message box follows, the interface closes, and busy clears when the box is dismissed.
+ * reward's message box follows, with its text (line breaks as spaces) in chat as a message box
+ * line, the interface closes, and busy clears when the box is dismissed.
  *
  * Varp 261 is the lowest base level the cache lets a skill be chosen at, and varp 262 the skills
  * it offers, one bit each (enum 81 gives a stat's bit; script 3809 refuses a skill whose bit is
- * clear: "This skill is not available."). The server checks the level again.
+ * clear: "This skill is not available."). The server checks the level again, and the quest and house
+ * unlocks script 3809 checks, since only the slot reaches it.
  *
  *   api.emitCustomEvent("xpreward:open", {
  *     player, minLevel?, title?, skills?,
@@ -71,6 +73,23 @@ function open(request) {
   request.opened = true;
 }
 
+/**
+ * Script 3809's unlocks: Herblore after Druidic Ritual, Runecraft after Rune Mysteries, Construction with a house,
+ * Sailing after Pandemonium (Wiki: Lamp), with the cache's refusals. Null when the skill can be chosen.
+ */
+function lockedMessage(player, skill) {
+  const stage = (key) => Number(player.getAttribute(`quest.${key}.stage`)) || 0;
+  if (skill === Skill.HERBLORE && stage("druidic_ritual") < 4) return "You need to complete the Druidic Ritual quest to choose that option.";
+  if (skill === Skill.RUNECRAFTING && stage("rune_mysteries") < 6) return "You need to complete the Rune Mysteries quest to choose that option.";
+  if (skill === Skill.SAILING && stage("pandemonium") < 50) return "You need to complete the Pandemonium quest to choose that option.";
+  if (skill === Skill.CONSTRUCTION) {
+    const house = { player, owns: true };
+    pluginApi?.emitCustomEvent("construction:owns-house", house);
+    if (house.owns === false) return "You must own a house to choose that option.";
+  }
+  return null;
+}
+
 function confirm(event) {
   const buttonId = Number(event.buttonId ?? 0);
   if ((event.groupId ?? (buttonId >>> 16)) !== XPREWARD || (event.childId ?? (buttonId & 0xffff)) !== UNIVERSE) return;
@@ -81,6 +100,11 @@ function confirm(event) {
   if (!request || !skill) return;
   if (request.skills && !request.skills.includes(skill)) return;
   if (player.getSkillManager().getMaxLevel(skill) < (request.minLevel ?? 0)) return;
+  const locked = lockedMessage(player, skill);
+  if (locked) {
+    player.sendMessage(locked);
+    return;
+  }
   pending.delete(player);
   const sender = player.getPacketSender();
   const text = request.onConfirm(skill, statName(skill));
@@ -106,12 +130,16 @@ function closed({ player, interfaceId }) {
   player.getPacketSender().sendVarbit(BUSY_VARBIT, 0);
 }
 
+let pluginApi;
+
 module.exports = {
   name: "XpReward",
+  description: "The 'Choose the stat you wish to be advanced' interface used by experience lamps, with level and unlock checks before granting the XP.",
   register(api) {
+    pluginApi = api;
     api.onCustomEvent("xpreward:open", open);
     api.onInterfaceActionClick(confirm);
     api.onCustomEvent("interface:closed", closed);
   },
-  _test: { open, confirm, closed, skillForSlot, statName, availableMask },
+  _test: { open, confirm, closed, skillForSlot, statName, availableMask, lockedMessage },
 };

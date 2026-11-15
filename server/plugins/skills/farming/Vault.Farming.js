@@ -1,6 +1,7 @@
 const core = require("./Core.Farming");
 const Patches = require("./Patches.Farming");
 const Data = require("./Data.Farming");
+const { examineItem } = require("../../../src/main/typescript/elvarg/game/content/ExaminePrice");
 
 // Cache241: scripts2813/2820 read inventories93/626 and seed-category obj param709.
 const CAPACITY = 104;
@@ -153,11 +154,19 @@ function near(player, object, anywhere = false) {
         (anywhere || player.getLocation().isWithinDistance(object.getLocation(), 5))
     );
 }
+function ultimate(player) {
+    const query = { player, mode: "none" };
+    core.PluginManager.emitCustomEvent("ironman:mode", query);
+    if (query.mode !== "ultimate") return false;
+    // Use the existing bank restriction's refusal side effects for this mode.
+    core.PluginManager.emitCanBank(player, "seed-vault");
+    return true;
+}
 function current(player) {
-    const session = SESSIONS.get(player),
-        sender = player.getPacketSender();
-    return session &&
-        session.farm === Patches.farmFor(player) &&
+    const session = SESSIONS.get(player);
+    if (!session || ultimate(player)) return null;
+    const sender = player.getPacketSender();
+    return session.farm === Patches.farmFor(player) &&
         near(player, session.object, session.anywhere) &&
         player.getInterfaceId() === group("seed_vault") &&
         sender.isSubInterfaceOpen(group("seed_vault")) &&
@@ -170,6 +179,7 @@ function open(event) {
     const { player, object } = event;
     const anywhere = event.anywhere === true;
     if (!anywhere && !player.getLocation().isWithinDistance(object.getLocation(), 5)) return;
+    if (ultimate(player)) return;
     // Do not create storage state or expose its contents until the shared PIN guard succeeds.
     const request = { player, feature: "seed-vault", resume: () => open(event) };
     core.PluginManager.emitCustomEvent("bank-pin:guard", request);
@@ -217,6 +227,10 @@ function guarded(player, session) {
     };
     core.PluginManager.emitCustomEvent("bank-pin:guard", request);
     return !request.locked && current(player) === session;
+}
+/** Refresh only an existing visible vault; do not open it or prompt for a PIN. */
+function refreshOpen(player) {
+    if (current(player)) sync(player);
 }
 function changed(player) {
     player.getInventory().refreshItems();
@@ -360,7 +374,13 @@ function click(event) {
         action > 10
     )
         return;
-    player.setEnteredAmountAction(null);
+    if (buttonId === uid("seed_vault:search")) {
+        // Script2865 owns local text input and filtering. Its search box replaced a count prompt,
+        // which an abort would close too (script 138), so only the prompt's answer is dropped.
+        player.setEnteredAmountAction(null);
+        return;
+    }
+    player.getPacketSender().abortInputPrompt();
     const farm = session.farm,
         settings = farm.vaultSettings;
     if (popup) {
@@ -390,7 +410,6 @@ function click(event) {
             }
             return;
         }
-        if (buttonId === uid("seed_vault:search")) return; // Script2865 owns local text input and filtering.
         if (buttonId === uid("seed_vault:category_list")) {
             const offset =
                 player
@@ -419,7 +438,7 @@ function click(event) {
             displayed = count ? id : core.CacheDefinitions.getItem(id).placeholder;
         if (itemId > 0 && itemId !== displayed) return;
         if (action === 10) {
-            player.sendMessage(core.ItemDefinition.forId(id).getExamine());
+            examineItem(player, id, count);
             return;
         }
         if (!count) {
@@ -459,7 +478,7 @@ function click(event) {
         const item = player.getInventory().forSlot(slot);
         if (!item || item.getId() <= 0 || (itemId > 0 && itemId !== item.getId())) return;
         if (action === 10) {
-            player.sendMessage(core.ItemDefinition.forId(item.getId()).getExamine());
+            examineItem(player, item.getId(), item.getAmount());
             return;
         }
         const originalId = item.getId();
@@ -499,11 +518,11 @@ function drag(event) {
         (packet.targetItemId > 0 && packet.targetItemId !== display(order[to]))
     )
         return;
-    player.setEnteredAmountAction(null);
+    player.getPacketSender().abortInputPrompt();
     [order[from], order[to]] = [order[to], order[from]];
     changed(player);
 }
 function logout({ player }) {
     SESSIONS.delete(player);
 }
-Object.assign(module.exports, { open, click, drag, logout });
+Object.assign(module.exports, { open, click, drag, logout, eligible, held, refreshOpen });

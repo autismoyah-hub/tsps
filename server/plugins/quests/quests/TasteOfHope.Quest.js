@@ -62,8 +62,6 @@ module.exports = function registerTasteOfHopeQuest(api) {
     NpcIdentifiers,
     Skill,
     TaskManager,
-    TeleportHandler,
-    TeleportType,
   } = api.core;
   const { registerQuest, startTranscript, refreshQuestList } = require("../QuestRuntime");
 
@@ -208,8 +206,6 @@ module.exports = function registerTasteOfHopeQuest(api) {
   const VIAL_ITEM_ID = ItemIdentifiers.VIAL; // 229
   const VIAL_OF_WATER_ITEM_ID = ItemIdentifiers.VIAL_OF_WATER; // 227
   const PESTLE_AND_MORTAR_IDS = new Set([ItemIdentifiers.PESTLE_AND_MORTAR, ItemIdentifiers.PESTLE_AND_MORTAR_2, 15247]); // 233/234
-  const EMERALD_IDS = new Set([ItemIdentifiers.EMERALD, 1606, 6896, 16308]); // 1605
-  const CHISEL_ITEM_ID = ItemIdentifiers.CHISEL; // 1755
   const ENCHANT_EMERALD_TABLET_ITEM_ID = 8017; // Enchant emerald or jade (QH POH_TABLET_ENCHANTEMERALD)
   const SILVER_SICKLE_B_ITEM_ID = ItemIdentifiers.SILVER_SICKLE_B_; // 2963
   const ROD_OF_IVANDIS_ITEM_IDS = new Set([7639, 7640, 7641, 7642, 7643, 7644, 7645, 7646, 7647, 7648]);
@@ -271,7 +267,6 @@ module.exports = function registerTasteOfHopeQuest(api) {
   const VERTIDA_NEW_BASE_TILE = { x: 3599, y: 9611, z: 0 };
   const KAEL_NEW_BASE_TILE = { x: 3594, y: 9613, z: 0 };
   const ABOMINATION_TILE = { x: 3627, y: 9645, z: 0 };
-  const VER_SINHAZA_TELEPORT = { x: 3649, y: 3230, z: 0 };
   const RANIS_TILE = { x: 3649, y: 3227, z: 0 };
   const RANIS_PLAYER_TILE = { x: 3649, y: 3234, z: 0 };
   const HIDEOUT_SURFACE_TILE = { x: 3639, y: 3251, z: 0 };
@@ -1613,8 +1608,13 @@ module.exports = function registerTasteOfHopeQuest(api) {
         player.sendMessage("The fountain is bone dry.");
         return;
       }
-      player.getInventory().deleteNumber(VIAL_ITEM_ID, 1);
-      player.getInventory().adds(VIAL_OF_WATER_ITEM_ID, 1);
+      // The vial the player used, in place (setId keeps the vial's meta: a preset vial stays preset).
+      const items = player.getInventory().getItems?.();
+      const converted = items?.[event.itemSlot]?.getId() === VIAL_ITEM_ID
+        ? items[event.itemSlot] : items?.find((item) => item?.getId() === VIAL_ITEM_ID);
+      if (converted) converted.setId(VIAL_OF_WATER_ITEM_ID);
+      else { player.getInventory().deleteNumber(VIAL_ITEM_ID, 1); player.getInventory().adds(VIAL_OF_WATER_ITEM_ID, 1); }
+      player.getInventory().refreshItems?.();
       player.sendMessage("You fill the vial with water from the fountain.");
       return;
     }
@@ -1643,6 +1643,11 @@ module.exports = function registerTasteOfHopeQuest(api) {
   // ---------------------------------------------------------------------------
   // Items: combining the flail, the tome and the medallion
   // ---------------------------------------------------------------------------
+
+  /** The emerald on a silver sickle (b) (Crafting's gem sickles) can be made once the quest is started (Wiki). */
+  function allowEmeraldSickle(request) {
+    if (request.product === EMERALD_SICKLE_B_ITEM_ID && quest.getStage(request.player) >= STAGE_STARTED) request.allowed = true;
+  }
 
   function handleItemOnItem(event) {
     const { player, usedItemId, usedWithItemId } = event;
@@ -1687,23 +1692,6 @@ module.exports = function registerTasteOfHopeQuest(api) {
       player.getInventory().deleteNumber(UNFINISHED_BLOOD_POTION_ITEM_ID, 1);
       player.getInventory().adds(BLOOD_POTION_ITEM_ID, 1);
       player.sendMessage("You add the crushed meat to the unfinished blood potion.");
-      return;
-    }
-    if (pair.has(SILVER_SICKLE_B_ITEM_ID) && [...EMERALD_IDS].some((id) => pair.has(id))) {
-      const emerald = [...EMERALD_IDS].find((id) => pair.has(id));
-      event.handled = true;
-      if (!held(player, CHISEL_ITEM_ID)) {
-        player.sendMessage("You need a chisel to attach the emerald.");
-        return;
-      }
-      if (held(player, EMERALD_SICKLE_B_ITEM_ID)) {
-        player.sendMessage("You already have an emerald sickle (b).");
-        return;
-      }
-      player.getInventory().deleteNumber(emerald, 1);
-      player.getInventory().deleteNumber(SILVER_SICKLE_B_ITEM_ID, 1);
-      player.getInventory().adds(EMERALD_SICKLE_B_ITEM_ID, 1);
-      player.sendMessage("You use the chisel to attach the emerald to the silver sickle.");
       return;
     }
     if (pair.has(EMERALD_SICKLE_B_ITEM_ID) && pair.has(ENCHANT_EMERALD_TABLET_ITEM_ID)) {
@@ -1800,7 +1788,7 @@ module.exports = function registerTasteOfHopeQuest(api) {
       onConfirm: (skill, name) => {
         const skills = player.getSkillManager();
         const before = skills.getExperience(skill);
-        skills.addExperience(skill, 2500, false);
+        skills.addExperience(skill, 2500, true);
         if (skills.getExperience(skill) === before) return null;
         const chapters = attributeNumber(player, TOME_ATTRIBUTE) + 1;
         player.setAttribute(TOME_ATTRIBUTE, chapters);
@@ -1812,15 +1800,6 @@ module.exports = function registerTasteOfHopeQuest(api) {
         return `You read a fascinating chapter and earn experience! You have been awarded 2,500 ${name ?? skill.getName()} experience!`;
       },
     });
-    return true;
-  }
-
-  function teleportMedallion(event) {
-    if (event.itemId !== DRAKANS_MEDALLION_ITEM_ID) return false;
-    const { player } = event;
-    const destination = new Location(VER_SINHAZA_TELEPORT.x, VER_SINHAZA_TELEPORT.y, VER_SINHAZA_TELEPORT.z);
-    if (!TeleportHandler.checkReqs(player, destination, 20)) return true;
-    TeleportHandler.teleport(player, destination, TeleportType.NORMAL, false);
     return true;
   }
 
@@ -1990,12 +1969,12 @@ module.exports = function registerTasteOfHopeQuest(api) {
   api.onObjectInteraction(handleObjectInteraction);
   api.onItemOnObject(handleItemOnObject, { noted: false });
   api.onItemOnItem(handleItemOnItem);
+  api.onCustomEvent("crafting:gem-sickle-allowed", allowEmeraldSickle);
   api.onCustomEvent("magic:enchant-item-recipe", provideSickleEnchantRecipe);
   api.onItemAction("Flaygian's notes", { Read: readFlaygiansNotes });
   api.onItemAction("Old notes", { Read: readOldNotes });
   api.onItemAction("Old diary", { Read: readOldDiary });
   api.onItemAction("Tome of Experience", { Read: readTome });
-  api.onItemAction("Drakan's medallion", { Teleport: teleportMedallion });
   api.registerArea(new HideoutWarningArea([HIDEOUT_BOUNDS]));
   api.onPlayerLogin(handleLogin);
   api.onPlayerLogout(handleLogout);

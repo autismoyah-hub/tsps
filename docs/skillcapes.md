@@ -35,7 +35,7 @@ Firemaking cape's light, the Slayer cape's repeat chance).
 | Prayer: holy wrench, worn or carried | `items/Potions.plugin.js` |
 | Ranged: accumulator (72%), assembler/upgraded max capes (80%), metal gathering | `items/AvasAccumulator.plugin.js` via `skillcape:ammo-recovery`; `skillcapes/MetalAttraction.SkillCapes.js` |
 | Runecraft: every altar without talisman or tiara (varbits `rc_no_tally_required_*`) | `skills/Runecrafting.plugin.js` |
-| Sailing: teleport a boat to the Pandemonium and rename a boat | `skills/sailing/BoatTeleport.plugin.js` via `sailing:cape-teleport` / `sailing:cape-rename-boat` |
+| Sailing: teleport a boat to the Pandemonium and rename a boat | `skills/sailing/BoatTeleport.Sailing.js` via `sailing:cape-teleport` / `sailing:cape-rename-boat` |
 | Slayer: no combat requirement (worn); 10% previous task (carried) | `skills/slayer/Tasks.Slayer.js` |
 | Smithing: gold bar XP; coal bag holds 36 | `skills/Smithing.plugin.js`, `items/storage/CoalBag.StorageItems.js` |
 | Thieving: +10% pickpocket | `skills/thieving/Pickpocket.Thieving.js` |
@@ -66,7 +66,7 @@ Firemaking cape's light, the Slayer cape's repeat chance).
   upgrade (his transcript's `upgrading-a-skillcape`). Construction's Teleport opens the menu
   interface "House portal teleports". Sailing and the max cape's Pandemonium, boat and
   "Teleport Boat (Pandemonium)" entries go to `sailing:cape-teleport`; "Rename Boat" goes to
-  `sailing:cape-rename-boat` (BoatTeleport.plugin.js).
+  `sailing:cape-rename-boat` (BoatTeleport.Sailing.js).
 - **Options**: Stamina Boost (once a day, "You feel reinvigorated."), Search (pestle and mortar,
   `searchcape_pestle`; grapple and crossbow three times a day, `searchcape_grapple`, varbit
   `free_grapple`), Spellbook ("Choose spellbook: (5/5 left)", "Arceuus spellbook activated.",
@@ -99,6 +99,22 @@ mirror them for the client.
 - Disassembling also turns a carried matching hood back into a max hood (the captured player's
   hoods were banked).
 - The Ardougne save tile (the marketplace, 2662,3305) is approximate.
+
+## Skill Cape emote stalls
+
+`interface/Emotes.plugin.js` holds movement and world interactions for the
+[Wiki's per-cape stall durations](https://oldschool.runescape.wiki/w/Skill_Cape_(emote)#Emote_durations),
+including the longer Cooking (25 ticks), Quest point (15), Achievement diary (32) and
+Max (8) emotes. These are gameplay delays, not the cache sequence's visual length.
+Another emote click during that delay cannot restart or replace the animation or graphic;
+the existing input queue keeps the most recent walk click until the delay ends.
+Incoming damage is not delayed by this content lock.
+
+[RSProx recording 2235](https://rsprox.net/download/2235), tick 30, records emote-tab
+slot 43 playing the Max cape sequence 7121 and graphic 1286, matching the current cache.
+It contains no walk or repeated emote click during the stall, so it does not establish
+its input-blocking duration; the durations above come from the Wiki. Verification of
+input locking is offline through the real connection dispatcher and movement policy.
 
 ## Open
 

@@ -227,7 +227,25 @@ function scrollTeleport() {
   return scrollTeleportType;
 }
 
-function readScroll(player, slot, destination) {
+/** The clicked scroll's inventory slot (else wherever it is now), as a "teleport-scroll:read" source. */
+function inventoryScroll(player, slot) {
+  const find = () => {
+    const inventory = player.getInventory();
+    return inventory.getItems()[slot]?.getId?.() === SCROLL ? slot : inventory.getSlotForItemId(SCROLL);
+  };
+  return {
+    item: SCROLL,
+    has: () => true,
+    spend: () => {
+      const at = find();
+      if (at < 0) return false;
+      player.getInventory().deleteAtSlot(at, 1);
+      return true;
+    },
+  };
+}
+
+function readScroll(player, source, destination) {
   const sender = player.getPacketSender();
   const level = Wilderness.isIn(player) ? Wilderness.levelAt(player.getLocation().getX(), player.getLocation().getY()) : 0;
   if (level > SCROLL_LEVEL_LIMIT) {
@@ -241,24 +259,43 @@ function readScroll(player, slot, destination) {
     sender.sendVarbit(BUSY_VARBIT, 0);
     return;
   }
-  const inventory = player.getInventory();
-  if (inventory.getItems()[slot]?.getId?.() !== SCROLL) return;
-  inventory.deleteAtSlot(slot, 1);
-  sender.sendGlobalGraphic(new core.Graphic(SCROLL_GRAPHIC), player.getLocation().clone());
-  core.TeleportHandler.teleport(player, to, scrollTeleport(), false);
+  core.TeleportHandler.confirm(player, to, () => {
+    // The clicked slot, else wherever the scroll is now (moved while a warning asked).
+    if (!source.spend()) {
+      sender.sendVarbit(BUSY_VARBIT, 0);
+      return;
+    }
+    sender.sendGlobalGraphic(new core.Graphic(SCROLL_GRAPHIC), player.getLocation().clone());
+    core.TeleportHandler.teleport(player, to, scrollTeleport(), false);
+  }, SCROLL_LEVEL_LIMIT, { item: source.item ?? SCROLL, refused: () => sender.sendVarbit(BUSY_VARBIT, 0) });
 }
 
 /** "Teleport": a sub-option picks the entrance; a left-click uses the configured one. */
 function teleportOption(event) {
-  const { player, slot } = event;
+  const { player } = event;
+  const source = event.source ?? inventoryScroll(player, event.slot);
   const index = Number.isInteger(event.subOpId)
     ? event.subOpId - 1
     : Number(player.getAttribute(SCROLL_LOCATION_ATTRIBUTE) ?? 0);
   const destination = SCROLL_DESTINATIONS[index] ?? SCROLL_DESTINATIONS[0];
   player.getPacketSender().sendVarbit(BUSY_VARBIT, 1);
   api.sendMultiChatboxPrompt(player, destination.question,
-    "Yes, teleport me now.", () => readScroll(player, slot, destination),
+    "Yes, teleport me now.", () => readScroll(player, source, destination),
     "No, I want to stay here.", () => player.getPacketSender().sendVarbit(BUSY_VARBIT, 0));
+}
+
+/** "teleport-scroll:read": a stored scroll (the Master scroll book) reads like the inventory one. */
+function readStoredScroll(request) {
+  if (request.handled || request.itemId !== SCROLL) return;
+  request.handled = true;
+  teleportOption({ player: request.player, subOpId: request.subOpId, source: request.source });
+}
+
+/** "teleport-scroll:configure": the book's Config entry picks the entrance as the scroll's Config does. */
+function configureStoredScroll(request) {
+  if (request.handled || request.itemId !== SCROLL) return;
+  request.handled = true;
+  configOption(request);
 }
 
 function configOption({ player }) {
@@ -292,7 +329,9 @@ function onDeath({ player, killer }) {
   player.setAttribute(FEE_PAID_ATTRIBUTE, false);
   if (!byPlayer) return;
   if (inside) player.sendMessage("You died to another player in the Revenant Cave, you've lost your entry fee.");
-  core.ItemOnGroundManager.registerLocation(killer.getAsPlayer?.() ?? killer, new core.Item(COINS, FEE), location.clone());
+  // An Ironman killer takes no other player's loot: the fee drops for the victim (PlayerDeathTask.lootOwner).
+  const owner = core.PlayerDeathTask.lootOwner(player, killer.getAsPlayer?.() ?? killer);
+  core.ItemOnGroundManager.registerLocation(owner, new core.Item(COINS, FEE), location.clone());
 }
 
 function sendStateOnLogin({ player }) {
@@ -344,6 +383,7 @@ function createCavesArea() {
 
 module.exports = {
   name: "RevenantCaves",
+  description: "Revenant Caves entrances (100,000 coin fee), exits and teleport scroll, with the Wilderness rules applying inside.",
   members: true,
   _test: {
     enter, exit, creviceWarning, teleportOption, configOption, readScroll, onDeath, payFee, inCaves, createCavesArea,
@@ -359,6 +399,8 @@ module.exports = {
     pluginApi.onObjectInteraction("Crevice", { "Jump-Down": enter });
     pluginApi.onObjectInteraction("Stairs", { "Climb-up": exit });
     pluginApi.onItemAction("Revenant cave teleport", { Teleport: teleportOption, Config: configOption });
+    pluginApi.onCustomEvent("teleport-scroll:read", readStoredScroll);
+    pluginApi.onCustomEvent("teleport-scroll:configure", configureStoredScroll);
     pluginApi.onInterfaceActionClick(creviceWarning);
     pluginApi.onCustomEvent("interface:closed", warningClosed);
     pluginApi.onPlayerDeath(onDeath);

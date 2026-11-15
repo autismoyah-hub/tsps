@@ -26,6 +26,11 @@
  * used up unless the Guardian is active ("The portal talisman shatters and you find yourself at
  * the altar it originated from.").
  * The overlay colours of earth, mind, cosmic and death aren't captured; they borrow the closest.
+ *
+ * A logout ends the player's game (Temple), so a login at the altar of a trip they were on sends
+ * them back to the temple's lobby, as a login on the game's side of the barrier does; otherwise
+ * the altar's portal would take them out to its ruins with the game lost (issue 2698). The altar
+ * is saved for that, since the trip itself doesn't survive the logout.
  */
 
 const Shared = require("./Shared.GuardiansOfTheRift");
@@ -60,6 +65,8 @@ const ALTARS = [
 }));
 
 const RETURN_TILE = { x: 3615, y: 9491 };
+/** The altar (its key) the player is at on a trip, saved so a login there can be sent back. */
+const TRIP_ATTRIBUTE = "guardians-of-the-rift:altar-trip";
 const PORTAL_SOUND = 1098;
 const CRAFT_SOUND = 2710;
 const TALISMAN_CHANCE = 250;
@@ -100,34 +107,53 @@ function questDone(player, key) {
 
 // ------------------------------------------------------------------ trips
 
+/** The trip the player is on (an altar) or none; the altar it reached is saved too. */
+function setTrip(player, altar, arrived = false) {
+  player.__gotrTrip = altar;
+  if (!altar) player.setAttribute(TRIP_ATTRIBUTE, "");
+  else if (arrived) player.setAttribute(TRIP_ATTRIBUTE, altar.key);
+}
+
+function nearAltar(location, altar) {
+  return Math.abs(location.getX() - altar.arrival[0]) < ALTAR_RANGE
+    && Math.abs(location.getY() - altar.arrival[1]) < ALTAR_RANGE;
+}
+
 function overlay(player, altar, on) {
   if (Records.setting(player, "gotr_colourful_fade_disabled") === 1) return;
   const sender = player.getPacketSender();
   if (on) {
     Game.closeHud(player);
-    sender.sendSubInterface(Shared.OVERLAY_ATMOSPHERE_UID, Shared.iface(Shared.INTERFACE.OVERLAY), 1, {
-      postScripts: [{ scriptId: Shared.SCRIPT.OVERLAY_PORTAL, args: altar.overlay }],
-    });
+    Shared.openPortalEffect(player, altar.overlay);
   } else {
     sender.closeSubInterface(Shared.OVERLAY_ATMOSPHERE_UID);
     if (Game.isPlaying(player)) Game.openHud(player);
   }
 }
 
-/** Into the altar (going) or back to the temple. */
-function travel(player, altar, going, message) {
+/**
+ * Into the altar (going) or back to the temple. `whileActive` trips (Enter, not a talisman) are
+ * checked again on the move: a Guardian that went dormant in the two ticks turns the player back.
+ */
+function travel(player, altar, going, message, whileActive = false) {
   player.getMovementQueue().reset();
   Shared.animate(player, null);
   overlay(player, altar, true);
   Shared.sound(player, PORTAL_SOUND);
   Shared.later(2, () => {
     if (!player.isRegistered()) return;
-    player.__gotrTrip = going ? altar : null;
+    if (whileActive && !isActive(altar)) {
+      setTrip(player, null);
+      overlay(player, altar, false);
+      Shared.statement(player, "The Guardian is dormant. Its energy might return soon.");
+      return;
+    }
+    setTrip(player, going ? altar : null, going);
     Shared.spam(player, message);
     const [x, y] = going ? altar.arrival : [RETURN_TILE.x, RETURN_TILE.y];
     player.moveTo(Shared.location({ x, y }));
     if (Records.setting(player, "gotr_colourful_fade_disabled") !== 1) {
-      player.getPacketSender().sendClientScript(Shared.SCRIPT.REMOVE_PORTAL);
+      Shared.clearPortalEffect(player);
     }
     Shared.later(1, () => {
       if (!player.isRegistered()) return;
@@ -138,9 +164,9 @@ function travel(player, altar, going, message) {
   });
 }
 
-function enterAltar(player, altar) {
-  player.__gotrTrip = altar;
-  travel(player, altar, true, `You step through the rift and find yourself at the ${altar.name} Altar.`);
+function enterAltar(player, altar, whileActive = false) {
+  setTrip(player, altar);
+  travel(player, altar, true, `You step through the rift and find yourself at the ${altar.name} Altar.`, whileActive);
 }
 
 /** Who may refuse this player the rift, or null to let them in. */
@@ -164,10 +190,12 @@ function enter({ player, objectId }) {
     return true;
   }
   if (!isActive(altar)) {
+    // Holding the Guardian's portal talisman, Enter uses it: no need to use it on the Guardian.
+    if (Shared.count(player, altar.talisman) > 0) return useTalisman({ player, objectId, itemId: Shared.obj(altar.talisman) });
     Shared.statement(player, "The Guardian is dormant. Its energy might return soon.");
     return true;
   }
-  if (!refuse(player, altar)) enterAltar(player, altar);
+  if (!refuse(player, altar)) enterAltar(player, altar, true);
   return true;
 }
 
@@ -209,9 +237,18 @@ function onTrip(player) {
   const altar = player.__gotrTrip;
   if (!altar) return false;
   const location = player.getLocation();
-  const near = Math.abs(location.getX() - altar.arrival[0]) < ALTAR_RANGE && Math.abs(location.getY() - altar.arrival[1]) < ALTAR_RANGE;
-  if (!near && !Shared.inTemple(location)) player.__gotrTrip = null;
+  const near = nearAltar(location, altar);
+  if (!near && !Shared.inTemple(location)) setTrip(player, null);
   return near;
+}
+
+/** A login at the altar of the trip the logout ended: back to the temple's lobby. */
+function login({ player }) {
+  const key = player.getAttribute(TRIP_ATTRIBUTE);
+  if (!key) return;
+  player.setAttribute(TRIP_ATTRIBUTE, "");
+  const altar = ALTARS.find((candidate) => candidate.key === key);
+  if (altar && nearAltar(player.getLocation(), altar)) player.moveTo(Shared.location(Shared.LOBBY_TILE));
 }
 
 // ------------------------------------------------------------------ crafting
@@ -228,11 +265,22 @@ function altarRune(player, objectId) {
   return request.rune;
 }
 
+/** Rune, pure and daeyalt essence: Runecrafting's own, not the minigame's. */
+const OTHER_ESSENCE = ["blankrune", "blankrune_high", "blankrune_daeyalt"];
+
 function craft(event) {
   const { player, objectId } = event;
   const altar = byAltar(objectId);
   const essence = Shared.count(player, Shared.ITEM.ESSENCE);
-  if (!altar || essence <= 0 || !Game.isPlaying(player)) return false;
+  if (!altar || !Game.isPlaying(player)) return false;
+  if (essence <= 0) {
+    if (chargeOnly(player, altar)) return true;
+    // Other essence crafts as plain Runecrafting does.
+    if (OTHER_ESSENCE.some((item) => Shared.count(player, item) > 0)) return false;
+    // rsprox capture (solo): no essence and nothing to charge (the cell held was the altar's tier).
+    player.sendMessage("You do not have any guardian essence to bind here.");
+    return true;
+  }
   const rune = altarRune(player, objectId);
   if (!rune) return false;
   if (player.getSkillManager().getCurrentLevel(Shared.core().Skill.RUNECRAFTING) < rune.level) {
@@ -250,7 +298,6 @@ function craft(event) {
   Shared.graphic(player, "runecrafting", 92);
   Shared.sound(player, CRAFT_SOUND);
   Shared.addXp(player, "RUNECRAFTING", essence * rune.xp);
-  Game.addContribution(player, essence);
   // Wiki / Mod Elena (30 March 2022): guardian essence cannot award a Rift guardian.
   // Keep the success receipt for other consumers without an ordinary altar pet rate.
   Shared.api().emitCustomEvent("runecrafting:success", {
@@ -259,14 +306,40 @@ function craft(event) {
   return true;
 }
 
-/** One uncharged cell takes the altar's charge, while no charged cell is held (Wiki). */
+/** The charged cell held, 1-4, or 0. */
+function heldCell(player) {
+  const index = Shared.ITEM.CELLS.findIndex((cell) => Shared.count(player, cell) > 0);
+  return index + 1;
+}
+
+/**
+ * One uncharged cell takes the altar's charge (Wiki: charged as essence is). One charged cell at
+ * a time, but a weaker one is upgraded in its place (Wiki, 30 March 2022: "Cells can now be
+ * upgraded at a runic altar, without having to drop weaker cells"). True when a cell charged.
+ */
 function chargeCell(player, altar) {
-  if (Shared.count(player, Shared.ITEM.UNCHARGED_CELL) <= 0) return;
-  if (Shared.ITEM.CELLS.some((cell) => Shared.count(player, cell) > 0)) return;
+  if (Shared.count(player, Shared.ITEM.UNCHARGED_CELL) <= 0) return false;
+  const held = heldCell(player);
+  if (held >= altar.tier) return false;
   const inventory = player.getInventory();
+  if (held > 0) inventory.delete(Shared.obj(Shared.ITEM.CELLS[held - 1]), 1);
   inventory.delete(Shared.obj(Shared.ITEM.UNCHARGED_CELL), 1);
   inventory.adds(Shared.obj(Shared.ITEM.CELLS[altar.tier - 1]), 1);
   player.sendMessage(`Your cell absorbs a ${ABSORB[altar.tier - 1]} amount of excess energy.`);
+  return true;
+}
+
+/**
+ * Craft-rune with no guardian essence still charges an uncharged cell (Wiki: players imbue a
+ * cell between games, when the essence is gone). False when there's nothing to charge.
+ */
+function chargeOnly(player, altar) {
+  if (!chargeCell(player, altar)) return false;
+  player.getInventory().refreshItems();
+  Shared.animate(player, "human_runecraft");
+  Shared.graphic(player, "runecrafting", 92);
+  Shared.sound(player, CRAFT_SOUND);
+  return true;
 }
 
 function findTalisman(player, altar, essence) {
@@ -331,8 +404,10 @@ function attachGuardians(api) {
 }
 
 module.exports = {
-  ALTARS, isActive,
+  ALTARS, TRIP_ATTRIBUTE, isActive,
   attach(api) {
+    api.persistAttribute(TRIP_ATTRIBUTE, "");
+    api.onPlayerLogin(login);
     attachGuardians(api);
     api.onBeforeObjectInteraction(claimTrip);
     api.onNpcDialogueCondition(answerCondition);

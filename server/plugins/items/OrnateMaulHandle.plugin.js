@@ -49,6 +49,8 @@ function useForms(loaded) {
 function attachFor(event) {
   const { usedItemId, usedItemSlot, usedWithItemId, usedWithItemSlot } = event;
   const usedIsHandle = usedItemId === handleId;
+  // Only the handle with a maul: a maul used on anything else is not this plugin's (and must not open the warning).
+  if (!usedIsHandle && usedWithItemId !== handleId) return null;
   const maulId = usedIsHandle ? usedWithItemId : usedItemId;
   const formId = forms.get(maulId);
   if (formId === undefined) {
@@ -115,6 +117,7 @@ function revertHandle(event) {
 
 module.exports = {
   name: "OrnateMaulHandle",
+  description: "Lets the ornate maul handle be attached to a granite maul, with a warning, for the cheaper Quick Smash special, and removed again.",
   members: true,
   _test: { loadHandleForms, SKIP_WARNING_ATTRIBUTE },
   register(api) {

@@ -17,6 +17,8 @@ import { Skill } from "../../../../model/Skill";
 import type { CombatSpell } from "../../magic/CombatSpell";
 import { Spell } from "../../magic/Spell";
 import { Autocasting } from "../../magic/Autocasting";
+import { CrossFloor } from "../../../../CrossFloor";
+import { ChatType } from "../../../../../net/protocol/ClientProtocol";
 
 
 export class MagicCombatMethod extends CombatMethod {
@@ -42,7 +44,11 @@ export class MagicCombatMethod extends CombatMethod {
         13011: 6589, 13023: 6589,
         // Capture: Undead Grasp.
         21832: 5030,
+        // OSRS Wiki List of sound IDs, Surge casts.
+        21876: 4028, 21877: 4030, 21878: 4025, 21879: 4032,
     };
+    /** Live plays a spell's impact and its splash as an area sound this far round the target's tile. */
+    public static readonly IMPACT_SOUND_RADIUS = 10;
     private static readonly IMPACT_SOUNDS: Readonly<Record<number, number>> = {
         1: 1460,
         1152: 221, 1153: 121, 1154: 212, 1156: 133, 1157: 3010, 1158: 161,
@@ -56,6 +62,8 @@ export class MagicCombatMethod extends CombatMethod {
         13011: 177, 13023: 175,
         // Capture: Undead Grasp (an area sound at the target).
         21832: 5055,
+        // OSRS Wiki List of sound IDs, Surge impacts.
+        21876: 4027, 21877: 4029, 21878: 4026, 21879: 4031,
     };
 
     public type(): CombatType {
@@ -75,20 +83,38 @@ export class MagicCombatMethod extends CombatMethod {
         const own = spell?.hitDelay?.();
         if (typeof own === "number") return own;
         if (!attacker.isPlayer()) return Projectile.arrivalTicks(attacker, target, Projectile.LEGACY_MAGIC_END_BASE);
+        const from = CombatPosition.location(attacker, target);
+        const to = CombatPosition.location(target, attacker);
+        const crossFloor = CrossFloor.canCross(from, to) && from.getZ() !== to.getZ();
         const distance = MagicCombatMethod.isBarrage(spell)
-            ? CombatPosition.distance(attacker, target)
+            ? crossFloor ? CombatPosition.projectileDistance(attacker, target) : CombatPosition.distance(attacker, target)
             : MagicCombatMethod.edgeDistance(attacker, target);
+        if (crossFloor) {
+            return Projectile.ticksToLand(Projectile.LEGACY_MAGIC_END_BASE + distance * 10);
+        }
         return 1 + Math.floor((1 + distance) / 3);
     }
 
-    /** Chebyshev distance from the attacker's tile to the nearest tile of the target. */
+    /** Flight distance in tile units from the attacker to the nearest tile of the target. */
     private static edgeDistance(attacker: Mobile, target: Mobile): number {
-        const from = CombatPosition.location(attacker, target);
-        const to = CombatPosition.location(target, attacker);
-        const size = Math.max(1, target.getSize?.() ?? 1);
-        const dx = Math.max(0, to.getX() - from.getX(), from.getX() - (to.getX() + size - 1));
-        const dy = Math.max(0, to.getY() - from.getY(), from.getY() - (to.getY() + size - 1));
-        return Math.max(dx, dy);
+        return CombatPosition.edgeDistance(attacker, target);
+    }
+
+    /**
+     * A blood spell that hits sends one spam line per cast: "opponent's" for one target and
+     * "opponents'" for two or more (rsprox_transcripts/226/01702.txt and 234/00821.txt: every
+     * singular line follows exactly one blood impact; 238/01224.txt tick 3066 for Blood Blitz). An accurate impact
+     * counts even for 0 damage: 234/00821.txt tick 4446, a Barrage on a just-killed nechryael spawn (base Magic XP
+     * only, no Hitpoints XP), still sent the singular line.
+     */
+    private static sendBloodDrainLine(character: Mobile, spell: CombatSpell, hits: PendingHit[]): void {
+        if (!character.isPlayer()) return;
+        const { CombatSpells } = require("../../magic/CombatSpells");
+        if (![CombatSpells.BLOOD_RUSH, CombatSpells.BLOOD_BURST, CombatSpells.BLOOD_BLITZ, CombatSpells.BLOOD_BARRAGE].includes(spell)) return;
+        const drained = hits.filter((hit) => hit.isAccurate()).length;
+        if (drained === 0) return;
+        character.getAsPlayer().getPacketSender().sendTypedMessage(ChatType.SPAM,
+            drained === 1 ? "You drain some of your opponent's health." : "You drain some of your opponents' health.");
     }
 
     /** Barrages are the only area spells from level 86 (bursts go up to 70). */
@@ -114,6 +140,7 @@ export class MagicCombatMethod extends CombatMethod {
 
         for (let hit of hits) {
             spell.onHitCalc(hit);
+            MagicCombatMethod.queueProjectileGraphic(hit);
 
             const spellRadius =
                 spell.getSpellbook() === MagicSpellbook.ANCIENT && typeof (spell as any).spellRadius === "function"
@@ -123,16 +150,21 @@ export class MagicCombatMethod extends CombatMethod {
             if (!hit.isAccurate() || !isAncientSpell || spellRadius <= 0) {
                 continue;
             }
+            // Wiki (Ancient Magicks; Multicombat area): the area spells hit more than one target only in multicombat, and
+            // the target's zone decides (CombatFactory.areaAttackSpreads).
+            if (!CombatFactory.areaAttackSpreads(character, target)) {
+                continue;
+            }
 
-            let it: IterableIterator<Mobile> = null;
-            if (character.isPlayer() && target.isPlayer()) {
-                it = (character as Player).getLocalPlayers().values();
-            } else if (character.isPlayer() && target.isNpc()) {
-                it = (character as Player).getLocalNpcs().values();
-            } else if (character.isNpc() && target.isNpc()) {
-                let npcs = Object.values(World.getNpcs());
-            } else if (character.isNpc() && target.isPlayer()) {
-                let npcsValues = Object.values(World.getNpcs());
+            // The splash picks victims of the primary target's kind; an NPC caster has no local lists,
+            // so it draws from the world (canAttackSecondaryTarget applies the radius and multi rules).
+            let it: Iterable<Mobile>;
+            if (character.isPlayer()) {
+                it = target.isPlayer() ? (character as Player).getLocalPlayers().values() : (character as Player).getLocalNpcs().values();
+            } else {
+                it = target.isPlayer()
+                    ? World.getPlayers()
+                    : World.getNpcsNear(target.getLocation(), spellRadius, target.getPrivateArea());
             }
 
             for (let next of it) {
@@ -146,10 +178,37 @@ export class MagicCombatMethod extends CombatMethod {
             }
         }
         MagicCombatMethod.payBaseExperience(character, spell, hits[0].isAccurate());
+        MagicCombatMethod.sendBloodDrainLine(character, spell, hits.concat(multiCombatHits));
         if (multiCombatHits.length > 0) {
             return hits.concat(multiCombatHits);
         }
         return hits;
+    }
+
+    private static queueProjectileGraphic(hit: PendingHit): void {
+        const spell = hit.getSpell();
+        const target = hit.getTarget();
+        const visual = spell?.getProjectileVisual?.(hit.getSpellContext(), target);
+        if (!visual || visual.queued) return;
+        // Live sends the impact (or splash) area sound at the cast, delayed to the projectile's end cycle
+        // (RSProx 227/00102 tick 232: sound_area 161 delay=106 for a projectile ending at 106), beside the graphic.
+        if (!visual.soundQueued) {
+            const sound = hit.isAccurate() ? MagicCombatMethod.impactSoundFor(spell) : Sound.SPELL_FAIL_SPLASH;
+            const at = target.getLocation?.();
+            if (sound && at) {
+                Sounds.playAreaSound({
+                    soundId: sound.getId(), source: target, x: at.getX(), y: at.getY(), level: at.getZ(),
+                    loops: sound.getLoopType(), delay: visual.endCycleOffset + sound.getDelay(),
+                    radius: MagicCombatMethod.IMPACT_SOUND_RADIUS,
+                });
+                visual.soundQueued = true;
+            }
+        }
+        const graphic = hit.isAccurate() ? spell.endGraphic() : MagicCombatMethod.SPLASH_GRAPHIC;
+        if (!graphic || typeof graphic.withDelay !== "function") return;
+        const delayed = graphic.withDelay(visual.endCycleOffset + graphic.getDelay());
+        target.performGraphic(delayed);
+        visual.queued = target.getGraphic() === delayed;
     }
 
     /**
@@ -177,6 +236,14 @@ export class MagicCombatMethod extends CombatMethod {
 
         // Character didn't have autocast spell either.
         if (character.getCombat().getCastSpell() == null) {
+            return false;
+        }
+
+        // An autocast keeps the spell's own target rule (Wiki: Crumble Undead, the demonbanes); the
+        // spell-on-target packets check it before combat, so only the autocast is new here.
+        if (!character.getCombat().getCastSpell().canCastOnTarget(character, target)) {
+            character.getCombat().setCastSpell(null);
+            character.getCombat().reset();
             return false;
         }
 
@@ -209,7 +276,7 @@ export class MagicCombatMethod extends CombatMethod {
         }
 
         if (spell != null) {
-            const castSound = spell.castSound?.() ?? MagicCombatMethod.resolveCastSound(spell.spellId());
+            const castSound = MagicCombatMethod.castSoundFor(spell);
             if (castSound != null) {
                 Sounds.sendSound(character, castSound);
             }
@@ -286,20 +353,36 @@ export class MagicCombatMethod extends CombatMethod {
         const previousSpell = hit.getSpell();
 
         if (previousSpell) {
+            const visual = previousSpell.getProjectileVisual?.(hit.getSpellContext(), target);
+            const queuedGraphic = visual?.queued === true;
+            const queuedSound = visual?.soundQueued === true;
             if (accurate) {
                 const endGraphic = previousSpell.endGraphic();
                 // A spell with no impact graphic (a grasp shows its own at the cast) sends none.
-                if (endGraphic) target.performGraphic(endGraphic);
-                const impactSound = previousSpell.impactSound()
-                    ?? MagicCombatMethod.resolveImpactSound(previousSpell.spellId());
-                Sounds.sendSound(target, impactSound);
+                if (endGraphic && !queuedGraphic) target.performGraphic(endGraphic);
+                // Live (RSProx 102 tick 232, 3275): an area sound at the target's tile with range 10,
+                // for an NPC or a player. A private synth never reached the caster, and an area sound
+                // of range 0 (what Sounds.sendSound gives an NPC) is dropped by the client.
+                const impactSound = MagicCombatMethod.impactSoundFor(previousSpell);
+                if (impactSound && !queuedSound) Sounds.playAreaSoundAt(target, impactSound, MagicCombatMethod.IMPACT_SOUND_RADIUS);
               } else {
                 // Send splash graphics for the spell because it wasn't accurate
-                target.performGraphic(MagicCombatMethod.SPLASH_GRAPHIC);
-                Sounds.sendSound(attacker, Sound.SPELL_FAIL_SPLASH);
+                if (!queuedGraphic) target.performGraphic(MagicCombatMethod.SPLASH_GRAPHIC);
+                // Also an area sound at the target (3275: 492 `sound_area id=227 range=10`).
+                if (!queuedSound) Sounds.playAreaSoundAt(target, Sound.SPELL_FAIL_SPLASH, MagicCombatMethod.IMPACT_SOUND_RADIUS);
             }
             previousSpell.finishCast(attacker, target, accurate, damage, hit.getSpellContext());
         }
+    }
+
+    /** A spell's own impact sound, else the table by its spell id (null: none captured). */
+    /** The caster's private sound as `spell` is cast (its own, else the spell id's). */
+    public static castSoundFor(spell: { castSound?(): Sound | null; spellId(): number }): Sound | null {
+        return spell.castSound?.() ?? MagicCombatMethod.resolveCastSound(spell.spellId());
+    }
+
+    public static impactSoundFor(spell: { impactSound(): Sound | null; spellId(): number }): Sound | null {
+        return spell.impactSound() ?? MagicCombatMethod.resolveImpactSound(spell.spellId());
     }
 
     private static resolveImpactSound(spellId: number): Sound | null {

@@ -24,7 +24,7 @@ function shockwave(fight) {
   const { muspah, player } = fight;
   fight.shockwaveStarted = true;
   fight.hold(true);
-  player.sendMessage(specials.message);
+  Common.fightMessage(player, specials.message);
   Common.animate(muspah, clouds.disappearAnim);
   muspah.performGraphic(Common.graphic(clouds.disappearSpot));
   Common.sounds(player, clouds.disappearSounds);
@@ -79,6 +79,8 @@ function raise(fight) {
   fight.shield = shield.points;
   fight.spikes.hardenAll();
   fight.setForm("shielded");
+  const defence = Common.core.Skill.DEFENCE;
+  fight.muspah.setCurrentLevels(defence, fight.muspah.getMaxLevel(defence));
   fight.muspah.setHealthBar(shield.healthBar);
   fight.showShield();
   Common.overlayFade(fight.player, overlay.clear);
@@ -113,7 +115,7 @@ function hitShield(fight, hit) {
   }
   if (fight.tick - (fight.lastShieldMessage ?? -Infinity) >= MESSAGE_GAP_TICKS) {
     fight.lastShieldMessage = fight.tick;
-    player.sendMessage(shield.message);
+    Common.fightMessage(player, shield.message);
   }
 }
 

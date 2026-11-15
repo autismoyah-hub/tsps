@@ -67,6 +67,7 @@ function buildMcpServer(core) {
   require("./mcp/Social.AgentMcp")(ctx);
   require("./mcp/Testing.AgentMcp")(ctx);
   require("./mcp/QuestHelper.AgentMcp")(ctx);
+  require("./mcp/Cache.AgentMcp")(ctx);
   require("./mcp/Load.AgentMcp")(ctx);
   require("./mcp/Perf.AgentMcp")(ctx);
   require("./mcp/Vision.AgentMcp")(ctx);
@@ -119,6 +120,7 @@ function stopMcpServer() {
 
 module.exports = {
   name: "AgentMcp",
+  description: "Runs an MCP server that lets a tool such as Claude Code drive an online player for testing. Active only when AGENT_MCP=1 is set.",
   buildMcpServer,
   register(api) {
     pluginApi = api;

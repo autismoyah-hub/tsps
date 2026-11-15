@@ -47,18 +47,21 @@ function index() {
   unfinishedByHerb = new Map();
   grindsByItem = new Map();
   for (const row of DATA.grinding) {
-    grindsByItem.set(gameval("obj", row.item), { ...row, itemId: gameval("obj", row.item), productId: gameval("obj", row.product), amount: row.amount ?? [1, 1] });
+    grindsByItem.set(gameval("obj", row.item), { ...row, itemId: gameval("obj", row.item), productId: gameval("obj", row.product), amount: row.amount ?? [1, 1], alternateToolId: row.alternateTool ? gameval("obj", row.alternateTool) : null });
   }
-  const vialOfWater = gameval("obj", "vial_water");
+  // Zahur's bases (Wiki: "vials of water or vials of blood").
+  const bases = new Set([gameval("obj", "vial_water"), gameval("obj", "vial_blood")]);
   for (const row of DATA.recipes) {
     const recipe = { ...row, productId: gameval("obj", row.product), ingredients: items(row.ingredients), returns: items(row.returns) };
     for (const { id } of recipe.ingredients) {
       if (!recipesByIngredient.has(id)) recipesByIngredient.set(id, []);
       recipesByIngredient.get(id).push(recipe);
     }
-    const herb = recipe.ingredients.find(({ id }) => id !== vialOfWater);
-    if (recipe.ingredients.length === 2 && herb && recipe.ingredients.some(({ id }) => id === vialOfWater)) {
-      unfinishedByHerb.set(herb.id, recipe);
+    const base = recipe.ingredients.find(({ id }) => bases.has(id));
+    const herb = recipe.ingredients.find(({ id }) => !bases.has(id));
+    if (recipe.ingredients.length === 2 && herb && base) {
+      if (!unfinishedByHerb.has(herb.id)) unfinishedByHerb.set(herb.id, new Map());
+      unfinishedByHerb.get(herb.id).set(base.id, recipe);
     }
   }
 }
@@ -95,16 +98,20 @@ function repeatMessage(firstId, secondId) {
   return null;
 }
 
-/** "herblore:clean" `{ grimyId, clean, level }`: clean herb and its required Herblore level. */
+/** "herblore:clean" `{ grimyId, clean, level, xp }`: clean herb, its required Herblore level and cleaning XP. */
 function answerClean(request) {
   const herb = herbFor(request?.grimyId);
-  if (herb) { request.clean = herb.cleanId; request.level = herb.level; }
+  if (herb) { request.clean = herb.cleanId; request.level = herb.level; request.xp = herb.xp; }
 }
 
-/** "herblore:unfinished" `{ herbId, potion }`: the unfinished potion a clean herb makes (Zahur). */
+/**
+ * "herblore:unfinished" `{ herbId, baseId?, potion }`: the unfinished potion a clean herb makes with `baseId` (a vial
+ * of water when not given; Zahur also uses vials of blood).
+ */
 function answerUnfinished(request) {
   index();
-  const recipe = unfinishedByHerb.get(request?.herbId);
+  const baseId = request?.baseId ?? gameval("obj", "vial_water");
+  const recipe = unfinishedByHerb.get(request?.herbId)?.get(baseId);
   if (recipe) request.potion = recipe.productId;
 }
 
@@ -132,6 +139,24 @@ function questDone(player, requirement) {
   api.emitCustomEvent(state === "started" ? "quest:is-started" : "quest:is-complete", request);
   const answer = state === "started" ? request.started : request.complete;
   return answer !== false;
+}
+
+/**
+ * Whether content outside the quest system has taught a recipe's `unlock` ("herblore:unlocked"
+ * { player, unlock, allowed }: Barbarian Training answers "barbarian_herblore", or
+ * "barbarian_herblore:started" for the attack mix Otto asks for). No answer does not lock it.
+ */
+function unlocked(player, unlock) {
+  const request = { player, unlock, allowed: null };
+  api.emitCustomEvent("herblore:unlocked", request);
+  return request.allowed !== false;
+}
+
+/** The player's stage in a quest (`quest:get-stage`), or null when no quest answers. */
+function questStage(player, key) {
+  const request = { player, key, stage: null };
+  api.emitCustomEvent("quest:get-stage", request);
+  return typeof request.stage === "number" ? request.stage : null;
 }
 
 /** Herblore needs Druidic Ritual; says so and returns false without it. */
@@ -191,9 +216,36 @@ function answerHerbs(request) {
   request.herbs = [...herbsByGrimy.values()].map(({ grimyId, cleanId, level, xp }) => ({ grimyId, cleanId, level, xp }));
 }
 
+const PRESET_REFUSAL = "Preset items cannot be used for this.";
+
+/** Preset, untradeable and unbankable copies keep their restrictions, so a mix never takes them. */
+function restricted(item) {
+  const { Item } = core;
+  return item.isPresetItem?.() === true
+    || item.getMetaValue?.(Item.PRESET_META) === true
+    || item.getMetaValue?.(Item.UNTRADEABLE_META) === true
+    || item.getMetaValue?.(Item.UNBANKABLE_META) === true;
+}
+
+/** How many of `id` the inventory holds as unrestricted copies. */
+function plainAmount(inventory, id) {
+  return inventory.getItems().reduce((sum, item) => (item && item.getId() === id && !restricted(item) ? sum + item.getAmount() : sum), 0);
+}
+
+/** Takes `count` unrestricted copies of `id`, by slot, so a restricted copy of the same id stays put. */
+function takePlain(inventory, id, count) {
+  let left = count;
+  inventory.getItems().forEach((item, slot) => {
+    if (left <= 0 || !item || item.getId() !== id || restricted(item)) return;
+    const take = Math.min(item.getAmount(), left);
+    inventory.deleteAtSlot(slot, take, false);
+    left -= take;
+  });
+}
+
 module.exports = {
-  MIX_ANIMATION, MIX_SOUND,
-  init, gameval, herbFor, grindFor, recipesWith, repeatMessage, answerClean, answerUnfinished, answerHerbs, level, actionsPerCycle, questDone, canUseHerblore,
+  MIX_ANIMATION, MIX_SOUND, PRESET_REFUSAL, restricted, plainAmount, takePlain,
+  init, gameval, herbFor, grindFor, recipesWith, repeatMessage, answerClean, answerUnfinished, answerHerbs, level, actionsPerCycle, questDone, unlocked, questStage, canUseHerblore,
   wearsHerbloreCape, spam, mesbox, animate, sound, addXp, run,
   get api() { return api; },
   get core() { return core; },

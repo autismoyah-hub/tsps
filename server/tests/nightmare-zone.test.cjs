@@ -15,6 +15,10 @@ const { PluginManager } = require('../dist/plugins/PluginManager');
 const { NpcDefinitionLoader } = require('../dist/game/definition/loader/impl/NpcDefinitionLoader');
 const { TaskManager } = require('../dist/game/task/TaskManager');
 const { Location } = require('../dist/game/model/Location');
+const { TimerRepository } = require('../dist/util/timers/TimerRepository');
+const { World } = require('../dist/game/World');
+/** The next game tick, as far as a once-a-tick check sees. */
+const nextTick = () => { World.processCycle++; };
 
 let Common, Dominic, Coffer, Dream, Potions, PowerUps, hooks, core;
 
@@ -33,6 +37,7 @@ before(() => {
   const api = {
     core,
     persistAttribute() {},
+    emitCanDrink: (player) => player.canDrink !== false,
     onObjectInteraction: (name, actions) => { for (const [op, fn] of Object.entries(actions)) chain(hooks.objects, `${name}:${op}`, fn); },
     onNpcInteraction: (name, actions) => { for (const [op, fn] of Object.entries(actions)) chain(hooks.npcs, `${name}:${op}`, fn); },
     onNpcDeath: (fn) => hooks.npcDeath.push(fn),
@@ -41,7 +46,7 @@ before(() => {
     onNpcHitModify: (fn) => hooks.npcHit.push(fn),
     onPlayerDeath: (fn) => hooks.death.push(fn),
     onShouldDropItemsOnDeath: (fn) => hooks.drops.push(fn),
-    onPlayerLogin() {},
+    onPlayerLogin: (fn) => (hooks.login ??= []).push(fn),
     onPlayerLogout: (fn) => (hooks.logout ??= []).push(fn),
     onPlayerDisconnect: (fn) => (hooks.disconnect ??= []).push(fn),
     onCanBank: (fn) => hooks.canBank.push(fn),
@@ -56,6 +61,11 @@ before(() => {
     onInterfaceActionButton: (ids, fn) => { for (const id of [].concat(ids)) (hooks.buttons ??= new Map()).set(id, fn); },
   };
   require('../plugins/minigames/NightmareZone.plugin').register(api);
+  require('../plugins/achievements/diaries/ArdougneSalveDiary.AchievementDiaries').register(api);
+  const Progress = require('../plugins/achievements/diaries/Progress.AchievementDiaries');
+  const AchievementDiaries = require('../plugins/achievements/AchievementDiaries.plugin');
+  Progress(api);
+  api.onCustomEvent('diary:task', AchievementDiaries._test.onTask);
   Common = require('../plugins/minigames/nightmarezone/Common.NightmareZone');
   Dominic = require('../plugins/minigames/nightmarezone/Dominic.NightmareZone');
   Coffer = require('../plugins/minigames/nightmarezone/Coffer.NightmareZone');
@@ -90,13 +100,15 @@ const QUESTS = () => Common.data.bosses.map((boss) => boss.quest);
 function fakePlayer({ quests = QUESTS().slice(0, 12), coins = 0 } = {}) {
   const attributes = new Map();
   const p = {
-    location: new Location(2608, 3116, 0), messages: [], varbits: new Map(), varps: new Map(), texts: new Map(), pages: [],
+    location: new Location(2608, 3116, 0), messages: [], varbits: new Map(), varps: new Map(), texts: new Map(), pages: [], worn: [],
     quests: new Set(quests), inventory: container(),
     isPlayer: () => true, getAsPlayer: () => p, isRegistered: () => true, getUsername: () => 'Dreamer',
     getLocation: () => p.location, moveTo(l) { p.location = l; }, setLocation(l) { p.location = l; }, getArea: () => p.area, setArea(a) { p.area = a; },
     getPrivateArea: () => null, getIndex: () => 1,
+    timers: new TimerRepository(), getTimers: () => p.timers,
     getAttribute: (k) => attributes.get(k), setAttribute: (k, v) => attributes.set(k, v),
     getInventory: () => p.inventory,
+    getEquipment: () => ({ getItems: () => p.worn }),
     sendMessage: (m) => p.messages.push(m),
     hp: 99, levels: {}, damage: [], special: 0,
     getHitpoints: () => p.hp, heal(amount) { p.hp = Math.min(99, p.hp + amount); },
@@ -106,6 +118,11 @@ function fakePlayer({ quests = QUESTS().slice(0, 12), coins = 0 } = {}) {
       getCurrentLevel: (skill) => p.levels[skill.getName?.() ?? skill] ?? 99,
       getMaxLevel: () => 99,
       setCurrentLevel(skill, level) { p.levels[skill.getName?.() ?? skill] = level; return this; },
+      // As SkillManager: up by `amount`, capped at `max`, never lowering a level already past it.
+      increaseCurrentLevel(skill, amount, max) {
+        const key = skill.getName?.() ?? skill, current = p.levels[key] ?? 99;
+        if (current < max) p.levels[key] = Math.min(max, current + amount);
+      },
     }),
     setEnteredAmountAction(action) { p.amount = action; },
     getDialogueManager: () => (p.dialogue ??= dialogueManager(p)),
@@ -115,6 +132,8 @@ function fakePlayer({ quests = QUESTS().slice(0, 12), coins = 0 } = {}) {
         sendConfig: (id, value) => { p.varps.set(id, value); return sender; },
         sendString: (text, id) => { p.texts.set(id, text); return sender; },
         sendSubInterface: () => sender, closeSubInterface: () => sender, sendInterfaceScript: () => sender,
+        // A player at the reward chest: its interface is open unless a test closes it.
+        isSubInterfaceOpen: () => p.shopClosed !== true,
         sendInterface: (id) => { p.interface = id; return sender; },
         sendClientScript: (id, ...args) => { p.script = [id, ...args]; return sender; },
         sendInterfaceFlagsRange: () => sender, sendInterfaceRemoval: () => sender, sendSound: () => sender, sendSong: () => sender,
@@ -318,6 +337,7 @@ test("absorption: only in a dream; 50 a dose up to 1,000; it takes monsters' dam
   assert.equal(p.inventory.getAmount(11735), 1, 'the next dose is left');
   for (let i = 0; i < 25; i++) {
     p.inventory.add(new core.Item(11737, 1));
+    nextTick(); // one dose a tick
     drink(p, 11737);
   }
   assert.equal(varbit(p, 'nzone_absorb_potion_effects'), 1000, 'capped');
@@ -328,6 +348,122 @@ test("absorption: only in a dream; 50 a dose up to 1,000; it takes monsters' dam
   assert.equal(varbit(p, 'nzone_absorb_potion_effects'), 970);
   Dream.wake({ player: p });
   assert.equal(varbit(p, 'nzone_absorb_potion_effects'), 0);
+});
+
+// Wiki (Nightmare Zone, Benefits): the dream potions "excluding overloads" can be drunk "extremely quickly" without
+// delaying hits, at herb-cleaning speed and mixed with food. Overload keeps the normal potion delay.
+test("absorption, super magic and super ranging: no potion or food delay, one dose a tick, none stunned or barred", () => {
+  const p = dreamer();
+  p.inventory.add(new core.Item(11737, 4));
+  nextTick();
+  drink(p, 11737);
+  drink(p, 11737);
+  assert.equal(varbit(p, 'nzone_absorb_potion_effects'), 50, 'a second dose the same tick does nothing');
+  assert.equal(p.inventory.getAmount(11737), 3);
+  assert.equal(p.getTimers().has(core.TimerKey.POTION), false, 'no potion delay');
+  assert.equal(p.getTimers().has(core.TimerKey.FOOD), false, 'and no food delay');
+  nextTick();
+  drink(p, 11737);
+  assert.equal(varbit(p, 'nzone_absorb_potion_effects'), 100, 'the next tick takes another dose');
+  for (const [id, skill] of [[11726, 'Magic'], [11722, 'Ranged']]) {
+    p.inventory.add(new core.Item(id, 1));
+    p.getTimers().registers(core.TimerKey.POTION, 3); // another potion's delay doesn't hold these back either
+    nextTick();
+    drink(p, id);
+    assert.equal(p.levels[skill], 99 + 14 + 5, `${skill} boosted at once`);
+    p.getTimers().cancel(core.TimerKey.POTION);
+  }
+  nextTick();
+  p.getTimers().registers(core.TimerKey.STUN, 5);
+  drink(p, 11737);
+  assert.equal(varbit(p, 'nzone_absorb_potion_effects'), 100, 'not while stunned');
+  assert.equal(p.messages.at(-1), "You're currently stunned and cannot use potions.");
+  p.getTimers().cancel(core.TimerKey.STUN);
+  p.canDrink = false;
+  drink(p, 11737);
+  assert.equal(varbit(p, 'nzone_absorb_potion_effects'), 100, 'not where drinking is barred');
+  assert.equal(p.messages.at(-1), 'You cannot use potions here.');
+  Dream.wake({ player: p });
+});
+
+test("overload keeps the potion delay and the food delay, and is refused while stunned before its own checks", () => {
+  const p = dreamer();
+  p.inventory.add(new core.Item(11730, 1));
+  p.hp = 50;
+  p.getTimers().registers(core.TimerKey.STUN, 5);
+  drink(p, 11730);
+  assert.equal(p.messages.at(-1), "You're currently stunned and cannot use potions.", 'the stun is told first');
+  p.getTimers().cancel(core.TimerKey.STUN);
+  p.hp = 99;
+  p.getTimers().registers(core.TimerKey.POTION, 3);
+  drink(p, 11730);
+  assert.equal(varbit(p, 'nzone_overload_potion_effects') ?? 0, 0, "not inside another potion's delay");
+  p.getTimers().cancel(core.TimerKey.POTION);
+  drink(p, 11730);
+  assert.equal(varbit(p, 'nzone_overload_potion_effects'), 20);
+  assert.equal(p.getTimers().has(core.TimerKey.POTION), true, 'it sets the potion delay');
+  assert.equal(p.getTimers().has(core.TimerKey.FOOD), true, 'and the food delay');
+  Dream.wake({ player: p });
+});
+
+test('a restart mid-dream: logging in still marked as dreaming wakes the player by Dominic, effects gone', () => {
+  const p = fakePlayer();
+  p.location = new Location(9000, 9000, 0); // the gone dream's instance tiles
+  p.setAttribute('nightmare-zone:in-dream', true);
+  p.setAttribute('nightmare-zone:absorb', 500);
+  p.levels.Strength = 118;
+  for (const fn of hooks.login) fn({ player: p });
+  const [x, y, z] = Common.data.lobby.afterDream;
+  assert.deepEqual([p.location.getX(), p.location.getY(), p.location.getZ()], [x, y, z ?? 0], 'by Dominic');
+  assert.equal(p.getAttribute('nightmare-zone:in-dream'), false);
+  assert.equal(varbit(p, 'nzone_absorb_potion_effects'), 0, 'absorption gone');
+  const outside = fakePlayer();
+  const start = outside.location;
+  for (const fn of hooks.login) fn({ player: outside });
+  assert.equal(outside.location, start, 'a player not dreaming stays put');
+});
+
+/** The same save loaded into a new player after a restart: no logout ran, and this server has no dream for it. */
+function restarted(p) {
+  const back = fakePlayer({ quests: [...p.quests] });
+  back.getAttribute = p.getAttribute;
+  back.setAttribute = p.setAttribute;
+  back.location = p.location;
+  return back;
+}
+
+test("a restart mid-dream pays the dream's points at the next login, once", () => {
+  const p = dreamer();
+  ticks(Common.data.arena.firstSpawnTicks);
+  // A boss with several forms pays only for its last one: kill until the counter shows points.
+  for (let i = 0; i < 10 && !(varbit(p, 'nzone_currentpoints') > 0); i++) Dream.bossDied({ npc: [...Dream.dreams.get(p).npcs][0] });
+  const earned = varbit(p, 'nzone_currentpoints');
+  assert.ok(earned > 0);
+  const before = Common.points(p);
+  const back = restarted(p); // a new player object: this server has no dream for it
+  for (const fn of hooks.login) fn({ player: back });
+  assert.equal(Common.points(back), before + earned, 'the points gathered before the restart');
+  const [x, y] = Common.data.lobby.afterDream;
+  assert.deepEqual([back.location.getX(), back.location.getY()], [x, y], 'by Dominic');
+  for (const fn of hooks.login) fn({ player: back });
+  assert.equal(Common.points(back), before + earned, 'a second login pays nothing more');
+});
+
+test('a restart during the entry fade gives the fee back and keeps the dream prepared', () => {
+  const p = fakePlayer({ quests: QUESTS() });
+  Common.setCoffer(p, 5000);
+  Common.setPreparedDream(p, { mode: 'endurance', difficulty: 'normal' });
+  Dream.start(p);
+  ticks(1);
+  assert.equal(Common.coffer(p), 4000);
+  assert.equal(Common.preparedDream(p), null, 'the vial is emptied a tick into the fade');
+  const back = restarted(p);
+  for (const fn of hooks.login) fn({ player: back });
+  assert.equal(Common.coffer(back), 5000, 'the fee is back');
+  assert.deepEqual(Common.preparedDream(back), { mode: 'endurance', difficulty: 'normal' });
+  assert.equal(Common.points(back), 0);
+  for (const fn of hooks.login) fn({ player: back });
+  assert.equal(Common.coffer(back), 5000, 'refunded once');
 });
 
 test('real executeHit protects before absorption spends points', () => {
@@ -367,6 +503,24 @@ test('real executeHit protects before absorption spends points', () => {
 
   assert.equal(Potions.absorbOf(player), 50, 'the prayer blocked the 20 before absorption could spend points');
   assert.equal(player.getHitpoints(), 99, 'the protected hit dealt no damage');
+});
+
+// The shared potion rule (ConsumableEffects.boostSkill, 226/01696.txt): a drained stat gains the boost from its
+// current level; one between base and the cap goes to the cap; one past the cap is left alone.
+test('super ranging and overload add to a drained level, up to base + boost, like every other potion', () => {
+  const p = dreamer();
+  p.inventory.add(new core.Item(11722, 3));
+  for (const [before, after] of [[60, 60 + 14 + 5], [110, 99 + 14 + 5], [120, 120]]) {
+    p.levels.Ranged = before;
+    nextTick();
+    drink(p, 11722);
+    assert.equal(p.levels.Ranged, after, `Ranged ${before}`);
+  }
+  p.levels.Strength = 50;
+  p.inventory.add(new core.Item(11730, 1));
+  drink(p, 11730);
+  assert.equal(p.levels.Strength, 50 + 14 + 5, 'the overload adds to drained Strength');
+  Dream.wake({ player: p });
 });
 
 test('overload: not under 51 Hitpoints; +floor(15%)+5 to the combat skills, 50 damage of its own, 5 minutes, 50 back at the end', () => {
@@ -451,6 +605,15 @@ test('the rewards chest: the recorded opening (invs 464 and 108, the modal, the 
   assert.equal(hooks.objects.get('Rewards chest:Search')({ player: p, object: { getId: () => 1 } }), false, 'only its own chest');
 });
 
+test('the reward chest answers only while open: a Buy with it closed buys nothing', () => {
+  const p = fakePlayer();
+  Common.addPoints(p, 1000);
+  p.shopClosed = true;
+  button('resources', { player: p, slot: 0, opId: 3 });
+  assert.equal(p.inventory.getAmount(1780), 0);
+  assert.equal(Common.points(p), 1000);
+});
+
 test('Resources: Buy-10 of flax (sub 0) gives noted flax for 750 points; too few points buys nothing', () => {
   const p = fakePlayer();
   Common.addPoints(p, 1000);
@@ -460,6 +623,30 @@ test('Resources: Buy-10 of flax (sub 0) gives noted flax for 750 points; too few
   button('resources', { player: p, slot: 0, opId: 3 });
   assert.ok(p.messages.includes(Common.message('notEnoughPoints')));
   assert.equal(p.inventory.getAmount(1780), 10);
+});
+
+test("Resources: an ironman buys only scrolls of redirection (Wiki: Dom Onion's Reward Shop)", () => {
+  const p = fakePlayer();
+  p.ironman = true;
+  assert.ok(hooks.objects.get('Rewards chest:Search')({ player: p, object: { getId: () => core.CacheDefinitions.getLocId('nzone_lobby_chest') } }));
+  Common.addPoints(p, 100000);
+  button('resources', { player: p, slot: 0, opId: 3 });
+  assert.equal(p.inventory.getAmount(1780), 0, 'no flax');
+  // The recorded refusal, byte for byte (rsprox 237/01150.txt:342295).
+  assert.equal(Common.message('ironmanResource'), 'Ironmen can purchase redirection scrolls, but not other resources.');
+  assert.deepEqual(p.messages.filter((m) => m.startsWith('Ironmen')), ['Ironmen can purchase redirection scrolls, but not other resources.']);
+  // The recorded click: the herb box (11738) gets the same line.
+  const herbBox = p.invs[464].findIndex((item) => item.id === 11738);
+  assert.ok(herbBox >= 0, 'the herb box is on the Resources tab');
+  p.messages.length = 0;
+  button('resources', { player: p, slot: herbBox * 2, opId: 2 });
+  assert.equal(p.inventory.getAmount(11738), 0, 'no herb box');
+  assert.deepEqual(p.messages, ['Ironmen can purchase redirection scrolls, but not other resources.']);
+  assert.equal(Common.points(p), 100000, 'no points spent');
+  const scroll = p.invs[464].findIndex((item) => item.id === 11740);
+  assert.ok(scroll >= 0, 'the scroll is on the Resources tab');
+  button('resources', { player: p, slot: scroll * 2, opId: 1 }); // a sub is twice its item's index
+  assert.equal(p.inventory.getAmount(11740), 1, 'a scroll of redirection');
 });
 
 test('Benefits: Buy-5 of absorption (sub 9) puts 5 doses in its barrel for 5,000 points', () => {
@@ -479,6 +666,76 @@ test('Upgrades: Imbue (sub = 2 x the backpack slot) quotes the price when short,
   button('upgrades', { player: p, slot: 2, opId: 1 });
   assert.equal(p.inventory.slots[1].id, 11865, 'the slayer helmet (i)');
   assert.equal(Common.points(p), 50_000);
+});
+
+test('the Ardougne Elite diary credits the NMZ Salve imbue and a worn NMZ amulet once', (t) => {
+  const p = fakePlayer();
+  const ids = core.ItemIdentifiers;
+  const salveBase = ids.SALVE_AMULET_E_;
+  const salveImbued = ids.SALVE_AMULET_EI_;
+  const imbues = core.CacheDefinitions.getEnumValues(Common.data.rewards.enums.imbues);
+  assert.equal(imbues.get(salveBase), salveImbued, 'the NMZ cache enum maps its enchanted Salve amulet to its NMZ imbued form');
+  p.getPrivateArea = () => ({ id: 'test-private-area' });
+  p.inventory.slots.push({ id: salveBase, amount: 1, meta: { custom: 'preserved' } });
+  Common.addPoints(p, 800_000);
+
+  button('upgrades', { player: p, slot: 0, opId: 1 });
+
+  assert.equal(p.inventory.slots[0].id, salveImbued);
+  assert.deepEqual(p.inventory.slots[0].meta, { custom: 'preserved' });
+  assert.equal(Common.points(p), 0);
+  const Progress = require('../plugins/achievements/diaries/Progress.AchievementDiaries');
+  const tasks = Progress.doneTasks(p, require('../plugins/achievements/diaries/Data.AchievementDiaries').BY_KEY.get('ardougne'));
+  assert.deepEqual([...tasks], ['imbue-a-salve-amulet-at-nightmare-zone-or-equip']);
+  assert.equal(p.varbits.get(require('../plugins/achievements/diaries/Data.AchievementDiaries').BY_KEY.get('ardougne').tiers.elite.countVarbit), 1);
+
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { EquipPacketListener } = require('../dist/net/packet/impl/EquipPacketListener');
+  const { PluginManager } = require('../dist/plugins/PluginManager');
+  t.mock.method(PluginManager, 'emitCustomEvent', (name, event) => hooks.events[name]?.(event));
+  const oldSalve = new Player({ sendClientPacket() {} });
+  oldSalve.setRegistered(true);
+  oldSalve.getEquipment().setItem(core.Equipment.AMULET_SLOT, new core.Item(ids.SALVE_AMULET_I_, 1));
+  oldSalve.getEquipment().refreshItems();
+  assert.deepEqual([...Progress.doneTasks(oldSalve, require('../plugins/achievements/diaries/Data.AchievementDiaries').BY_KEY.get('ardougne'))], [],
+    'the real equipment refresh event does not credit an item restored on the player');
+  oldSalve.getInventory().setItem(0, new core.Item(ids.SALVE_AMULET_I_, 1));
+  EquipPacketListener.equip(oldSalve, ids.SALVE_AMULET_I_, 0, 3214);
+  assert.equal(oldSalve.getEquipment().getItems()[core.Equipment.AMULET_SLOT].getId(), ids.SALVE_AMULET_I_);
+  assert.deepEqual([...Progress.doneTasks(oldSalve, require('../plugins/achievements/diaries/Data.AchievementDiaries').BY_KEY.get('ardougne'))], [
+    'imbue-a-salve-amulet-at-nightmare-zone-or-equip',
+  ], 'the real equip handler credits a same-id replacement');
+
+  const originalSalve = fakePlayer();
+  originalSalve.inventory.slots.push({ id: ids.SALVE_AMULET, amount: 1 });
+  Common.addPoints(originalSalve, 800_000);
+  button('upgrades', { player: originalSalve, slot: 0, opId: 1 });
+  assert.equal(originalSalve.inventory.slots[0].id, ids.SALVE_AMULET_I_);
+  assert.deepEqual([...Progress.doneTasks(originalSalve, require('../plugins/achievements/diaries/Data.AchievementDiaries').BY_KEY.get('ardougne'))], [
+    'imbue-a-salve-amulet-at-nightmare-zone-or-equip',
+  ], 'the NMZ upgrade to the older imbued item id counts too');
+});
+
+test('the diary does not credit a failed NMZ imbue or a same-looking Soul Wars Salve', () => {
+  const p = fakePlayer();
+  const ids = core.ItemIdentifiers;
+  p.inventory.slots.push({ id: ids.SALVE_AMULET_E_, amount: 1 });
+  Common.addPoints(p, 799_999);
+  button('upgrades', { player: p, slot: 0, opId: 1 });
+  assert.equal(p.inventory.slots[0].id, ids.SALVE_AMULET_E_);
+
+  for (const [baseItemId, imbuedItemId] of [
+    [ids.SALVE_AMULET_I__3, ids.SALVE_AMULET_EI__3],
+    [ids.SALVE_AMULET_I__5, ids.SALVE_AMULET_EI__5],
+  ]) hooks.events['nightmare-zone:imbued']({ player: p, baseItemId, imbuedItemId });
+  for (const id of [ids.SALVE_AMULET_I__3, ids.SALVE_AMULET_EI__3, ids.SALVE_AMULET_I__5, ids.SALVE_AMULET_EI__5]) {
+    p.worn[core.Equipment.AMULET_SLOT] = new core.Item(id, 1);
+    hooks.events['equipment:changed']?.({ player: p });
+  }
+  const Progress = require('../plugins/achievements/diaries/Progress.AchievementDiaries');
+  const diary = require('../plugins/achievements/diaries/Data.AchievementDiaries').BY_KEY.get('ardougne');
+  assert.deepEqual([...Progress.doneTasks(p, diary)], []);
+  assert.equal(Common.points(p), 799_999);
 });
 
 test('a logout during the entry fade cancels the dream: the fee back in the coffer, the dream still prepared', () => {

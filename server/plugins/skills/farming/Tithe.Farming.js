@@ -105,7 +105,7 @@ function titheObject(event) {
                 if (!player.getLocation().isWithinDistance(object.getLocation(), 3)) return;
                 leave(player); player.moveTo(new core.Location(1804, 3501, 0));
             }], ["Stay", () => {}]]);
-        } else if (player.getSkillManager().getCurrentLevel(core.Skill.FARMING) < 34) player.sendMessage("You need level 34 Farming to enter.");
+        } else if (player.getSkillManager().getMaxLevel(core.Skill.FARMING) < 34 || player.getSkillManager().getCurrentLevel(core.Skill.FARMING) < 34) player.sendMessage("You need level 34 Farming to enter.");
         else if (!CROPS.some(c => player.getInventory().contains(Data.itemId(c.name + " seed")))) player.sendMessage("Take some seeds from the table first.");
         else {
             enter(player); player.moveTo(new core.Location(1806, 3501, 0));
@@ -184,6 +184,9 @@ function titheItem(event) {
         plot.plant = { crop, stage: 0, watered: false, dead: false, fertilized: false, nextAt: Date.now() + 60000 };
         player.getPacketSender().sendVarbit(4901, crop + 1);
         player.performAnimation(new core.Animation(2291));
+        if (CROPS[crop].name === "Logavano") {
+            core.PluginManager.emitCustomEvent("diary:task", { player, diary: "kourend", task: "plant-some-logavano-seeds-at-the-tithe-farm" });
+        }
     } else if (plot.plant && id === Data.itemId("Spade")) {
         plot.plant = undefined; player.performAnimation(new core.Animation(830));
     } else if (plot.plant && !plot.plant.dead && plot.plant.stage < 3) {

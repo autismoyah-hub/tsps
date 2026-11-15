@@ -165,6 +165,7 @@ test('the Woodcutting request uses per-log farmed depletion while wild redwoods 
         getEquipment: () => ({ getItems: () => [], get: () => null }),
         getSkillManager: () => ({ getCurrentLevel: () => 99, stopSkillable() {}, addExperiences() {} }),
         getCombat: () => ({ reset() {} }), getForceMovement: () => null,
+        getRunEnergyUnits: () => 10000,
         getMovementQueue: () => ({ size: () => 0 }), getHitpoints: () => 99, isRegistered: () => true,
         getLocation: () => branches[0].getLocation().clone(),
         setPositionToFace() {}, performAnimation() {}, sendMessage() {},
@@ -182,8 +183,8 @@ test('the Woodcutting request uses per-log farmed depletion while wild redwoods 
     assert.equal(wild.respawnTicks, 199);
     const random = Math.random;
     try {
-        const rolls = [0, 0.99, 0.99, 0.99, 0.99, 0.99, 0.99, 0];
-        Math.random = () => rolls.shift() ?? 0.99; // log, no nests, then depletion
+        const rolls = [0, 0.99, 0.99, 0.99, 0.99, 0.99, 0];
+        Math.random = () => rolls.shift() ?? 0.99; // log, no clue nests (redwoods roll no bird nest), then depletion
         for (let i = 0; i < 4; i++) task.execute();
     } finally { Math.random = random; }
     assert.equal(inventory.getAmount(core.ItemIdentifiers.REDWOOD_LOGS), 1);

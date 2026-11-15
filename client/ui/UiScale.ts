@@ -24,8 +24,8 @@ function normalizeUiScale(scale: number): number {
 }
 
 function loadOverride(): number | null {
-    if (typeof localStorage === "undefined") return null;
     try {
+        if (typeof localStorage === "undefined") return null;
         const raw = localStorage.getItem(SCALE_STORAGE_KEY);
         if (raw === null) return null;
         const parsed = Number(raw);
@@ -81,8 +81,10 @@ export function osrsInterfaceScalingPercentFromScale(scale: number): number {
     );
 }
 
-export function getOsrsInterfaceScalingPercent(): number {
-    return osrsInterfaceScalingPercentFromScale(getUiScale());
+export function getOsrsInterfaceScalingPercent(mobile = false): number {
+    // Native mobile login replaces values below its minimum with 400%; keep that out of saved preferences.
+    return normalizeOsrsInterfaceScalingPercent(osrsInterfaceScalingPercentFromScale(getUiScale()),
+        mobile ? OSRS_INTERFACE_SCALING_MIN_MOBILE_PERCENT : OSRS_INTERFACE_SCALING_MIN_DESKTOP_PERCENT);
 }
 
 export function getDefaultUiScale(): number {
@@ -115,21 +117,21 @@ export function setUiScale(scale: number | null): void {
     overrideLoaded = true;
     if (scale === null) {
         manualScaleOverride = null;
-        if (typeof localStorage !== "undefined") {
-            try {
+        try {
+            if (typeof localStorage !== "undefined") {
                 localStorage.removeItem(SCALE_STORAGE_KEY);
-            } catch {}
-        }
+            }
+        } catch {}
         return;
     }
 
     const clamped = normalizeUiScale(scale);
     manualScaleOverride = clamped;
-    if (typeof localStorage !== "undefined") {
-        try {
+    try {
+        if (typeof localStorage !== "undefined") {
             localStorage.setItem(SCALE_STORAGE_KEY, String(clamped));
-        } catch {}
-    }
+        }
+    } catch {}
 }
 
 export function setRuneliteInterfaceScalingEnabled(enabled: boolean): void {

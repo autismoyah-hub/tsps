@@ -8,6 +8,9 @@
  * first flight, played at the balloon controls (BalloonTransport's Controls unit, the
  * "taverley" route), with the transcript's crash sites.
  *
+ * The stage numbers below are durable plugin stages. nativeProgress maps them to
+ * the native cache phases; see docs/quests/native-quest-state-a.md.
+ *
  * Stages (varbit 2866 "zep_quest", varp 912 bits 0-7 - see below): 1 accepted,
  * 2 first experiment done (origami balloon handed over), 3 second experiment done
  * (two papyrus and a sack of potatoes taken), 4 Auguste's sapling handed over
@@ -54,6 +57,7 @@
  * rewards, walkthrough) and its transcript.
  */
 module.exports = function registerEnlightenedJourneyQuest(api) {
+  const { giveReward } = require("../QuestRuntime");
   const {
     Equipment,
     ItemIdentifiers,
@@ -522,13 +526,13 @@ module.exports = function registerEnlightenedJourneyQuest(api) {
         return hasTestMaterials(player);
       case "8VDUe9": // has them in noted form
         return hasNotedTestMaterials(player);
-      case "HqA8Gq": // second experiment: two papyrus and a sack of potatoes
+      case "bhVUCf": // second experiment: two papyrus and a sack of potatoes
         return held(player, POTATOES) && held(player, PAPYRUS, EXPERIMENT_TWO_PAPYRUS);
-      case "y8uuFQ":
+      case "_OGIzV": // neither
         return !held(player, POTATOES) && !held(player, PAPYRUS, EXPERIMENT_TWO_PAPYRUS);
-      case "NbTsCS":
+      case "e-wFDO":
         return !held(player, POTATOES);
-      case "YB6Lup":
+      case "iBZETA":
         return !held(player, PAPYRUS, EXPERIMENT_TWO_PAPYRUS);
       case "gxuWQU": // sapling + basket of apples handout
         return !hasFlag(player, BIT_SAPLING_GIVEN) && inventory.getFreeSlots() >= 2;
@@ -619,11 +623,11 @@ module.exports = function registerEnlightenedJourneyQuest(api) {
       case "G1OzvY":
         return carriedWeight(player) > MAX_FLIGHT_WEIGHT;
       case "pgRm3-":
-        return held(player, LOGS, FLIGHT_LOGS) && held(player, TINDERBOX);
+        return hasFlightFuel(player) && held(player, TINDERBOX);
       case "z2wZOR":
         return !held(player, TINDERBOX);
       case "Kjqrcm":
-        return !held(player, LOGS, FLIGHT_LOGS);
+        return !hasFlightFuel(player);
       case "2DszCS":
         return inventory.getFreeSlots() >= 2;
       case "M-nwQB":
@@ -708,14 +712,6 @@ module.exports = function registerEnlightenedJourneyQuest(api) {
         player.getInventory().deleteNumber(BOWL, 1);
         setFlag(player, BIT_BOWL);
         return;
-      case "HqA8Gq": // second experiment takes two papyrus and the potatoes
-        if (!held(player, POTATOES) || !held(player, PAPYRUS, EXPERIMENT_TWO_PAPYRUS)) return;
-        player.getInventory().deleteNumber(PAPYRUS, EXPERIMENT_TWO_PAPYRUS);
-        player.getInventory().deleteNumber(POTATOES, 1);
-        if (quest.getStage(player) < STAGE_SECOND_EXPERIMENT) {
-          quest.setStage(player, STAGE_SECOND_EXPERIMENT);
-        }
-        return;
       case "gxuWQU": // sapling and basket of apples handout
         if (hasFlag(player, BIT_SAPLING_GIVEN) || player.getInventory().getFreeSlots() < 2) return;
         player.getInventory().adds(AUGUSTES_SAPLING, 1);
@@ -735,11 +731,34 @@ module.exports = function registerEnlightenedJourneyQuest(api) {
     }
   }
 
+  /** Storage owns eligibility: ten unnoted inventory logs OR ten stored logs, never a mix. */
+  function hasFlightFuel(player) {
+    const request = { player, station: FLIGHT_STATION, logs: FLIGHT_LOGS, canPay: held(player, LOGS, FLIGHT_LOGS) };
+    api.emitCustomEvent("balloon-transport:can-pay", request);
+    return request.canPay === true;
+  }
+
+  /** The same requirements when an offered flight is committed, before any fuel is taken. */
+  function canStartFlight(player) {
+    if (quest.getStage(player) !== STAGE_BALLOON_READY) return false;
+    let refusal = null;
+    if (hasFollower(player)) refusal = "You need to put your pet into your inventory before the flight.";
+    else if (carriedWeight(player) > MAX_FLIGHT_WEIGHT) refusal = "You have too much weight in your bag. You may only bring 40kg of weight.";
+    else if (!held(player, TINDERBOX)) refusal = "You need a tinderbox.";
+    else if (!hasFlightFuel(player)) refusal = "You don't have enough logs. You need ten normal logs.";
+    if (refusal) player.sendMessage(refusal);
+    return refusal === null;
+  }
+
   /** The ten logs onto Auguste's fire, from `source`: the balloon controls fly to Taverley. */
   function startFlight(player, source) {
-    if (quest.getStage(player) !== STAGE_BALLOON_READY) return;
-    if (!held(player, LOGS, FLIGHT_LOGS) || !held(player, TINDERBOX)) return;
-    api.emitCustomEvent("balloon-transport:quest-flight", { player, station: FLIGHT_STATION, logs: FLIGHT_LOGS, source });
+    if (!canStartFlight(player)) return;
+    const at = player.getLocation();
+    const origin = new Location(at.getX(), at.getY(), at.getZ());
+    api.emitCustomEvent("balloon-transport:quest-flight", {
+      player, station: FLIGHT_STATION, logs: FLIGHT_LOGS, source,
+      canStart: () => origin.equals(player.getLocation()) && canStartFlight(player),
+    });
   }
 
   /** Landed on Taverley's target: Auguste is there, and the quest moves on. */
@@ -786,8 +805,11 @@ module.exports = function registerEnlightenedJourneyQuest(api) {
       case "_ZdYV3": // end of cutscene
         event.handled = true;
         return;
-      case "MqDt3v": // second experiment cutscene
+      case "1JQEmc": // second experiment cutscene: Auguste takes two papyrus and the potatoes
         event.handled = true;
+        if (!held(player, POTATOES) || !held(player, PAPYRUS, EXPERIMENT_TWO_PAPYRUS)) return;
+        player.getInventory().deleteNumber(PAPYRUS, EXPERIMENT_TWO_PAPYRUS);
+        player.getInventory().deleteNumber(POTATOES, 1);
         if (quest.getStage(player) < STAGE_SECOND_EXPERIMENT) {
           quest.setStage(player, STAGE_SECOND_EXPERIMENT);
         }
@@ -932,7 +954,9 @@ module.exports = function registerEnlightenedJourneyQuest(api) {
       return;
     }
     if (itemId !== WILLOW_BRANCH || !BASKET_FRAME_OBJECT_IDS.has(objectId)) return;
-    if (quest.getStage(player) !== STAGE_MATERIALS || !saplingRecord(player)) return;
+    // Wiki: the 12 branches may be bought ("buy from the Grand Exchange, or plant a willow
+    // sapling"); what the basket needs is everything already handed to Auguste.
+    if (quest.getStage(player) !== STAGE_MATERIALS || !allMaterialsHanded(player)) return;
     event.handled = true;
     if (!held(player, WILLOW_BRANCH, REQUIRED_BRANCHES)) {
       startTranscript(
@@ -986,7 +1010,7 @@ module.exports = function registerEnlightenedJourneyQuest(api) {
   function handleItemOnNpc(event) {
     const { player, npcId, itemId } = event;
     if (!AUGUSTE_NPC_IDS.has(npcId) || itemId !== WILLOW_BRANCH) return;
-    if (!allMaterialsHanded(player) || !saplingRecord(player)) return;
+    if (quest.getStage(player) !== STAGE_MATERIALS || !allMaterialsHanded(player)) return;
     event.handled = true;
     startTranscript(
       api,
@@ -1125,18 +1149,26 @@ module.exports = function registerEnlightenedJourneyQuest(api) {
     skills.addExperiences(Skill.FARMING, 3000);
     skills.addExperiences(Skill.WOODCUTTING, 1500);
     skills.addExperiences(Skill.FIREMAKING, 4000);
-    player.getInventory().adds(BOMBER_CAP, 1);
+    giveReward(player, BOMBER_CAP, 1);
   }
 
   api.persistAttribute(FLAGS_ATTRIBUTE);
   api.persistAttribute(SAPLING_ATTRIBUTE);
   api.persistAttribute(STAN_ATTRIBUTE, 0);
 
+  // QH 06da90's zep_quest experiment/build/flight phases; cache DB completes at 200.
+  // The saved stage remains the plugin's compact phase for balloon callbacks and old saves.
+  function nativeProgress(stage) {
+    const phases = [0, 20, 40, 60, 70, 80, 90, 100, 200];
+    return phases[Math.max(0, Math.min(stage, STAGE_COMPLETE))];
+  }
+
   quest = registerQuest(api, {
     key: "enlightened_journey",
     name: "Enlightened Journey",
     varpId: VARP_ENLIGHTENED_JOURNEY,
     varbitId: VARBIT_ZEP_QUEST,
+    varbitValue: nativeProgress,
     startedValue: STAGE_STARTED,
     completionValue: STAGE_COMPLETE,
     questPoints: 1,

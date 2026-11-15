@@ -5,6 +5,12 @@
  */
 module.exports = function registerTheBloodMoonRises(api) {
   const { Animation, Boundary, Equipment, Graphic, HitDamage, HitMask, Item, ItemIdentifiers, Location, NpcIdentifiers, ObjectDefinition, ObjectIdentifiers, PrayerHandler, PrivateArea, Skill, World } = api.core;
+
+  /** Room for one more of `itemId` (`adds` never reports a failure); a slotless stand-in falls back to free slots. */
+  function hasRoom(inventory, itemId) {
+    if (typeof inventory.getAddableAmount === "function") return inventory.getAddableAmount(new Item(itemId, 1)) >= 1;
+    return (inventory.getFreeSlots?.() ?? 1) > 0;
+  }
   const { registerQuest, loadTranscripts, startTranscript } = require("../QuestRuntime");
   const { createQuestScenes } = require("../QuestScenes");
   const { handleDrakanDodgeRoll } = require("../bmr/DrakanDodgeRoll.TheBloodMoonRises");
@@ -1360,7 +1366,9 @@ module.exports = function registerTheBloodMoonRises(api) {
         : `A wall of blood surges from the ${direction}. Run straight toward it and cross its path by four tiles.`);
     }
     // Wiki: the player must dodge 3–5 lunges by stepping back onto the sparkling side.
-    // shortcut: use three lunges and a two-tick response window until a First Blood capture calibrates timing.
+    // shortcut: three lunges, within the Wiki's 3-5. rsprox 4288 times the rest: the telegraph, the strike 3 ticks
+    // on, the next telegraph 3-4 ticks after it. Live counts only a roll on the strike's own tick and catches a step
+    // a tick before, the Wiki's "tick perfect"; here any step onto the tile before the strike counts.
     processFirstBloodLunges(fight, player, boss, now) {
       if (fight.warning === "first-blood-lunge" && fight.impactAt && now >= fight.impactAt) {
         const loc = player.getLocation();
@@ -1381,7 +1389,7 @@ module.exports = function registerTheBloodMoonRises(api) {
           boss.setFlag?.("combat:no-retaliate", false);
           boss.getCombat?.()?.attack?.(player);
           player.sendMessage("After three clean lunges, Lowerniel turns his attention to you. You can now strike him.");
-        } else fight.nextAttackAt = now + 2;
+        } else fight.nextAttackAt = now + 3;
         return;
       }
       if (fight.impactAt || now < fight.nextAttackAt) return;
@@ -1422,7 +1430,7 @@ module.exports = function registerTheBloodMoonRises(api) {
       fight.markedX = playerLoc.getX();
       fight.markedY = playerLoc.getY();
       fight.warning = "first-blood-lunge";
-      fight.impactAt = now + 2;
+      fight.impactAt = now + 3;
       this.animate(fight, FINAL_DRAKAN_ANIM.thrustTelegraph);
       const direction = `${dy < 0 ? "south" : dy > 0 ? "north" : ""}${dx && dy ? "-" : ""}${dx < 0 ? "west" : dx > 0 ? "east" : ""}`;
       if (boss.getHitpoints() > 2900) {
@@ -1806,10 +1814,12 @@ module.exports = function registerTheBloodMoonRises(api) {
   function handleFirstBloodHit(event) {
     const npc = event?.npc;
     const hit = event?.hit;
-    const attacker = event?.attacker;
+    const attacker = hit?.getAttacker?.();
     const fight = npc && drakanEncounters.get(npc.getArea?.());
     if (!fight || fight.mode !== "first-blood" || fight.ending || !hit) return;
     if (npc !== fight.boss) {
+      // Ours: rsprox 4288 shows his hits landing on Vanescula and her apparently healed back. Keeping them at
+      // zero keeps her up without modelling that.
       if (!fight.damageUnlocked && fight.allies?.includes(npc) && attacker === fight.boss) {
         for (const part of hit.getHits?.() ?? []) part.setDamage(0);
         hit.updateTotalDamage?.();
@@ -3579,18 +3589,16 @@ module.exports = function registerTheBloodMoonRises(api) {
     if (!player.getInventory().contains(event.itemId)) return;
     const placements = { ...(story.bookPlacements ?? {}) };
     const key = `${plinth.x},${plinth.y}`;
+    if (placements[key] === book.id) {
+      player.sendMessage("That book is already on this plinth.");
+      return;
+    }
+    // The held book goes onto the plinth first: its slot then takes the plinth's book, even in a full inventory.
+    player.getInventory().deleteNumber(event.itemId, 1);
     if (placements[key]) {
-      if (placements[key] === book.id) {
-        player.sendMessage("That book is already on this plinth.");
-        return;
-      }
-      if (!player.getInventory().adds(placements[key], 1)) {
-        player.sendMessage("Make room in your inventory before changing the book on this plinth.");
-        return;
-      }
+      player.getInventory().adds(placements[key], 1);
       player.sendMessage(`You take ${SLEPE_BOOKS.find(({ id }) => id === placements[key])?.name ?? "the misplaced book"} from the plinth.`);
     }
-    player.getInventory().deleteNumber(event.itemId, 1);
     placements[key] = book.id;
     const complete = SLEPE_PLINTHS.every((spot) =>
       placements[`${spot.x},${spot.y}`] === spot.itemId);
@@ -6127,12 +6135,13 @@ module.exports = function registerTheBloodMoonRises(api) {
       (player.getAttribute(DRAKAN_ENCOUNTER_COMPLETE) || player.getAttribute(DRAKAN_DEATH_CONFIRMED) ||
         finalDrakanFight?.deathConfirmed)) {
       const inventory = player.getInventory();
-      if (!hasItem(player, ItemIdentifiers.SUNSPEAR) && !inventory.adds(ItemIdentifiers.SUNSPEAR, 1)) {
+      if (!hasItem(player, ItemIdentifiers.SUNSPEAR) && !hasRoom(inventory, ItemIdentifiers.SUNSPEAR)) {
         event.handled = true;
         player.sendMessage("Make room in your inventory to take the Sunspear from Lowerniel's body.");
         event.end = true;
         return;
       }
+      if (!hasItem(player, ItemIdentifiers.SUNSPEAR)) inventory.adds(ItemIdentifiers.SUNSPEAR, 1);
       event.handled = true;
       event.box = { items: [ItemIdentifiers.SUNSPEAR] };
     }
@@ -7057,10 +7066,14 @@ module.exports = function registerTheBloodMoonRises(api) {
       title: "Choose the stat you wish to be advanced!",
       onConfirm: (skill, name) => {
         if (player.getInventory().get(slot) !== item) return null;
+        // A chapter is only spent when its XP lands (an XP lock or an area's gate keeps the tome as it was).
+        const skills = player.getSkillManager();
+        const before = skills.getExperience(skill);
+        skills.addExperience(skill, 30000, true);
+        if (skills.getExperience(skill) === before) return null;
         const used = (Number(player.getAttribute(ATTRIBUTE)) || 0) + 1;
         player.setAttribute(ATTRIBUTE, used);
         if (used >= 6) player.getInventory().deleteAtSlot(slot, 1);
-        player.getSkillManager().addExperience(skill, 30000, false);
         return `You have been awarded 30,000 ${name} XP!`;
       },
     });
@@ -8437,10 +8450,11 @@ module.exports = function registerTheBloodMoonRises(api) {
       player.sendMessage("You already have all you need from these shelves.");
       return;
     }
-    if (!inventory.adds(itemId, 1)) {
+    if (!hasRoom(inventory, itemId)) {
       player.sendMessage("Make room in your inventory before taking anything from the shelves.");
       return;
     }
+    inventory.adds(itemId, 1);
     player.sendMessage(message);
   }
 
@@ -8500,10 +8514,10 @@ module.exports = function registerTheBloodMoonRises(api) {
     let variant = null;
     let changed = false;
     if (name === "amitire plant" && prepObjectAt(event, 2982, 7679, 0) && !hasItem(player, PREP.leaves)) {
-      changed = inventory.adds(PREP.leaves, 1);
+      changed = takeOne(player, PREP.leaves);
       variant = "hallowed-preparations-picking-the-amitire-plant";
     } else if (name === "shelves" && prepObjectAt(event, 3159, 7824, 1) && !hasItem(player, PREP.bowl)) {
-      changed = inventory.adds(PREP.bowl, 1);
+      changed = takeOne(player, PREP.bowl);
       variant = "hallowed-preparations-searching-the-shelves";
     } else if (name === "cupboard" && prepObjectAt(event, 3155, 7832, 1)) {
       event.handled = true;
@@ -8521,18 +8535,18 @@ module.exports = function registerTheBloodMoonRises(api) {
         "Nothing.", () => {});
       return;
     } else if ((name.includes("crate") || name.includes("blisterwood")) && prepObjectAt(event, 3177, 7843, 1) && !hasItem(player, PREP.logs)) {
-      changed = inventory.adds(PREP.logs, 1);
+      changed = takeOne(player, PREP.logs);
       variant = "hallowed-preparations-searching-the-blisterwood-crate";
     } else if ((name.includes("crate") || name.includes("sickle")) && prepObjectAt(event, 3181, 7841, 1) && !hasItem(player, PREP.blessedSickle)) {
-      changed = inventory.adds(PREP.blessedSickle, 1);
+      changed = takeOne(player, PREP.blessedSickle);
       variant = "hallowed-preparations-searching-the-sickle-crate";
     } else if (name === "chest" && !hasItem(player, PREP.diamond) && hasItem(player, PREP.blessedSickle) &&
       prepObjectAt(event, 3181, 7835, 1)) {
-      changed = inventory.adds(PREP.diamond, 1);
+      changed = takeOne(player, PREP.diamond);
       variant = "hallowed-preparations-searching-the-workshop-s-eastern-chest";
     } else if (name === "chest" && !hasItem(player, PREP.diamondTablet) && hasItem(player, PREP.diamondSickle) &&
       prepObjectAt(event, 3175, 7836, 1)) {
-      changed = inventory.adds(PREP.diamondTablet, 1);
+      changed = takeOne(player, PREP.diamondTablet);
       variant = "hallowed-preparations-searching-the-workshop-s-western-chest";
     } else if (name.includes("range") && prepObjectAt(event, 3160, 7826, 1) && inventory.contains(PREP.rawMeat)) {
       changed = replaceItems(player, [PREP.rawMeat], [PREP.rawMeat], [[PREP.cookedMeat, 1]]);
@@ -8551,6 +8565,10 @@ module.exports = function registerTheBloodMoonRises(api) {
           player.sendMessage("You upgrade your flail by swapping out the sickle and shortening the shaft before enhancing it with pure silvthrill.");
         }
       }, "No.", () => {});
+      return;
+    }
+    if (changed === null) {
+      event.handled = true;
       return;
     }
     if (!changed) return;
@@ -8593,8 +8611,6 @@ module.exports = function registerTheBloodMoonRises(api) {
       recipe = [[PREP.incompleteStew, PREP.cookedMeat], [PREP.incompleteStew, PREP.cookedMeat], [[PREP.uncookedStew, 1]]];
     } else if (pair.has(PREP.cookedStew) && pair.has(PREP.leaves)) {
       recipe = [[PREP.cookedStew, PREP.leaves], [PREP.cookedStew, PREP.leaves], [[PREP.stew, 1]]];
-    } else if (pair.has(PREP.blessedSickle) && pair.has(PREP.diamond)) {
-      recipe = [[PREP.blessedSickle, PREP.diamond], [PREP.blessedSickle, PREP.diamond], [[PREP.diamondSickle, 1]]];
     } else if (pair.has(PREP.diamondSickle) && pair.has(PREP.diamondTablet)) {
       recipe = [[PREP.diamondSickle, PREP.diamondTablet], [PREP.diamondSickle, PREP.diamondTablet], [[PREP.enchantedSickle, 1]]];
     } else if (pair.has(PREP.enchantedSickle) && pair.has(PREP.logs)) {
@@ -8604,16 +8620,39 @@ module.exports = function registerTheBloodMoonRises(api) {
     }
     if (!recipe) return;
     event.handled = true;
-    if (pair.has(PREP.blessedSickle) || pair.has(PREP.enchantedSickle)) {
-      const diamond = pair.has(PREP.blessedSickle);
-      api.sendMultiChatboxPrompt(player, diamond ? "Craft a diamond sickle?" : "Craft an enhanced blisterwood sickle?",
+    if (pair.has(PREP.enchantedSickle)) {
+      api.sendMultiChatboxPrompt(player, "Craft an enhanced blisterwood sickle?",
         "Yes.", () => craftPrepRecipe(player, recipe, pair), "No.", () => {});
     } else craftPrepRecipe(player, recipe, pair);
   }
 
   function takePrepItem(player, id, message) {
     if (stage(player) !== STAGE.PREPARATIONS || hasItem(player, id)) return;
-    if (player.getInventory().adds(id, 1)) player.sendMessage(message);
+    if (takeOne(player, id)) player.sendMessage(message);
+  }
+
+  /** One of `id`, or null (with the inventory's own full message) when there is no room: `adds` never says. */
+  function takeOne(player, id) {
+    const inventory = player.getInventory();
+    if (!hasRoom(inventory, id)) {
+      inventory.full?.();
+      return null;
+    }
+    inventory.adds(id, 1);
+    return true;
+  }
+
+  /** The diamond on a silver sickle (b) (Crafting's gem sickles) belongs to the preparations. */
+  function allowDiamondSickle(request) {
+    if (request.product !== PREP.diamondSickle || quest.isComplete(request.player)) return;
+    if (stage(request.player) === STAGE.PREPARATIONS) request.allowed = true;
+  }
+
+  /** A diamond sickle made: the preparations' helper varbits follow the inventory, as after any prep recipe. */
+  function diamondSickleMade({ player, product }) {
+    if (product === PREP.diamondSickle && !quest.isComplete(player) && stage(player) === STAGE.PREPARATIONS) {
+      quest.setStage(player, STAGE.PREPARATIONS);
+    }
   }
 
   function craftPrepRecipe(player, recipe, pair) {
@@ -8626,8 +8665,6 @@ module.exports = function registerTheBloodMoonRises(api) {
       player.setAttribute(PREP_ATTRIBUTE, { ...(player.getAttribute(PREP_ATTRIBUTE) ?? {}), stakes: true });
       publishHelperVarbits(player);
       player.sendMessage("You cut the blisterwood logs into five stakes.");
-    } else if (pair.has(PREP.blessedSickle)) {
-      player.sendMessage("You embed the diamond into the sickle.");
     } else if (pair.has(PREP.diamondSickle)) {
       player.sendMessage("You enchant the diamond sickle.");
     } else if (pair.has(PREP.enchantedSickle)) {
@@ -8847,6 +8884,8 @@ module.exports = function registerTheBloodMoonRises(api) {
   api.onItemOnObject(handleBloodHuntItemOnObject, { noted: false });
   api.onItemOnItem(handleAncientShieldAssembly);
   api.onItemOnItem(handlePrepItemOnItem);
+  api.onCustomEvent("crafting:gem-sickle-allowed", allowDiamondSickle);
+  api.onCustomEvent("crafting:gem-sickle-made", diamondSickleMade);
   api.onItemOnItem(handleBloodHuntItemOnItem);
   api.onItemOnNpc(feedSafalaan);
   api.onItemAction("Dusty book", { Read: readDustyBook });

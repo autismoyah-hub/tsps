@@ -1,5 +1,53 @@
 {
-  "$comment": "Lasting decisions for scripts/sync-loc-teleports.cjs (docs/loc-teleports.md): captured loc teleports to leave out, by tile (one placement of a name many locs share), exact gameval name or pattern, with the reason; and `requirements`, the gates live OSRS refused some players at, with the requirement (Wiki) and the captured refusal; and `dialogues`, locs whose option asks first, with the question and options as the game sends them (chatbox_multi_init in the recordings): `go` are the options that lead to the captured destination, `ladder` hands an uncaptured direction to Ladders, and `answer` has the ticks from the answer (the captured ticks count from arriving, and include reading the question). A requirement or dialogue without a tile applies to every placement of that name. `include` takes locs of other kinds that are a plain move (exits, lifts, wells), by name, with the reason.",
+  "$comment": "Lasting decisions for scripts/sync-loc-teleports.cjs (docs/loc-teleports.md): captured loc teleports to leave out, by tile (one placement of a name many locs share), exact gameval name or pattern, with the reason; and `requirements`, the gates live OSRS refused some players at, with the requirement (Wiki) and the captured refusal; and `dialogues`, locs whose option asks first, with the question and options as the game sends them (chatbox_multi_init in the recordings): `go` are the options that lead to the captured destination, `ladder` hands an uncaptured direction to Ladders, and `answer` has the ticks from the answer (the captured ticks count from arriving, and include reading the question). `ignoreSounds`, the sounds a capture hears around a climb that are not the loc's: attack, hit, block and weapon sounds of a fight going on nearby (id and the Wiki's List of sound IDs name), which toEntry skips when it takes the entry's sound (#2595 found a hurt sound on stairs). A requirement or dialogue without a tile applies to every placement of that name. `include` takes locs of other kinds that are a plain move (exits, lifts, wells), by name, with the reason.",
+  "ignoreSounds": {
+    "369": "cow_attack",
+    "397": "black_demon_attack",
+    "400": "demon_attack",
+    "408": "dragon_attack",
+    "409": "dragon_death",
+    "410": "dragon_hit",
+    "449": "moss_giant_attack",
+    "511": "human_block_1",
+    "513": "human_hit",
+    "518": "human_hit_1",
+    "519": "human_hit_2",
+    "520": "human_hit_3",
+    "521": "human_hit_4",
+    "537": "insect_attack",
+    "539": "insect_death",
+    "718": "rock_crab_attack",
+    "726": "rock_lobster_attack",
+    "815": "sukqa_attack",
+    "1615": "dagganoth_attack",
+    "1616": "dagganoth_critter_attack",
+    "2497": "baxe_crush",
+    "2500": "hacksword_slash",
+    "2503": "2H_slash",
+    "2548": "stabsword_slash",
+    "2566": "unarmed_punch",
+    "2693": "arrowlaunch2",
+    "2700": "longbow",
+    "2749": "swordclash6_4",
+    "2750": "swordclash6_5",
+    "2766": "sword_hit2_1",
+    "2770": "sword_hit2_5",
+    "2811": "leather_hit_1",
+    "2812": "leather_hit_2",
+    "2841": "blade2_1",
+    "2843": "blade2_3",
+    "2844": "blade2_4",
+    "2845": "blade2_5",
+    "2867": "gorak_attack",
+    "2958": "dragon_shield_1",
+    "2961": "dragon_shield_3",
+    "3312": "hatchet_skeleton_attack",
+    "3313": "warhammer_skeleton_attack",
+    "3326": "lotr_terrordog_attack",
+    "3347": "lotr_zombie_attack",
+    "3717": "dog_attack",
+    "7254": "strangled_boar_attack"
+  },
   "include": {
     "fossil_slayer_cave_task": "The Fossil Island Slayer cave's exit.",
     "cof_over_falloff2_rope": "The way down into the Chasm of Fire.",
@@ -70,7 +118,42 @@
       "requires": [
         {"varbit": 3759, "atLeast": 3, "refuse": {"message": "You must learn barbarian firemaking from Otto before diving into the Ancient Cavern."}},
         {"varbit": 3764, "atLeast": 1, "refuse": {"message": "You must speak to Otto about pyre ships before diving into the Ancient Cavern."}}
-      ]}
+      ]},
+    {"name": "prif_wall_gate_left", "source": "https://oldschool.runescape.wiki/w/Prifddinas (All methods of entering the city require completion of Song of the Elves); TSPS wording for the refusal",
+      "requires": [
+        {"quest": "song_of_the_elves", "refuse": {"message": "You need to complete Song of the Elves to enter Prifddinas."}}
+      ]},
+    {"name": "prif_wall_gate_right", "source": "https://oldschool.runescape.wiki/w/Prifddinas (All methods of entering the city require completion of Song of the Elves); TSPS wording for the refusal",
+      "requires": [
+        {"quest": "song_of_the_elves", "refuse": {"message": "You need to complete Song of the Elves to enter Prifddinas."}}
+      ]},
+    {"name": "dorgesh_city_entrance_left", "source": "https://oldschool.runescape.wiki/w/Dorgesh-Kaan (It can only be accessed after completion of the Death to the Dorgeshuun quest); TSPS wording for the refusal",
+      "requires": [
+        {"quest": "death_to_the_dorgeshuun", "refuse": {"message": "You need to complete Death to the Dorgeshuun to enter Dorgesh-Kaan."}}
+      ]},
+    {"name": "dorgesh_city_entrance_right", "source": "https://oldschool.runescape.wiki/w/Dorgesh-Kaan (It can only be accessed after completion of the Death to the Dorgeshuun quest); TSPS wording for the refusal",
+      "requires": [
+        {"quest": "death_to_the_dorgeshuun", "refuse": {"message": "You need to complete Death to the Dorgeshuun to enter Dorgesh-Kaan."}}
+      ]},
+    {"name": "vmq4_crypt_door_to_moki", "source": "#3828: the multiloc's Pass-through variant shows from The Final Dawn's stage 61 (vmq4, varbit 16663); before it the closed door is the quest's. No refusal: the client shows no Pass-through",
+      "requires": [
+        {"varbit": 16663, "atLeast": 61, "refuse": {}}
+      ]},
+    {"name": "vmq4_crypt_lift", "source": "#3828: https://oldschool.runescape.wiki/w/Lift_Platform_(Crypt_of_Tonali) (the lift can be activated for future use); Use shows once vmq4_lift_activated (varbit 16694) is on. No refusal: the client shows no Use",
+      "requires": [
+        {"varbit": 16694, "atLeast": 1, "refuse": {}}
+      ]},
+    {"name": "vmq4_crypt_lift_surface", "source": "#3828: https://oldschool.runescape.wiki/w/Lift_Platform_(Crypt_of_Tonali) (an un-interactable pit until activated); Use shows once vmq4_lift_activated (varbit 16694) is on. No refusal: the client shows no Use",
+      "requires": [
+        {"varbit": 16694, "atLeast": 1, "refuse": {}}
+      ]},
+    {"name": "araxxor_boss_tunnel_multi", "x": 3655, "y": 9814, "z": 0, "source": "https://oldschool.runescape.wiki/w/Araxxor (92 Slayer, Morytania access, an araxyte or spider task); no refusal captured, the lines are the lair's own",
+      "requires": [
+        {"skill": "slayer", "atLeast": 92, "refuse": {"message": "You need a Slayer level of at least 92 to enter Araxxor's lair."}},
+        {"quest": "priest_in_peril", "refuse": {"message": "You need to complete Priest in Peril before entering Morytania."}},
+        {"slayerTask": ["araxyte", "spider"], "refuse": {"message": "You need to be assigned an araxyte or spider Slayer task to enter Araxxor's lair."}}
+      ],
+      "mesbox": "You crawl through the webbed tunnel."}
   ],
   "dialogues": [
     {"name": "varlamore_thieving_house_window_multi", "prompt": "Climb out of the window?", "options": ["Yes.", "No."], "go": ["Yes."], "answer": {"animTick": 1, "tick": 2}},

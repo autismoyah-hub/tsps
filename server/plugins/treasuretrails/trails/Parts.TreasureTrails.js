@@ -6,9 +6,12 @@
 // (part 1, 2 or 3 by its place on the clue); combining all three with the clue gives the next step.
 // Some parts ask more of the player (data/master-parts.json): Robin, Ghommal and Wizard Cromperty
 // want strong gear, Abbot Langley a negative prayer bonus, the Monk of Entrana a weapon or armour
-// worn as one tries to sail, the Mage of Zamorak and Juna three god items, Sir Vyvin white plate.
+// worn as one tries to sail, the Mage of Zamorak and Juna three god items, Sir Vyvin white plate,
+// and Viggora a ring of visibility and ghostspeak, with Curse of the Empty Lord up to him and at the
+// spot of the player's own ghost sequence (asked of the miniquest through its requirementEvent).
 const Runtime = require("./Runtime.TreasureTrails");
 const Dialogue = require("./Dialogue.TreasureTrails");
+const { playDig } = require("./Dig.TreasureTrails");
 const { byName } = require("./Tiers.TreasureTrails");
 const PASS = ["treasure-trails-master", "treasure-trails-master-with-inventory-space-available"];
 const NO_SPACE = "Hey, I have something for you but you don't have any space for it!";
@@ -32,9 +35,18 @@ function partIds() {
   return Runtime.TORN_PARTS.map(name => core.CacheDefinitions.getObjId(name));
 }
 
-/** Whether the player still has a trail's torn part, carried or banked (its token links it). */
+/**
+ * Whether a torn part belongs to the trail's current step: its token names the trail, its revision the step (give()
+ * stamps both). A part left over from an earlier three-part step of the same trail is not this step's.
+ */
+function ofStep(item, trail) {
+  const meta = item?.getMetaValue(Runtime.metaKey(trail.tier));
+  return meta?.token === trail.state.token && meta?.revision === trail.state.revision;
+}
+
+/** Whether the player still has a trail's torn part, carried or banked (its token and revision link it). */
 function owns(player, trail, index) {
-  const ours = item => item?.getId() === partIds()[index] && item.getMetaValue(Runtime.metaKey(trail.tier))?.token === trail.state.token;
+  const ours = item => item?.getId() === partIds()[index] && ofStep(item, trail);
   return player.getInventory().getItems().some(ours) || player.getBanks().some(bank => bank?.getItems().some(ours));
 }
 
@@ -69,8 +81,7 @@ function openPart(player, matches) {
 
 /** The torn parts of a trail the player carries, by part number (its token and revision link them). */
 function heldParts(player, trail) {
-  return partIds().map(id => player.getInventory().getItems().findIndex(item => item && item.getId() === id &&
-    item.getMetaValue(Runtime.metaKey(trail.tier))?.token === trail.state.token));
+  return partIds().map(id => player.getInventory().getItems().findIndex(item => item && item.getId() === id && ofStep(item, trail)));
 }
 
 function wornIds(player) {
@@ -78,9 +89,14 @@ function wornIds(player) {
 }
 
 /** Whether the player meets a part's condition (data/master-parts.json, or its cache outfit). */
-function meets(player, step) {
+function meets(player, step, npc = null) {
   const rule = Runtime.MASTER_PARTS.conditions[step.key];
   if (!rule) return true;
+  if (rule.requirementEvent) {
+    const request = { player, npc, ready: false, here: false };
+    api.emitCustomEvent(rule.requirementEvent, request);
+    if (request.ready !== true || request.here !== true) return false;
+  }
   if (rule.attack || rule.other) {
     core.BonusManager.update(player);
     const bonuses = player.getBonusManager();
@@ -153,10 +169,11 @@ function talk(event) {
   const { player, npcId, npc } = event;
   const definition = event.definition ?? npc.getCurrentDefinition?.(player);
   const option = definition?.getActions?.()[event.clickType - 1];
-  if (option !== "Talk-to" && option !== "Take-boat") return;
+  // The mysterious ghosts (Viggora) spell it "Talk-To" in the cache.
+  if (!["talk-to", "take-boat"].includes(String(option ?? "").toLowerCase())) return;
   const found = openPart(player, step => step.target === "npc" && step.npcIds.includes(npcId));
   if (!found) return;
-  if (!meets(player, found.step)) {
+  if (!meets(player, found.step, npc)) {
     // Robin says why; the others carry on as they normally would.
     const rule = Runtime.MASTER_PARTS.conditions[found.step.key];
     if (!rule?.fail) return;
@@ -186,7 +203,7 @@ function dig(event) {
   const found = partAt(player, step => step.target === "coord" && distance(location(player), step.location) === 0);
   if (!found) return;
   event.allow = false;
-  player.performAnimation(new core.Animation(core.CacheDefinitions.getSeqId("human_dig") ?? 830));
+  playDig(core, player);
   // Live captures: digging again while the part is still had.
   if (!found.open) { player.sendMessage(ALREADY_FOUND); return; }
   if (!carries(player, found.step)) return;

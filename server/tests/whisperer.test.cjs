@@ -1588,7 +1588,7 @@ test('Ketla replacement uses her generated conversation and grants the plain fra
 test('capture messages accompany special activation, depletion and bind impact', t => {
     const f=fixture(), messages=[],sounds=[],graphics=[];
     f.player.sendMessage=text=>messages.push(text);
-    const sender=new Proxy({}, {get:(_,name)=>(...args)=>{if(name==='sendSoundEffect')sounds.push(args[0]);return sender;}});
+    const sender=new Proxy({}, {get:(_,name)=>(...args)=>{if(name==='sendSoundEffect')sounds.push(args[0]);if(name==='sendTypedMessage')messages.push(args[0]===core.ChatType.SPAM?`spam:${args[1]}`:args[1]);return sender;}});
     f.player.getPacketSender=()=>sender;
     f.player.performGraphic=graphic=>graphics.push(graphic.getId());
     startSpecial(f.fight,'seeds');
@@ -1596,7 +1596,8 @@ test('capture messages accompany special activation, depletion and bind impact',
     assert.deepEqual(sounds,[1664]);
     f.fight.special.left=1;
     Specials.process(f.fight);
-    assert.ok(messages.includes(Common.data.messages.deplete));
+    // Recorded: the depletion is spam (58); the failed-seeds line is a game message.
+    assert.ok(messages.includes(`spam:${Common.data.messages.deplete}`));
     assert.ok(messages.includes(Common.data.messages.seedsFailed));
     for(let tick=0;tick<7;tick++)f.fight.process();
     assert.ok(messages.includes(Common.data.messages.bind));
@@ -1645,4 +1646,33 @@ test('melee recovery retains launched volley impacts and removes future shots; e
     g.fight.volley();g.fight.process();g.fight.stop();
     for(let tick=0;tick<5;tick++)g.fight.process();
     assert.equal(g.fight.events.length,0);
+});
+
+test('Ketla reclaims a lost blackstone fragment, but not while one is banked', () => {
+    Common.init({ core, emitCustomEvent(name, request) { if (name === 'quest:is-complete') request.complete = true; }, removeNpc() { } });
+    try {
+        const reclaimAt = (player) => {
+            const event = { player, npcId: core.NpcIdentifiers.KETLA, stepId: '5mQjA2', handled: false };
+            Site.reclaim(event);
+            return event;
+        };
+        const someone = () => {
+            const p = new Player(null);
+            p.getSession = () => ({ sendClientPacket: () => true, write: () => true });
+            return p;
+        };
+        const banked = someone();
+        banked.getBank(0).add(new core.Item(Common.data.items.fragment, 1), false);
+        assert.equal(reclaimAt(banked).handled, true, 'Ketla has nothing to give');
+        assert.equal(banked.getInventory().contains(Common.data.items.fragment), false);
+        const lost = someone();
+        reclaimAt(lost);
+        assert.equal(lost.getInventory().contains(Common.data.items.fragment), true, 'a lost one comes back');
+        const placeholder = someone();
+        placeholder.getBank(1).add(new core.Item(Common.data.items.fragment, 0), false);
+        reclaimAt(placeholder);
+        assert.equal(placeholder.getInventory().contains(Common.data.items.fragment), true, 'a bank placeholder owns nothing');
+    } finally {
+        Common.init({ core, emitCustomEvent() { }, removeNpc() { } });
+    }
 });

@@ -7,10 +7,13 @@ Server.installProductionPathResolver();
 
 const { CachePipeline } = require('../dist/game/cache/CachePipeline');
 const { PluginManager } = require('../dist/plugins/PluginManager');
+const { Dialogue } = require('../dist/game/model/dialogues/entries/Dialogue');
 const Shared = require('../plugins/minigames/mixology/Shared.Mixology');
 const Orders = require('../plugins/minigames/mixology/Orders.Mixology');
 const Stations = require('../plugins/minigames/mixology/Stations.Mixology');
 const Mixer = require('../plugins/minigames/mixology/Mixer.Mixology');
+const Goggles = require('../plugins/minigames/mixology/Goggles.Mixology');
+const HERBLORE = require('../plugins/skills/data/herblore.json');
 
 before(() => {
   CachePipeline.initialize();
@@ -97,6 +100,84 @@ test('the resin text over the belt matches the capture', () => {
   assert.equal(Orders.chatterText({ mox: 10, aga: 0, lye: 0 }), '<col=389cff>+10 Mox</col>');
   assert.equal(Orders.chatterText({ mox: 0, aga: 672, lye: 224 }), '   <col=11ff00>+672 Aga</col>   <col=ff242f>+224 Lye</col>');
   assert.equal(Orders.chatterText({ mox: 448, aga: 0, lye: 560 }), '<col=389cff>+448 Mox</col>   <col=ff242f>+560 Lye</col>');
+});
+
+/** A real player at the conveyor, with the registered Fulfil-order handler and its packets recorded. */
+function conveyorHandIn(t, items) {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const core = PluginManager.getCoreApi();
+  const previousApi = Shared.api();
+  const hooks = new Map();
+  const sounds = [], chat = [], boxes = [];
+  const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true,
+    send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+  const player = new Player(new PlayerSession(channel));
+  player.setIndex(1801);
+  player.setUsername('mixologybelt');
+  player.setLocation(new core.Location(Shared.LOC.CONVEYOR.x, Shared.LOC.CONVEYOR.y - 1, Shared.LAB.z));
+  t.after(() => {
+    core.TaskManager.cancelTasks(player.getIndex());
+    player.setRegistered(false);
+    Shared.bind(previousApi);
+  });
+  const sender = player.getPacketSender();
+  t.mock.method(sender, 'sendSound', (id, loops, delay) => { sounds.push([id, delay]); return sender; });
+  t.mock.method(sender, 'sendTypedMessage', (type, text) => { chat.push([type, text]); return sender; });
+  t.mock.method(sender, 'sendMessage', (text) => { chat.push([0, text]); return sender; });
+  t.mock.method(sender, 'sendChatboxInterface', (id) => { boxes.push(id); return sender; });
+  const api = { ...previousApi, core,
+    onObjectInteraction(name, actions) { hooks.set(name, actions); },
+    emitCustomEvent() {},
+    spawnNpc: () => null,
+    removeNpc() {},
+  };
+  Shared.bind(api);
+  Orders(api);
+  Shared.set(player, Shared.VARBIT.MET_SUPERVISOR, 1);
+  Shared.set(player, Shared.VARBIT.ORDER_TYPE[0], 1);
+  Shared.set(player, Shared.VARBIT.ORDER_MODIFIER[0], Shared.MODIFIER.AGITATOR);
+  for (const item of items) player.getInventory().add(item, false);
+  hooks.get(Shared.OBJECT.CONVEYOR)['Fulfil-order']({ player });
+  return { player, sounds, chat, boxes };
+}
+
+test('conveyor: with no finished potion, a message box says so and nothing is deposited', t => {
+  const h = conveyorHandIn(t, []);
+  const text = "You're not carrying any finished potions.";
+  const { ChatType } = PluginManager.getCoreApi();
+  assert.deepEqual(h.chat, [[ChatType.MESBOX, text]]);
+  assert.deepEqual(h.boxes, [229]); // messagebox
+  assert.deepEqual(h.sounds, []);
+  assert.equal(Shared.get(h.player, Shared.VARBIT.ORDER_TYPE[0]), 1, 'orders are not re-drawn');
+});
+
+test('conveyor: a hand-in that fills an order also plays 9512 (delay 20), once', t => {
+  const filled = conveyorHandIn(t, [finished(1, Shared.MODIFIER.AGITATOR)]);
+  assert.deepEqual(filled.sounds, [[2739, 15], [9512, 20]]);
+  assert.deepEqual(filled.boxes, []);
+});
+
+test('conveyor: an unordered hand-in plays only the deposit sound', t => {
+  const unordered = conveyorHandIn(t, [finished(1, Shared.MODIFIER.RETORT)]);
+  assert.deepEqual(unordered.sounds, [[2739, 15]]);
+  assert.ok(unordered.chat.some(([, text]) => /fail to fulfil an order/.test(text)));
+});
+
+test('every lab message box also writes its text to chat, line breaks as spaces', () => {
+  const { ChatType } = PluginManager.getCoreApi();
+  const chat = [];
+  // Each box logs its own chat line as it opens, as the real one does.
+  const player = {
+    getPacketSender: () => ({ sendTypedMessage: (type, text) => chat.push([type, text]) }),
+    getDialogueManager: () => ({ startDialogues(chain) { for (const d of chain.getDialogues().values()) if (d.getText) Dialogue.sendBoxChatLine(player, d.getText()); } }),
+  };
+  Shared.statement(player, "You don't currently have enough reagents to mix that potion. You<br>are missing the following:<br>30 Aga");
+  Shared.itemStatement(player, Shared.ITEM.LAB_NOTES, 'You take a set of lab notes from the bookshelf.');
+  assert.deepEqual(chat, [
+    [ChatType.MESBOX, "You don't currently have enough reagents to mix that potion. You are missing the following: 30 Aga"],
+    [ChatType.MESBOX, 'You take a set of lab notes from the bookshelf.'],
+  ]);
 });
 
 /** Exercise the shared reward shop with actual cache rows and a native inventory. */
@@ -286,4 +367,335 @@ test('owner sale checks update the side panel and reject previously offered sale
   h.sell(28613);
   assert.equal(h.inventory.getAmount(28613), 0);
   assert.equal(h.inventory.getAmount(28134), 2000);
+});
+
+
+/** Real player/items and the station's registered callbacks, with a controlled processing clock.
+ * This does not dispatch a client packet or render the NPC headbar. */
+function stationWork(t, key = 'alembic') {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const core = PluginManager.getCoreApi();
+  const previousApi = Shared.api();
+  const hooks = new Map();
+  const itemHooks = [];
+  const bars = new Set();
+  const sounds = [];
+  const xp = [];
+  let now = 0;
+  let player;
+  t.after(() => {
+    try {
+      if (player) {
+        Stations.stop(player);
+        core.TaskManager.cancelTasks(player.getIndex());
+        player.setRegistered(false);
+      }
+      assert.equal(bars.size, 0, 'owned progress bars are removed');
+    } finally {
+      Shared.bind(previousApi);
+    }
+  });
+  const channel = { kind: 'test', remoteAddress: '127.0.0.1', isOpen: () => true,
+    send: () => true, close() {}, onData() {}, onError() {}, onClose() {} };
+  player = new Player(new PlayerSession(channel));
+  player.setIndex(1800);
+  player.setUsername('mixologystation');
+  const station = Stations.STATIONS[key];
+  const tile = new core.Location(station.loc.x, station.loc.y - 1, Shared.LAB.z);
+  player.setLocation(tile);
+  const skills = player.getSkillManager();
+  skills.setExperience(core.Skill.HERBLORE, core.SkillManager.getExperienceForLevel(60));
+  skills.setMaxLevel(core.Skill.HERBLORE, 60);
+  skills.setCurrentLevel(core.Skill.HERBLORE, 60, false);
+  assert.equal(Stations.total(player), 25);
+  const realAddXp = skills.addExperiences.bind(skills);
+  t.mock.method(skills, 'addExperiences', (skill, amount, ...rest) => {
+    if (skill === core.Skill.HERBLORE) xp.push(amount);
+    return realAddXp(skill, amount, ...rest);
+  });
+  const sender = player.getPacketSender();
+  const realSound = sender.sendSound.bind(sender);
+  t.mock.method(sender, 'sendSound', (id, loops, delay, ...rest) => {
+    sounds.push({ now, id, loops, delay });
+    return realSound(id, loops, delay, ...rest);
+  });
+  t.mock.method(Shared, 'tick', () => now);
+  const api = { ...previousApi, core,
+    onObjectInteraction(name, actions) { hooks.set(name, actions); },
+    onItemOnObject(handler) { itemHooks.push(handler); },
+    spawnNpc() {
+      const bar = { showHeadbar() {} };
+      bars.add(bar);
+      return bar;
+    },
+    removeNpc(bar) { bars.delete(bar); },
+  };
+  Shared.bind(api);
+  Stations(api);
+  Shared.set(player, Shared.VARBIT.MET_SUPERVISOR, 1);
+  const potion = Shared.potion(1);
+  player.getInventory().add(new core.Item(potion.unfinished, 1), true);
+  const event = { player, objectId: station.loc.id,
+    location: new core.Location(station.loc.x, station.loc.y, Shared.LAB.z) };
+  const action = { alembic: 'Crystalise-potion', retort: 'Concentrate-potion', agitator: 'Homogenise-potion' }[key];
+  const interact = () => hooks.get(station.name)[action]({ ...event });
+  function start() {
+    const itemSlot = player.getInventory().getItems().findIndex(item => item?.getId() === potion.unfinished);
+    assert.ok(itemSlot >= 0);
+    const use = { ...event, itemId: potion.unfinished, itemSlot, handled: false };
+    for (const handler of itemHooks) handler(use);
+    assert.equal(use.handled, true, 'real registered item-on-station handler accepted the potion');
+    assert.equal(player.getInventory().getAmount(potion.unfinished), 0);
+    assert.equal(Shared.get(player, station.potionVarbit), 1);
+    assert.equal(Stations.isWorking(player), true);
+  }
+  function advance(click = false) {
+    now++;
+    if (click) interact();
+    Stations.tick(player, now);
+  }
+  function leaveAndResume() {
+    player.setLocation(new core.Location(tile.getX() + 1, tile.getY(), tile.getZ()));
+    advance();
+    assert.equal(Stations.isWorking(player), false, 'moving away stops active work');
+    assert.equal(Shared.get(player, station.potionVarbit), 1, 'unfinished potion stays in station');
+    player.setLocation(tile);
+    interact();
+    assert.equal(Stations.isWorking(player), true);
+  }
+  function finish() {
+    for (let i = 0; i < 40 && Stations.isWorking(player); i++) advance();
+    assert.equal(Stations.isWorking(player), false, 'bounded processing completed');
+    assert.equal(Shared.get(player, station.potionVarbit), 0);
+    assert.equal(Shared.get(player, station.progressVarbit), 0);
+    const carried = player.getInventory().getItems().filter(item => item && item.getId() >= 0 && item.getAmount() > 0);
+    assert.equal(carried.length, 1, 'one input becomes exactly one output, without extra items');
+    assert.equal(carried[0].getId(), potion.finished);
+    assert.equal(carried[0].getAmount(), 1);
+    assert.equal(carried[0].getMetaValue(Shared.META.MODIFIER), station.modifier);
+    assert.equal(bars.size, 0);
+  }
+  const cues = () => sounds.filter(sound => sound.id === 2655);
+  return { player, station, start, advance, interact, leaveAndResume, finish, xp, cues,
+    progress: () => Shared.get(player, station.progressVarbit),
+    hit: () => Shared.get(player, station.hitVarbit) };
+}
+
+test('alembic: a missed first window rearms after seven active pumps, independently of progress', t => {
+  const f = stationWork(t);
+  f.start();
+  for (let i = 0; i < 4; i++) f.advance();
+  assert.deepEqual(f.cues(), [{ now: 4, id: 2655, loops: 1, delay: 30 }]);
+  f.advance(); // Leave the existing one-step response window unused.
+  f.advance(true); // A late click loses progress and starts the retry count.
+  assert.equal(f.progress(), 3, 'late click deducts two from five');
+  assert.deepEqual(f.xp, []);
+  for (let i = 0; i < 6; i++) f.advance();
+  assert.equal(f.cues().length, 1, 'six following pumps cannot open the recovery cue');
+  f.advance();
+  assert.deepEqual(f.cues().map(sound => [sound.now, sound.delay]), [[4, 30], [13, 30]]);
+  assert.deepEqual(f.xp, [], 'the cue itself grants nothing');
+  f.advance(true); // The established delayed-cue response phase is unchanged.
+  assert.deepEqual(f.xp, [14]);
+  assert.equal(f.hit(), 1);
+  assert.equal(f.progress(), 20, 'ten progress plus one third of 25 and the ordinary click step');
+  f.finish();
+  assert.deepEqual(f.xp, [14]);
+});
+
+test('alembic: an early click keeps the initial retry target rather than shifting it on every miss', t => {
+  const f = stationWork(t);
+  f.start();
+  f.advance(true); // Failure on active pump one: target pump eight.
+  assert.equal(f.progress(), 0);
+  f.advance(true); // Another bad click must not postpone the initial target.
+  for (let i = 0; i < 5; i++) f.advance();
+  assert.deepEqual(f.cues(), []);
+  f.advance();
+  assert.deepEqual(f.cues().map(sound => sound.now), [8]);
+  f.advance(true);
+  assert.deepEqual(f.xp, [14]);
+  f.finish();
+});
+
+test('alembic: leaving and restarting resets pump count without resetting potion progress', t => {
+  const f = stationWork(t);
+  f.start();
+  for (let i = 0; i < 4; i++) f.advance();
+  f.advance();
+  f.advance(true);
+  assert.equal(f.progress(), 3);
+  f.leaveAndResume(); // Stop at time seven, retaining three progress.
+  assert.equal(f.progress(), 3);
+  for (let i = 0; i < 3; i++) f.advance();
+  assert.deepEqual(f.cues().map(sound => sound.now), [4]);
+  f.advance();
+  assert.deepEqual(f.cues().map(sound => sound.now), [4, 11]);
+  f.advance(true);
+  assert.deepEqual(f.xp, [14]);
+  f.finish();
+});
+
+test('alembic: a potion keeps its awarded bonus across leaving, restarting and further clicks', t => {
+  const f = stationWork(t);
+  f.start();
+  for (let i = 0; i < 4; i++) f.advance();
+  f.advance(true);
+  assert.deepEqual(f.xp, [14]);
+  assert.equal(f.hit(), 1);
+  f.leaveAndResume();
+  assert.equal(f.hit(), 1);
+  f.advance(true);
+  for (let i = 0; i < 8; i++) f.advance();
+  assert.equal(f.cues().length, 1, 'a hit potion cannot rearm a cue');
+  assert.deepEqual(f.xp, [14], 'no second bonus after resume');
+  f.finish();
+  assert.deepEqual(f.xp, [14]);
+});
+
+test('station controls: retort click XP and potion conservation are unchanged', t => {
+  const f = stationWork(t, 'retort');
+  f.start();
+  f.advance(true);
+  assert.equal(f.progress(), 2);
+  assert.deepEqual(f.xp, [2]);
+  assert.deepEqual(f.cues(), []);
+  f.finish();
+  assert.deepEqual(f.xp, [2]);
+});
+
+test('station controls: agitator retains its two-hit window and literal XP rewards', t => {
+  t.mock.method(Math, 'random', () => 0);
+  const f = stationWork(t, 'agitator');
+  f.start();
+  f.advance();
+  f.advance();
+  assert.deepEqual(f.cues(), [{ now: 2, id: 2655, loops: 1, delay: 0 }]);
+  f.advance(true);
+  assert.equal(f.progress(), 12);
+  f.advance(true);
+  assert.equal(f.progress(), 22);
+  assert.deepEqual(f.xp, [14, 2]);
+  f.finish();
+  assert.deepEqual(f.xp, [14, 2]);
+});
+
+/** The request Herblore offers "herblore:mix" for a recipe (Mixing.Herblore.js makeOne), by the recipe's product and a named ingredient. */
+function mixRequest(product, secondaryName, wearsGoggles) {
+  const { CacheDefinitions } = PluginManager.getCoreApi();
+  const recipe = HERBLORE.recipes.find((candidate) => candidate.product === product
+    && candidate.ingredients.some(([name]) => name === secondaryName));
+  assert.ok(recipe, `${product} with ${secondaryName}`);
+  const id = (name) => CacheDefinitions.getObjId(name);
+  const head = wearsGoggles ? { getId: () => id(wearsGoggles) } : { getId: () => -1 };
+  const runtimeRecipe = { ...recipe, ingredients: recipe.ingredients.map(([name, count]) => ({ id: id(name), count })) };
+  return {
+    recipe: runtimeRecipe,
+    player: { getEquipment: () => ({ getItems: () => ({ [PluginManager.getCoreApi().Equipment.HEAD_SLOT]: head }) }) },
+    consume: recipe.ingredients.map(([name, count]) => ({ id: id(name), count })),
+    returns: (recipe.returns ?? []).map(([name, count]) => ({ id: id(name), count })),
+  };
+}
+
+function withRoll(roll, run) {
+  const random = Math.random;
+  Math.random = () => roll;
+  try { run(); } finally { Math.random = random; }
+}
+
+test('prescription goggles: a 10% roll, once per potion, keeps the secondary (Wiki: Prescription goggles)', () => {
+  withRoll(0.05, () => {
+    const request = mixRequest('3dose1attack', 'eye_of_newt', 'mm_alchemist_hat');
+    Goggles.saveSecondaries(request);
+    assert.deepEqual(request.consume.map((item) => item.count), [1, 0]); // the potion goes, the eye of newt stays
+  });
+  withRoll(0.1, () => {
+    const request = mixRequest('3dose1attack', 'eye_of_newt', 'mm_alchemist_hat');
+    Goggles.saveSecondaries(request);
+    assert.deepEqual(request.consume.map((item) => item.count), [1, 1]); // 10% is below 0.1 only
+  });
+});
+
+test('prescription goggles: the unfocused look works, and nothing is saved without them', () => {
+  withRoll(0, () => {
+    const alt = mixRequest('3dose1attack', 'eye_of_newt', 'mm_alchemist_hat_alt');
+    Goggles.saveSecondaries(alt);
+    assert.equal(alt.consume[1].count, 0);
+    const bare = mixRequest('3dose1attack', 'eye_of_newt', null);
+    Goggles.saveSecondaries(bare);
+    assert.equal(bare.consume[1].count, 1);
+  });
+});
+
+test('prescription goggles: a vial of water step and the herb into it are not secondaries', () => {
+  withRoll(0, () => {
+    const vial = mixRequest('guamvial', 'guam_leaf', 'mm_alchemist_hat');
+    Goggles.saveSecondaries(vial);
+    assert.deepEqual(vial.consume.map((item) => item.count), [1, 1]);
+  });
+});
+
+test('prescription goggles: the herb or coral added to a vial of water is never saved', () => {
+  withRoll(0, () => {
+    for (const [product, herb] of [['cadantinevial', 'cadantine'], ['elkhornvial', 'coral_elkhorn'], ['pillarvial', 'coral_pillar'], ['umbralvial', 'coral_umbral'], ['toadflaxvial', 'toadflax']]) {
+      const request = mixRequest(product, herb, 'mm_alchemist_hat');
+      Goggles.saveSecondaries(request);
+      assert.ok(request.consume.every((item) => item.count > 0), product);
+    }
+  });
+});
+
+test('prescription goggles: every copy of a stacked secondary is kept (20 Zulrah scales on an anti-venom(4))', () => {
+  withRoll(0, () => {
+    const request = mixRequest('antivenom4', 'snakeboss_scale', 'mm_alchemist_hat');
+    assert.equal(request.consume[1].count, 20);
+    Goggles.saveSecondaries(request);
+    assert.deepEqual(request.consume.map((item) => item.count), [1, 0]);
+  });
+});
+
+test('prescription goggles: an (unf) potion made from a coconut milk vial saves its herb (antidote+, antidote++, weapon poison++)', () => {
+  withRoll(0, () => {
+    for (const [product, herb] of [['unfinished_antidote+', 'toadflax'], ['unfinished_antidote++', 'irit_leaf'], ['unfinished_weapon_poison++', 'nightshade']]) {
+      const request = mixRequest(product, herb, 'mm_alchemist_hat');
+      Goggles.saveSecondaries(request);
+      assert.deepEqual(request.consume.map((item) => item.count), [1, 0], product);
+    }
+  });
+});
+
+test('prescription goggles: barbarian potions keep their caviar, haemostatic dressings their squid paste and cotton yarn', () => {
+  withRoll(0, () => {
+    const brutal = mixRequest('brutal_2dose1attack', 'brut_caviar', 'mm_alchemist_hat');
+    Goggles.saveSecondaries(brutal);
+    assert.deepEqual(brutal.consume.map((item) => item.count), [1, 0]);
+    const paste = mixRequest('haemostatic_poultice', 'squid_paste', 'mm_alchemist_hat');
+    Goggles.saveSecondaries(paste);
+    assert.deepEqual(paste.consume.map((item) => item.count), [1, 0]);
+    const yarn = mixRequest('3dosehaemostaticdressing', 'cotton_yarn', 'mm_alchemist_hat');
+    Goggles.saveSecondaries(yarn);
+    assert.deepEqual(yarn.consume.map((item) => item.count), [1, 0]);
+  });
+});
+
+test('prescription goggles: a super combat potion keeps its torstol, or its torstol potion (unf) and the vial that came with it', () => {
+  withRoll(0, () => {
+    const herb = mixRequest('4dose2combat', 'torstol', 'mm_alchemist_hat');
+    Goggles.saveSecondaries(herb);
+    assert.deepEqual(herb.consume.map((item) => item.count), [1, 1, 1, 0]); // the three potions go, the torstol stays
+    const vialed = mixRequest('4dose2combat', 'torstolvial', 'mm_alchemist_hat');
+    assert.equal(vialed.returns[0].count, 3);
+    Goggles.saveSecondaries(vialed);
+    assert.deepEqual(vialed.consume.map((item) => item.count), [1, 1, 1, 0]);
+    assert.equal(vialed.returns[0].count, 2); // the torstol potion (unf) stays whole, so its vial is not handed back
+  });
+});
+
+test('prescription goggles: crystal dust is never saved (divine potions)', () => {
+  withRoll(0, () => {
+    const request = mixRequest('4dosedivineattack', 'prif_crystal_shard_crushed', 'mm_alchemist_hat');
+    Goggles.saveSecondaries(request);
+    assert.deepEqual(request.consume.map((item) => item.count), [1, 4]);
+  });
 });

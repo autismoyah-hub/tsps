@@ -1,14 +1,21 @@
 // TODO: ported from xrsps-typescript; untested.
 module.exports = function registerZaryteCrossbowSpecialAttack(api) {
-  const { Animation, CombatFactory, CombatSpecial, ItemIdentifiers, PendingHit, Projectile, RangedCombatMethod, RangedWeapon, Sound, Sounds, WeaponProfiles } = api.core;
+  const { Animation, CombatFactory, CombatPosition, CombatSpecial, ItemIdentifiers, PendingHit, Projectile, RangedCombatMethod, RangedWeapon, Sound, Sounds } = api.core;
 
   const DRAIN = 75;
   const EVOKE_ACCURACY_MULTIPLIER = 2;
   const ANIMATION = new Animation(9166);
+  const SPECIAL_PROJECTILE = 1995;
+  const SHOT = { delay: 41, speed: 75, startHeight: 44, endHeight: 36.5, angle: 5, progress: 11 };
 
   class ZaryteCrossbowCombatMethod extends RangedCombatMethod {
     hits(character, target) {
-      return [new PendingHit(character, target, this, 2)];
+      if (character.getLocation().getZ() === target.getLocation().getZ()) {
+        return [new PendingHit(character, target, this, 2)];
+      }
+      const distance = CombatPosition.projectileDistance(character, target);
+      const delay = RangedCombatMethod.playerHitDelays(character, target, distance)[0];
+      return [new PendingHit(character, target, this, Math.max(2, delay))];
     }
 
     canAttack(character, target) {
@@ -28,26 +35,18 @@ module.exports = function registerZaryteCrossbowSpecialAttack(api) {
       player.performAnimation(ANIMATION);
       Sounds.sendSound(character, Sound.SHOOT_CROSSBOW);
 
-      // Evoke is a normal bolt shot with doubled accuracy: use the equipped bolt's travel
-      // spotanim on the crossbow's trajectory (44 + 5 a tile from 41). The old 301/44->35
-      // ended before it started, so the client clamped it to a single cycle at the player.
-      const profile = WeaponProfiles.ranged(player);
-      const shot = profile?.projectiles?.[0] ?? { delay: 41, lengthAdjustment: 5, stepMultiplier: 5, startHeight: 38.75, endHeight: 36.5, angle: 5, progress: 11 };
-      const distance = character.getLocation().getDistance(target.getLocation());
-      const end = RangedCombatMethod.projectileEnd(shot, distance);
-      const ammo = player.getCombat().getAmmunition();
-      const projectile = Projectile.createProjectile(
+      // Evoke flies its own zcb_specialattack spotanim on a flat path, as Armadyl Eye does:
+      // rsprox_transcripts/227/01752.txt shows 1995, start 41, end 75, angle 5, heights 44->36.
+      const distance = CombatPosition.projectileDistance(character, target);
+      Projectile.createProjectile(
         character,
         target,
-        profile?.projectileId ?? ammo?.getProjectileId() ?? 27,
-        shot.delay,
-        end,
-        shot.startHeight,
-        shot.endHeight,
-      );
-      if (shot.angle != null) projectile.withAngle(shot.angle);
-      if (shot.progress != null) projectile.withProgress(shot.progress);
-      projectile.sendProjectile();
+        SPECIAL_PROJECTILE,
+        SHOT.delay,
+        RangedCombatMethod.projectileEnd(SHOT, distance),
+        SHOT.startHeight,
+        SHOT.endHeight,
+      ).withAngle(SHOT.angle).withProgress(SHOT.progress).sendProjectile();
       CombatFactory.decrementAmmo(player, target.getLocation(), 1);
     }
   }

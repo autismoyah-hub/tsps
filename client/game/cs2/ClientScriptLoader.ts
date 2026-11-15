@@ -4,6 +4,7 @@ import { isGroupMissingError } from "../../rs/cache/js5/GroupMissingError";
 import { retryOnMissingGroup } from "../../rs/cache/js5/retryOnMissingGroup";
 import { Opcodes } from "../../rs/cs2/Opcodes";
 import { loadRuneliteScript } from "../../rs/cs2/runeliteScripts";
+import { applyMinimapZoomToggleFix } from "../../rs/cs2/minimapZoomToggle";
 import { type Script as Cs2Script, parseScriptFromBytes } from "../../rs/cs2/Script";
 import { applySortCallbacks } from "../../rs/cs2/sortCallbacks";
 import { applyZoomCallbacks } from "../../rs/cs2/zoomCallbacks";
@@ -113,7 +114,7 @@ export class ClientScriptLoader {
         }
     }
 
-    /** The cache's script, or RuneLite's patched version of it (bank tags' callbacks). */
+    /** The cache's script, or RuneLite's patched version of it (Bank Tags' and the chat plugins' callbacks). */
     private parse(scriptId: number, data: Int8Array): Cs2Script {
         const script = parseScriptFromBytes(scriptId, data, this.deps.getCacheSystem().decodeProfile);
         return loadRuneliteScript(scriptId, data, script) ?? script;
@@ -129,6 +130,7 @@ export class ClientScriptLoader {
         }
         applySortCallbacks(script);
         applyZoomCallbacks(script);
+        applyMinimapZoomToggleFix(script);
         if (this.cache.has(scriptId)) {
             this.cache.delete(scriptId);
         }

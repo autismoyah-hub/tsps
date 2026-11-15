@@ -34,7 +34,7 @@ const BOND_CONVERT_INTERFACE = 862;
 const BOND_MANAGEMENT_INTERFACE = 863;
 const uid = (group, child) => (group << 16) | child;
 const BOND_POUCH_BUTTON = uid(ACCOUNT_INTERFACE, 37); // action "Bond Pouch"
-const VIEW_BONDS_BUTTON = uid(BOND_MAIN_INTERFACE, 7); // script 1146: "View Your Bonds"
+const VIEW_BONDS_BUTTON = uid(BOND_MAIN_INTERFACE, 8); // bond_main:bond_pouch_body (7 before rev 242), script 1146: "View Your Bonds"
 const BACK_BUTTON = uid(BOND_MANAGEMENT_INTERFACE, 2); // script 1929: "Buy or Redeem Bonds"
 const CONVERT_BUTTON = uid(BOND_MANAGEMENT_INTERFACE, 23); // script 1929: "Convert"
 const CONVERT_DIALOG_TARGET = uid(BOND_MANAGEMENT_INTERFACE, 24);
@@ -208,8 +208,11 @@ function convertBond(event) {
   convertSlots(player, [slot]);
 }
 
-/** Turns up to `count` tradeable bonds in `container` into untradeable ones. */
-function convertHeldBonds(container, count) {
+/**
+ * Turns up to `count` tradeable bonds in `container` into untradeable ones. `bankOwner`: the container is
+ * that player's bank tab, so a split-off untradeable stack joins the tab already holding untradeable bonds.
+ */
+function convertHeldBonds(container, count, bankOwner = null) {
   let remaining = count;
   const items = container.getItems();
   for (let slot = 0; slot < items.length && remaining > 0; slot++) {
@@ -219,10 +222,39 @@ function convertHeldBonds(container, count) {
     }
     const amount = item.getAmount();
     const converted = Math.min(remaining, amount);
-    if (converted === amount) {
-      container.setItem(slot, new pluginApi.core.Item(UNTRADEABLE_BOND, amount));
-      remaining -= converted;
+    const { Item } = pluginApi.core;
+    const { Bank } = pluginApi.core;
+    const heldTab = bankOwner ? bankOwner.getBank(Bank.getTabForItem(bankOwner, UNTRADEABLE_BOND)) : null;
+    if (converted === amount && heldTab?.getAmount(UNTRADEABLE_BOND) > 0) {
+      // The whole stack is the bought bonds, and untradeable bonds are already banked: join that stack.
+      const whole = new Item(UNTRADEABLE_BOND, amount);
+      const place = () => {
+        if (heldTab.getAddableAmount(whole) < amount) return false;
+        container.deletedItem(new Item(TRADEABLE_BOND, amount), slot, false);
+        heldTab.add(whole, false);
+        return true;
+      };
+      if (!Bank.withoutLimit(bankOwner, place)) continue;
+      container.refreshItems();
+      if (heldTab !== container) heldTab.refreshItems();
+      slot--;
+    } else if (converted === amount) {
+      container.setItem(slot, new Item(UNTRADEABLE_BOND, amount));
+    } else {
+      // A bank stacks bonds: a bought one collected onto bonds already banked is split off that stack, into
+      // the tab holding untradeable bonds. The split needs at most one more slot, so a full bank still takes it.
+      const split = new Item(UNTRADEABLE_BOND, converted);
+      const target = heldTab ?? container;
+      const place = () => {
+        if (target.getAddableAmount(split) < converted) return false;
+        container.setItem(slot, new Item(TRADEABLE_BOND, amount - converted));
+        target.add(split, false);
+        return true;
+      };
+      if (!(bankOwner ? Bank.withoutLimit(bankOwner, place) : place())) continue;
+      if (target !== container) target.refreshItems();
     }
+    remaining -= converted;
   }
   container.refreshItems();
 }
@@ -288,10 +320,11 @@ function vetoUntradeableSale(event) {
 
 /** Grand Exchange: a bond bought from an offer arrives untradeable. */
 function convertCollectedBond(event) {
-  if (event?.itemId !== TRADEABLE_BOND || !event.container) {
+  // A bond handed back from an aborted sell was never bought: it stays tradeable.
+  if (event?.itemId !== TRADEABLE_BOND || !event.container || event.returned) {
     return;
   }
-  convertHeldBonds(event.container, event.amount);
+  convertHeldBonds(event.container, event.amount, event.destination === "bank" ? event.player : null);
 }
 
 const MOVE_BUTTON_IDS = [...MOVE_BUTTONS.keys()];
@@ -420,6 +453,7 @@ function openConvertDialog(event) {
 
 module.exports = {
   name: "Bonds",
+  description: "Old school bonds: tradeable and untradeable forms, bond pouch interface, redeeming for membership days, converting and gifting bonds.",
   register(api) {
     pluginApi = api;
     api.persistAttribute(MEMBERSHIP_ATTRIBUTE);
@@ -433,6 +467,12 @@ module.exports = {
     api.onInterfaceActionButton(QUANTITY_BUTTON_IDS, selectQuantity);
     api.onInterfaceActionButton(CONVERT_BUTTON, openConvertDialog);
     api.onItemDropPolicy(protectBondDrop);
+    // The bank incinerator asks this instead of the drop policy.
+    api.onCustomEvent("destroy-item:allowed", (request) => {
+      if (!BOND_IDS.has(request.itemId)) return;
+      request.allowed = false;
+      request.message = "This object cannot be dropped or destroyed.";
+    });
     api.onShouldKeepItemOnDeath(keepBondOnDeath);
     api.onItemOnPlayer(donateBond);
     api.onTradeCompleted(convertTradedBonds);

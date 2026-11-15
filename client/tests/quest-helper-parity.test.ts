@@ -8,7 +8,7 @@ import { CLIENT_TOKEN } from "@runelite/client/plugins/PluginInjector";
 import { GameTick, PluginMessage } from "@runelite/api/events";
 import { QuestHelperPlugin } from "../game/plugins/questhelper/QuestHelperPlugin";
 import { QuestHelperPanel, defaultSettings } from "../game/plugins/questhelper/QuestHelperPanel";
-import { parseHelperCatalog, parseHelperResponse } from "../game/plugins/questhelper/QuestHelperProtocol";
+import { parseHelperCatalog, parseHelperResponse, wikiHref } from "../game/plugins/questhelper/QuestHelperProtocol";
 import { normalizeQuestName, passesSkillFilter, questListSections } from "../game/plugins/questhelper/QuestHelperOrdering";
 import { questListMenuEntries } from "../game/plugins/questhelper/QuestHelperMenus";
 import { applyChoiceRules, highlightedItems, wrapText } from "../game/plugins/questhelper/QuestHelperOverlays";
@@ -17,6 +17,7 @@ import { TileHighlightManager } from "../game/highlights/TileHighlightManager";
 import { Inventory } from "../rs/inventory/Inventory";
 import { state as network } from "../network/serverConnection/state";
 import { parsePluginMessage } from "../common/network/PluginMessage";
+import { retainedInventory } from "../game/sync/InventoryStopTransmit";
 
 const step: any = { id: "s", text: ["Talk to the cook."], targets: [{ kind: "npc", id: 4626, x: 3209, y: 3215, plane: 0 }], requirements: [{ name: "Egg", met: false, state: "partial", ids: [1944], quantity: 1 }],
     dialogueChoices: [], widgets: [], overlays: [], recommended: [], teleports: [{ name: "Lumbridge teleport", met: true, ids: [8008] }], inventoryHighlights: [1944],
@@ -33,6 +34,16 @@ assert.ok(parseHelperResponse({ ...result, overview: undefined, sections: undefi
 assert.equal(parseHelperResponse({ ...result, sections: [{ ...section(0, true), steps: "x" }] }), null);
 assert.equal(parseHelperResponse({ ...result, activeStep: { ...step, choiceRules: [{ groupId: "219" }] } }), null);
 assert.equal(parseHelperResponse({ ...result, activeStep: { ...step, requirements: [{ name: "x", met: true, state: "maybe" }] } }), null);
+// A requirement may carry its item's wiki URL (QuestRequirementsPanel's "Go to wiki..").
+const cited = { ...result, activeStep: { ...step, requirements: [{ name: "Redberries", met: false, state: "fail", ids: [1951], quantity: 1, wikiUrl: "https://oldschool.runescape.wiki/w/Redberries#Item_sources" }] } };
+assert.ok(parseHelperResponse(cited), "a requirement with a wiki URL parses");
+assert.equal(parseHelperResponse({ ...result, activeStep: { ...step, requirements: [{ name: "x", met: false, wikiUrl: 5 }] } }), null, "a non-string wiki URL is rejected");
+// Only the wiki is ever linked: anything else must degrade to text, never to a live link.
+assert.equal(wikiHref("https://oldschool.runescape.wiki/w/Redberries#Item_sources"), "https://oldschool.runescape.wiki/w/Redberries#Item_sources");
+assert.equal(wikiHref("https://example.com/w/Redberries"), undefined, "another origin is not linked");
+assert.equal(wikiHref("javascript:alert(1)"), undefined, "a javascript URL is not linked");
+assert.equal(wikiHref("//oldschool.runescape.wiki/w/Egg"), undefined, "a protocol-relative URL is not linked");
+assert.equal(wikiHref(undefined), undefined);
 assert.equal(parseHelperCatalog({ protocol: 1, sourceCommit: "a", diagnostics: [], quests: [{ questKey: "a", name: "A", supported: true, optimalOrder: "1" }] }), null);
 
 // QuestOrdering / QuestFilter / Difficulty / SkillFiltering.
@@ -121,8 +132,9 @@ async function main(): Promise<void> {
     config.setConfiguration("questhelper", "highlightColor", "#123456");
     config.setConfiguration("questhelper", "highlightTiles", "false");
     const player: any = { getIndexForServerId: () => 0, getLevel: () => 0, getAnimActionSeqId: () => -1, getAnimMovementSeqId: () => -1, getRotation: () => 0, getInteractionIndex: () => -1 };
+    const bank = new Inventory(1410);
     const client: any = { stateMachine: { getState: () => 30 }, localPlayerName: "A", getControlledPlayerMovementTile: () => ({ tileX: 3200, tileY: 3200 }), controlledPlayerServerId: 1, playerEcs: player, tileHighlightManager: new TileHighlightManager(),
-        varManager: { values: new Int32Array(1), customVarbits: new Map(), varbitLoader: { load: () => undefined }, varpChangeListeners: new Set() }, inventory: new Inventory(), equipment: new Inventory(14), bankInventory: new Inventory(1410),
+        varManager: { values: new Int32Array(1), customVarbits: new Map(), varbitLoader: { load: () => undefined }, varpChangeListeners: new Set() }, inventory: new Inventory(), equipment: new Inventory(14), bankInventory: bank, lastKnownBank: retainedInventory(bank),
         npcEcs: { forEachActive: () => {}, mutationListeners: new Set() }, renderer: { getLocIdsAtTileAllLevels: () => [], canvas: { width: 765, height: 503 } }, groundItems: { getAllStacks: () => [], mutationListeners: new Set() },
         widgetManager: { rootInterface: -1, interfaceParents: new Map(), getAllGroupRoots: () => [], groupLoadedListeners: new Set(), interfaceClosedListeners: new Set() } };
     manager.getInjector().provide(CLIENT_TOKEN, client);

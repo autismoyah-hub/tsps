@@ -71,7 +71,13 @@ function input(core, { player, packet }) {
   const mobility = queue.getMobility();
   state.blocked = player.getHitpoints() <= 0 || !mobility.canMove() ||
     player.getForceMovement() != null || player.isNeedsPlacement();
-  if (!state.active && !state.blocked) {
+  if (state.blocked) {
+    // Hold the player where they stand, off-centre too; only coordinates left on another tile
+    // (an inactive controller from before a teleport) fall back to this tile's centre.
+    cancel(core, player, state, location);
+    return;
+  }
+  if (!state.active) {
     queue.reset();
     queue.walkToReset();
     player.getCombat().reset();
@@ -158,6 +164,7 @@ function logout({ player }) { states.delete(player); }
 
 module.exports = {
   name: "Free movement",
+  description: "Continuous free movement: moves players by client input at walk and run speed with server-checked timing, and sends fine positions to observers.",
   register(api) {
     api.onCustomEvent("player:movement-input", input.bind(null, api.core));
     api.onCustomEvent("player:world-input", worldInput.bind(null, api.core));

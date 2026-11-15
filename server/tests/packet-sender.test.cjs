@@ -3,6 +3,26 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { PacketSender } = require('../dist/net/packet/PacketSender');
 
+test('server chat translates legacy colour tags into native font markup', () => {
+  const frames = [];
+  const sender = Object.assign(Object.create(PacketSender.prototype), {
+    player: { getSession: () => ({ sendClientPacket: frame => frames.push(frame) }) },
+  });
+  sender.sendMessage('@red@Warning @whi@white @gre@green @bla@black');
+  sender.sendTypedMessage(14, '@dre@Pet @or2@announcement');
+  const text = frame => frame.toString('latin1', 3, frame.indexOf(0, 3));
+  assert.equal(text(frames[0]), '<col=ff0000>Warning <col=ffffff>white <col=00ff00>green <col=000000>black');
+  assert.equal(text(frames[1]), '<col=800000>Pet <col=ff7000>announcement');
+  sender.sendMessage('<col=123456>Native</col> email@example.com @xyz@');
+  assert.equal(text(frames[2]), '<col=123456>Native</col> email@example.com @xyz@');
+
+  const { encodeChatMessage } = require('../dist/net/protocol/ClientProtocol');
+  for (const kind of ['public', 'private_in', 'private_out', 'channel', 'clan', 'trade']) {
+    assert.equal(text(encodeChatMessage(kind, '@red@literal')), '@red@literal', `${kind} keeps player-authored text literal`);
+  }
+  assert.equal(text(encodeChatMessage('server', '@blu@Notice')), '<col=0000ff>Notice');
+});
+
 const sender = (interfaceId, tracked) => ({
   resetInterfaceState: () => interfaceId,
   closeTrackedInterfaces: () => tracked,
@@ -35,6 +55,26 @@ test('sendSystemUpdate emits the SYSTEM_UPDATE packet (opcode 220, big-endian se
   assert.equal(result, fake);
   assert.equal(frames.length, 1);
   assert.deepEqual(Buffer.from(frames[0]), Buffer.from([220, 0, 0, 0, 125]));
+});
+
+test('sendHideNpcOps emits opcode 148 with the native global boolean', () => {
+  const frames = [];
+  const fake = Object.assign(Object.create(PacketSender.prototype), {
+    player: { getSession: () => ({ sendClientPacket: (frame) => { frames.push(Buffer.from(frame)); return true; } }) },
+  });
+  assert.equal(fake.sendHideNpcOps(true), fake);
+  assert.equal(fake.sendHideNpcOps(false), fake);
+  assert.deepEqual(frames, [Buffer.from([148, 1]), Buffer.from([148, 0])]);
+});
+
+test('sendHideObjOps emits opcode 149 with the native global ground-item boolean', () => {
+  const frames = [];
+  const fake = Object.assign(Object.create(PacketSender.prototype), {
+    player: { getSession: () => ({ sendClientPacket: (frame) => { frames.push(Buffer.from(frame)); return true; } }) },
+  });
+  assert.equal(fake.sendHideObjOps(true), fake);
+  assert.equal(fake.sendHideObjOps(false), fake);
+  assert.deepEqual(frames, [Buffer.from([149, 1]), Buffer.from([149, 0])]);
 });
 
 test('sendTab runs toplevel_sidebutton_switch (script 915) rather than writing a 1-byte opcode 106', () => {
@@ -116,6 +156,7 @@ test('chatbox replacement, explicit close and interface removal notify their pre
   const fake = Object.assign(Object.create(PacketSender.prototype), {
     chatboxGroupId: -1,
     subInterfaceTargets: new Map(),
+    inventoryOwners: new Map(),
     player: {
       getSession: () => ({ sendClientPacket: () => true }),
       getFrameUpdater: () => ({ clearGroup() {} }),
@@ -236,6 +277,38 @@ test('sub-interface mount ownership survives same-ID replacement, relocation and
   assert.equal(sender.closeSubInterfaceMount(removedChat),false,'modal removal retires the chatbox mount');
   await Promise.resolve();
   assert.ok(delivered.length,'the actual session delivers the native mount/close packets');
+});
+
+test('tab and chatbox mounts close a group still mounted at another target, as mountSubInterface does', async () => {
+  require('../dist/Server').Server.installProductionPathResolver();
+  await require('../dist/game/cache/CachePipeline').CachePipeline.initialize(process.cwd());
+  const {Player}=require('../dist/game/entity/impl/player/Player');
+  const {PlayerSession}=require('../dist/net/PlayerSession');
+  const {encodeWidgetCloseSub}=require('../dist/net/protocol/ClientProtocol');
+  const session=new PlayerSession({isOpen:()=>true,send:()=>{}});
+  const player=new Player(session);session.setPlayer(player);player.setUsername('mountmover');
+  const sender=player.getPacketSender();
+  const sent=()=>session.pendingPackets.splice(0);
+  const closes=(packets,target)=>packets.filter(packet=>packet.equals(encodeWidgetCloseSub(target))).length;
+  const elsewhere=(161<<16)|50, tab=(161<<16)|75, chat=(162<<16)|568;
+  // Tab path: the group moves from the other target to the tab slot.
+  sender.sendSubInterface(elsewhere,320,1);sent();
+  sender.sendTabInterface(75,320);
+  assert.equal(closes(sent(),elsewhere),1,'the tab mount closes the old target');
+  assert.equal(sender.getSubInterfaceAt(elsewhere),undefined);
+  assert.equal(sender.getSubInterfaceAt(tab).groupId,320);
+  // Magic tab path.
+  sender.sendSubInterface(elsewhere,522,1);sent();
+  sender.sendMagicTabInterface(522);
+  assert.equal(closes(sent(),elsewhere),1,'the magic tab mount closes the old target');
+  // Chatbox path.
+  sender.sendSubInterface(elsewhere,270,0);sent();
+  sender.sendChatboxInterface(270);
+  assert.equal(closes(sent(),elsewhere),1,'the chatbox mount closes the old target');
+  assert.equal(sender.getSubInterfaceAt(chat).groupId,270);
+  // The same target again sends no close.
+  sender.sendTabInterface(75,320);sent();sender.sendTabInterface(75,320);
+  assert.equal(closes(sent(),tab),0,'remounting at the same tab sends no close');
 });
 
 test('a crater full of ground items goes as a snapshot and deltas, each inside one game message', () => {

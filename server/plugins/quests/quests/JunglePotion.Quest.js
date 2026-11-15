@@ -106,6 +106,11 @@ module.exports = function registerJunglePotionQuest(api) {
   const LOC_TO_HERB = new Map(HERBS.map((herb) => [herb.locId, herb]));
   const HAND_IN_STEPS = new Map(HERBS.map((herb) => [herb.handInStepId, herb]));
   const GRIMY_TO_CLEAN = new Map(HERBS.map((herb) => [herb.grimy, herb]));
+  /** Every jungle herb cleans at level 3 for 2.5 XP (OSRS Wiki: Snake weed, Ardrigal, Sito foil, Volencia moss, Rogue's purse). */
+  const CLEAN_LEVEL = 3;
+  const CLEAN_XP = 2.5;
+  /** The Herblore plugin's four herb cleaning sounds (Cleaning.Herblore.js). */
+  const CLEAN_SOUNDS = [3920, 3921, 3922, 3923];
 
   let quest;
 
@@ -200,10 +205,12 @@ module.exports = function registerJunglePotionQuest(api) {
     return request.complete === true;
   }
 
-  function handleStartHook({ player, npcId, hook }) {
+  function handleStartHook(event) {
+    const { player, npcId, hook } = event;
     if (npcId !== TRUFITUS_NPC_ID || hook !== START_HOOK) return;
     if (quest.getStage(player) < STAGE_STARTED) {
       if (!druidicRitualComplete(player)) {
+        event.end = true;
         player.sendMessage("You must complete Druidic Ritual to start this quest.");
         return;
       }
@@ -284,21 +291,50 @@ module.exports = function registerJunglePotionQuest(api) {
     event.handled = true;
   }
 
-  /** Cleaning a grimy jungle herb (the Herblore plugin does not list these). */
+  /**
+   * Cleaning a grimy jungle herb (the Herblore plugin does not list these), as the Herblore plugin cleans a herb.
+   * rsprox_transcripts/227/01875.txt: Clean on grimy snake weed in slot 9 -> "You clean the Grimy snake weed."
+   * (spam), snake weed in slot 9, and one of the cleaning sounds (3920-3922 there).
+   */
   function handleItemAction(event) {
     const herb = GRIMY_TO_CLEAN.get(event.itemId);
     if (!herb) return;
     if (event.option && !/clean/i.test(event.option)) return;
     event.handled = true;
-    if (event.player.getInventory().getItems()[event.slot]?.getId() !== event.itemId) return;
-    if (event.player.getSkillManager().getCurrentLevel(Skill.HERBLORE) < 3) {
-      event.player.sendMessage("You need a Herblore level of 3 to clean this herb.");
+    const { player } = event;
+    const inventory = player.getInventory();
+    if (inventory.getItems()[event.slot]?.getId() !== event.itemId) return;
+    const grimyName = api.core.ItemDefinition.forId(event.itemId).getName();
+    if (herbloreLevel(player) < CLEAN_LEVEL) {
+      player.sendMessage(`You need level ${CLEAN_LEVEL} Herblore to clean the ${grimyName}.`);
       return;
     }
-    event.player.getInventory().deleteAtSlot(event.slot, 1);
-    event.player.getInventory().adds(herb.clean, 1);
-    event.player.getSkillManager().addExperiences(Skill.HERBLORE, 2.5);
-    event.player.sendMessage(`You clean the ${herb.name.toLowerCase()}.`);
+    // As Cleaning.Herblore.js: content may clean every herb of the kind in one click.
+    const slots = [event.slot, ...inventory.getItems()
+      .map((item, index) => (index !== event.slot && item?.getId() === event.itemId ? index : -1))
+      .filter((index) => index >= 0)];
+    for (const at of slots.slice(0, cleanActionsPerCycle(player))) {
+      inventory.setItem(at, new api.core.Item(herb.clean, 1));
+      player.getSkillManager().addExperiences(Skill.HERBLORE, CLEAN_XP);
+      api.emitCustomEvent("skills:produced", { player, skill: Skill.HERBLORE, itemId: herb.clean, amount: 1, xp: CLEAN_XP, kind: "clean" });
+    }
+    inventory.refreshItems();
+    player.getPacketSender().sendSound(CLEAN_SOUNDS[Math.floor(Math.random() * CLEAN_SOUNDS.length)], 1, 0);
+    player.getPacketSender().sendTypedMessage(api.core.ChatType.SPAM, `You clean the ${grimyName}.`);
+  }
+
+  /** The Herblore level cleaning checks, raised by content as the Herblore plugin's is ("skills:level-boost"). */
+  function herbloreLevel(player) {
+    const request = { player, skill: Skill.HERBLORE, boost: 0 };
+    api.emitCustomEvent("skills:level-boost", request);
+    return player.getSkillManager().getCurrentLevel(Skill.HERBLORE) + Math.max(0, request.boost | 0);
+  }
+
+  /** How many herbs one Clean cleans ("skills:actions-per-cycle"); 1 unless content says more. */
+  function cleanActionsPerCycle(player) {
+    const request = { player, skill: Skill.HERBLORE, kind: "clean", recipe: null, actions: 1 };
+    api.emitCustomEvent("skills:actions-per-cycle", request);
+    return Math.max(1, request.actions | 0);
   }
 
   function handleLogin({ player }) {

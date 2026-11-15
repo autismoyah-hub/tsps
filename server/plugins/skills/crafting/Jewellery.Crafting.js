@@ -63,6 +63,11 @@ function data() {
       mouldId: Shared.itemId(type.mould),
       products: type.products.map(([item, level, xp]) => [Shared.itemId(item), level, xp]),
     })),
+    slayerRing: {
+      ...gold.slayerRing,
+      mouldId: Shared.itemId(gold.slayerRing.mould),
+      products: gold.slayerRing.products.map(([gem, item]) => [Shared.itemId(gem), Shared.itemId(item)]),
+    },
     goldQuantities: quantities(gold.quantities),
     silver: new Map(silver.products.map((product) => [product.component, {
       ...product,
@@ -75,7 +80,8 @@ function data() {
     perfect: perfect.recipes.map((recipe) => ({
       ...recipe, itemId: Shared.itemId(recipe.item), mouldId: Shared.itemId(recipe.mould),
     })),
-    strung: new Map(strungAmulets.pairs.map(([unstrung, strung]) => [Shared.itemId(unstrung), Shared.itemId(strung)])),
+    strung: new Map(strungAmulets.pairs.map(([unstrung, strung, noun = "amulet", material = "BALL_OF_WOOL"]) =>
+      [`${Shared.itemId(material)}:${Shared.itemId(unstrung)}`, { itemId: Shared.itemId(strung), noun }])),
     stringXp: strungAmulets.xp,
     animation: new Animation(FURNACE_ANIMATION_ID),
     sound: new Sound(FURNACE_SOUND, 1, 0, 0),
@@ -94,7 +100,7 @@ function hasFurnaceMaterials(player, product) {
 }
 
 function craftFurnaceProduct(player, product) {
-  const { PluginManager, Item } = Shared.getCore();
+  const { PluginManager, Item, Inventory } = Shared.getCore();
   if (Shared.craftingLevel(player) < product.level) {
     player.sendMessage(`You need a Crafting level of at least ${product.level} to craft this.`);
     return false;
@@ -102,9 +108,18 @@ function craftFurnaceProduct(player, product) {
   if (!hasFurnaceMaterials(player, product) ||
       PluginManager.emitCanUseItem(player, product.itemId, "craft") === false) return false;
   const inventory = player.getInventory();
+  const output = new Item(product.itemId, product.amount);
+  // Check the whole batch after the inputs have freed their slots.
+  const preview = new Inventory(player).setItems(inventory.getCopiedItems());
+  preview.deleted(product.bar, 1, false);
+  for (const id of product.extra) preview.deleted(id, 1, false);
+  if (preview.getAddableAmount(output) < product.amount) {
+    inventory.full();
+    return false;
+  }
   inventory.deleteNumber(product.bar, 1);
   for (const id of product.extra) inventory.deleteNumber(id, 1);
-  inventory.addItem(new Item(product.itemId, product.amount));
+  inventory.addItem(output);
   Shared.addCraftingXp(player, product.xp);
   Shared.getApi().emitCustomEvent("crafting:made", { player, itemId: product.itemId, furnace: true });
   Shared.produced(player, product.itemId, product.amount, product.xp, "jewellery", [[product.bar, 1], ...product.extra.map((id) => [id, 1])]);
@@ -143,16 +158,34 @@ function storeLastItem(player, buttonId) {
   if (Number.isInteger(value) && varbitId != null) player.getPacketSender().sendVarbit(varbitId, value);
 }
 
-function goldProduct(component) {
+function goldProduct(player, component) {
   const { ItemIds: I } = Shared.getCore();
-  const { goldTypes, goldGems } = data();
-  const type = goldTypes.find(({ firstComponent }) => component >= firstComponent && component < firstComponent + goldGems.length);
+  const { goldTypes, goldGems, slayerRing } = data();
+  if (component === slayerRing.component) return slayerRingProduct(player, slayerRing);
+  const type = goldTypes.find(({ components }) => components.includes(component));
   if (!type) return null;
-  const gemIndex = component - type.firstComponent;
+  const gemIndex = type.components.indexOf(component);
   const [itemId, level, xp] = type.products[gemIndex];
   const gemId = goldGems[gemIndex];
   return { itemId, level, xp, bar: I.GOLD_BAR, mouldId: type.mouldId,
     extra: gemId === null ? [] : [gemId], amount: 1 };
+}
+
+/** Ours: the Wiki gives no message for trying it without Ring bling. */
+const SLAYER_RING_LOCKED = "You need to unlock the ability to craft slayer rings from a Slayer master.";
+
+/** 446:16: the eternal ring when an eternal gem is carried, else the enchanted-gem ring; needs Ring bling. */
+function slayerRingProduct(player, slayerRing) {
+  const { ItemIds: I, CacheDefinitions } = Shared.getCore();
+  const varbit = CacheDefinitions.getVarbitId(slayerRing.unlockVarbit);
+  if (varbit == null || player.getPacketSender().getVarbit(varbit) !== 1) {
+    player.sendMessage(SLAYER_RING_LOCKED);
+    return null;
+  }
+  const inventory = player.getInventory();
+  const [gemId, itemId] = slayerRing.products.find(([gem]) => inventory.contains(gem)) ?? slayerRing.products.at(-1);
+  return { itemId, level: slayerRing.level, xp: slayerRing.xp, bar: I.GOLD_BAR, mouldId: slayerRing.mouldId,
+    extra: [gemId], amount: 1 };
 }
 
 function silverProduct(component) {
@@ -182,7 +215,7 @@ function handleJewelleryButton(event) {
     menu.amount = amount;
     player.getPacketSender().sendConfig(MAKE_QUANTITY_VARP, amount === 28 ? 0 : amount);
   } else {
-    const product = group === GOLD_CRAFTING_INTERFACE ? goldProduct(component) : silverProduct(component);
+    const product = group === GOLD_CRAFTING_INTERFACE ? goldProduct(player, component) : silverProduct(component);
     if (product) startFurnaceProduct(player, menu, product, buttonId);
   }
 }
@@ -274,24 +307,30 @@ function handlePerfectJewellery(event) {
   );
 }
 
-/** A ball of wool used on an unstrung amulet, in either order. */
+/** A selected string material used on unstrung jewellery, in either order. */
 function stringAmulet(event) {
   const { player, usedItemId, usedWithItemId } = event;
-  const { ItemIds: I, Item } = Shared.getCore();
-  const unstrungId = usedItemId === I.BALL_OF_WOOL ? usedWithItemId : usedItemId;
-  const woolId = usedItemId === I.BALL_OF_WOOL ? usedItemId : usedWithItemId;
-  const strungId = data().strung.get(unstrungId);
-  if (woolId !== I.BALL_OF_WOOL || strungId === undefined) return;
+  const { Item } = Shared.getCore();
+  const recipes = data().strung;
+  let materialId = usedItemId, unstrungId = usedWithItemId;
+  let strung = recipes.get(`${materialId}:${unstrungId}`);
+  if (!strung) {
+    materialId = usedWithItemId;
+    unstrungId = usedItemId;
+    strung = recipes.get(`${materialId}:${unstrungId}`);
+  }
+  if (!strung) return;
 
   event.handled = true;
   Shared.nextTick(player, () => {
     const inventory = player.getInventory();
-    if (!inventory.contains(I.BALL_OF_WOOL) || !inventory.contains(unstrungId)) return;
-    inventory.deleteNumber(I.BALL_OF_WOOL, 1);
+    if (!inventory.contains(materialId) || !inventory.contains(unstrungId)) return;
+    inventory.deleteNumber(materialId, 1);
     inventory.deleteNumber(unstrungId, 1);
-    inventory.addItem(new Item(strungId, 1));
+    inventory.addItem(new Item(strung.itemId, 1));
     Shared.addCraftingXp(player, data().stringXp);
-    Shared.spam(player, "You put some string on your amulet.");
+    Shared.spam(player, `You put some string on your ${strung.noun}.`);
+    Shared.produced(player, strung.itemId, 1, data().stringXp, "string", [[unstrungId, 1], [materialId, 1]]);
   });
 }
 

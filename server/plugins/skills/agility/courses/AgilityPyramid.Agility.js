@@ -254,6 +254,49 @@ function takePyramidTop({ player, core, api }) {
     .add(new core.ItemStatementDialogue(0, ItemIds.PYRAMID_TOP, "You find a golden pyramid!")));
 }
 
+/**
+ * On the course above the ground: the pyramid's floors 1-3, or the separate map square that holds the top two floors
+ * and the doorway (the stairs' landings and the doorway, rsprox 2932 and 1757, with a margin).
+ */
+function onPyramid(location) {
+  const x = location?.getX?.(), y = location?.getY?.(), z = location?.getZ?.();
+  if (!Number.isInteger(x) || !Number.isInteger(y)) return false;
+  if (x >= 3038 && x <= 3052 && y >= 4690 && y <= 4705) return true;
+  return z >= 1 && x >= 3350 && x <= 3380 && y >= 2826 && y <= 2856;
+}
+
+/**
+ * The top stays taken until the player is off the pyramid. The doorway clears agility_pyramid_top in
+ * rsprox_transcripts/227/01757.txt (Leagues V), the one recording of it, which shows the take and the doorway but no
+ * relog and no other way off. So it is inferred that a relog on the course keeps it (the attribute is saved, Agility.
+ * plugin, and the varbit sent again at login), and that any other way off (a teleport, a death or fall, the stairs
+ * down) clears it as the doorway does, or the top could never be taken again.
+ */
+function syncPyramidTop({ player }) {
+  if (player.getAttribute(PYRAMID_TOP_ATTRIBUTE) !== true) return;
+  if (!onPyramid(player.getLocation?.())) return clearPyramidTop(player);
+  player.getPacketSender().sendVarbit(PYRAMID_TOP_VARBIT, 1);
+}
+
+/**
+ * agility_pyramid_level again at login: live sends it in the login varbits (rsprox_transcripts/230/02933.txt, a login
+ * on floor 3 at 3370,2840: 0 -> 3), so the floor's moving blocks show after a relog. Sent from the floor stood on;
+ * off the pyramid it stays 0 (live keeps the last floor there, which nothing off the course reads).
+ */
+function syncPyramidLevel({ player }) {
+  const location = player.getLocation?.();
+  if (!onPyramid(location)) return;
+  const level = pyramidLevel([location.getX(), location.getY(), location.getZ()]);
+  if (level > 0) player.getPacketSender().sendVarbit(PYRAMID_LEVEL_VARBIT, level);
+}
+
+/** Off the pyramid with the top taken, by any way but the doorway: it can be taken again (see syncPyramidTop). */
+function clearPyramidTop(player) {
+  if (player.getAttribute(PYRAMID_TOP_ATTRIBUTE) !== true || onPyramid(player.getLocation?.())) return;
+  player.setAttribute(PYRAMID_TOP_ATTRIBUTE, false);
+  player.getPacketSender().sendVarbit(PYRAMID_TOP_VARBIT, 0);
+}
+
 /** Out through the doorway: the top can be taken again, and the player is back on the ground. */
 function leavePyramid(player) {
   player.setAttribute(PYRAMID_TOP_ATTRIBUTE, false);
@@ -370,9 +413,11 @@ function stoneBlocks({ varbit, block: [bx, by, bz, face], fall }) {
 }
 
 module.exports = {
+  PYRAMID_TOP_ATTRIBUTE, syncPyramidTop, syncPyramidLevel, clearPyramidTop, takePyramidTop, leavePyramid,
   key: "pyramid",
   name: "Agility Pyramid",
   helper: 6, // the Agility helper's course (enum 3507: "Agility Pyramid")
+  lootSource: 17, // the loot tracker's source (enum 4976)
   lapXp: 0,
   // Each floor has its own mix of the obstacles; the lap runs from the stairs to the doorway.
   anyOrder: true,

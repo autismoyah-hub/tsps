@@ -1,6 +1,8 @@
 // Run after `yarn build`: node --test tests/bot-brain.test.cjs
 const assert = require('node:assert/strict');
 const { before, test } = require('node:test');
+// Accounts writes its file to this path; keep it off the real data/saves, before `dist` is required.
+process.env.TSPS_ACCOUNTS_FILE = require('node:path').join(require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'accounts-')), 'accounts.json');
 const { Server } = require('../dist/Server');
 Server.installProductionPathResolver();
 before(async () => {
@@ -23,6 +25,8 @@ const {
 
 const fakePlayer = (name = 'bot', x = 3100, y = 3600) => ({
   getUsername: () => name,
+  getDisplayName() { return this.displayName || name; },
+  setDisplayName(value) { this.displayName = value; },
   getForceMovement: () => null,
   getMovementQueue: () => ({ size: () => 0 }),
   getLocation: () => ({ getX: () => x, getY: () => y, getZ: () => 0 }),
@@ -129,7 +133,7 @@ test('a bot without a rotation returns to its own activity, never a random one (
 
 test('cooking: food goes on a fire nearby; with no range or fire about, the bot lights one', () => {
   const Cooking = require('../plugins/skills/Cooking.plugin');
-  Cooking._test.setApi({ core: require('../dist/plugins/PluginManager').PluginManager.getCoreApi() });
+  Cooking._test.setApi({ core: require('../dist/plugins/PluginManager').PluginManager.getCoreApi(), emitCustomEvent() {} });
   const Firemaking = require('../plugins/skills/Firemaking.plugin');
   const { createCookAction } = require('../plugins/bots/brain/actions/Cook.PlayerBots');
   const { Skill } = require('../dist/game/model/Skill');
@@ -179,6 +183,48 @@ test('cooking: food goes on a fire nearby; with no range or fire about, the bot 
   } finally {
     Object.assign(Cooking, { isCookingActive: real.cooking });
     Object.assign(Firemaking, { isFiremakingActive: real.firemaking, startBotInventoryFiremaking: real.light, canPlayerBurnLog: real.canBurn, LIGHTABLE_LOGS: real.logs });
+  }
+});
+
+test("cooking: a bot leaves Hunter meat its Hunters' Rumours do not unlock", () => {
+  const Cooking = require('../plugins/skills/Cooking.plugin');
+  const core = require('../dist/plugins/PluginManager').PluginManager.getCoreApi();
+  let rumours = 0;
+  const api = { core, emitCustomEvent: (name, request) => { if (name === 'hunter:rumours-completed') request.completed = rumours; } };
+  Cooking._test.setApi(api);
+  const { createCookAction } = require('../plugins/bots/brain/actions/Cook.PlayerBots');
+  const { Skill } = require('../dist/game/model/Skill');
+  const { Location: Loc } = require('../dist/game/model/Location');
+  const { WorldDefinition } = core;
+  const KYATT = core.CacheDefinitions.getObjId('hunting_kyatt_meat');
+  assert.equal(Cooking.COOKABLE_BY_RAW.get(KYATT)?.rumours, 25, "Wiki (Hunters' Rumours): kyatt cooks after 25 rumours");
+  const real = { cooking: Cooking.isCookingActive, members: WorldDefinition.isMembersWorld };
+  const used = [];
+  const fire = { getId: () => 26185, getLocation: () => new Loc(3230, 3220, 0), getDefinition: () => ({ getName: () => 'Fire' }) };
+  try {
+    Cooking.isCookingActive = () => false;
+    WorldDefinition.isMembersWorld = () => true;
+    const world = {
+      core: { Skill, World: { getObjects: () => [fire] } },
+      objectSearch: { findCandidatesByIds: () => [] },
+      emitItemOnObject: (event) => used.push(event.itemId),
+    };
+    const a = createCookAction({}, world);
+    const player = {
+      ...fakePlayer('hunter-cook', 3225, 3220),
+      getSkillManager: () => ({ getCurrentLevel: () => 99 }),
+      getInventory: () => ({ getItems: () => [{ getId: () => KYATT }], getAmount: (id) => (id === KYATT ? 1 : 0) }),
+      getMovementQueue: () => ({ size: () => 0, walkToObject: (object, { execute }) => execute() }),
+    };
+    assert.equal(a.update({ player, nowMs: 1000 }), 'success', 'no rumours: nothing it may cook');
+    assert.deepEqual(used, []);
+    rumours = 25;
+    a.update({ player, nowMs: 5000 });
+    assert.deepEqual(used, [KYATT], '25 rumours: the kyatt goes on the fire');
+  } finally {
+    Cooking.isCookingActive = real.cooking;
+    WorldDefinition.isMembersWorld = real.members;
+    Cooking._test.setApi({ core, emitCustomEvent() {} });
   }
 });
 
@@ -952,7 +998,10 @@ test('a requested PvP profile and archetype reach the first kit before the bot j
   const metadata = { profileId: 'elite', loadoutId: 'deep_wild_nh', generatedArchetypeId: 'elite_nh_ags',
     combatLevelRange: { min: 121, max: 126 } };
   const registry = createBotRegistry({
-    botApi: { getRegionManager: () => ({}) }, botCount: 0, spawn: new Location(3423, 4120),
+    botApi: { getRegionManager: () => ({}), core: {
+      DisplayNames: { refusal: () => null },
+      World: { getPlayers: () => [], getAddPlayerQueue: () => [] },
+    } }, botCount: 0, spawn: new Location(3423, 4120),
     behaviorMode: { PVP: 'pvp' }, worldGetPlayerByName: () => null,
     createBotPlayer: (name, location) => ({ ...fakePlayer(name), getLocation: () => location }),
     createInitialState: () => ({ pvp: {} }), assignPvpMetadata,
@@ -983,7 +1032,10 @@ test('regional PvP bots use varied catalogue gear and favour towns over the leve
   let regionsUpdated;
   const generated = [];
   const registry = createBotRegistry({
-    botApi: { getRegionManager: () => ({ blocked: () => false, isWater: () => false }) },
+    botApi: { getRegionManager: () => ({ blocked: () => false, isWater: () => false }), core: {
+      DisplayNames: { refusal: () => null },
+      World: { getPlayers: () => [], getAddPlayerQueue: () => [] },
+    } },
     botCount: 0,
     wildernessRoamerBotCount: 128,
     wildernessActiveRegionBotsPerRegion: PVP_BOT_SETTINGS.activeRegionBotsPerRegion,
@@ -2510,4 +2562,1119 @@ test('the shared PvP world population has more one-defence pures without protect
   t.diagnostic(`${noProtectionPures}/1000 one-defence pures without protection prayers`);
   assert.ok(noProtectionPures >= 250 && noProtectionPures <= 400, `${noProtectionPures}/1000 no-protection pures`);
   assert.ok(types.size > 25, 'the rest of the catalogue remains represented');
+});
+
+test('a roam target that cannot be reached is abandoned instead of walked at forever', () => {
+  const { createWanderAction } = require('../plugins/bots/brain/actions/Wander.PlayerBots');
+  const player = fakePlayer('roamer', 3100, 3600);
+  const state = {
+    mode: 'roaming',
+    home: { x: 3100, y: 3600, z: 0 },
+    roaming: { target: { x: 3200, y: 3700, z: 0 }, targetPickedAt: 1000, nextWalkAt: 0, endpointPauseUntil: 0 },
+  };
+  const wander = createWanderAction({ walkRadius: 4 }, {
+    regionManager: { blocked: () => false, isWater: () => false },
+    ditch: null,
+  });
+  assert.equal(wander.update({ player, state, nowMs: 1000 + 29999 }), 'running');
+  assert.deepEqual(state.roaming.target, { x: 3200, y: 3700, z: 0 }, 'still trying before the timeout');
+  assert.equal(wander.update({ player, state, nowMs: 1000 + 30001 }), 'running');
+  assert.notDeepEqual(state.roaming.target, { x: 3200, y: 3700, z: 0 }, 'a new target is picked');
+  assert.equal(state.roaming.targetPickedAt, 31001);
+});
+
+test('a wilderness bot pacing one 8x8 square is flagged as stuck, a fight or its hotspot is not', () => {
+  const { __testing: behaviorTesting } = require('../plugins/bots/behaviours/task/BehaviorTask.PlayerBots');
+  const { trackStuckArea, STUCK_AREA_MS } = behaviorTesting;
+  let x = 3100;
+  let y = 3600;
+  const player = {
+    ...fakePlayer('pacer', x, y),
+    getLocation: () => ({ getX: () => x, getY: () => y, getZ: () => 0 }),
+    getCombat: () => ({ getTarget: () => null, getAttacker: () => null }),
+    getCombatFollowing: () => null,
+  };
+  const state = {
+    autonomy: { allowedAutonomousModes: ['pvp'] },
+    pvp: { hotspotId: null },
+    roaming: { roamBounds: { minX: 3072, maxX: 3135, minY: 3584, maxY: 3647, z: 0 } },
+  };
+  const entry = { player, state };
+  assert.equal(trackStuckArea(entry, 1000), null);
+  assert.equal(trackStuckArea(entry, 1000 + STUCK_AREA_MS - 1), null);
+  const stuck = trackStuckArea(entry, 1000 + STUCK_AREA_MS + 1);
+  assert.ok(stuck && stuck.elapsedMs >= STUCK_AREA_MS, 'the same square for five minutes is stuck');
+
+  x = 3108;
+  assert.equal(trackStuckArea(entry, 1000 + STUCK_AREA_MS + 2), null, 'leaving the square resets the clock');
+
+  x = 3090;
+  y = 3531;
+  state.pvp.hotspotId = 'edge_mid';
+  assert.equal(trackStuckArea({ player, state }, 2000), null);
+  assert.equal(trackStuckArea({ player, state }, 2000 + STUCK_AREA_MS + 1), null,
+    'lingering inside its own hotspot is not an unreachable roam target');
+
+  const fighting = {
+    ...player,
+    getCombat: () => ({ getTarget: () => ({ getId: () => 1 }), getAttacker: () => null }),
+  };
+  state.pvp.hotspotId = null;
+  assert.equal(trackStuckArea({ player: fighting, state }, 3000), null);
+  assert.equal(trackStuckArea({ player: fighting, state }, 3000 + STUCK_AREA_MS + 1), null,
+    'a live fight is real progress');
+});
+
+test('a PvP bot wearing armour but no weapon needs a loadout restore', () => {
+  const { Equipment } = require('../dist/game/model/container/impl/Equipment');
+  const { needsLoadoutRestore } = require('../plugins/bots/behaviours/policies/PvpLoadoutPolicy.PlayerBots');
+  const empty = Array.from({ length: 14 }, () => ({ getId: () => 0 }));
+  const armourOnly = empty.slice();
+  armourOnly[Equipment.BODY_SLOT] = { getId: () => 1129 };
+  const armed = armourOnly.slice();
+  armed[Equipment.WEAPON_SLOT] = { getId: () => 4151 };
+  const bot = (items) => ({ getEquipment: () => ({ getItems: () => items }) });
+  assert.equal(needsLoadoutRestore(bot(empty)), true, 'nothing worn');
+  assert.equal(needsLoadoutRestore(bot(armourOnly)), true, 'armour but no weapon');
+  assert.equal(needsLoadoutRestore(bot(armed)), false, 'a complete kit is left alone');
+});
+
+test('a PvP bot that lost its brain is recovered and moved onto a walkable Wilderness tile', (t) => {
+  const { Wilderness } = require('../dist/game/content/wilderness/Wilderness');
+  t.mock.method(Wilderness, 'isInLocation', () => true);
+  const { BotBehaviorTask } = require('../plugins/bots/behaviours/task/BehaviorTask.PlayerBots');
+  let movedTo = null;
+  const player = {
+    ...fakePlayer('lost', 3100, 3600),
+    isDyingReturn: () => false,
+    getHitpoints: () => 99,
+    getCombat: () => ({ getTarget: () => null, getAttacker: () => null, reset() {}, setUnderAttack() {} }),
+    getCombatFollowing: () => null,
+    setFollowing() {},
+    setCombatFollowing() {},
+    setMobileInteraction() {},
+    setPositionToFace() {},
+    getMovementQueue: () => ({ size: () => 0, reset() {}, walkToReset() {} }),
+    moveTo: (location) => { movedTo = location; },
+    getEquipment: () => ({ getItems: () => [] }),
+  };
+  const state = {
+    mode: 'pvp',
+    home: { x: 3100, y: 3600, z: 0 },
+    pvp: { phase: 'seeking', hotspotId: null },
+    roaming: {
+      target: null,
+      nextWalkAt: 0,
+      roamBounds: { minX: 3072, maxX: 3135, minY: 3584, maxY: 3647, z: 0 },
+    },
+    autonomy: { allowedAutonomousModes: ['pvp'] },
+  };
+  const entry = { player, state, brain: null };
+  const logs = [];
+  const task = new BotBehaviorTask([entry], 1, {
+    idleEntryStride: 1,
+    api: {
+      getWorld: () => ({}),
+      getRegionManager: () => ({ blocked: () => false, isWater: () => false }),
+      getCombatFactory: () => ({}),
+      getAreaManager: () => ({}),
+      getServerPerf: () => ({ measurePhase: (_, fn) => fn() }),
+      log: (message, extra) => logs.push([message, extra]),
+    },
+  });
+  task.processEntry(entry, 0, 1000);
+  assert.equal(movedTo, null, 'a missing brain gets a grace period first');
+  task.processEntry(entry, 0, 16001);
+  assert.ok(movedTo, 'the bot is moved back onto the map');
+  assert.ok(logs.some(([message]) => message === 'bot_stuck_recovered'), 'the recovery is logged');
+  assert.equal(state.pvp.phase, 'seeking', 'its PvP frame starts over');
+});
+
+
+test('a minigame PvP bot without wilderness roam bounds is left to its own controller', () => {
+  const { __testing: behaviorTesting, BotBehaviorTask } = require('../plugins/bots/behaviours/task/BehaviorTask.PlayerBots');
+  const { isManagedWildernessBot, trackStuckArea, STUCK_AREA_MS } = behaviorTesting;
+  const waiting = {
+    autonomy: { allowedAutonomousModes: ['pvp'] },
+    pvp: { hotspotId: null },
+    roaming: { target: null, nextWalkAt: 0 },
+  };
+  assert.equal(isManagedWildernessBot(waiting), false, 'LMS/BH bots carry no assigned roam bounds');
+  let movedTo = null;
+  const player = {
+    ...fakePlayer('LmsBot1', 3100, 3600),
+    isDyingReturn: () => false,
+    getHitpoints: () => 99,
+    getCombat: () => ({ getTarget: () => null, getAttacker: () => null, reset() {}, setUnderAttack() {} }),
+    getCombatFollowing: () => null,
+    setFollowing() {},
+    setCombatFollowing() {},
+    setMobileInteraction() {},
+    setPositionToFace() {},
+    getMovementQueue: () => ({ size: () => 0, reset() {}, walkToReset() {} }),
+    moveTo: (location) => { movedTo = location; },
+    getEquipment: () => ({ getItems: () => [] }),
+  };
+  const entry = { player, state: waiting, brain: null };
+  assert.equal(trackStuckArea(entry, 1000), null);
+  assert.equal(trackStuckArea(entry, 1000 + STUCK_AREA_MS + 1), null,
+    'the waiting area is not a stuck wilderness square');
+
+  const logs = [];
+  const task = new BotBehaviorTask([entry], 1, {
+    idleEntryStride: 1,
+    api: {
+      getWorld: () => ({}),
+      getRegionManager: () => ({ blocked: () => false, isWater: () => false }),
+      getCombatFactory: () => ({}),
+      getAreaManager: () => ({}),
+      getServerPerf: () => ({ measurePhase: (_, fn) => fn() }),
+      log: (message, extra) => logs.push([message, extra]),
+    },
+  });
+  task.processEntry(entry, 0, 1000);
+  task.processEntry(entry, 0, 16001);
+  assert.equal(movedTo, null, 'its waiting-area position is left alone');
+  assert.equal(waiting.pvp.loadoutPending, undefined, 'its stashed kit is not regenerated');
+  assert.equal(logs.some(([message]) => message === 'bot_stuck_recovered' || message === 'bot_pvp_loadout_restored'), false);
+});
+
+// Minigames intentionally use PvP entries without a roaming assignment, brain or kit.
+test('recovery watchdogs leave independently managed PvP waiters untouched', () => {
+  const { BotBehaviorTask } = require('../plugins/bots/behaviours/task/BehaviorTask.PlayerBots');
+  let gearChecks = 0, moves = 0;
+  const player = {
+    ...fakePlayer('waiting', 3141, 3641),
+    getHitpoints: () => 99, isDyingReturn: () => false,
+    getCombat: () => ({ getTarget: () => null, getAttacker: () => null }),
+    getEquipment: () => { gearChecks++; return { getItems: () => [] }; },
+    moveTo: () => { moves++; },
+  };
+  const state = { mode: 'pvp', pvp: {}, roaming: {}, autonomy: { allowedAutonomousModes: ['pvp'] } };
+  const entry = { player, state, brain: null };
+  const task = new BotBehaviorTask([entry], 1, { api: {
+    getWorld: () => ({}),
+    getRegionManager: () => ({ blocked: () => false, isWater: () => false }),
+    getCombatFactory: () => ({}), getAreaManager: () => ({}),
+    getServerPerf: () => ({ measurePhase: (_, fn) => fn() }),
+  } });
+  task.processEntry(entry, 0, 1000);
+  task.processEntry(entry, 0, 17000);
+  assert.equal(gearChecks, 0, 'an intentional empty kit must not be inspected or replaced');
+  assert.equal(moves, 0);
+  assert.equal(entry.brain, null);
+});
+
+// Real movement/combat behind these checks: fake combat links would miss both regressions.
+function nativeFollowCombatPlayer(t, name, location) {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { Skill } = require('../dist/game/model/Skill');
+  const player = new Player(null, location);
+  const sender = new Proxy({}, { get: () => () => sender });
+  player.setUsername(name);
+  player.setPlayerBot(true);
+  player.getPacketSender = () => sender;
+  player.setRegistered(true);
+  player.setNeedsPlacement(false);
+  for (const skill of Skill.values()) {
+    player.getSkillManager().setMaxLevel(skill, 99);
+    player.getSkillManager().setCurrentLevel(skill, 99);
+  }
+  t.after(() => player.setRegistered(false));
+  return player;
+}
+
+test('a teleblocked recruit walks a segmented route after a distant owner teleport', (t) => {
+  const { createFollowOwnerAction } = require('../plugins/bots/brain/actions/FollowOwner.PlayerBots');
+  const { ATTR_RECRUIT_OWNER_USERNAME } = require('../plugins/bots/runtime/RecruitConstants.PlayerBots');
+  const { FriendsChatManager } = require('../plugins/interface/FriendsChatManager');
+  const bot = nativeFollowCombatPlayer(t, 'blocked-recruit', new Location(3100, 3550));
+  const owner = nativeFollowCombatPlayer(t, 'recruit-owner', new Location(3100, 3850));
+  bot.setAttribute(ATTR_RECRUIT_OWNER_USERNAME, owner.getUsername());
+  bot.getCombat().getTeleblockTimer().start(300);
+  t.mock.method(FriendsChatManager, 'getOwnedChannel', () => ({}));
+  const state = { pvp: {}, home: { x: 3100, y: 3550, z: 0 } };
+  const world = { getPlayerByName: () => owner, areaManager: { inMulti: () => false } };
+  const activity = { id: 'follow_owner', actions: [createFollowOwnerAction({}, world)] };
+  const brain = new BotBrain({ player: bot, state, world, registry: fakeRegistry(), activity, nowMs: 1000 });
+  t.after(() => brain.reset());
+  for (let tick = 0; tick < 8; tick++) {
+    brain.tick(1000 + tick * 600);
+    bot.getMovementQueue().beginCycle();
+    bot.getMovementQueue().process();
+  }
+  assert.equal(brain.lastError, null);
+  assert.ok(bot.getLocation().getY() > 3550, 'the dispatched walk survives the action update');
+  assert.ok(bot.getLocation().getY() < 3570, 'the recruit walks rather than snapping to the owner');
+  assert.equal(bot.getCombat().getTeleblockTimer().finished(), false);
+});
+
+test('regional culling waits for an incoming ranged hit before the first attacker link', (t) => {
+  const { createBotRegistry } = require('../plugins/bots/runtime/Registry.PlayerBots');
+  const { CombatFactory } = require('../dist/game/content/combat/CombatFactory');
+  const { RangedCombatMethod } = require('../dist/game/content/combat/method/impl/RangedCombatMethod');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let regionsUpdated;
+  let snapshot = { regions: [{ key: '0:50:57', regionX: 50, regionY: 57, z: 0 }] };
+  const registry = createBotRegistry({
+    botApi: { getRegionManager: () => ({ blocked: () => false, isWater: () => false }), log() {}, core: {
+      DisplayNames: { refusal: () => null },
+      World: { getPlayers: () => [], getAddPlayerQueue: () => [] },
+    } },
+    botCount: 0, wildernessRoamerBotCount: 1, wildernessActiveRegionBotsPerRegion: 1,
+    spawn: new Location(3222, 3218), behaviorMode: { PVP: 'pvp' },
+    worldGetPlayerByName: () => null,
+    createBotPlayer: (name, location) => nativeFollowCombatPlayer(t, name, location),
+    createInitialState: () => ({ pvp: {} }), applyInitialPvpLoadout: () => true,
+    emitPlayerLogin() {}, ensureBehaviorTaskStarted() {}, randomInRange: (min) => min,
+    onActiveRegionsUpdated: (handler) => { regionsUpdated = handler; },
+    getActiveRegionSnapshot: () => snapshot,
+  });
+  registry.scheduleInitialSpawn();
+  regionsUpdated(snapshot);
+  const bot = registry.entries[0].player;
+  bot.setNeedsPlacement(false);
+  const attacker = nativeFollowCombatPlayer(t, 'ranged-attacker',
+    new Location(bot.getLocation().getX(), bot.getLocation().getY() + 5));
+  let logouts = 0;
+  t.mock.method(bot, 'requestLogout', () => { logouts++; });
+  for (const hit of new RangedCombatMethod().hits(attacker, bot)) CombatFactory.addPendingHit(hit);
+  t.after(() => bot.getCombat().getHitQueue().clear());
+  assert.equal(bot.getCombat().getTarget(), null);
+  assert.equal(bot.getCombat().getAttacker(), null);
+  assert.equal(bot.getCombat().getHitQueue().hasPendingWork(), true);
+  snapshot = { regions: [] };
+  regionsUpdated(snapshot);
+  t.mock.timers.tick(30000);
+  assert.equal(logouts, 0, 'a shot in flight prevents culling before attacker is set');
+  assert.equal(bot.getForcedLogoutTimer().isRunning(), false);
+  bot.getCombat().getHitQueue().clear();
+  regionsUpdated(snapshot);
+  t.mock.timers.tick(30000);
+  assert.equal(logouts, 1, 'culling resumes after the incoming hit is gone');
+});
+
+test('regional roamers in the Revenant Caves spawn only where the player can walk to them (#2834)', (t) => {
+  let seed = 2834;
+  t.mock.method(Math, 'random', () => ((seed = Math.imul(seed, 1664525) + 1013904223 >>> 0) / 2 ** 32));
+  const { createBotRegistry } = require('../plugins/bots/runtime/Registry.PlayerBots');
+  const { RegionManager } = require('../dist/game/collision/RegionManager');
+  const { RsmodRouteFinding } = require('../dist/game/model/movement/path/RsmodRouteFinding');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  RegionManager.init();
+  RegionManager.loadMapFiles(3226, 10140);
+  const route = new RsmodRouteFinding((x, y, z, area) => RegionManager.getClipping(x, y, z, area));
+  const walkable = (x, y) => {
+    const path = route.findRoute({ level: 0, srcX: x, srcY: y, srcSize: 1, destX: 3226, destY: 10140, privateArea: null, moveNear: false });
+    return path.success && !path.alternative;
+  };
+  assert.equal(RegionManager.blocked(new Location(3249, 10120), null), false, 'the cave void is not flagged');
+  assert.equal(walkable(3249, 10120), false, 'so it is only unreachable');
+  const human = nativeFollowCombatPlayer(t, 'rev-cave-human', new Location(3226, 10140));
+  human.setPlayerBot(false);
+  let regionsUpdated;
+  const snapshot = { regions: [{ key: '0:50:158', regionX: 50, regionY: 158, z: 0 }] };
+  const registry = createBotRegistry({
+    botApi: { getRegionManager: () => RegionManager, log() {}, core: {
+      DisplayNames: { refusal: () => null }, RsmodRouteFinding,
+      World: { getPlayers: () => [human], getAddPlayerQueue: () => [] },
+    } },
+    botCount: 0, wildernessRoamerBotCount: 16, wildernessActiveRegionBotsPerRegion: 16,
+    spawn: new Location(3222, 3218), behaviorMode: { PVP: 'pvp' },
+    worldGetPlayerByName: () => null,
+    createBotPlayer: (name, location) => nativeFollowCombatPlayer(t, name, location),
+    createInitialState: () => ({ pvp: {} }), applyInitialPvpLoadout: () => true,
+    emitPlayerLogin() {}, ensureBehaviorTaskStarted() {},
+    randomInRange: (min, max) => min + Math.floor(Math.random() * (max - min + 1)),
+    onActiveRegionsUpdated: (handler) => { regionsUpdated = handler; },
+    getActiveRegionSnapshot: () => snapshot,
+  });
+  registry.scheduleInitialSpawn();
+  regionsUpdated(snapshot);
+  t.mock.timers.tick(60000);
+  const caveRoamers = registry.entries.filter(({ state }) => state.roaming.roamBounds?.minY >= 6400);
+  assert.ok(caveRoamers.length > 0, 'regional roamers still spawn in the caves');
+  assert.ok(registry.entries.some(({ player }) => player.getLocation().getY() < 6400), 'persistent surface hotspots remain populated');
+  for (const { player } of caveRoamers) {
+    const at = player.getLocation();
+    assert.ok(walkable(at.getX(), at.getY()), `${player.getUsername()} at ${at.getX()},${at.getY()} is reachable`);
+  }
+});
+
+test('every PvP archetype equips real, wearable, un-noted gear', () => {
+  // A noted item and an item with no wear position are both slot -1, so both would silently drop
+  // out of the equipment filter and leave the bot half-dressed instead of failing loudly.
+  const coreLocal = require('../dist/plugins/PluginManager').PluginManager.getCoreApi();
+  const definitions = JSON.parse(fs.readFileSync('data/definitions/pvp-bot-loadouts.json', 'utf8'));
+  const I = coreLocal.ItemIdentifiers;
+  const SLOTS = { 0: 'head', 1: 'cape', 2: 'amulet', 3: 'weapon', 4: 'body', 5: 'shield',
+    7: 'legs', 9: 'hands', 10: 'feet', 12: 'ring', 13: 'ammo' };
+  const expand = (name, out = []) => {
+    if (typeof name !== 'string') return out;
+    if (name.startsWith('@')) {
+      for (const inner of definitions.pools[name.slice(1)] ?? []) expand(inner, out);
+    } else {
+      out.push(name);
+    }
+    return out;
+  };
+  const problems = [];
+  for (const archetype of definitions.archetypes) {
+    for (const [slot, spec] of Object.entries(archetype.equipment ?? {})) {
+      for (const name of [].concat(spec).flatMap((entry) => expand(entry))) {
+        const id = I[name];
+        if (typeof id !== 'number') continue;
+        const definition = coreLocal.ItemDefinition.forId(id);
+        if (!definition?.getName?.()) {
+          problems.push(`${archetype.id}: ${slot}=${name} has no definition`);
+          continue;
+        }
+        if (definition.isNoted?.()) problems.push(`${archetype.id}: ${slot}=${name} is the noted ${id}`);
+        const wears = definition.getEquipmentType().getSlot();
+        if (wears >= 0 && SLOTS[wears] !== slot) {
+          problems.push(`${archetype.id}: ${slot}=${name} actually wears ${SLOTS[wears]}`);
+        }
+      }
+    }
+  }
+  assert.deepEqual(problems, []);
+});
+
+
+function nativePvpSwitchKit(t, weaponId, spell, staffId) {
+  const { Item } = require('../dist/game/model/Item');
+  const { ItemIdentifiers: ids } = require('../dist/util/ItemIdentifiers');
+  const { Equipment } = require('../dist/game/model/container/impl/Equipment');
+  const { WeaponInterfaceManager } = require('../dist/game/content/combat/WeaponInterfaceManager');
+  const player = nativeFollowCombatPlayer(t, 'switch-kit', new Location(3100, 3550));
+  const target = nativeFollowCombatPlayer(t, 'switch-target', new Location(3101, 3550));
+  player.getEquipment().set(Equipment.WEAPON_SLOT, new Item(weaponId));
+  player.getInventory().setItem(0, new Item(staffId));
+  for (const [i, id] of [ids.AIR_RUNE, ids.FIRE_RUNE, ids.DEATH_RUNE].entries()) {
+    player.getInventory().setItem(i + 1, new Item(id, 100));
+  }
+  player.setAttribute('pvp:current-preset', { getAutocastSpellId: () => spell.spellId() });
+  WeaponInterfaceManager.assign(player);
+  target.getEquipment().set(Equipment.WEAPON_SLOT, new Item(ids.STAFF_OF_AIR));
+  WeaponInterfaceManager.assign(target);
+  return { player, target, state: { pvp: { generatedPrimaryWeaponId: staffId } } };
+}
+
+test('F2P pressure restores the elemental staff and queues magic against melee protection', t => {
+  const { CombatSpells } = require('../dist/game/content/combat/magic/CombatSpells');
+  const { ItemIdentifiers: ids } = require('../dist/util/ItemIdentifiers');
+  const { PrayerHandler } = require('../dist/game/content/PrayerHandler');
+  const { CombatType } = require('../dist/game/content/combat/CombatType');
+  const { initPvpPressureCombatPolicyCoreAccess, maybeRunPressureCombatScript } =
+    require('../plugins/bots/behaviours/policies/PvpPressureCombatPolicy.PlayerBots');
+  initPvpPressureCombatPolicyCoreAccess({
+    getPrayerHandler: () => PrayerHandler,
+    getServerPerf: () => ({ measurePhase: (_, fn) => fn() }),
+  });
+  t.mock.method(Math, 'random', () => 0);
+  for (const weapon of [ids.RUNE_2H_SWORD, ids.RUNE_BATTLEAXE, ids.RUNE_WARHAMMER]) {
+   for (const hp of [20, 99]) {
+    const spell = CombatSpells.FIRE_BLAST, staff = ids.STAFF_OF_FIRE;
+    const h = nativePvpSwitchKit(t, weapon, spell, staff);
+    h.target.setHitpoints(hp);
+    h.target.getPrayerActive()[PrayerHandler.PROTECT_FROM_MELEE] = true;
+    const result = maybeRunPressureCombatScript({ ...h, nowMs: 100000, profile: {
+      id: 'standard', nextHitScriptChance: 1, nextHitStyleSwitchChance: 1,
+    } });
+    assert.equal(result.forcedCombatType, CombatType.MAGIC);
+    assert.equal(h.player.getEquipment().getWeapon().getId(), staff);
+    assert.equal(h.player.getCombat().getCastSpell(), spell);
+    assert.equal(h.player.getCombat().getTarget(), h.target);
+    assert.equal(spell.canCast(h.player, false), true, 'real cast requirements pass after equip');
+   }
+  }
+  for (const protection of [PrayerHandler.PROTECT_FROM_MAGIC, PrayerHandler.PROTECT_FROM_MISSILES]) {
+    const h = nativePvpSwitchKit(t, ids.RUNE_BATTLEAXE, CombatSpells.FIRE_BLAST, ids.STAFF_OF_FIRE);
+    h.target.setHitpoints(20);
+    h.target.getPrayerActive()[protection] = true;
+    const result = maybeRunPressureCombatScript({ ...h, nowMs: 100000, profile: {
+      id: 'standard', nextHitScriptChance: 1, nextHitStyleSwitchChance: 1,
+    } });
+    assert.equal(result.forcedCombatType, CombatType.MELEE, 'unprotected melee finisher stays viable');
+    assert.equal(h.player.getEquipment().getWeapon().getId(), ids.RUNE_BATTLEAXE);
+  }
+});
+
+test('all F2P KO weapons share P2P hold/stow and primary/ordinary weapons stay excluded', t => {
+  const { CombatSpells } = require('../dist/game/content/combat/magic/CombatSpells');
+  const { ItemIdentifiers: ids } = require('../dist/util/ItemIdentifiers');
+  const { trackSpecWeaponHold, maybeSwitchBackToPrimaryWeapon } =
+    require('../plugins/bots/behaviours/policies/PvpSpecialAttackPolicy.PlayerBots');
+  const { SUPPORTED_SPEC_WEAPONS } = require('../plugins/bots/behaviours/policies/PvpCombatRuntimeCache.PlayerBots');
+  t.mock.method(Math, 'random', () => 0);
+  for (const weapon of [ids.RUNE_2H_SWORD, ids.RUNE_BATTLEAXE, ids.RUNE_WARHAMMER, SUPPORTED_SPEC_WEAPONS[0]]) {
+    const h = nativePvpSwitchKit(t, weapon, CombatSpells.FIRE_BLAST, ids.STAFF_OF_FIRE);
+    const pvp = h.state.pvp;
+    assert.equal(trackSpecWeaponHold(pvp, h.player, 1000), false);
+    assert.ok(pvp.specWeaponStowAt >= 16000 && pvp.specWeaponStowAt <= 21000);
+    assert.equal(trackSpecWeaponHold(pvp, h.player, pvp.specWeaponStowAt - 1), false);
+    assert.equal(trackSpecWeaponHold(pvp, h.player, pvp.specWeaponStowAt), true);
+    assert.equal(maybeSwitchBackToPrimaryWeapon({ ...h, nowMs: pvp.specWeaponStowAt }), true);
+    assert.equal(h.player.getEquipment().getWeapon().getId(), ids.STAFF_OF_FIRE);
+    assert.equal(pvp.heldSpecWeaponId, 0);
+    assert.equal(pvp.specWeaponStowAt, 0);
+    assert.equal(trackSpecWeaponHold(pvp, h.player, 50000), false, 'primary excluded');
+  }
+  const h = nativePvpSwitchKit(t, ids.RUNE_SCIMITAR, CombatSpells.FIRE_BLAST, ids.STAFF_OF_FIRE);
+  assert.equal(trackSpecWeaponHold(h.state.pvp, h.player, 1000), false, 'ordinary weapon excluded');
+  assert.equal(maybeSwitchBackToPrimaryWeapon({ ...h, nowMs: 50000 }), false);
+  for (const id of [ids.RUNE_2H_SWORD, ids.RUNE_BATTLEAXE, ids.RUNE_WARHAMMER]) {
+    assert.equal(SUPPORTED_SPEC_WEAPONS.includes(id), false, 'KO lifecycle does not enable special attacks');
+  }
+});
+
+test('manual control preserves both characters and restores the bot on return or disconnect', (t) => {
+  const { ClientConnection, controlPlayer, releasePlayerControl } = require('../dist/net/NetworkBuilder');
+  const { HeadlessBinaryChannel } = require('../dist/net/BinaryChannel');
+  const { BotPlayerSession } = require('../dist/net/BotPlayerSession');
+  const { World } = require('../dist/game/World');
+  const owner = nativeFollowCombatPlayer(t, 'controller', new Location(3200, 3200));
+  owner.setPlayerBot(false);
+  const bot = nativeFollowCombatPlayer(t, 'controlled', new Location(3100, 3500));
+  const botSession = new BotPlayerSession();
+  bot.setSession(botSession);
+  const channel = new HeadlessBinaryChannel();
+  const connection = new ClientConnection(channel);
+  const bootstraps = [];
+  t.mock.method(connection, 'sendPlayerBootstrap', () => bootstraps.push(connection.player));
+  t.mock.method(World, 'refreshActiveRegions', () => {});
+  connection.bindControlledPlayer(owner);
+  owner.setNeedsPlacement(false);
+  let releases = 0;
+  assert.equal(controlPlayer(owner, bot, () => releases++), true);
+  assert.equal(connection.player, bot);
+  assert.equal(bot.isPlayerBot(), true, 'taking control must not change bot identity or rank');
+  assert.equal(owner.getLocation().getX(), 3200);
+  assert.equal(bot.getLocation().getY(), 3500);
+  assert.equal(controlPlayer(owner, bot, () => {}), false, 'the parked owner cannot nest control');
+  assert.equal(releasePlayerControl(owner), false, 'only the controlling connection can return');
+  assert.equal(releasePlayerControl(bot), true);
+  assert.equal(connection.player, owner);
+  assert.equal(bot.getSession(), botSession);
+  assert.equal(releases, 1);
+  assert.equal(releasePlayerControl(bot), false);
+  owner.setNeedsPlacement(false);
+  bot.setNeedsPlacement(false);
+  assert.equal(controlPlayer(owner, bot, () => releases++), true);
+  connection.cleanup('test-disconnect');
+  assert.equal(bot.getSession(), botSession);
+  assert.equal(connection.player, owner);
+  assert.equal(releases, 2);
+  assert.equal(World.getRemovePlayerQueue().includes(owner), true);
+  assert.equal(World.getRemovePlayerQueue().includes(bot), false);
+  World.getRemovePlayerQueue().splice(World.getRemovePlayerQueue().indexOf(owner), 1);
+  assert.deepEqual(bootstraps, [owner, bot, owner, bot, owner]);
+});
+
+test('manually controlled bots skip recovery, re-gearing and brain decisions', () => {
+  const { BotBehaviorTask } = require('../plugins/bots/behaviours/task/BehaviorTask.PlayerBots');
+  const entry = { player: fakePlayer(), state: { mode: 'pvp' }, manuallyControlled: true,
+    brain: { tick() { assert.fail('manual control must pause the brain'); } } };
+  const task = new BotBehaviorTask([entry], 1, { api: {
+    getWorld: () => ({}), getRegionManager: () => ({}), getCombatFactory: () => ({}),
+    getAreaManager: () => ({}), getServerPerf: () => ({ measurePhase: (_, fn) => fn() }),
+  } });
+  task.recoverBlockedWildernessBot = () => assert.fail('manual control must skip recovery');
+  task.processEntry(entry, 0, 1000);
+  entry.manuallyControlled = false;
+  entry.behaviorPaused = true;
+  task.processEntry(entry, 0, 2000);
+});
+
+test('a bot with a real client receives world updates while an unattended bot does not', (t) => {
+  const { World } = require('../dist/game/World');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const { BotPlayerSession } = require('../dist/net/BotPlayerSession');
+  const bot = nativeFollowCombatPlayer(t, 'viewed-bot', new Location(3100, 3500));
+  bot.setSession(new BotPlayerSession());
+  assert.equal(World.shouldRunNetworkUpdates(bot), false);
+  bot.setSession(new PlayerSession({ kind: 'websocket', readyState: 1 }));
+  assert.equal(World.shouldRunNetworkUpdates(bot), true);
+  assert.equal(World.shouldProcessBotPlayerThisTick(bot, 1), true);
+  bot.setSession(new BotPlayerSession());
+  assert.equal(World.shouldRunNetworkUpdates(bot), false);
+});
+
+test('a controlled bot accepts walking and Follow packets on its next turn', async (t) => {
+  const { ClientConnection, controlPlayer, dispatchClientMessages } = require('../dist/net/NetworkBuilder');
+  const { HeadlessBinaryChannel } = require('../dist/net/BinaryChannel');
+  const { BotPlayerSession } = require('../dist/net/BotPlayerSession');
+  const { World } = require('../dist/game/World');
+  const owner = nativeFollowCombatPlayer(t, 'walk-owner', new Location(3089, 3524));
+  owner.setPlayerBot(false);
+  const bot = nativeFollowCombatPlayer(t, 'walk-bot', new Location(3089, 3524));
+  bot.setSession(new BotPlayerSession());
+  const connection = new ClientConnection(new HeadlessBinaryChannel());
+  t.mock.method(connection, 'sendPlayerBootstrap', () => {});
+  t.mock.method(World, 'refreshActiveRegions', () => {});
+  connection.bindControlledPlayer(owner);
+  owner.setNeedsPlacement(false);
+  assert.equal(controlPlayer(owner, bot, () => {}), true);
+  bot.setNeedsPlacement(false);
+  assert.equal(dispatchClientMessages(bot, [{ type: 'move', worldX: 3086, worldY: 3524, modifierFlags: 0 }]), true);
+  await new Promise(setImmediate);
+  bot.process();
+  assert.ok(bot.getLocation().getX() < 3089, 'the walk packet must move the controlled bot');
+  t.mock.method(World.getPlayers(), 'get', () => owner);
+  assert.equal(dispatchClientMessages(bot, [{ type: 'player_option', index: 26, option: 3 }]), true);
+  await new Promise(setImmediate);
+  bot.process();
+  assert.equal(bot.getFollowing(), owner, 'Follow must attach to the parked main character');
+  connection.releasePlayerControl();
+});
+
+test('bh manual stops AI and movement without logging out; another bh assignment resumes it', (t) => {
+  const { registerBotCommands } = require('../plugins/bots/runtime/RegisterBotCommands.PlayerBots');
+  const { configureBrainActivities } = require('../plugins/bots/brain/BrainActivities.PlayerBots');
+  const { resetMovementState } = require('../plugins/bots/behaviours/state/State.PlayerBots');
+  const { PlayerRights } = require('../dist/game/model/rights/PlayerRights');
+  const owner = nativeFollowCombatPlayer(t, 'manual-owner', new Location(3089, 3524));
+  const bot = nativeFollowCombatPlayer(t, 'manual-bot', new Location(3085, 3524));
+  let resets = 0;
+  const state = { mode: 'pvp', autonomy: {}, home: { x: 3085, y: 3524, z: 0 } };
+  const entry = { player: bot, state, brain: { reset() { resets++; } } };
+  const runtime = {
+    entriesByUsername: new Map([[bot.getUsername(), entry]]),
+    botStatesByName: new Map([[bot.getUsername(), state]]),
+    resolveControlledPlayer: () => bot,
+    hasControllerForUsername: () => true,
+  };
+  const roam = { id: 'roam', mode: 'roaming', actions: [] };
+  const pvp = { id: 'pvp', mode: 'pvp', actions: [] };
+  const brainRegistry = { activities: [roam, pvp], byId: new Map([['roam', roam], ['pvp', pvp]]) };
+  configureBrainActivities({ runtime, registry: brainRegistry, world: {}, resetMovementState });
+  const commands = new Map();
+  let releaseControl;
+  runtime.playerBotUsernames = new Set([bot.getUsername()]);
+  registerBotCommands({
+    api: { core: { PlayerRights,
+      controlPlayer(_owner, _bot, released) { releaseControl = released; return true; },
+      releasePlayerControl() { releaseControl(); return true; },
+    }, registerCommand: (name, handler) => commands.set(name, handler),
+      onPlayerProcess() {}, onPlayerLogout() {}, onPlayerDisconnect() {} },
+    runtime, brainRegistry, resetMovementState, botApi: { log() {} },
+    taskManager: { submit() {} }, flashHintArrowTaskFactory() {},
+  });
+  const assign = (mode) => commands.get('bh')({ player: owner, parts: ['bh', bot.getUsername(), mode] });
+  bot.setFollowing(owner);
+  assign('manual');
+  assert.equal(resets, 1, 'the old activity releases its resources');
+  assert.equal(entry.behaviorPaused, true);
+  assert.equal(entry.brain, null);
+  assert.equal(bot.getFollowing(), null);
+  assert.equal(bot.getMovementQueue().hasPendingWork(), false);
+  assert.equal(bot.isRegistered(), true, 'manual keeps the same character logged in');
+  commands.get('botcontrol')({ player: owner, parts: ['botcontrol', bot.getUsername()] });
+  bot.setFollowing(owner);
+  commands.get('botback')({ player: bot });
+  assert.equal(entry.manuallyControlled, false);
+  assert.equal(entry.behaviorPaused, true, 'returning to the main must not restart paused AI');
+  assert.equal(bot.getFollowing(), owner, 'manual Follow survives returning to the main');
+  assign('auto');
+  assert.equal(entry.behaviorPaused, false);
+  assert.ok(entry.brain);
+  assign('manual');
+  assign('pvp');
+  assert.equal(entry.behaviorPaused, false);
+  assert.ok(entry.brain.isRunningActivity('pvp'));
+  entry.brain.reset();
+});
+
+test('::botstatsme requires the active character to be an administrator and copies valid stats', (t) => {
+  const { registerBotControlCommands } = require('../plugins/bots/runtime/Control.PlayerBots');
+  const { PluginManager } = require('../dist/plugins/PluginManager');
+  const { CommandPacketListener } = require('../dist/net/packet/impl/CommandPacketListener');
+  const { ClientConnection } = require('../dist/net/NetworkBuilder');
+  const { HeadlessBinaryChannel } = require('../dist/net/BinaryChannel');
+  const { BotPlayerSession } = require('../dist/net/BotPlayerSession');
+  const api = PluginManager.createApi('BotStatsMeTest');
+  const { Equipment, Flag, Item, ItemIdentifiers, PlayerRights, Skill, World } = api.core;
+  const admin = nativeFollowCombatPlayer(t, 'admin', new Location(3200, 3200));
+  admin.setPlayerBot(false);
+  admin.setRights(PlayerRights.ADMINISTRATOR);
+  const bot = nativeFollowCombatPlayer(t, 'devbot1', new Location(3200, 3200));
+  bot.setDisplayName('Dev Bot1');
+  bot.setSession(new BotPlayerSession());
+  const connection = new ClientConnection(new HeadlessBinaryChannel());
+  t.mock.method(connection, 'sendPlayerBootstrap', () => {});
+  t.mock.method(World, 'refreshActiveRegions', () => {});
+  connection.bindControlledPlayer(admin);
+  admin.setNeedsPlacement(false);
+  t.after(() => {
+    if (connection.player === bot) connection.releasePlayerControl();
+  });
+
+  const messages = [];
+  t.mock.method(admin, 'sendMessage', (message) => messages.push(message));
+  t.mock.method(bot, 'sendMessage', (message) => messages.push(message));
+  let snapshots = 0;
+  const sender = new Proxy({
+    sendSkillsSnapshot() { snapshots++; },
+  }, { get: (target, key) => target[key] ?? (() => sender) });
+  t.mock.method(bot, 'getPacketSender', () => sender);
+  const source = admin.getSkillManager();
+  const target = bot.getSkillManager();
+  for (const skill of Skill.values()) {
+    const index = skill.getIndex();
+    source.setMaxLevels(skill, 40 + index, false)
+      .setCurrentLevel(skill, 10, false)
+      .setExperiences(skill, 100000 + index, false);
+  }
+
+  registerBotControlCommands({
+    api,
+    runtime: {
+      entriesByUsername: new Map([[bot.getUsername(), { player: bot }]]),
+      playerBotUsernames: new Set([bot.getUsername()]),
+    },
+    resetMovementState() {},
+  });
+  const command = (raw) => CommandPacketListener.execute(connection.player, raw);
+  const copy = '::botstatsme dev_bot1';
+  const denied = 'You do not have permission to use this command.';
+
+  admin.setRights(PlayerRights.NONE);
+  command(copy);
+  assert.equal(messages.at(-1), denied, 'a nonadministrator cannot copy stats');
+  admin.setRights(PlayerRights.ADMINISTRATOR);
+  command('::botcontrol dev_bot1');
+  assert.equal(connection.player, bot);
+  assert.equal(bot.getRights(), PlayerRights.NONE);
+  command(copy);
+  assert.equal(messages.at(-1), denied, 'the driven bot cannot use its parked owner’s rights');
+  command('::botback');
+  assert.equal(connection.player, admin);
+
+  const whip = new Item(ItemIdentifiers.ABYSSAL_WHIP);
+  bot.getEquipment().set(Equipment.WEAPON_SLOT, whip);
+  command(copy);
+  assert.match(messages.at(-1), /unequip Abyssal whip/i);
+  for (const skill of Skill.values()) {
+    assert.equal(target.getMaxLevel(skill), 99, 'an equipment rejection leaves the stats intact');
+  }
+  assert.equal(snapshots, 0, 'denied and rejected copies do not send a skills snapshot');
+
+  const scimitar = new Item(ItemIdentifiers.RUNE_SCIMITAR);
+  bot.getEquipment().set(Equipment.WEAPON_SLOT, scimitar);
+  bot.getUpdateFlag().reset();
+  command(copy);
+  for (const skill of Skill.values()) {
+    assert.equal(target.getMaxLevel(skill), source.getMaxLevel(skill), skill.getName());
+    assert.equal(target.getCurrentLevel(skill), source.getMaxLevel(skill), skill.getName());
+    assert.equal(target.getExperience(skill), source.getExperience(skill), skill.getName());
+  }
+  assert.equal(snapshots, 1, 'one skills snapshot refresh');
+  assert.ok(bot.getUpdateFlag().flagged(Flag.APPEARANCE), 'the visible combat level is refreshed');
+  assert.equal(bot.getWeapon(), scimitar.getDefinition().getWeaponInterface());
+  assert.equal(bot.getBonusManager().getAttackBonus()[1], scimitar.getDefinition().getBonuses()[1]);
+  assert.equal(messages.at(-1), 'Copied your stats to Dev Bot1.');
+
+  command('::botstatsme missing');
+  assert.match(messages.at(-1), /Usage: ::botstatsme/);
+});
+
+test('::botgearme requires the active character to be an administrator and copies worn gear', (t) => {
+  const { registerBotControlCommands } = require('../plugins/bots/runtime/Control.PlayerBots');
+  const { PluginManager } = require('../dist/plugins/PluginManager');
+  const { CommandPacketListener } = require('../dist/net/packet/impl/CommandPacketListener');
+  const { ClientConnection } = require('../dist/net/NetworkBuilder');
+  const { HeadlessBinaryChannel } = require('../dist/net/BinaryChannel');
+  const { BotPlayerSession } = require('../dist/net/BotPlayerSession');
+  const api = PluginManager.createApi('BotGearMeTest');
+  const { Equipment, Flag, Item, ItemIdentifiers, PlayerRights, Skill, World } = api.core;
+  const admin = nativeFollowCombatPlayer(t, 'gear-admin', new Location(3200, 3200));
+  admin.setPlayerBot(false);
+  admin.setRights(PlayerRights.ADMINISTRATOR);
+  const bot = nativeFollowCombatPlayer(t, 'devbot2', new Location(3200, 3200));
+  bot.setDisplayName('Dev Bot2');
+  bot.setSession(new BotPlayerSession());
+  const connection = new ClientConnection(new HeadlessBinaryChannel());
+  t.mock.method(connection, 'sendPlayerBootstrap', () => {});
+  t.mock.method(World, 'refreshActiveRegions', () => {});
+  connection.bindControlledPlayer(admin);
+  admin.setNeedsPlacement(false);
+  t.after(() => {
+    if (connection.player === bot) connection.releasePlayerControl();
+  });
+
+  const messages = [];
+  t.mock.method(admin, 'sendMessage', (message) => messages.push(message));
+  t.mock.method(bot, 'sendMessage', (message) => messages.push(message));
+  let containerRefreshes = 0;
+  const sender = new Proxy({
+    sendItemContainer() { containerRefreshes++; },
+  }, { get: (target, key) => target[key] ?? (() => sender) });
+  t.mock.method(bot, 'getPacketSender', () => sender);
+
+  registerBotControlCommands({
+    api,
+    runtime: {
+      entriesByUsername: new Map([[bot.getUsername(), { player: bot }]]),
+      playerBotUsernames: new Set([bot.getUsername()]),
+    },
+    resetMovementState() {},
+  });
+  const command = (raw) => CommandPacketListener.execute(connection.player, raw);
+  const copy = '::botgearme dev_bot2';
+  const denied = 'You do not have permission to use this command.';
+
+  admin.setRights(PlayerRights.NONE);
+  command(copy);
+  assert.equal(messages.at(-1), denied, 'a nonadministrator cannot copy gear');
+  admin.setRights(PlayerRights.ADMINISTRATOR);
+  command('::botcontrol dev_bot2');
+  assert.equal(connection.player, bot);
+  command(copy);
+  assert.equal(messages.at(-1), denied, 'the driven bot cannot use its parked owner’s rights');
+  command('::botback');
+  assert.equal(connection.player, admin);
+
+  const whip = new Item(ItemIdentifiers.ABYSSAL_WHIP);
+  const body = new Item(ItemIdentifiers.RUNE_PLATEBODY);
+  const glory = new Item(ItemIdentifiers.AMULET_OF_GLORY);
+  admin.getEquipment().set(Equipment.WEAPON_SLOT, whip);
+  admin.getEquipment().set(Equipment.BODY_SLOT, body);
+  admin.getEquipment().set(Equipment.AMULET_SLOT, glory);
+  const scimitar = new Item(ItemIdentifiers.RUNE_SCIMITAR);
+  bot.getEquipment().set(Equipment.WEAPON_SLOT, scimitar);
+  bot.getSkillManager().setMaxLevel(Skill.ATTACK, 1);
+  command(copy);
+  assert.match(messages.at(-1), /cannot wear Abyssal whip/i);
+  assert.equal(bot.getEquipment().getItems()[Equipment.WEAPON_SLOT], scimitar, 'a rejection leaves the bot’s gear intact');
+  assert.equal(containerRefreshes, 0, 'denied and rejected copies do not refresh the worn items');
+
+  bot.getSkillManager().setMaxLevel(Skill.ATTACK, 99);
+  bot.getUpdateFlag().reset();
+  command('::botgearme Dev Bot2');
+  const worn = bot.getEquipment().getItems();
+  const source = admin.getEquipment().getItems();
+  for (let slot = 0; slot < bot.getEquipment().capacity(); slot++) {
+    assert.equal(worn[slot].getId(), source[slot].getId(), `slot ${slot} id`);
+    assert.equal(worn[slot].getAmount(), source[slot].getAmount(), `slot ${slot} amount`);
+    assert.notEqual(worn[slot], source[slot], `slot ${slot} is a copy, not a shared item`);
+  }
+  assert.equal(containerRefreshes, 1, 'one worn-item refresh');
+  assert.ok(bot.getUpdateFlag().flagged(Flag.APPEARANCE), 'the visible gear is refreshed');
+  assert.equal(bot.getWeapon(), whip.getDefinition().getWeaponInterface());
+  const slashBonus = source.reduce((total, item) =>
+    item.getId() > 0 ? total + item.getDefinition().getBonuses()[1] : total, 0);
+  assert.equal(bot.getBonusManager().getAttackBonus()[1], slashBonus, 'bonuses cover the whole copied gear');
+  assert.equal(messages.at(-1), 'Copied your gear to Dev Bot2.');
+
+  command('::botgearme missing');
+  assert.match(messages.at(-1), /Usage: ::botgearme/);
+});
+
+// Review fixes (#3676): a bot an administrator drives has a real client, so it gets what a player gets.
+function watchedBot(t, name, location, watched) {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  const { BotPlayerSession } = require('../dist/net/BotPlayerSession');
+  const bot = new Player(null, location);
+  bot.setUsername(name);
+  bot.setPlayerBot(true);
+  bot.setRegistered(true);
+  bot.setNeedsPlacement(false);
+  bot.setSession(watched ? new PlayerSession({ kind: 'websocket', readyState: 1, send() {} }) : new BotPlayerSession());
+  t.after(() => bot.setRegistered(false));
+  return bot;
+}
+
+test('a controlled bot is sent the interfaces it opens; an unattended bot is not', (t) => {
+  for (const watched of [true, false]) {
+    const bot = watchedBot(t, `iface-${watched}`, new Location(3200, 3200), watched);
+    const frames = [];
+    t.mock.method(bot.getSession(), 'sendClientPacket', (frame) => { frames.push(frame); return true; });
+    bot.getPacketSender().sendInterface(12);
+    assert.equal(bot.getInterfaceId(), 12);
+    assert.equal(frames.length > 0, watched, watched ? 'the driving admin sees the interface' : 'no client, no packets');
+  }
+});
+
+test('moving a controlled bot to a new map square wakes the regions around it; an unattended bot does not', (t) => {
+  const { World } = require('../dist/game/World');
+  for (const watched of [true, false]) {
+    const bot = watchedBot(t, `region-${watched}`, new Location(3200, 3200), watched);
+    let refreshes = 0;
+    const mock = t.mock.method(World, 'refreshActiveRegions', () => { refreshes++; });
+    World.onPlayerMoved(bot, new Location(3200, 3200), new Location(2960, 3380));
+    mock.mock.restore();
+    assert.equal(refreshes, watched ? 1 : 0, watched ? 'the admin\'s regions load' : 'bots alone wake nothing');
+  }
+});
+
+test('an AI bot held by an administrator (::botcontrol or ::bh manual) neither acts nor is logged out', () => {
+  const { tickMinds, logOutAiBot } = require('../plugins/bots/ai/RegisterAiBots.PlayerBots');
+  for (const hold of ['manuallyControlled', 'behaviorPaused', null]) {
+    let ticks = 0;
+    let logouts = 0;
+    const bot = { requestLogout() { logouts++; }, getForcedLogoutTimer: () => ({ start() {} }) };
+    const entry = { player: bot };
+    if (hold) entry[hold] = true;
+    const runtime = { entriesByUsername: new Map([['ai bot', entry]]) };
+    tickMinds(new Map([['ai bot', { name: 'ai bot', bot, tick() { ticks++; } }]]), runtime, 1000);
+    logOutAiBot(runtime, bot);
+    assert.equal(ticks, hold ? 0 : 1, `${hold ?? 'free'}: the model's tick`);
+    assert.equal(logouts, hold ? 0 : 1, `${hold ?? 'free'}: Presence's logout`);
+  }
+});
+
+test('the parked owner leaving ends the control: the bot is released and the connection closes, never re-attached', (t) => {
+  const { ClientConnection, controlPlayer, releasePlayerControl, endPlayerControl } = require('../dist/net/NetworkBuilder');
+  const { HeadlessBinaryChannel } = require('../dist/net/BinaryChannel');
+  const { BotPlayerSession } = require('../dist/net/BotPlayerSession');
+  const { World } = require('../dist/game/World');
+  const { registerBotControlCommands } = require('../plugins/bots/runtime/Control.PlayerBots');
+  const { PlayerRights } = require('../dist/game/model/rights/PlayerRights');
+  const owner = nativeFollowCombatPlayer(t, 'kicked-owner', new Location(3200, 3200));
+  owner.setPlayerBot(false);
+  const bot = nativeFollowCombatPlayer(t, 'kept-bot', new Location(3100, 3500));
+  const botSession = new BotPlayerSession();
+  bot.setSession(botSession);
+  const channel = new HeadlessBinaryChannel();
+  let closed = 0;
+  t.mock.method(channel, 'close', () => { closed++; });
+  const connection = new ClientConnection(channel);
+  t.mock.method(connection, 'sendPlayerBootstrap', () => {});
+  t.mock.method(World, 'refreshActiveRegions', () => {});
+  connection.bindControlledPlayer(owner);
+  owner.setNeedsPlacement(false);
+  const commands = new Map();
+  const logoutHooks = [];
+  const entry = { player: bot, manuallyControlled: false };
+  registerBotControlCommands({
+    api: { core: { PlayerRights, controlPlayer, releasePlayerControl, endPlayerControl },
+      registerCommand: (name, handler) => commands.set(name, handler),
+      onPlayerLogout: (hook) => logoutHooks.push(hook), onPlayerDisconnect() {} },
+    runtime: { entriesByUsername: new Map([[bot.getUsername(), entry]]), playerBotUsernames: new Set([bot.getUsername()]) },
+    resetMovementState() {},
+  });
+  commands.get('botcontrol')({ player: owner, parts: ['botcontrol', bot.getUsername()] });
+  assert.equal(connection.player, bot, 'the admin drives the bot');
+  // The owner is kicked or banned: its removal runs the logout hooks.
+  for (const hook of logoutHooks) hook({ player: owner });
+  assert.equal(bot.getSession(), botSession, 'the bot has its own session back');
+  assert.equal(entry.manuallyControlled, false, 'and is no longer held');
+  assert.notEqual(connection.player, owner, 'the open socket is not re-attached to the removed owner');
+  assert.equal(closed, 1, 'the connection is closed');
+  const queued = World.getRemovePlayerQueue().includes(owner);
+  if (queued) World.getRemovePlayerQueue().splice(World.getRemovePlayerQueue().indexOf(owner), 1);
+  assert.equal(queued, false, 'and its close does not queue the removed owner again');
+});
+
+// Follow-up (#3676): the rest of what a player's client is sent, and a WebRTC client counted as one.
+test('a controlled bot is told game messages and shown ground items; an unattended bot is not', (t) => {
+  const { ItemOnGround, State } = require('../dist/game/entity/impl/grounditem/ItemOnGround');
+  const { ItemOnGroundManager, OperationType } = require('../dist/game/entity/impl/grounditem/ItemOnGroundManager');
+  const { Item } = require('../dist/game/model/Item');
+  for (const watched of [true, false]) {
+    const at = new Location(3200, 3200);
+    const bot = watchedBot(t, `told-${watched}`, at, watched);
+    const frames = [];
+    t.mock.method(bot.getSession(), 'sendClientPacket', (frame) => { frames.push(frame); return true; });
+    bot.sendMessage(`Controlling ${bot.getDisplayName()}.`);
+    assert.equal(frames.length > 0, watched, `${watched ? 'controlled' : 'unattended'}: the game message`);
+    let created = 0;
+    t.mock.method(bot.getPacketSender(), 'createGroundItem', () => { created++; return bot.getPacketSender(); });
+    const coins = new ItemOnGround(State.SEEN_BY_EVERYONE, undefined, at.clone(), new Item(995, 10), true, -1, null);
+    ItemOnGroundManager.performPlayer(bot, coins, OperationType.CREATE);
+    assert.equal(created, watched ? 1 : 0, `${watched ? 'controlled' : 'unattended'}: the ground item`);
+  }
+});
+
+test('a controlled bot is sent the tick clock and poison orb each turn; an unattended bot is not', (t) => {
+  for (const watched of [true, false]) {
+    const bot = watchedBot(t, `clock-${watched}`, new Location(3200, 3200), watched);
+    let clocks = 0;
+    let orbs = 0;
+    t.mock.method(bot, 'sendMapClock', () => { clocks++; });
+    t.mock.method(bot, 'syncPoisonOrb', () => { orbs++; });
+    bot.process();
+    assert.deepEqual([clocks, orbs], watched ? [1, 1] : [0, 0], watched ? 'controlled' : 'unattended');
+  }
+});
+
+test('a WebRTC client is a real client: a bot driven over it is watched', (t) => {
+  const { PlayerSession } = require('../dist/net/PlayerSession');
+  for (const kind of ['websocket', 'tcp', 'webrtc']) {
+    assert.equal(new PlayerSession({ kind, readyState: 1, send() {} }).hasNetworkClient(), true, kind);
+  }
+  assert.equal(new PlayerSession({ kind: 'headless', readyState: 1, send() {} }).hasNetworkClient(), false, 'headless');
+  const bot = watchedBot(t, 'webrtc-driven', new Location(3200, 3200), true);
+  bot.setSession(new PlayerSession({ kind: 'webrtc', readyState: 1, send() {} }));
+  assert.equal(bot.isUnwatchedBot(), false, 'the admin on WebRTC is watching');
+});
+
+// #3885: a fight away from every player only runs the brain every 20 cycles. Its eating ran
+// with it, so F2P bots (whose one-more-hit wait needs two looks at the HP) died with full food.
+test('a bot fighting away from players eats every cycle while its activity stays downsampled', (t) => {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { BotPlayerSession } = require('../dist/net/BotPlayerSession');
+  const { PluginManager } = require('../dist/plugins/PluginManager');
+  const { BotBehaviorTask } = require('../plugins/bots/behaviours/task/BehaviorTask.PlayerBots');
+  const { PvpController } = require('../plugins/bots/brain/pvp/PvpController.PlayerBots');
+  const { createInitialState } = require('../plugins/bots/behaviours/state/State.PlayerBots');
+  const Food = require('../plugins/items/Food.plugin');
+  const core = PluginManager.getCoreApi();
+  Food.register(PluginManager.createApi('Food'));
+  const bot = (name, y) => {
+    const player = new Player(null, new core.Location(3093, y, 0));
+    player.setUsername(name);
+    player.setPlayerBot(true);
+    player.setSession(new BotPlayerSession());
+    player.setRegistered(true);
+    player.sendMessage = () => {};
+    t.after(() => player.setRegistered(false));
+    return player;
+  };
+  const player = bot('far-f2p', 3700);
+  const opponent = bot('far-foe', 3701);
+  player.getSkillManager().setCurrentLevel(core.Skill.HITPOINTS, 88, false).setMaxLevels(core.Skill.HITPOINTS, 88, false);
+  player.getInventory().adds(core.ItemIdentifiers.SWORDFISH, 20);
+  player.getCombat().attack(opponent);
+  opponent.getCombat().attack(player);
+
+  const behaviorMode = { PVP: 'pvp', ROAMING: 'roaming' };
+  const state = createInitialState({ x: 3093, y: 3700, z: 0 }, behaviorMode);
+  state.mode = 'pvp';
+  Object.assign(state.pvp, { loadoutId: 'f2p_rune_pure', profileId: 'standard' });
+  const states = new Map([['far-f2p', state]]);
+  const api = PluginManager.createApi('PlayerBots#3885');
+  api.log = () => {};
+  const controller = new PvpController(states, api, { behaviorMode });
+  let activityTicks = 0;
+  const registry = { byId: new Map(), acquire: () => true, release() {}, pickNext: () => null, isBlocked: () => false };
+  const brain = new BotBrain({
+    player, state, registry,
+    world: { supportTick: (context) => controller.tickSupport(context) },
+    activity: { id: 'pvp', repeat: true, actions: [{ id: 'fight', update: () => { activityTicks++; return 'running'; } }] },
+  });
+  const entry = { player, state, brain };
+  const task = new BotBehaviorTask([entry], 1, {
+    timingDesyncMs: 0, behaviorMode,
+    lodConfig: { enabled: true, farStride: 4, mediumStride: 2, nearStride: 1 },
+    api: {
+      getWorld: () => ({ getPlayers: () => [], isPlayerSessionConnected: () => false }),
+      getRegionManager: () => ({ blocked: () => false, isWater: () => false }),
+      getCombatFactory: () => ({}), getAreaManager: () => ({}),
+      getServerPerf: () => ({ measurePhase: (_, fn) => fn() }),
+    },
+  });
+
+  // A 15 every four cycles: 88 HP lasts 24 cycles unfed, about one downsampled brain tick.
+  let lowest = 88;
+  for (let cycle = 0; cycle < 60; cycle++) {
+    if (cycle % 4 === 0) {
+      // A landed hit also marks who is attacking (CombatFactory), which is what keeps the bot engaged.
+      player.setHitpoints(Math.max(0, player.getHitpoints() - 15));
+      player.getCombat().setUnderAttack(opponent);
+    }
+    lowest = Math.min(lowest, player.getHitpoints());
+    if (player.getHitpoints() <= 0) break;
+    task.processEntry(entry, 0, 1000 + cycle * 600);
+    player.getTimers().process();
+  }
+  assert.ok(lowest > 0, `the bot keeps itself alive (lowest ${lowest} HP)`);
+  assert.ok(player.getInventory().getAmount(core.ItemIdentifiers.SWORDFISH) < 20, "it ate its real food");
+  assert.ok(activityTicks < 10, `its activity is still downsampled (${activityTicks} of 60 cycles)`);
+});
+
+test('a bot retreating on foot away from players walks every cycle; its activity stays downsampled', (t) => {
+  const { Player } = require('../dist/game/entity/impl/player/Player');
+  const { BotPlayerSession } = require('../dist/net/BotPlayerSession');
+  const { PluginManager } = require('../dist/plugins/PluginManager');
+  const { BotBehaviorTask } = require('../plugins/bots/behaviours/task/BehaviorTask.PlayerBots');
+  const { createInitialState } = require('../plugins/bots/behaviours/state/State.PlayerBots');
+  const core = PluginManager.getCoreApi();
+  const bot = (name, y) => {
+    const player = new Player(null, new core.Location(3093, y, 0));
+    player.setUsername(name);
+    player.setPlayerBot(true);
+    player.setSession(new BotPlayerSession());
+    player.setRegistered(true);
+    player.sendMessage = () => {};
+    t.after(() => player.setRegistered(false));
+    return player;
+  };
+  const behaviorMode = { PVP: 'pvp', ROAMING: 'roaming' };
+  const run = (retreating) => {
+    const player = bot(retreating ? 'far-retreat' : 'far-fight', 3700);
+    const opponent = bot(retreating ? 'far-chaser' : 'far-foe', 3701);
+    opponent.getCombat().attack(player);
+    player.getCombat().setUnderAttack(opponent);
+    const state = createInitialState({ x: 3093, y: 3700, z: 0 }, behaviorMode);
+    state.mode = 'pvp';
+    if (retreating) state.pvp.retreat = { startedAtMs: 0, runUntilMs: 0 };
+    let activityTicks = 0, supportTicks = 0, walks = 0;
+    const registry = { byId: new Map(), acquire: () => true, release() {}, pickNext: () => null, isBlocked: () => false };
+    const brain = new BotBrain({
+      player, state, registry,
+      world: { supportTick: () => { supportTicks++; return null; } },
+      activity: { id: 'pvp', repeat: true, actions: [{ id: 'fight', update: () => { activityTicks++; return 'running'; } }] },
+    });
+    t.mock.method(brain, 'dispatchMovement', () => { walks++; });
+    const entry = { player, state, brain };
+    const task = new BotBehaviorTask([entry], 1, {
+      timingDesyncMs: 0, behaviorMode,
+      lodConfig: { enabled: true, farStride: 4, mediumStride: 2, nearStride: 1 },
+      api: {
+        getWorld: () => ({ getPlayers: () => [], isPlayerSessionConnected: () => false }),
+        getRegionManager: () => ({ blocked: () => false, isWater: () => false }),
+        getCombatFactory: () => ({}), getAreaManager: () => ({}),
+        getServerPerf: () => ({ measurePhase: (_, fn) => fn() }),
+      },
+    });
+    for (let cycle = 0; cycle < 60; cycle++) task.processEntry(entry, 0, 1000 + cycle * 600);
+    return { activityTicks, supportTicks, walks };
+  };
+  const retreat = run(true), fight = run(false);
+  assert.equal(retreat.supportTicks, 60, 'support still runs every cycle');
+  assert.equal(retreat.walks, 60, `the retreat's route goes out every cycle (${retreat.walks} of 60)`);
+  assert.ok(retreat.activityTicks < 10, `its activity is still downsampled (${retreat.activityTicks} of 60 cycles)`);
+  assert.ok(fight.walks < 10, `a bot that isn't retreating keeps its walk on the brain tick (${fight.walks} of 60)`);
+});
+
+test('rare cosmetic swaps replace armour with stat-identical variants in the same slot', () => {
+  const { ItemIdentifiers } = require('../dist/util/ItemIdentifiers');
+  const { Item } = require('../dist/game/model/Item');
+  const { PVP_LOADOUT_DEFINITIONS } = require('../plugins/bots/behaviours/pvp/PvpLoadoutRegistry.PlayerBots');
+  const { applyCosmeticSwaps } = loadoutTesting;
+  const rolls = (...values) => () => values.shift() ?? 0;
+  const body = new Item(ItemIdentifiers.RUNE_PLATEBODY, 1);
+  const legs = new Item(ItemIdentifiers.RUNE_PLATELEGS, 1);
+  // Roll under the chance, then 1 slot, then pick the body, then its first variant (gilded).
+  const [swapped, kept] = applyCosmeticSwaps([body, legs], () => true, rolls(0, 0, 0, 0));
+  assert.equal(swapped.getId(), ItemIdentifiers.GILDED_PLATEBODY);
+  assert.equal(kept, legs);
+  assert.deepEqual(applyCosmeticSwaps([body, legs], () => true, rolls(0.99)), [body, legs]);
+  for (const [base, variants] of Object.entries(PVP_LOADOUT_DEFINITIONS.cosmetics.swaps)) {
+    const def = new Item(ItemIdentifiers[base], 1).getDefinition();
+    for (const key of variants) {
+      const variant = new Item(ItemIdentifiers[key], 1).getDefinition();
+      assert.equal(variant.getEquipmentType().getSlot(), def.getEquipmentType().getSlot(), key);
+      assert.deepEqual(variant.getBonuses(), def.getBonuses(), `${key} matches ${base}`);
+      assert.equal(variant.getRequirements?.()?.toString(), def.getRequirements?.()?.toString(), key);
+    }
+  }
+});
+
+test('a name only a league character is saved under is taken for a new AI bot', () => {
+  const { nameHeld } = require('../plugins/bots/ai/RegisterAiBots.PlayerBots');
+  const { PluginManager } = require('../dist/plugins/PluginManager');
+  const real = PluginManager.getCoreApi();
+  const saves = new Set(['main:mainonly', 'league:leagueonly']);
+  const core = {
+    PLAYER_PROFILES: real.PLAYER_PROFILES,
+    GameConstants: { PLAYER_PERSISTENCE: { exists: (name, profile = real.MAIN_PROFILE) => saves.has(`${profile}:${name}`) } },
+    World: { getPlayerByName: (name) => (name === 'online' ? {} : undefined) },
+  };
+  const roster = { has: (name) => name === 'rostered' };
+  assert.ok(real.PLAYER_PROFILES.includes(real.LEAGUE_PROFILE), 'PRE: the league profile is one of the profiles');
+  for (const name of ['mainonly', 'leagueonly', 'online', 'rostered']) assert.equal(nameHeld(core, roster, name), true, name);
+  assert.equal(nameHeld(core, roster, 'free'), false);
 });

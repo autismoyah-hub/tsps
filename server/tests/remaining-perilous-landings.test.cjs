@@ -31,7 +31,7 @@ function harness() {
     getItemOnGroundManager: () => ({ registerLocation: () => {} }),
     persistAttribute() {}, onCustomEvent(k, fn) { (events[k] ??= []).push(fn); },
     emitCustomEvent(k, e) { for (const fn of events[k] ?? []) fn(e); },
-    onObjectInteraction(fn) { (hooks.object ??= []).push(fn); },
+    onObjectInteraction(fn) { if (typeof fn === 'function') (hooks.object ??= []).push(fn); },
     spawnNpc(def) { let loc = new core.Location(def.x, def.y, def.z); const npc = { ...def, getLocation: () => loc, moveTo: to => { loc = to; }, remove: () => {}, isRegistered: () => true, isNpc: () => true, getAsNpc: () => npc, getIndex: () => next++, setOwner() {}, setMobileInteraction() {}, setPositionToFace() {}, getMovementQueue: () => ({ reset() { return this; }, setBlockMovement() { return this; } }) }; npcs.push(npc); return npc; },
     removeNpc(npc) { npc.removed = true; removed.push(npc); },
   }, { get: (t, k) => t[k] ?? ((...args) => (hooks[k] ??= []).push(args.find(x => typeof x === 'function'))) });
@@ -61,8 +61,9 @@ const pos = p => [p.getLocation().getX(), p.getLocation().getY(), p.getLocation(
 test('every captured mandatory entrance lands on its real destination', () => {
   const h = harness(), p = player();
   h.quest.setStage(p, 5); gate(h, p, O.ENTRANCE_15, 1435, 3129); assert.deepEqual(pos(p), [1439, 9509, 1]);
-  h.quest.setStage(p, 7); gate(h, p, O.ENTRANCE_15, 1439, 9600, 1); assert.deepEqual(pos(p), [1440, 9615, 1]);
+  // Stages 7-14 land in a copy of the antechamber (tests/perilous-moons-camp-instance.test.cjs); the real map's landing:
   h.quest.setStage(p, 27);
+  gate(h, p, O.ENTRANCE_15, 1439, 9600, 1); assert.deepEqual(pos(p), [1440, 9615, 1]);
   gate(h, p, O.ENTRANCE_16, 1421, 9613, 1); assert.deepEqual(pos(p), [1388, 9575, 0]);
   gate(h, p, O.ENTRANCE_16, 1421, 9650, 1); assert.deepEqual(pos(p), [1403, 9717, 0]);
   gate(h, p, O.ENTRANCE_16, 1458, 9650, 1); assert.deepEqual(pos(p), [1481, 9669, 0]);
@@ -144,10 +145,13 @@ test('Nahta/Blacksmith capture spawns and exact RSMOD routes out of the shop to 
 test('shop Squeeze-through 51005 is a captured two-way transition and the real object interaction reaches the Blacksmith', () => {
   const data = require('../plugins/world/data/loc-teleports.json').locs
     .find(entry => entry.id === 51005 && entry.x === 1431 && entry.y === 9567 && entry.z === 1);
+  // Each row crosses straight to the opposite tile (1af6d9ae9, from RSProx 1098/1102/1105/1135 and 1693).
   assert.deepEqual(data.sides, [
     { from: [1430, 9567, 1], to: [1432, 9567, 1] },
+    { from: [1432, 9567, 1], to: [1430, 9567, 1] },
+    { from: [1430, 9568, 1], to: [1432, 9568, 1] },
     { from: [1432, 9568, 1], to: [1430, 9568, 1] },
-  ], 'RSProx 1693 west->east and east->west destinations');
+  ], 'west->east and east->west on both rows');
   assert.equal(data.anim, 6103); assert.equal(data.animTick, 3); assert.equal(data.tick, 4);
   assert.equal(data.sound, 2452);
 
@@ -157,7 +161,7 @@ test('shop Squeeze-through 51005 is a captured two-way transition and the real o
   assert.equal(door.getDefinition().getInteractions()[0], 'Squeeze-through');
 
   let objectHook;
-  const api = { core, persistAttribute() {}, onObjectInteraction(fn) { objectHook = fn; }, onItemOnObject() {}, onObjectRoute() {}, onCustomEvent() {} };
+  const api = { core, persistAttribute() {}, onObjectInteraction(fn) { if (typeof fn === 'function') objectHook = fn; }, onItemOnObject() {}, onObjectRoute() {}, onCustomEvent() {} };
   require('../plugins/world/LocTeleports.plugin').register(api);
   const p = player();
   p.performAnimation = animation => { p.animation = animation.getId(); };
@@ -176,7 +180,7 @@ test('shop Squeeze-through 51005 is a captured two-way transition and the real o
   assert.equal(p.animation, 6103, 'captured animation before the move');
   assert.deepEqual(pos(p), [1430, 9568, 1], 'still on the west side before the captured move tick');
   core.TaskManager.process();
-  assert.deepEqual(pos(p), [1432, 9567, 1], 'west->east landing');
+  assert.deepEqual(pos(p), [1432, 9568, 1], 'west->east landing, straight across');
 
   click(1432, 9568);
   for (let tick = 0; tick < 3; tick++) core.TaskManager.process();

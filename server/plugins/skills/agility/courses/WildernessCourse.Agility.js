@@ -83,6 +83,7 @@ module.exports = {
   key: "wilderness",
   name: "Wilderness Agility",
   helper: 13, // the Agility helper's course (enum 3507: "Wilderness Agility Course")
+  lootSource: 65, // the loot tracker's source (enum 4976)
   lapXp: 571.4,
   petBase: 34666, // Giant squirrel base chance (Wiki)
   // No marks of grace on this course (Wiki: Wilderness Agility Course).
@@ -106,6 +107,8 @@ module.exports = {
       level: 1, // Wiki: the obstacles after the pipe have no level of their own
       xp: 20,
       route: [3005, 3953, 0],
+      // The logical landing unlocks before cycle 70. Let the captured swing pose finish.
+      keepAnimation: true,
       end: { spam: "You skillfully swing across." },
       steps: [...ropeSwing([3005, 3958]), { sound: ROPE_SWING_SOUND }],
       // Wiki: 200-250 out of 256 (78%-98% from level 1 to 99, Mod Ash), failable at any level.

@@ -65,6 +65,8 @@
  *    implemented; the owed partisan comes from the camp tent and the owed
  *    circlet from the Sophanem High Priest.
  */
+const CameraShake = require("../../interface/CameraShake.plugin");
+
 module.exports = function registerBeneathCursedSandsQuest(api) {
   const {
     GameObject,
@@ -86,9 +88,15 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
   // Stage values / varbits
   // ==========================================================================
 
+  const VARBIT_TOA_ENTRANCE_OPEN = 13837; // toa_entrance_open; capture 101 tick 11030, on quest completion
   const VARBIT_INVESTIGATED_ENTRY = 13844; // bcs_investigated_entry, varp 3421 bit 12
+  const VARBIT_INVESTIGATED_CITIZENS = 13845; // bcs_investigated_citizens, bit 13
+  const VARBIT_FOUND_PILLAR = 13846; // bcs_found_pillar, bit 14
   const VARBIT_FOUND_MOULD = 13847; // bcs_found_mould, varp 3421 bits 15-17
+  const VARBIT_FOUND_TOMB = 13848; // bcs_found_tomb, bit 18
+  const VARBIT_EMBLEM_ROTATION = 13849; // bcs_emblem_rotation, bits 19-24
   const VARBIT_LILY = 13850; // bcs_lily_type
+  const VARBIT_QUESTCOMPLETE_TYPE = 13851; // bcs_questcomplete_type, bits 27-28
   const VARBIT_OWED_PARTISAN = 13853; // bcs_owed_partisan
   const VARBIT_OWED_CIRCLET = 13854; // bcs_owed_circlet
 
@@ -307,7 +315,14 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
     "returned from whence they came. But where did they come from?",
   ];
   const NECROPOLIS_RUBBLE = ObjectIdentifiers.RUBBLE_60; // 44003, climbable
+  const RUBBLE_CROSS_TICKS = 2;
+  const RUBBLE_CROSS_CYCLES = 60;
+  const RUBBLE_CROSS_ANIMATION = 839; // human_walk_style
+  const RUBBLE_CROSS_SOUND = 2454;
+  const BUSY_VARBIT = 12393; // busy: 1 while the player crosses, as TeleportHandler and the bank use it
   const BLOCKED_ENTRY = 44008; // toa_entrance_blocked, Inspect at the Jaltevas Pyramid
+  // Quest Helper DigStep and the Wiki: one tile north of the southern ritual pillar.
+  const CHEST_DIG_TILE = new Location(3411, 2786, 0);
   const DIG_PILLARS = new Set([
     ObjectIdentifiers.PILLAR_86, // 43994
     ObjectIdentifiers.PILLAR_87, // 43995
@@ -337,6 +352,9 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
   const EMBLEMS_TAKEN_ATTRIBUTE = "beneath-cursed-sands:emblems-taken";
   const OWED_PARTISAN_ATTRIBUTE = "beneath-cursed-sands:owed-partisan";
   const OWED_CIRCLET_ATTRIBUTE = "beneath-cursed-sands:owed-circlet";
+  /** The partisan and circlet Maisa's chain hands over, once each (saved). */
+  const PARTISAN_GIVEN_ATTRIBUTE = "beneath-cursed-sands:partisan-given";
+  const CIRCLET_GIVEN_ATTRIBUTE = "beneath-cursed-sands:circlet-given";
 
   // Urn slots 1 (northernmost) .. 4 (southernmost); emblem types 1..4.
   const EMBLEM_TYPE_BABOON = 1;
@@ -500,6 +518,9 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
 
   function lilyType(player) {
     const stage = quest.getStage(player);
+    // Capture 101 moves 1 -> 2 while the lily is grown/picked, then back to 0
+    // when the quest completes at 108.
+    if (stage >= STAGE_COMPLETE) return 0;
     if (stage >= STAGE_LILY_PICKED) return 2;
     if (stage >= STAGE_ROGER_FED) return 1;
     return 0;
@@ -523,9 +544,10 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
     return null;
   }
 
-  /** The native bcs_found_mould values the helper reads: 1 found, 2 read, 4 mould taken. */
+  /** The native bcs_found_mould values the helper reads: 1 found, 2 read, 3 chest, 4 mould taken. */
   function foundMouldState(player) {
     if (hasFlag(player, MOULD_FOUND_ATTRIBUTE) || quest.getStage(player) >= STAGE_EMBLEM) return 4;
+    if (hasItem(player, CHEST_ITEM) || player.getBanks().some((bank) => bank?.contains(CHEST_ITEM))) return 3;
     if (hasFlag(player, TABLET_READ_ATTRIBUTE)) return 2;
     if (hasFlag(player, TABLET_FOUND_ATTRIBUTE)) return 1;
     return 0;
@@ -535,9 +557,17 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
   function syncQuestVarbits(player) {
     const sender = player.getPacketSender();
     const stage = quest.getStage(player);
+    sender.sendVarbit(VARBIT_TOA_ENTRANCE_OPEN, stage >= STAGE_COMPLETE ? 1 : 0);
     sender.sendVarbit(VARBIT_INVESTIGATED_ENTRY, entryInspected(player) || stage >= STAGE_ENTRY_INSPECTED ? 1 : 0);
+    sender.sendVarbit(VARBIT_INVESTIGATED_CITIZENS, hasFlag(player, TALKED_CITIZEN_ATTRIBUTE) ? 1 : 0);
+    sender.sendVarbit(VARBIT_FOUND_PILLAR, stage >= STAGE_EMBLEM ? 1 : 0);
     sender.sendVarbit(VARBIT_FOUND_MOULD, foundMouldState(player));
+    sender.sendVarbit(VARBIT_FOUND_TOMB, stage >= STAGE_EMBLEM_CONFIRMED ? 1 : 0);
+    // Capture 101 runs the pillar rotation through 18 -> 15 and leaves 15
+    // once the tomb opens; the solved value is all that survives a relog.
+    sender.sendVarbit(VARBIT_EMBLEM_ROTATION, stage >= STAGE_EMBLEM_CONFIRMED ? 15 : 0);
     sender.sendVarbit(VARBIT_LILY, lilyType(player));
+    sender.sendVarbit(VARBIT_QUESTCOMPLETE_TYPE, stage >= STAGE_COMPLETE ? 2 : 0);
     sender.sendVarbit(VARBIT_OWED_PARTISAN, owedPartisan(player) ? 1 : 0);
     sender.sendVarbit(VARBIT_OWED_CIRCLET, owedCirclet(player) ? 1 : 0);
   }
@@ -825,7 +855,7 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
   // Condition answers
   // ==========================================================================
 
-  function answerCondition({ player, text, stepId }) {
+  function answerCondition({ player, text, stepId, pages }) {
     const value = String(text ?? "").toLowerCase();
     switch (stepId) {
       case "EG72ae": // requirements not met
@@ -939,7 +969,10 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
       default:
         break;
     }
-    if (value.includes("does not meet all of the requirements")) return !meetsRequirements(player);
+    // Only for an NPC with this quest's page: the same words guard other quests' requirements
+    // (Twilight's Promise's ending, Prince Itzla Arkan's, Garden of Tranquillity's), theirs to answer.
+    const own = Array.isArray(pages) && pages.some((page) => page?.page === PAGE);
+    if (own && value.includes("does not meet all of the requirements")) return !meetsRequirements(player);
     return null;
   }
 
@@ -963,7 +996,7 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
     if (options.shake) {
       for (const [ticks, axis, random] of options.shake) {
         Scenes.later(player, ticks, () => {
-          if (cameraWatch.get(player) === token) player.getPacketSender().sendCameraShake(axis, random, 0, 0);
+          if (cameraWatch.get(player) === token) CameraShake.send(player.getPacketSender(), "atmospheric", axis, random, 0, 0);
         });
       }
     }
@@ -1075,6 +1108,7 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
       case "D9NBz-": // dig up an old chest
         if (!hasItem(player, CHEST_ITEM)) player.getInventory().adds(CHEST_ITEM, 1);
         if (quest.getStage(player) < STAGE_CHEST_DUG) setStage(player, STAGE_CHEST_DUG);
+        syncQuestVarbits(player);
         return;
       case "aCMKC-": // scarab emblem placed in the pillar opens the rotation puzzle
         if (hasItem(player, SCARAB_EMBLEM_ITEM)) player.getInventory().deleteNumber(SCARAB_EMBLEM_ITEM, 1);
@@ -1221,23 +1255,33 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
         });
         return;
       case "aHisly": // Maisa shows you a spear with a keris on the end
+        // Once: the High Priest's chain replays until the quest completes, so a banked partisan must not be re-given.
+        if (hasFlag(player, PARTISAN_GIVEN_ATTRIBUTE)) return;
         if (freeSlots(player) > 0) {
           if (!hasItem(player, KERIS_PARTISAN_ITEM)) player.getInventory().adds(KERIS_PARTISAN_ITEM, 1);
+          flag(player, PARTISAN_GIVEN_ATTRIBUTE, true);
+          setOwedPartisan(player, false);
         } else {
           setOwedPartisan(player, true);
         }
         return;
       case "VenWhi": // Maisa shows you an enchanted circlet
+        if (hasFlag(player, CIRCLET_GIVEN_ATTRIBUTE)) return;
         if (freeSlots(player) > 0) {
           if (!hasItem(player, CIRCLET_OF_WATER_ITEM)) player.getInventory().adds(CIRCLET_OF_WATER_ITEM, 1);
+          flag(player, CIRCLET_GIVEN_ATTRIBUTE, true);
+          setOwedCirclet(player, false);
         } else {
           setOwedCirclet(player, true);
         }
         return;
       case "MCAnTF": // the High Priest hands you a Circlet of Water
         event.handled = true;
-        if (freeSlots(player) > 0 && !hasItem(player, CIRCLET_OF_WATER_ITEM)) {
+        if (hasFlag(player, CIRCLET_GIVEN_ATTRIBUTE)) {
+          setOwedCirclet(player, false);
+        } else if (freeSlots(player) > 0 && !hasItem(player, CIRCLET_OF_WATER_ITEM)) {
           player.getInventory().adds(CIRCLET_OF_WATER_ITEM, 1);
+          flag(player, CIRCLET_GIVEN_ATTRIBUTE, true);
           player.sendMessage("The High Priest hands you a Circlet of Water.");
           setOwedCirclet(player, false);
         } else {
@@ -1248,8 +1292,11 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
         if (quest.getStage(player) < STAGE_MAISA_DEPARTS) setStage(player, STAGE_MAISA_DEPARTS);
         return;
       case "eRrcx2": // Keris partisan found in the tent
-        if (freeSlots(player) > 0 && !hasItem(player, KERIS_PARTISAN_ITEM)) {
+        if (hasFlag(player, PARTISAN_GIVEN_ATTRIBUTE)) {
+          setOwedPartisan(player, false);
+        } else if (freeSlots(player) > 0 && !hasItem(player, KERIS_PARTISAN_ITEM)) {
           player.getInventory().adds(KERIS_PARTISAN_ITEM, 1);
+          flag(player, PARTISAN_GIVEN_ATTRIBUTE, true);
           player.sendMessage("You find a Keris partisan in the tent.");
           setOwedPartisan(player, false);
         } else {
@@ -1415,6 +1462,21 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
     }
   }
 
+  function digChest(player) {
+    if (quest.getStage(player) !== STAGE_TABLET || foundMouldState(player) !== 2) return false;
+    if (freeSlots(player) === 0) {
+      player.sendMessage("Your spade hits an old chest, but you don't have enough room to take it.");
+      return true;
+    }
+    startTranscript(api, player, MAISA_CAMP, PAGE, "the-ruins-of-ullek-digging-under-the-ritual-pillar");
+    return true;
+  }
+
+  function handleSpadeDig({ player }) {
+    if (!Location.isSameTile(player.getLocation(), CHEST_DIG_TILE)) return false;
+    return digChest(player);
+  }
+
   function openChest(player) {
     if (!hasItem(player, CHEST_ITEM)) return;
     const sender = player.getPacketSender();
@@ -1503,12 +1565,7 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
       }
     }
     if (itemId === SPADE_ITEM && DIG_PILLARS.has(objectId)) {
-      event.handled = true;
-      if (freeSlots(player) === 0) {
-        player.sendMessage("Your spade hits an old chest, but you don't have enough room to take it.");
-        return;
-      }
-      startTranscript(api, player, MAISA_CAMP, PAGE, "the-ruins-of-ullek-digging-under-the-ritual-pillar");
+      event.handled = digChest(player);
     }
   }
 
@@ -1700,7 +1757,29 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
 
   function climbNecropolisRubble(player) {
     if (quest.getStage(player) < STAGE_NECROPOLIS) return;
-    player.moveTo(new Location(3348, 2755, 0));
+    // Capture 101 ticks 9141/10674: the rubble crosses east-west, not south into the wall. Tick 9141:
+    // busy, an exactmove from 3349 to 3347 over 60 cycles with human_walk_style (839), and sound
+    // 2454 (3 loops, delay 4); the player is free again two ticks later. Busy (12393) goes to 1 on the
+    // start tick and back to 0 when the move ends (227/00101.txt [9141]/[9143], [10674]/[10676]).
+    const { ForceMovement, ForceMovementTask, TaskManager } = api.core;
+    const sender = player.getPacketSender();
+    let busyCleared = false;
+    class RubbleCrossing extends ForceMovementTask {
+      stop() {
+        super.stop();
+        if (busyCleared) return;
+        busyCleared = true;
+        sender.sendVarbit(BUSY_VARBIT, 0);
+      }
+    }
+    const fromX = player.getLocation().getX() > 3348 ? 3349 : 3347;
+    const from = new Location(fromX, 2759, 0);
+    if (!player.getLocation().equals(from)) player.moveTo(from);
+    const west = fromX === 3349;
+    sender.sendVarbit(BUSY_VARBIT, 1);
+    TaskManager.submit(new RubbleCrossing(player, RUBBLE_CROSS_TICKS,
+      new ForceMovement(from.clone(), new Location(west ? -2 : 2, 0, 0), 0, RUBBLE_CROSS_CYCLES, west ? 3 : 1, RUBBLE_CROSS_ANIMATION)));
+    sender.sendSoundEffect(RUBBLE_CROSS_SOUND, 3, 4, 1);
     if (!entryInspected(player)) {
       flag(player, ENTRY_INSPECTED_ATTRIBUTE, true);
       if (quest.getStage(player) < STAGE_ENTRY_INSPECTED) setStage(player, STAGE_ENTRY_INSPECTED);
@@ -2130,6 +2209,7 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
 
   function grantReward(player) {
     player.getSkillManager().addExperiences(Skill.AGILITY, 50000);
+    syncQuestVarbits(player);
   }
 
   // ==========================================================================
@@ -2137,6 +2217,8 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
   // ==========================================================================
 
   api.persistAttribute(INTRO_ATTRIBUTE);
+  api.persistAttribute(PARTISAN_GIVEN_ATTRIBUTE, false);
+  api.persistAttribute(CIRCLET_GIVEN_ATTRIBUTE, false);
   api.persistAttribute(ENTRY_INSPECTED_ATTRIBUTE);
   api.persistAttribute(TABLET_FOUND_ATTRIBUTE, false);
   api.persistAttribute(TABLET_READ_ATTRIBUTE, false);
@@ -2182,6 +2264,7 @@ module.exports = function registerBeneathCursedSandsQuest(api) {
   api.onCustomEvent("npc-dialogue:line", handleLine);
   api.onCustomEvent("door:toggle", claimQuestDoor);
   api.onItemAction(handleItemAction);
+  api.onItemAction("Spade", { Dig: handleSpadeDig });
   api.onItemOnObject(handleItemOnObject, { noted: false });
   api.onObjectInteraction(handleObjectInteraction);
   api.onInterfaceActionButton(CHEMISTRY_BUTTONS, handleChemistryButton);

@@ -110,8 +110,35 @@ function makePlayer() {
     isPlayer: () => true, isNpc: () => false, getIndex: () => 1,
     sendMessage: (text) => messages.push(text),
     isRegistered: () => true,
+    getMovementQueue: () => movement,
+    setUntargetable: noop,
   };
+  const movement = { blocked: false, reset() { return movement; }, setBlockMovement(value) { movement.blocked = value; return movement; } };
   return player;
+}
+
+/** Records what the quest draws for the player: loc animations, projectiles and tile graphics. */
+function recordSends(player) {
+  const sent = [];
+  const sender = player.getPacketSender();
+  sender.sendObjectAnimation = (object, animation) => { sent.push({ kind: 'locanim', object, id: animation.getId() }); return sender; };
+  sender.sendProjectile = (from, to, offset, speed, id, startHeight, endHeight, lockon, delay) => {
+    sent.push({ kind: 'projectile', from, to, speed, id, delay }); return sender;
+  };
+  sender.sendGraphic = (graphic, at) => { sent.push({ kind: 'graphic', id: graphic.id, delay: graphic.delay, at }); return sender; };
+  return sent;
+}
+
+function tick(h, ticks = 1) {
+  for (let i = 0; i < ticks; i++) for (const task of [...h.tasks]) if (task.isRunning()) task.tick();
+}
+
+/** The player picks the item up from the floor. */
+function pickUp(h, player, itemId) {
+  const index = h.groundItems.findIndex((entry) => entry.player === player && entry.itemId === itemId);
+  assert.notEqual(index, -1, `item ${itemId} is on the floor`);
+  h.groundItems.splice(index, 1);
+  player.getInventory().adds(itemId, 1);
 }
 
 function harness() {
@@ -119,18 +146,21 @@ function harness() {
   const variants = [];
   const conditions = [];
   const objectHooks = [];
+  const npcHooks = [];
   const deathHooks = [];
   const loginHooks = [];
   const transcripts = [];
   const groundItems = [];
   const spawned = [], logoutHooks = [];
-  const tasks=[];
+  const tasks=[], walks=[];
   const api = new Proxy({
-    core:{...core,TaskManager:{submit(task){task.setRunning(true);if(task.isImmediate())task.execute();tasks.push(task);}}},
+    core:{...core,TaskManager:{submit(task){task.setRunning(true);if(task.isImmediate())task.execute();tasks.push(task);}},
+      PathFinder:{calculateWalkRoute(mobile,x,y){walks.push({mobile,x,y});}}},
     persistAttribute: noop,
     onNpcDialogueVariant: (handler) => variants.push(handler),
     onNpcDialogueCondition: (handler) => conditions.push(handler),
     onObjectInteraction: (handler) => objectHooks.push(handler),
+    onNpcInteraction: (name, handlers) => npcHooks.push({ name, handlers }),
     onNpcDeath: (handler) => deathHooks.push(handler),
     onPlayerLogin: (handler) => loginHooks.push(handler),
     onPlayerLogout: handler => logoutHooks.push(handler),
@@ -166,7 +196,7 @@ function harness() {
     runtime.startTranscript = originalStart;
   }
   const quest = runtime.getRegisteredQuests().findLast((entry) => entry.key === 'tree_gnome_village');
-  return { api,tasks,events, variants, conditions, objectHooks, deathHooks, loginHooks, transcripts, groundItems, spawned, logoutHooks, quest };
+  return { npcHooks,api,tasks,walks,events, variants, conditions, objectHooks, deathHooks, loginHooks, transcripts, groundItems, spawned, logoutHooks, quest };
 }
 
 function emit(h, name, event) {
@@ -196,8 +226,9 @@ function condition(h, player, npcId, stepId, text) {
   return answer;
 }
 
-function action(h, player, npcId, stepId) {
-  const event = { player, npcId, stepId, handled: false, end: false };
+/** A transcript step's event; message steps carry `kind: "message"`, as NpcDialogues sends them. */
+function action(h, player, npcId, stepId, kind = 'message') {
+  const event = { player, npcId, stepId, kind, step: { type: kind === 'message' ? 'message' : 'action' }, text: '', handled: false, end: false };
   emit(h, 'npc-dialogue:action', event);
   return event;
 }
@@ -242,7 +273,12 @@ test('fresh stage 0 to completion follows the helper stage order and canonical w
   assert.equal(p.configs.get(VARP), 1, 'stage 1 is transmitted on varp 111');
   assert.equal(p.varbits.get(VARBIT_ORBS), 0);
   assert.equal(p.varbits.get(VARBIT_TRACKER_H), 0);
-  assert.equal(p.getLocation().x, 2504, 'the start transcript guides the player out of the maze');
+  assert.equal(p.getLocation().x, 2541, 'acceptance leaves Bolren talking inside the village');
+  const guideOut = action(h, p, N.KING_BOLREN, 'GnZ1Sn');
+  assert.deepEqual(guideOut.box, { statement: true, holdTicks: 4, advance: true }, 'the guide message holds over the fade');
+  assert.equal(p.getLocation().x, 2541, 'the screen fades out before the player is moved');
+  tick(h, 2);
+  assert.equal(p.getLocation().x, 2504, 'the final guide-out message moves the player');
 
   assert.equal(variant(h, p, N.COMMANDER_MONTAI).variant, 'battlefield-commander-montai');
   choose(h, p, N.COMMANDER_MONTAI, "Ok, I'll gather some wood.");
@@ -285,9 +321,14 @@ test('fresh stage 0 to completion follows the helper stage order and canonical w
   assert.equal(h.quest.getStage(p), 5);
   assert.equal(p.configs.get(VARP), 5);
 
-  object(h, p, 2185, 'Climb-over');
-  assert.equal(p.getLocation().y, 3254);
-  object(h, p, 2183, 'Open');
+  // The wall is an agility shortcut (human_walk_crumbledwall), not a quest teleport.
+  assert.equal(object(h, p, 2185, 'Climb-over').handled, false);
+  const wall = require('../plugins/skills/data/agility-shortcuts.json').shortcuts.find(entry => entry.object === 2185);
+  assert.deepEqual(wall.between.ends, [[2509, 3252, 0], [2509, 3254, 0]]);
+  assert.ok(wall.between.cross.some(step => step.anim === 'CRUMBLED_WALL'));
+  p.setLocation(2509, 3254, 0);
+  assert.equal(object(h, p, 2183, 'Open').handled, false, 'shared chest handler opens the closed loc');
+  object(h, p, 2182, 'Search');
   assert.deepEqual(h.transcripts.at(-1), {
     npcId: N.KHAZARD_COMMANDER, page: PAGE,
     variant: 'into-the-stronghold-upon-opening-the-chest-containing-the-orb-of-protection',
@@ -302,12 +343,23 @@ test('fresh stage 0 to completion follows the helper stage order and canonical w
   assert.equal(h.quest.getStage(p), 7);
   assert.equal(variant(h, p, N.KING_BOLREN).variant,
     'into-the-stronghold-talking-to-bolren-without-the-orb-after-finding-it');
+  p.setLocation(2541, 3170, 0);
+  action(h, p, N.KING_BOLREN, 'dJzhSl');
+  tick(h, 2);
+  assert.deepEqual([p.getLocation().x, p.getLocation().y], [2504, 3191], 'Elkoy guides the player out after the first orb too');
 
-  death(h, p, WARLORD_SPAWN);
+  const kill = death(h, p, WARLORD_SPAWN);
   assert.equal(h.quest.getStage(p), 8);
-  assert.equal(p.getInventory().getAmount(I.ORBS_OF_PROTECTION), 1);
+  assert.equal(p.getInventory().getAmount(I.ORBS_OF_PROTECTION), 0, 'the orbs are not put in the pack');
+  assert.deepEqual(h.groundItems.map((entry) => [entry.itemId, entry.at.getX(), entry.at.getY()]),
+    [[I.ORBS_OF_PROTECTION, kill.npc.getLocation().getX(), kill.npc.getLocation().getY()]], 'they land on his tile');
+  assert.equal(h.transcripts.at(-1).variant, 'the-khazard-warlord-when-defeated');
   death(h, p, WARLORD_SPAWN);
-  assert.equal(p.getInventory().getAmount(I.ORBS_OF_PROTECTION), 1, 'a repeat kill grants no second orb set');
+  assert.equal(h.groundItems.length, 1, 'a repeat kill drops no second orb set while one lies there');
+  pickUp(h, p, I.ORBS_OF_PROTECTION);
+  death(h, p, WARLORD_SPAWN);
+  assert.equal(h.groundItems.length, 0, 'or while the player carries one');
+  assert.equal(p.getInventory().getAmount(I.ORBS_OF_PROTECTION), 1);
 
   assert.equal(variant(h, p, N.KING_BOLREN).variant, 'return-of-the-orb');
   action(h, p, N.KING_BOLREN, '51Oq7J');
@@ -361,7 +413,7 @@ test('lost first orb is recoverable from the chest and a full bag drops it on th
   const h = harness();
   const p = makePlayer();
   h.quest.setStage(p, 6);
-  object(h, p, 2183, 'Open');
+  object(h, p, 2182, 'Search');
   action(h, p, N.KHAZARD_COMMANDER, 'PatYnA');
   assert.equal(p.getInventory().getAmount(I.ORB_OF_PROTECTION), 1, 'the lost orb comes back from the chest');
 
@@ -380,11 +432,12 @@ test('lost orbs after the warlord are recoverable by killing him again', () => {
   const p = makePlayer();
   h.quest.setStage(p, 8);
   death(h, p, WARLORD_SPAWN);
-  assert.equal(p.getInventory().getAmount(I.ORBS_OF_PROTECTION), 1);
+  pickUp(h, p, I.ORBS_OF_PROTECTION);
 
   h.quest.setStage(p, 8);
   p.getInventory().deleteNumber(I.ORBS_OF_PROTECTION, 1);
   death(h, p, WARLORD_SPAWN);
+  pickUp(h, p, I.ORBS_OF_PROTECTION);
   assert.equal(p.getInventory().getAmount(I.ORBS_OF_PROTECTION), 1, 'a lost orb set can be regained');
   assert.equal(h.quest.getStage(p), 8);
 });
@@ -474,11 +527,53 @@ test('Elkoy guide-in stops at the inner maze railing approach', () => {
   h.quest.setStage(p, 1);
   p.setLocation(2504, 3191, 0);
   choose(h, p, ELKOY_OUTSIDE, 'Yes please.');
+  assert.equal(p.getLocation().x, 2504, 'saying yes does not move the player at once');
+  // The variant's "Elkoy guides you through the maze." is a transcript action: it plays as the message.
+  const direction = action(h, p, ELKOY_OUTSIDE, 'DoDThh', null);
+  direction.text = 'Elkoy guides you through the maze.';
+  emit(h, 'npc-dialogue:action', direction);
+  assert.equal(direction.handled, true);
+  const echoed = { player: p, npcId: ELKOY_OUTSIDE, stepId: 'DoDThh', step: { type: 'message' }, text: '', handled: false };
+  emit(h, 'npc-dialogue:action', echoed);
+  assert.equal(echoed.handled, false, "a message step's generic event on an older runner is left to the message event");
+  assert.deepEqual(direction.steps, [{ type: 'message', text: 'Elkoy guides you through the maze.', id: 'DoDThh' }]);
+  const message = action(h, p, ELKOY_OUTSIDE, 'DoDThh');
+  assert.equal(message.box.holdTicks, 4);
+  assert.equal(p.getPacketSender().getVarbit(6719), 2, 'the minimap goes dark with the walk');
+  tick(h, 1);
+  assert.equal(p.getLocation().x, 2504, 'still dark');
+  tick(h, 1);
   assert.equal(p.getLocation().x, 2515);
   assert.equal(p.getLocation().y, 3159);
+  assert.equal(p.getMovementQueue().blocked, false);
   choose(h, p, ELKOY_OUTSIDE, 'Can you show me out of the village?');
+  action(h, p, ELKOY_OUTSIDE, 'VDxtPz');
+  tick(h, 2);
   assert.equal(p.getLocation().x, 2504);
   assert.equal(p.getLocation().y, 3191);
+});
+
+test('Elkoy variants with no guide message walk the player as his next line shows', () => {
+  const h = harness();
+  const p = makePlayer();
+  h.quest.setStage(p, 8);
+  p.setLocation(2504, 3191, 0);
+  const own = { player: p, npcId: ELKOY_OUTSIDE, step: { speaker: 'Elkoy' }, text: 'Ok then, take care.' };
+  emit(h, 'npc-dialogue:line', own);
+  assert.equal(own.before, undefined, 'no walk without a yes');
+  choose(h, p, ELKOY_OUTSIDE, 'Yes please.');
+  const said = { player: p, npcId: ELKOY_OUTSIDE, step: { player: 'Yes please.' }, text: 'Yes please.' };
+  emit(h, 'npc-dialogue:line', said);
+  assert.equal(said.before, undefined, "the player's own line is not Elkoy's");
+  const line = { player: p, npcId: ELKOY_OUTSIDE, step: { speaker: 'Elkoy' }, text: 'Here we are. Feel free to have a look around.' };
+  emit(h, 'npc-dialogue:line', line);
+  assert.equal(line.holdTicks, 4);
+  line.before();
+  tick(h, 2);
+  assert.deepEqual([p.getLocation().x, p.getLocation().y], [2515, 3159]);
+  const later = { player: p, npcId: ELKOY_OUTSIDE, step: { speaker: 'Elkoy' }, text: 'Ok then, take care.' };
+  emit(h, 'npc-dialogue:line', later);
+  assert.equal(later.before, undefined, 'one yes, one walk');
 });
 
 
@@ -552,7 +647,9 @@ test('canonical warlord threat creates an owned full-health attack form and real
   for(const handler of h.deathHooks)hooks.push({pluginName:'q117-real-death',handler});
   try {
     const task=new NPCDeathTask(fighter);task.execute();task.execute();
-    assert.equal(h.quest.getStage(p),8);assert.equal(p.getInventory().getAmount(I.ORBS_OF_PROTECTION),1);
+    assert.equal(h.quest.getStage(p),8);assert.equal(p.getInventory().getAmount(I.ORBS_OF_PROTECTION),0);
+    assert.deepEqual(h.groundItems.map(e=>[e.player,e.itemId,e.at.getX(),e.at.getY()]),
+      [[p,I.ORBS_OF_PROTECTION,fighter.getLocation().getX(),fighter.getLocation().getY()]],'the orbs lie among his remains');
     assert.equal(h.quest.getStage(other),7);
     assert.equal(p.varbits.get(3460),0);
     assert.equal(source.getCurrentDefinition(p).getId(),7621);
@@ -571,23 +668,58 @@ test('warlord owned combat cancels on logout and can retry without progress gran
 });
 
 
-test('the warlord gives up past his combat follow distance instead of chasing across the map', () => {
-  const h=harness(),p=makePlayer();h.quest.setStage(p,7);p.setLocation(2458,3302,0);
+test('the warlord gives up past his follow distance, walks home beside the talking warlord and fights again there', () => {
+  const h=harness(),p=makePlayer();h.quest.setStage(p,7);p.setLocation(2458,3303,0);
   const source=new NPC(7621,new core.Location(2457,3302,0));source.isRegistered=()=>true;
+  // West of him is blocked here; east is open.
+  source.getMovementQueue=()=>({canWalkTo:(tile,from)=>from.getX()===2457&&tile.getX()!==2456});
   const e={player:p,npc:source,npcId:7621,text:"Ha, you really think you stand a chance? I'll crush you."};
   emit(h,'npc-dialogue:line',e);e.after();
-  const fighter=h.spawned.at(-1);
-  const leash=h.tasks.find(task=>task.constructor.name==='WarlordLeashTask');
-  assert.ok(leash,'the encounter is leashed');
+  const fighter=h.spawned.at(-1),home=new core.Location(2458,3302,0);
+  assert.ok(fighter.getLocation().equals(home),'he starts beside the talking warlord, whose tile stays taken');
+  assert.ok(fighter.getSpawnPosition().equals(home),'and goes home there, a tile he can reach');
+  assert.equal(h.tasks.some(task=>task.constructor.name==='WarlordLeashTask'),false);
   const follow=fighter.getCurrentDefinition().getCombatFollowDistance();
-  fighter.moveTo(new core.Location(2457+follow,3302,0));
-  leash.execute();
-  assert.notEqual(fighter.removed,true,'within reach he keeps fighting');
-  fighter.moveTo(new core.Location(2457+follow+1,3302,0));
-  leash.execute();
-  assert.equal(fighter.removed,true,'past it he goes');
-  assert.equal(p.varbits.get(3460),0);
-  assert.equal(h.quest.getStage(p),7,'the fight can be started again');
+  fighter.moveTo(new core.Location(2458+follow+1,3302,0));p.setLocation(2458+follow+2,3302,0);
+  tick(h);
+  assert.equal(fighter.getCombat().getTarget(),null,'past his follow distance he gives up the chase');
+  assert.notEqual(fighter.removed,true,'he is not despawned');
+  assert.deepEqual([h.walks.at(-1).mobile,h.walks.at(-1).x,h.walks.at(-1).y],[fighter,2458,3302],'he walks home');
+  assert.equal(p.varbits.get(3460),1);
+  fighter.getCombat().attack(p);tick(h);
+  assert.equal(fighter.getCombat().getTarget(),null,'hit on the way home, he keeps walking home');
+  fighter.moveTo(home.clone());tick(h);
+  assert.equal(fighter.getCombat().getTarget(),null,'home, with his challenger out of range, he waits');
+  p.setLocation(2458+follow,3302,0);tick(h);
+  assert.equal(fighter.getCombat().getTarget(),p,'his challenger back in range, he attacks again');
+});
+
+test('the ballista launches its spear at the stronghold entrance, or wide of it on a wrong coordinate', () => {
+  const h=harness(),p=makePlayer();h.quest.setStage(p,4);
+  p.setAttribute('tree-gnome-village:trackers',7);p.setAttribute('tree-gnome-village:ballista-coordinate',1);
+  const sent=recordSends(p);
+  const ballista=new core.GameObject(2181,new core.Location(2507,3209,0),10,0,null);
+  const fire=()=>{
+    const event={player:p,object:ballista,objectId:2181,option:'fire',handled:false};
+    for(const handler of h.objectHooks)handler(event);
+    assert.equal(event.handled,true);
+  };
+  fire();choose(h,p,N.COMMANDER_MONTAI,'0004');
+  assert.equal(condition(h,p,N.COMMANDER_MONTAI,'wwt4fB','If the player chooses the wrong coordinate:'),true);
+  action(h,p,N.COMMANDER_MONTAI,'B_5n9I');
+  const [launch,spear,impact]=sent.splice(0);
+  assert.deepEqual([launch.kind,launch.object,launch.id],['locanim',ballista,730]);
+  assert.deepEqual([spear.kind,spear.id,spear.from.getX(),spear.from.getY()],['projectile',182,2508,3210]);
+  assert.deepEqual([spear.to.getX(),spear.to.getY()],[2502+2*3,3250],'two coordinates out, six tiles east');
+  assert.deepEqual([impact.kind,impact.id,impact.delay],['graphic',183,spear.speed]);
+  assert.equal(h.quest.getStage(p),4);
+  fire();choose(h,p,N.COMMANDER_MONTAI,'0002');
+  assert.equal(condition(h,p,N.COMMANDER_MONTAI,'1G3SE7','If the player chooses the correct coordinate:'),true);
+  action(h,p,N.COMMANDER_MONTAI,'8Wc7CR');
+  const hit=sent.find(entry=>entry.kind==='projectile');
+  assert.deepEqual([hit.to.getX(),hit.to.getY()],[2502,3250],'onto the front entrance');
+  assert.ok(core.Location.isSameTile(sent.find(entry=>entry.kind==='graphic').at,hit.to));
+  assert.equal(h.quest.getStage(p),5);
 });
 
 test('warlord fighting visibility replays actual encounter and clears orphan state without touching siblings', () => {
@@ -653,4 +785,179 @@ test('missing ceremony cohort or cancelled overhead cannot consume orbs or compl
   for(let i=0;i<12;i++)cancelled.tick();
   assert.equal(cancelled.h.quest.getStage(cancelled.p),8);assert.equal(cancelled.p.getInventory().getAmount(I.ORBS_OF_PROTECTION),1);
   assert.equal(cancelled.p.getInventory().getAmount(I.GNOME_AMULET),0);
+});
+
+test('guide-out action waits for its canonical message and ignores other actors/stages', () => {
+  const h = harness(), p = makePlayer();
+  emit(h, 'npc-dialogue:hook', {player:p,npcId:N.KING_BOLREN,hook:'quest:tree-gnome-village:start'});
+  assert.deepEqual([p.getLocation().x,p.getLocation().y],[2541,3170]);
+  action(h,p,N.ELKOY,'GnZ1Sn');tick(h,2);
+  assert.equal(p.getLocation().x,2541);
+  h.quest.setStage(p,2);
+  action(h,p,N.KING_BOLREN,'GnZ1Sn');tick(h,2);
+  assert.equal(p.getLocation().x,2541);
+  h.quest.setStage(p,1);
+  action(h,p,N.KING_BOLREN,'GnZ1Sn',null);tick(h,2);
+  assert.equal(p.getLocation().x,2541,'only the message step guides');
+  // Bolren stands at the east edge of the village box; the guide no longer depends on it.
+  p.setLocation(2543,3169,0);
+  action(h,p,N.KING_BOLREN,'GnZ1Sn');tick(h,2);
+  assert.deepEqual([p.getLocation().x,p.getLocation().y],[2504,3191]);
+  action(h,p,N.KING_BOLREN,'GnZ1Sn');tick(h,2);
+  assert.equal(h.quest.getStage(p),1);
+});
+
+test('cached Elkoy Follow uses the dialogue shortcut in both directions after starting', () => {
+  const h=harness(),p=makePlayer();
+  const follow=h.npcHooks.find(hook=>hook.name==='Elkoy').handlers.Follow;
+  assert.ok(CacheDefinitions.getNpc(N.ELKOY_2).actions.includes('Follow'));
+  assert.ok(!CacheDefinitions.getNpc(N.ELKOY).actions.includes('Follow'));
+  follow({player:p,npcId:ELKOY_OUTSIDE});
+  assert.equal(p.getLocation().x,2541,'no shortcut before starting');
+  h.quest.setStage(p,1);
+  follow({player:p,npcId:N.KING_BOLREN});
+  assert.equal(p.getLocation().x,2541,'unrelated NPC cannot guide');
+  follow({player:p,npcId:N.ELKOY_2});
+  follow({player:p,npcId:N.ELKOY_2});
+  assert.equal(h.tasks.length,1,'a second click during the walk starts no second walk');
+  tick(h,2);
+  assert.deepEqual([p.getLocation().x,p.getLocation().y],[2504,3191]);
+  follow({player:p,npcId:ELKOY_OUTSIDE});
+  assert.deepEqual([p.getLocation().x,p.getLocation().y],[2504,3191],'the follow fades out first');
+  tick(h,2);
+  assert.deepEqual([p.getLocation().x,p.getLocation().y],[2515,3159]);
+  assert.equal(h.quest.getStage(p),1);
+});
+
+test('closed chest opening falls through without an orb; only open Search starts the reward', () => {
+  const h=harness(),p=makePlayer();
+  h.quest.setStage(p,5);
+  assert.equal(object(h,p,2183,'Open').handled,false);
+  assert.equal(object(h,p,2183,'Search').handled,false,'closed loc has no Search');
+  assert.equal(object(h,p,2182,'Open').handled,false,'open loc has no Open');
+  assert.equal(h.transcripts.length,0);
+  assert.equal(p.getInventory().getAmount(I.ORB_OF_PROTECTION),0);
+  assert.equal(object(h,p,2182,'Search').handled,true);
+  assert.equal(h.transcripts.length,1);
+  action(h,p,N.KHAZARD_COMMANDER,'PatYnA');
+  object(h,p,2182,'Search');
+  assert.equal(h.transcripts.length,1,'a second search cannot repeat the reward');
+  assert.equal(p.messages.at(-1),'The chest is empty.');
+  assert.equal(p.getInventory().getAmount(I.ORB_OF_PROTECTION),1);
+});
+
+test('the closed stronghold door keeps the canonical outside lock at every quest stage', () => {
+  const h=harness(), p=makePlayer();
+  const at=new core.Location(2502,3250,0);
+  const closed=new core.GameObject(core.ObjectIdentifiers.DOOR_67,at,0,1,null);
+  for (const stage of [0,1,4,5,6,7,8,9]) {
+    h.quest.setStage(p,stage);
+    p.setLocation(2502,3250);
+    const event={player:p,object:closed,objectId:closed.getId(),handled:false};
+    emit(h,'door:toggle',event);
+    assert.equal(event.handled,true);
+    assert.equal(h.transcripts.at(-1).variant,'into-the-stronghold-opening-the-stronghold-door-from-the-outside');
+    assert.equal(h.quest.getStage(p),stage);
+  }
+  const count=h.transcripts.length;
+  for (const object of [
+    new core.GameObject(core.ObjectIdentifiers.DOOR_67,new core.Location(2502,3251,0),0,2,null),
+    new core.GameObject(core.ObjectIdentifiers.DOOR_67,new core.Location(2502,3250,1),0,1,null),
+    new core.GameObject(core.ObjectIdentifiers.DOOR_3,at,0,1,null),
+  ]) {
+    const event={player:p,object,objectId:object.getId(),handled:false};
+    emit(h,'door:toggle',event);
+    assert.equal(event.handled,false,'open pose, other plane and other door keep ordinary handling');
+  }
+  p.setLocation(2502,3251);
+  const inside={player:p,object:closed,objectId:closed.getId(),handled:false};
+  emit(h,'door:toggle',inside);
+  assert.equal(inside.handled,false);
+  assert.equal(h.transcripts.length,count);
+});
+
+test('stronghold door uses the existing shared swing, passage both ways and close collision', () => {
+  const {RegionManager}=require('../dist/game/collision/RegionManager');
+  const {ObjectManager}=require('../dist/game/entity/impl/object/ObjectManager');
+  const {MapObjects}=require('../dist/game/entity/impl/object/MapObjects');
+  if(RegionManager.regions.size===0)RegionManager.init();
+  RegionManager.loadMapFiles(2502,3250);
+  const h=harness(),p=makePlayer(),tasks=[],names=new Map();
+  h.quest.setStage(p,6);
+  require('../plugins/objects/Doors.plugin').register({
+    core:{...core,ObjectManager,MapObjects,Sounds:{sendSound(){}},TaskManager:{
+      submit(task){task.setRunning(true);tasks.push(task);},
+      cancelTasks(key){for(const task of tasks)if(task.key===key)task.stop();},
+    }},
+    onObjectInteraction:(name,handlers)=>names.set(name,handlers),
+    onRegionLoaded(){},onServerStartup(){},onObjectRoute(){},
+    onCustomEvent:h.api.onCustomEvent,emitCustomEvent:h.api.emitCustomEvent,
+  });
+  const canCross=()=>[
+    RegionManager.canMove(2502,3250,2502,3251,0,1,1,null),
+    RegionManager.canMove(2502,3251,2502,3250,0,1,1,null),
+  ];
+  const click=object=>names.get('Door').Open({player:p,object,objectId:object.getId(),
+    definition:core.ObjectDefinition.forId(object.getId()),location:{
+      x:object.getLocation().getX(),y:object.getLocation().getY(),z:0},clickType:1});
+  const closed=MapObjects.get(core.ObjectIdentifiers.DOOR_67,new core.Location(2502,3250,0),null);
+  assert.ok(closed,'active-cache physical door exists');
+  assert.equal(closed.getFace(),1);
+  assert.deepEqual(canCross(),[false,false]);
+  p.setLocation(2502,3251);
+  assert.equal(click(closed),true,'inside Open uses shared door handler');
+  const opened=MapObjects.get(core.ObjectIdentifiers.DOOR_67,new core.Location(2502,3251,0),null);
+  assert.ok(opened,'ordinary shared swing retains the same loc ID');
+  assert.equal(opened.getFace(),2);
+  assert.deepEqual(canCross(),[true,true],'ordinary exit and return are walkable');
+  assert.deepEqual([p.getLocation().x,p.getLocation().y],[2502,3251],'Open never teleports the player');
+  assert.equal(tasks.length,1,'uses the existing shared close lifecycle');
+  p.setLocation(2502,3250);
+  assert.equal(click(opened),true,'outside can close the already-open ordinary leaf');
+  assert.deepEqual(canCross(),[false,false]);
+  assert.equal(MapObjects.get(core.ObjectIdentifiers.DOOR_67,new core.Location(2502,3250,0),null)?.getFace(),1);
+  const count=h.transcripts.length;
+  click(closed);
+  assert.equal(h.transcripts.length,count+1,'restored closed door is locked from outside again');
+  assert.deepEqual(canCross(),[false,false]);
+  assert.equal(h.quest.getStage(p),6);
+});
+
+test('Talk-to on the unindexed Elkoy and warlord spawns plays the quest page, and leaves other stages to the generic page', () => {
+  const h = harness();
+  const talk = h.npcHooks.filter((hook) => hook.handlers['Talk-to']);
+  assert.deepEqual(talk.map((hook) => hook.name).sort(), ['Elkoy', 'Khazard warlord']);
+  const p = makePlayer();
+  const via = (name, npc) => talk.find((hook) => hook.name === name).handlers['Talk-to']({ player: p, npc, npcId: npc.getId() });
+  const elkoy = new NPC(ELKOY_OUTSIDE, new core.Location(2504, 3193, 0));
+  const warlord = new NPC(WARLORD_SPAWN, new core.Location(2457, 3302, 0));
+  assert.equal(via('Elkoy', elkoy), false, 'before the quest the generic Elkoy page plays');
+  h.quest.setStage(p, 7);
+  p.setLocation(2504, 3191, 0);
+  assert.equal(via('Elkoy', elkoy), true);
+  assert.deepEqual(h.transcripts.at(-1), { npcId: ELKOY_OUTSIDE, page: PAGE,
+    variant: 'bringing-bolren-the-orb-talking-to-elkoy-after-giving-bolren-the-orb-of-protection-outside-the-maze' });
+  assert.equal(via('Khazard warlord', warlord), true);
+  assert.deepEqual(h.transcripts.at(-1), { npcId: WARLORD_SPAWN, page: PAGE, variant: 'the-khazard-warlord' });
+  assert.equal(via('Elkoy', new NPC(N.ELKOY, new core.Location(2504, 3193, 0))), false, 'indexed ids keep the dialogue plugin');
+  h.quest.setStage(p, 9);
+  assert.equal(via('Elkoy', elkoy), false, 'after the quest the Elkoy page plays');
+});
+
+test('an object click that carries only its click index still fires the ballista and searches the chest', () => {
+  const h = harness();
+  const p = makePlayer();
+  h.quest.setStage(p, 4);
+  p.setAttribute('tree-gnome-village:trackers', 7);
+  const click = (objectId, clickType) => {
+    const event = { player: p, object: { getId: () => objectId }, objectId, definition: core.ObjectDefinition.forId(objectId),
+      clickType, location: p.getLocation(), handled: false };
+    for (const handler of h.objectHooks) handler(event);
+    return event.handled;
+  };
+  const fireSlot = core.ObjectDefinition.forId(2181).getInteractions().findIndex((o) => o === 'Fire') + 1;
+  assert.ok(fireSlot > 0);
+  assert.equal(click(2181, fireSlot), true);
+  assert.equal(h.transcripts.at(-1).variant, 'using-the-ballista');
+  assert.equal(click(2181, fireSlot === 1 ? 2 : 1), false, 'another slot of the same loc is not Fire');
 });

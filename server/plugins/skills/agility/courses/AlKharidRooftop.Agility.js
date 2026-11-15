@@ -12,6 +12,19 @@ const HOLD_SOUND = 2459;
 const LAND_SOUND = 2455;
 const ZIPLINE_GRIP_SOUND = 1933;
 const ZIPLINE_SLIDE_SOUND = 1934;
+const FALL_LANDING = 1332;
+const HURT_SOUND = 519;
+
+/** The Wiki lists 1–5 damage for both failable obstacles on this course. */
+function fallTo(tile) {
+  return [
+    { tele: tile },
+    { anim: FALL_LANDING },
+    { sound: LAND_SOUND },
+    { sound: HURT_SOUND, delay: 20 },
+    { hit: [1, 5] },
+  ];
+}
 
 /** The zip line's slide: a tile a tick from 3303,3163 to 3314,3163, the last one quicker. */
 function zipSlide() {
@@ -26,6 +39,7 @@ module.exports = {
   key: "alkharid",
   name: "Al Kharid Rooftop",
   helper: 4, // the Agility helper's course (enum 3507: "Al Kharid Rooftops")
+  lootSource: 23, // the loot tracker's source (enum 4976)
   lapXp: 216,
   petBase: 26648, // Giant squirrel base chance (Wiki)
   diaryTask: {
@@ -62,6 +76,8 @@ module.exports = {
         { sound: TIGHTROPE_SOUND, loops: 6 },
         { walk: [[3272, 3172]], arrive: true },
       ],
+      // The Wiki lists Cross Tightrope 1 as failable for 1–5 damage.
+      fail: { xp: 0, steps: fallTo([3272, 3177, 0]) },
     },
     {
       object: ObjectIds.CABLE,
@@ -102,6 +118,7 @@ module.exports = {
         { anim: -1 },
         { walk: [[3315, 3163]], arrive: true },
       ],
+      // Jagex removed this fail point on 8 May 2024 (Project Rebalance).
     },
     {
       object: ObjectIds.TROPICAL_TREE_27,

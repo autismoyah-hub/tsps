@@ -1,7 +1,7 @@
 /**
  * Clue geodes (https://oldschool.runescape.wiki/w/Clue_geode): every successful mining action
  * rolls each clue tier the player does not already own, at
- * 1 in floor(floor(floor(base * 0.7) / (100 + Mining)) * tier modifier), where base is the rock's
+ * 1 in floor(floor(floor(base * 0.7) * CA) / (100 + Mining) * tier modifier), where base is the rock's
  * rock golem base. Anything that emits "mining:success" with a petBase (rocks, crashed stars)
  * rolls them. Opening a geode gives the clue scroll.
  *
@@ -22,8 +22,10 @@ function buildTiers(ids) {
 }
 
 /** 1 in this many for one tier (Wiki formula; the visible Mining level). */
-function geodeChance(petBase, miningLevel, modifier) {
-  return Math.floor(Math.floor(Math.floor(petBase * 0.7) / (100 + miningLevel)) * modifier);
+function geodeChance(petBase, miningLevel, modifier, combatAchievement = false) {
+  const base = Math.floor(petBase * 7 / 10);
+  const adjusted = combatAchievement ? Math.floor(base * 95 / 100) : base;
+  return Math.floor(adjusted * Math.round(modifier * 10) / ((100 + miningLevel) * 10));
 }
 
 // OSRS allows one clue of each tier at a time, in any of its forms, carried or banked.
@@ -51,6 +53,9 @@ function giveGeode(player, geodeId) {
   const inventory = player.getInventory();
   inventory.forceAdd(player, new core.Item(geodeId, 1));
   player.sendMessage("You find a clue geode!");
+  // "mining:geode" { player, itemId }: the geode found here (after any box rewrite), for a
+  // league's "Obtain a Clue Geode While Mining".
+  pluginApi?.emitCustomEvent?.("mining:geode", { player, itemId: geodeId });
 }
 
 function rollClueGeodes({ player, skill, petBase }, random = Math.random) {
@@ -62,9 +67,16 @@ function rollClueGeodes({ player, skill, petBase }, random = Math.random) {
     // Content may make clue geodes commoner ("treasure-trails:vessel-chance", a league relic): `multiplier` times.
     const boost = { player, vessel: "geode", tier: tier.name, multiplier: 1 };
     pluginApi?.emitCustomEvent?.("treasure-trails:vessel-chance", boost);
-    const base = geodeChance(petBase, level, tier.modifier);
+    if (boost.allowed === false) continue;
+    const achievement = { player, tier: tier.name, currentThresholdMet: false };
+    if (tier.name !== "beginner") pluginApi?.emitCustomEvent?.("combat-achievements:tier", achievement);
+    const base = geodeChance(petBase, level, tier.modifier, achievement.currentThresholdMet === true);
     const chance = base < 1 ? base : Math.max(1, Math.floor(base / (boost.multiplier > 1 ? boost.multiplier : 1)));
-    if (chance < 1 || Math.floor(random() * chance) !== 0 || ownsClue(player, tier)) {
+    if (chance < 1 || Math.floor(random() * chance) !== 0) {
+      continue;
+    }
+    if (ownsClue(player, tier)) {
+      pluginApi?.emitCustomEvent?.("treasure-trails:missed-clue", { player, tier: tier.name });
       continue;
     }
     giveGeode(player, tier.geodeId);

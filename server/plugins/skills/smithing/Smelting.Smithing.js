@@ -23,6 +23,7 @@ const { animation, spam } = Common;
 
 // Wiki: goldsmith gauntlets (or the Smithing or max cape) raise gold bar XP from 22.5 to 56.2.
 const GOLDSMITH_GAUNTLETS_BONUS_XP = 33.7;
+const SMELT_MENU_MODE = 13; // skillmulti Smelt, cache enum 1809
 const SMELT_TITLE = "What would you like to smelt?";
 const LOVAKITE_FURNACE = "Lovakite furnace";
 const NO_ORE_MESSAGE = "You don't have any ore to smelt.";
@@ -131,7 +132,8 @@ function beginSmelt(player, recipe) {
     return false;
   }
   if (recipe.smeltMessage) spam(player, recipe.smeltMessage);
-  player.performAnimation(animation("human_furnace"));
+  // Immediate recipes animate at the exchange below, once rather than twice.
+  if ((recipe.finishDelay ?? SMELT_FINISH_TICKS) > 0) player.performAnimation(animation("human_furnace"));
   Core.Sounds.sendSound(player, Core.Sound.SMELTING);
   return true;
 }
@@ -158,7 +160,7 @@ function finishSmelt(player, chosen, furnaceId) {
   const extraXp = (outcome.bars - 1) * smeltingXp(player, outcome.secondRecipe ?? recipe);
   player.getSkillManager().addExperiences(skill, smeltingXp(player, recipe) + extraXp);
   if (recipe.retrieveMessage) spam(player, recipe.retrieveMessage);
-  Core.api.emitCustomEvent("smelting:success", { player, skill, itemId: recipe.barId });
+  Core.api.emitCustomEvent("smelting:success", { player, skill, itemId: recipe.barId, furnaceId });
   Common.produced(player, skill, recipe.barId, outcome.bars, smeltingXp(player, recipe) + extraXp, "smelt");
   return true;
 }
@@ -187,8 +189,9 @@ function startSmelting(player, chosen, amount, furnaceId = -1) {
     // Molten glass is a Crafting recipe at the same furnace: its batching is Crafting's question.
     skill: recipe.skill ?? Core.Skill.SMITHING,
     remaining: amount,
-    interval: SMELT_INTERVAL_TICKS,
-    finishDelay: SMELT_FINISH_TICKS,
+    firstDelay: recipe.firstDelay ?? 0,
+    interval: recipe.interval ?? SMELT_INTERVAL_TICKS,
+    finishDelay: recipe.finishDelay ?? SMELT_FINISH_TICKS,
     begin: (smelter) => beginSmelt(smelter, recipe),
     step: (smelter) => finishSmelt(smelter, recipe, furnaceId),
   });
@@ -217,6 +220,7 @@ function openMenu(player, entries) {
   const most = Math.max(1, ...entries.map((entry) => entry.most));
   player.getPacketSender().sendCreationMenu(
     new CreationMenu(SMELT_TITLE, [...byItem.keys()], { execute: (itemId, amount) => byItem.get(itemId)?.start(player, amount) }, {
+      mode: SMELT_MENU_MODE,
       maxAmount: Math.min(most, MAX_QUANTITY),
     })
   );
@@ -235,6 +239,15 @@ function smelt({ player, objectId }) {
   const hasOre = Data.SMELTING_RECIPES.some((recipe) => !recipe.skill && !recipe.furnace && recipe.ingredients.some(([id]) => id !== Core.ItemIdentifiers.COAL && available(player, id) > 0));
   const extras = extraEntries(player);
   if (!hasOre && extras.length === 0) {
+    const crafting = Data.SMELTING_RECIPES.filter((recipe) => recipe.skill && !recipe.furnace
+      && (!recipe.members || Core.WorldDefinition.isMembersWorld()) && hasIngredients(player, recipe));
+    if (crafting.length > 0) {
+      const entries = recipeEntries(player, crafting, objectId);
+      // Recording 4283: with one pair, Smelt makes glass directly.
+      if (entries.length === 1 && entries[0].most === 1) entries[0].start(player, 1);
+      else openMenu(player, entries);
+      return;
+    }
     statement(player, NO_ORE_MESSAGE);
     return;
   }
@@ -242,15 +255,26 @@ function smelt({ player, objectId }) {
 }
 
 /**
- * An item used on a furnace: ore opens the Smelt menu; sand, soda ash and 'perfect' gold ore,
+ * An item used on a furnace: a lone, unambiguous ore smelts once; otherwise ore opens the menu.
+ * Sand, soda ash and 'perfect' gold ore,
  * which aren't on it, open a menu of their own product.
  */
 function useOnFurnace(event) {
   const furnace = event.object.getDefinition().getName();
   if (furnace === LOVAKITE_FURNACE) return smeltLovakite(event);
-  const recipes = Data.SMELTING_RECIPES.filter((recipe) => !recipe.furnace && recipe.ingredients.some(([id]) => id === event.itemId));
+  const recipes = Data.SMELTING_RECIPES.filter((recipe) => !recipe.furnace
+    && (!recipe.members || Core.WorldDefinition.isMembersWorld())
+    && recipe.ingredients.some(([id]) => id === event.itemId));
   if (recipes.length === 0) return;
   event.handled = true;
+  const ready = recipes.filter((recipe) => !recipe.skill && !recipe.notInMenu && hasIngredients(event.player, recipe));
+  const singleOre = Data.SMELTING_RECIPES.filter((recipe) => !recipe.skill && !recipe.furnace)
+    .every((recipe) => recipe.ingredients.every(([id]) => available(event.player, id) === (id === event.itemId ? 1 : 0)));
+  // A single ore used on the furnace needs no quantity choice; Smelt keeps its menu.
+  if (singleOre && ready.length === 1 && extraEntries(event.player).length === 0) {
+    startSmelting(event.player, ready[0], 1, furnaceIdOf(event));
+    return;
+  }
   const offMenu = recipes.filter((recipe) => recipe.notInMenu);
   if (offMenu.length > 0) openMenu(event.player, recipeEntries(event.player, offMenu, furnaceIdOf(event)));
   else smelt({ player: event.player, objectId: furnaceIdOf(event) });

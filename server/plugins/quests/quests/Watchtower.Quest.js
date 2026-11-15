@@ -22,8 +22,8 @@
  *
  * Source: LostCity quest_itwatchtower at 65b754f (pinned in issue #196).
  *
- * Gaps: the dark-cave fallback, the enclave cutscene and the bridge-jump
- * movement are not simulated; the "Gor cur" skavid that teaches "Ar" is absent
+ * Gaps: the mapped-cave no-light fallback is not simulated;
+ * the bridge and battlement crossings have functional movement, with native timing unverified; the "Gor cur" skavid that teaches "Ar" is absent
  * from the transcript dump, so the mad skavid accepts the three teachable
  * words; guard gate/bridge/southern roles are best-effort from their spawn
  * coordinates; the crystal pillars' transform varbit (3127) is not sent, so the
@@ -32,9 +32,20 @@
  * gates are wired here because no shared handler owns them.
  */
 module.exports = function registerWatchtowerQuest(api) {
+  const { giveReward } = require("../QuestRuntime");
   const { Skill, Location, ItemIdentifiers, NpcIdentifiers, ObjectIdentifiers } = api.core;
+  const { Animation, Graphic, HitDamage, HitMask, DialogueChainBuilder, ItemStatementDialogue } = api.core;
+  const { createQuestScenes } = require("../QuestScenes");
   const { registerQuest, refreshQuestList, startTranscript } = require("../QuestRuntime");
 
+  const ObstacleRunner = require("../../skills/agility/ObstacleRunner.Agility");
+  const Darkness = require("../../world/Darkness.plugin");
+  ObstacleRunner.init(api);
+
+  const ROPE_THROW_ANIMATION = 775;
+  const ROPE_SWING_ANIMATION = 751;
+  const ROPE_SWING_OBJECT_ANIMATION = 497;
+  const ROPE_SWING_SOUND = 2494;
   const PAGE = "Watchtower";
 
   const VARP_WATCHTOWER = 212;
@@ -95,8 +106,51 @@ module.exports = function registerWatchtowerQuest(api) {
   const TOBAN_ID = NpcIdentifiers.TOBAN;
   const GORAD_ID = NpcIdentifiers.GORAD;
   const ENTRANCE_GUARD_IDS = new Set([NpcIdentifiers.OGRE_GUARD_3, NpcIdentifiers.OGRE_GUARD_5]);
-  const SOUTHERN_GUARD_IDS = new Set([NpcIdentifiers.OGRE_GUARD_6]);
-  const MARKET_GUARD_IDS = new Set([NpcIdentifiers.OGRE_GUARD_7]);
+  // The two OGRE_GUARD_6s (2501/2503,3011-3012) stand at the battlement and want a gift from
+  // the market (a rock cake) before letting the player climb it. The OGRE_GUARD_7s by the market
+  // (2526/2529,3018-3019) only say "What do you want, small thing? Leave us alone!".
+  const SOUTHERN_GUARD_IDS = new Set([NpcIdentifiers.OGRE_GUARD_7]);
+  const MARKET_GUARD_IDS = new Set([NpcIdentifiers.OGRE_GUARD_6]);
+  const BATTLEMENT_GUARD_ID = NpcIdentifiers.OGRE_GUARD_6;
+  /** The battlement (2832) blocks the west end of the rope bridge at x 2507, y 3011-3012. */
+  const BATTLEMENT_ID = ObjectIdentifiers.BATTLEMENT;
+  const BATTLEMENT = { x: 2507, minY: 3011, maxY: 3012 };
+  const CLIMB_OVER_ANIMATION = 839;
+  /** "The ogre guard attacks the player." in the battlement guard's dialogue. */
+  const BATTLEMENT_GUARD_ATTACK_ID = "WdYOsW";
+  /**
+   * The broken bridge north of the rope bridge: a bridge-flagged span at x 2530-2531 whose
+   * y 3027-3028 is missing. Gap 2830 (2530,3026) is jumped north from the bridge for the
+   * guard's 20-coin toll; Gap 2831 (2531,3029) is jumped back south for free. Cache, rev 241.
+   */
+  const GAP_NORTH_ID = ObjectIdentifiers.GAP;
+  const GAP_SOUTH_ID = ObjectIdentifiers.GAP_2;
+  const GAP_FROM_SOUTH = [2530, 3026];
+  const GAP_LAND_NORTH = [2530, 3029];
+  const GAP_FROM_NORTH = [2531, 3029];
+  const GAP_LAND_SOUTH = [2531, 3026];
+  const GAP_JUMP_ANIMATION = 741;
+  /**
+   * The toll is only taken, and the jump only made, from the bridge deck south of the gap. The
+   * east-gate guards (2549-2551,3029-3031) share the bridge guard's id, and the jump's forced
+   * walk ignores clipping, so a toll paid anywhere else would walk the player through walls.
+   */
+  const atGapTakeOff = (player) => {
+    const at = player.getLocation();
+    return at.getZ() === 0 && at.getY() <= GAP_FROM_SOUTH[1]
+      && Math.max(Math.abs(at.getX() - GAP_FROM_SOUTH[0]), Math.abs(at.getY() - GAP_FROM_SOUTH[1])) <= 1;
+  };
+  const BRIDGE_GUARD_ID = NpcIdentifiers.OGRE_GUARD_4;
+  /**
+   * The enclave guards let a player past only while distracted by cave nightshade (wiki: "Use
+   * the second cave nightshade on an enclave guard to distract them and enter the enclave
+   * again"); once the quest is complete the way is open.
+   */
+  const enclaveDistracted = new WeakSet();
+  /** "You run past the guard while he's busy." after the nightshade. */
+  const ENCLAVE_RUN_PAST_ID = "Z7N4ZW";
+  /** "The enclave guard attacks the player." in the guards' dialogues. */
+  const ENCLAVE_GUARD_ATTACK_IDS = new Set(["n72ZBl", "qS75F0"]);
   const BRIDGE_GUARD_IDS = new Set([NpcIdentifiers.OGRE_GUARD_4]);
   // The live east-gate guards are OGRE_GUARD_4 spawns; the wiki lets a gold bar
   // be given to one of them directly, as well as clicking the gate.
@@ -176,17 +230,6 @@ module.exports = function registerWatchtowerQuest(api) {
   const GOLD_BAR = ItemIdentifiers.GOLD_BAR;
   const VIAL = ItemIdentifiers.VIAL;
 
-  const LIGHT_SOURCES = new Set([
-    ItemIdentifiers.LIT_CANDLE,
-    ItemIdentifiers.LIT_TORCH,
-    ItemIdentifiers.CANDLE_LANTERN,
-    ItemIdentifiers.OIL_LANTERN,
-    ItemIdentifiers.BULLSEYE_LANTERN,
-    ItemIdentifiers.SAPPHIRE_LANTERN,
-    ItemIdentifiers.LIT_BUG_LANTERN,
-    ItemIdentifiers.BRUMA_TORCH,
-  ]);
-
   const BUSH_IDS = new Set([
     ObjectIdentifiers.BUSH_11,
     ObjectIdentifiers.BUSH_12,
@@ -223,6 +266,30 @@ module.exports = function registerWatchtowerQuest(api) {
   // its Enter teleport lands on Toban's island, as in the reference script.
   const TOBAN_CAVE_ID = ObjectIdentifiers.CAVE_ENTRANCE_12;
   const TOBAN_CAVE_DESTINATION = { x: 2576, y: 3029 };
+  const TOBAN_LADDER_ID = ObjectIdentifiers.LADDER_25;
+  const YANILLE_HOLE_ID = ObjectIdentifiers.HOLE_4;
+  const ENCLAVE_EXIT_ID = ObjectIdentifiers.CAVE_ENTRANCE_13;
+  // Mapless travel follows a fixed circuit of surface caves, not an attempt counter.
+  // Wiki: Skavid caves / transport system; named reference quest_itwatchtower at 65b754f.
+  const MAPLESS_CAVE_ROUTES = new Map([
+    [ObjectIdentifiers.CAVE_ENTRANCE_6, [2523, 3070]],
+    [ObjectIdentifiers.CAVE_ENTRANCE_7, [2540, 3055]],
+    [ObjectIdentifiers.CAVE_ENTRANCE_8, [2553, 3055]],
+    [ObjectIdentifiers.CAVE_ENTRANCE_9, [2552, 3034]],
+    [ObjectIdentifiers.CAVE_ENTRANCE_10, [2563, 3024]],
+    [ObjectIdentifiers.CAVE_ENTRANCE_11, [2523, 3070]],
+  ]);
+  const SCENE_EXIT_ATTRIBUTE = "watchtower:scene-exit";
+  const ENCLAVE_SCENE_SEEN_ATTRIBUTE = "watchtower:enclave-scene-seen";
+  // Revision 242 gamevals: qip_watchtower_wizard_relic, relic_combine,
+  // ogre_spellcasting, ogre_spell_impact, dragon_death. Wiki GIFs show these actions;
+  // the camera tiles and tick scheduling below are approximations, not capture timing.
+  const RELIC_ASSEMBLY_ANIMATION = 5352;
+  const RELIC_ASSEMBLY_GRAPHIC = 969;
+  const SHAMAN_CAST_ANIMATION = 5357;
+  const SHAMAN_IMPACT_GRAPHIC = 971;
+  const DRAGON_DEATH_ANIMATION = 92;
+  const Scenes = createQuestScenes(api, { recoveryAttribute: SCENE_EXIT_ATTRIBUTE, onEnd: finishScene });
   // The two city gates: the north-west one is opened for the relic guard, the
   // eastern one costs a gold bar (its guard keeps the bar). Both are two leaves
   // with no open variant in the cache, so opening clears their clipping.
@@ -264,15 +331,6 @@ module.exports = function registerWatchtowerQuest(api) {
     [20025, { crystal: CRYSTAL_3, bit: BIT_PLACED_CYAN }],
     [20033, { crystal: CRYSTAL_2, bit: BIT_PLACED_MAGENTA }],
   ]);
-  // Wiki item sources: two Skavid-cave nightshade spawns (100-tick respawn) and
-  // the Feldip Hills death rune west of the gnome glider (200-tick respawn).
-  const NIGHTSHADE_SPAWNS = [
-    { x: 2528, y: 9415 },
-    { x: 2530, y: 9462 },
-  ];
-  const NIGHTSHADE_RESPAWN_TICKS = 100;
-  const DEATH_RUNE_SPAWN = { x: 2500, y: 2967 };
-  const DEATH_RUNE_RESPAWN_TICKS = 200;
   const CAVE_EXITS = new Map([
     [ObjectIdentifiers.CAVE_EXIT_2, { x: 2562, y: 3024 }],
     [ObjectIdentifiers.CAVE_EXIT_3, { x: 2524, y: 3070 }],
@@ -299,7 +357,6 @@ module.exports = function registerWatchtowerQuest(api) {
   const START_HOOK = "quest:watchtower:start";
 
   let quest;
-  let itemOnGroundManager;
 
   function bits(player) {
     const value = Number(player.getAttribute(BITS_ATTRIBUTE));
@@ -364,8 +421,7 @@ module.exports = function registerWatchtowerQuest(api) {
   }
 
   function hasLightSource(player) {
-    for (const itemId of LIGHT_SOURCES) if (held(player, itemId)) return true;
-    return false;
+    return Darkness.hasLightSource(player);
   }
 
   function bushObject(player) {
@@ -512,9 +568,28 @@ module.exports = function registerWatchtowerQuest(api) {
     ];
   }
 
+  function hasReadSpellScroll(player) {
+    return quest.getStage(player) >= STAGE_READ_SCROLL;
+  }
+
+  function canCastWatchtowerTeleport(event) {
+    if (event.spellName?.trim().toLowerCase() !== "watchtower teleport" || hasReadSpellScroll(event.player)) return;
+    event.allow = false;
+    event.player?.sendMessage?.("You need to read the Watchtower spell scroll before casting this spell.");
+  }
+
+  /**
+   * "magic:teleport-quest-lock": the house portals ask what casting needs (Wiki, Portal chamber: "the same Magic level
+   * and quest requirements as casting the spell"), and the cast needs the scroll read.
+   */
+  function watchtowerPortalLock(event) {
+    if (event?.name?.trim().toLowerCase() !== "watchtower teleport" || hasReadSpellScroll(event.player)) return;
+    event.refusal ??= `You need to read the Watchtower spell scroll to ${event.action ?? "cast this spell"}.`;
+  }
+
   function grantReward(player) {
     player.getSkillManager().addExperiences(Skill.MAGIC, 15250);
-    player.getInventory().adds(COINS, 5000);
+    giveReward(player, COINS, 5000);
   }
 
   function selectOgVariant(player, stage) {
@@ -545,7 +620,9 @@ module.exports = function registerWatchtowerQuest(api) {
   function selectWizardVariant(player, stage) {
     if (stage <= 0) return "getting-started-speaking-to-the-watchtower-wizard";
     if (stage === STAGE_STARTED) return "searching-for-evidence-talking-to-the-watchtower-wizard";
-    if (stage === STAGE_GIVEN_FINGERNAILS) return "ogre-investigations-talking-to-the-watchtower-wizard";
+    if (stage === STAGE_GIVEN_FINGERNAILS) return relicPartsHeld(player) === RELIC_PART_IDS.length
+      ? "ogre-investigations-assembling-the-relic"
+      : "ogre-investigations-talking-to-the-watchtower-wizard";
     if (stage === STAGE_MADE_RELIC) return "ogre-investigations-talking-to-the-watchtower-wizard-again";
     if (stage === STAGE_GIVEN_RELIC || stage === STAGE_GIVEN_RIDDLE) {
       return "entering-gu-tanoth-talking-to-the-watchtower-wizard-after-gaining-access-to-the-city";
@@ -684,7 +761,7 @@ module.exports = function registerWatchtowerQuest(api) {
       return "entering-gu-tanoth-ogre-guard-talking-to-the-ogre-guard-again";
     }
     if (BRIDGE_GUARD_IDS.has(npcId)) {
-      return stage >= STAGE_GIVEN_RELIC ? "entering-gu-tanoth-crossing-the-bridge" : null;
+      return stage >= STAGE_GIVEN_RELIC && atGapTakeOff(player) ? "entering-gu-tanoth-crossing-the-bridge" : null;
     }
     if (npcId === CITY_GUARD_ID) return selectCityGuardVariant(stage);
     if (npcId === SCARED_SKAVID_ID) return selectScaredSkavidVariant(player, stage);
@@ -846,10 +923,10 @@ module.exports = function registerWatchtowerQuest(api) {
     }
 
     if (value.includes("if the player has read the spell scroll")) {
-      return quest.getStage(player) >= STAGE_READ_SCROLL;
+      return hasReadSpellScroll(player);
     }
     if (value.includes("if the player has not read the spell scroll")) {
-      return quest.getStage(player) < STAGE_READ_SCROLL;
+      return !hasReadSpellScroll(player);
     }
     if (value.includes("if the player lost the spell scroll")) {
       return !has(SPELL_SCROLL) && !bank(SPELL_SCROLL);
@@ -898,11 +975,8 @@ module.exports = function registerWatchtowerQuest(api) {
       remove(player, itemId);
       setBit(player, BIT_RELIC[index]);
     }
-    if (relicPartsHeld(player) === RELIC_PART_IDS.length) {
-      give(player, OGRE_RELIC);
-      if (quest.getStage(player) < STAGE_MADE_RELIC) quest.setStage(player, STAGE_MADE_RELIC);
-      player.sendMessage("The wizard gives you a complete statue.");
-    }
+    // The transcript reaches its assembly message after the third hand-in. Keep
+    // the saved parts until then, including after a closed dialogue or a logout.
   }
 
   /** Hand-ins triggered by a chosen prose condition (npc-dialogue:condition). */
@@ -1039,8 +1113,10 @@ module.exports = function registerWatchtowerQuest(api) {
       return;
     }
     if (stepId === "kS6m_z") {
-      give(player, OGRE_RELIC);
-      if (quest.getStage(player) < STAGE_MADE_RELIC) quest.setStage(player, STAGE_MADE_RELIC);
+      event.handled = true;
+      if (relicPartsHeld(player) === RELIC_PART_IDS.length && quest.getStage(player) === STAGE_GIVEN_FINGERNAILS) {
+        assembleRelic(player);
+      }
       return;
     }
     if (stepId === "KRA6Uf") {
@@ -1108,10 +1184,11 @@ module.exports = function registerWatchtowerQuest(api) {
       return;
     }
     if (stepId === "rEZMuS") {
-      if (player.getInventory().getAmount(COINS) >= 20) {
+      if (atGapTakeOff(player) && player.getInventory().getAmount(COINS) >= 20) {
         player.getInventory().deleteNumber(COINS, 20);
         player.getSkillManager().addExperiences(Skill.AGILITY, 50);
         player.sendMessage("You daringly jump across the chasm.");
+        jumpGap(player, true);
       }
       event.handled = true;
       return;
@@ -1122,8 +1199,107 @@ module.exports = function registerWatchtowerQuest(api) {
     }
   }
 
+  function enterEnclave(player) {
+    enclaveDistracted.delete(player);
+    player.moveTo(new Location(ENCLAVE_ENTRANCE_DESTINATION.x, ENCLAVE_ENTRANCE_DESTINATION.y, 0));
+    if (!player.getAttribute(ENCLAVE_SCENE_SEEN_ATTRIBUTE) && quest.getStage(player) < STAGE_LEARNED_POTION) {
+      showEnclaveScene(player);
+    }
+  }
+
+  function finishScene(player, scene, logout) {
+    Scenes.closeFade(player);
+    player.getDialogueManager().reset();
+    player.getPacketSender().sendInterfaceRemoval();
+    if (!logout && scene.exit) player.moveTo(new Location(...scene.exit));
+    if (!scene.finished || logout || player.getHitpoints() <= 0) return;
+    if (scene.name === "watchtower-relic" && quest.getStage(player) === STAGE_GIVEN_FINGERNAILS) {
+      give(player, OGRE_RELIC);
+      if (!held(player, OGRE_RELIC)) {
+        player.sendMessage("The wizard keeps the relic until you have room to carry it.");
+        return;
+      }
+      quest.setStage(player, STAGE_MADE_RELIC);
+      player.getDialogueManager().startDialogues(new DialogueChainBuilder().add(
+        new ItemStatementDialogue(0, OGRE_RELIC, "The wizard gives you a complete statue.")
+      ));
+    }
+    if (scene.name === "watchtower-enclave") player.setAttribute(ENCLAVE_SCENE_SEEN_ATTRIBUTE, true);
+  }
+
+  function assembleRelic(player) {
+    if (Scenes.get(player)) return;
+    const at = player.getLocation();
+    const exit = [at.getX(), at.getY(), at.getZ()];
+    const scene = Scenes.open(player, "watchtower-relic", [[2536, 2559, 3104, 3127, 2]], {}, {
+      instance: { sourceChunk: [317, 388], size: 3 }, at: [2547, 3116, 2], exit,
+    });
+    player.getDialogueManager().reset();
+    Scenes.controls(player, true, true);
+    const wizard = Scenes.actor(scene, WIZARD_ID, [2549, 3116, 2], [2550, 3116]);
+    Scenes.camera(player, [2546, 3113, 700], [2549, 3116, 100]);
+    wizard?.performAnimation(new Animation(RELIC_ASSEMBLY_ANIMATION));
+    wizard?.performGraphic(new Graphic(RELIC_ASSEMBLY_GRAPHIC));
+    Scenes.hold(player);
+    Scenes.later(scene, 5, () => {
+      scene.finished = true;
+      Scenes.end(player, false);
+    });
+  }
+
+  function showEnclaveScene(player) {
+    if (Scenes.get(player)) return;
+    const exit = [ENCLAVE_ENTRANCE_DESTINATION.x, ENCLAVE_ENTRANCE_DESTINATION.y, 0];
+    const scene = Scenes.open(player, "watchtower-enclave", [[2560, 2623, 9408, 9471, 0]], {}, {
+      instance: { sourceChunk: [320, 1176], size: 8 }, at: [2580, 9433, 0], exit,
+    });
+    player.getDialogueManager().reset();
+    Scenes.controls(player, true, true);
+    const shaman = Scenes.actor(scene, NpcIdentifiers.OGRE_SHAMAN_5, [2582, 9437, 0], [2586, 9437]);
+    const dragon = Scenes.actor(scene, NpcIdentifiers.BLUE_DRAGON_6, [2586, 9437, 0], [2582, 9437]);
+    Scenes.camera(player, [2581, 9429, 550], [2586, 9437, 100]);
+    Scenes.hold(player);
+    Scenes.later(scene, 1, () => {
+      shaman?.forceChat("Take dis!");
+      shaman?.performAnimation(new Animation(SHAMAN_CAST_ANIMATION));
+    });
+    Scenes.later(scene, 2, () => {
+      dragon?.performGraphic(new Graphic(SHAMAN_IMPACT_GRAPHIC));
+      dragon?.addTickHit(new HitDamage(75, HitMask.RED));
+      // This is a visual death, not a world combat kill/drop/XP event.
+      dragon?.setHitpoints(1);
+      shaman?.forceChat("Hur, hur, hur, hur!");
+    });
+    Scenes.later(scene, 3, () => dragon?.performAnimation(new Animation(DRAGON_DEATH_ANIMATION)));
+    Scenes.later(scene, 7, () => {
+      scene.finished = true;
+      Scenes.end(player, false);
+    });
+  }
+
+  function cancelScene({ player }) {
+    if (player && Scenes.get(player)) Scenes.end(player, true);
+  }
+
+  function claimTobanLadder(event) {
+    if (event.objectId === TOBAN_LADDER_ID) handleObjectInteraction(event);
+  }
+
   function handleAction(event) {
     if (!event.player || !event.stepId) return;
+    if (event.stepId === ENCLAVE_RUN_PAST_ID && enclaveDistracted.has(event.player)) {
+      // The transcript's own message still shows; the player is then inside.
+      enterEnclave(event.player);
+      return;
+    }
+    if (ENCLAVE_GUARD_ATTACK_IDS.has(event.stepId)) {
+      event.npc?.getCombat?.()?.attack(event.player);
+      return;
+    }
+    if (event.stepId === BATTLEMENT_GUARD_ATTACK_ID) {
+      event.npc?.getCombat?.()?.attack(event.player);
+      return;
+    }
     if (event.kind === "message") {
       handleMessage(event);
       return;
@@ -1222,6 +1398,8 @@ module.exports = function registerWatchtowerQuest(api) {
   function enterSkavidCave(player, objectId) {
     if (!held(player, SKAVID_MAP)) {
       player.sendMessage("There's no way I can find my way through without a map of some kind.");
+      const destination = MAPLESS_CAVE_ROUTES.get(objectId);
+      if (destination) player.moveTo(new Location(destination[0], destination[1], 0));
       return;
     }
     if (!hasLightSource(player)) {
@@ -1255,9 +1433,140 @@ module.exports = function registerWatchtowerQuest(api) {
     startTranscript(api, player, WIZARD_ID, PAGE, "entering-the-enclave-mining-the-rock-of-dalgroth");
   }
 
+  /** rsprox 3271 ticks 3913–3918: the rope is lost on the west-bank crossing. */
+  function crossGrewRiver(event, entering) {
+    const { player, object } = event;
+    if (!object) return;
+    const at = object.getLocation();
+    const x = entering ? 2499 : 2511, y = entering ? 3087 : 3090;
+    if (at.getX() !== x || at.getY() !== y || at.getZ() !== 0) return;
+    event.handled = true;
+    const from = player.getLocation();
+    if (ObstacleRunner.isBusy(player) || from.getZ() !== 0 ||
+        (entering ? from.getX() > 2501 : from.getY() > 3092)) return;
+    if (entering && !held(player, ItemIdentifiers.ROPE)) return;
+    const start = entering ? [2501, 3087] : [2511, 3092];
+    if (Math.max(Math.abs(from.getX() - start[0]), Math.abs(from.getY() - start[1])) > 3) return;
+    // shortcut: return endpoints use the cache orientation and sister swing in capture 348; verify with an exit capture.
+    const end = entering ? [2505, 3087] : [2511, 3096];
+    const roped = new api.core.GameObject(ObjectIdentifiers.ROPESWING_10, at.clone(), object.getType(), object.getFace(), player.getPrivateArea());
+    let task;
+    let ropeConsumed = false;
+    const steps = [{ walk: [start], arrive: true }, { faceDir: entering ? "east" : "north" }];
+    if (entering) steps.push(
+      { msg: "You tie the rope to the tree..." }, { anim: ROPE_THROW_ANIMATION }, { wait: 1 },
+      { run: () => {
+        if (!held(player, ItemIdentifiers.ROPE)) { task.stop(); return; }
+        remove(player, ItemIdentifiers.ROPE);
+        ropeConsumed = true;
+        player.getPacketSender().sendObject(roped);
+      } },
+      { wait: 1 }
+    );
+    steps.push(
+      { objAnim: ROPE_SWING_OBJECT_ANIMATION },
+      { move: end, anim: ROPE_SWING_ANIMATION, delay: 20, speed: [45, 70], ticks: 0 },
+      { wait: 1 }, { msg: "You skillfully swing across." }, { sound: ROPE_SWING_SOUND },
+      { wait: 2 }, { tele: end }
+    );
+    task = ObstacleRunner.run({ player, object: entering ? roped : object }, steps, {
+      onFinish: (completed) => {
+        if (!entering) return;
+        // Logout fast-forwards movement without executing the delayed payment step.
+        if (completed && !ropeConsumed) {
+          if (held(player, ItemIdentifiers.ROPE)) remove(player, ItemIdentifiers.ROPE);
+          else player.moveTo(new Location(start[0], start[1], 0));
+        }
+        player.getPacketSender().sendObject(object);
+      },
+    });
+  }
+
+  /**
+   * Climbing the battlement: the guards stop the player until they have been given a rock cake
+   * (wiki: "Try to climb the battlement and you will be stopped by one of the guards").
+   */
+  function climbBattlement(event) {
+    const { player, object } = event;
+    const at = object?.getLocation?.();
+    if (!at || at.getX() !== BATTLEMENT.x || at.getY() < BATTLEMENT.minY || at.getY() > BATTLEMENT.maxY || at.getZ() !== 0) return;
+    event.handled = true;
+    if (ObstacleRunner.isBusy(player)) return;
+    const from = player.getLocation();
+    const fromWest = from.getX() < BATTLEMENT.x;
+    const allowed = !fromWest || quest.isComplete(player) || hasBit(player, BIT_MARKET_GIVEN);
+    if (!allowed) {
+      if (quest.getStage(player) < STAGE_GIVEN_RELIC) {
+        startTranscript(api, player, BATTLEMENT_GUARD_ID, PAGE, "entering-gu-tanoth-talking-to-the-southern-ogre-guard");
+        return;
+      }
+      const first = !hasBit(player, BIT_MARKET_WANTS);
+      setBit(player, BIT_MARKET_WANTS);
+      startTranscript(api, player, BATTLEMENT_GUARD_ID, PAGE, first
+        ? "entering-gu-tanoth-ogre-guard"
+        : "entering-gu-tanoth-ogre-guard-talking-to-the-ogre-guard-again");
+      return;
+    }
+    const y = Math.min(BATTLEMENT.maxY, Math.max(BATTLEMENT.minY, from.getY()));
+    const start = [fromWest ? BATTLEMENT.x - 1 : BATTLEMENT.x + 1, y];
+    const end = [fromWest ? BATTLEMENT.x + 1 : BATTLEMENT.x - 1, y];
+    ObstacleRunner.run({ player, object }, [
+      { walk: [start], arrive: true },
+      { faceDir: fromWest ? "east" : "west" },
+      { move: end, anim: CLIMB_OVER_ANIMATION, speed: [0, 60], ticks: 1 },
+    ]);
+  }
+
+  /** Jumps the broken bridge: north over the gap from the bridge, or back south. */
+  function jumpGap(player, northward) {
+    if (ObstacleRunner.isBusy(player)) return;
+    const start = northward ? GAP_FROM_SOUTH : GAP_FROM_NORTH;
+    const end = northward ? GAP_LAND_NORTH : GAP_LAND_SOUTH;
+    ObstacleRunner.run({ player }, [
+      { walk: [start], arrive: true },
+      { faceDir: northward ? "north" : "south" },
+      { move: end, anim: GAP_JUMP_ANIMATION, speed: [15, 35] },
+    ]);
+  }
+
+  /**
+   * Jump-Over on the gap. Northward the ogre guard wants his 20 coins first (the toll action
+   * then makes the jump); the way back south is free ("I'm glad that was easier on the way back!").
+   */
+  function jumpOverGap(event) {
+    const { player, objectId } = event;
+    event.handled = true;
+    if (objectId === GAP_SOUTH_ID) {
+      startTranscript(api, player, BRIDGE_GUARD_ID, PAGE, "entering-gu-tanoth-crossing-back-across-the-bridge");
+      jumpGap(player, false);
+      return;
+    }
+    if (quest.isComplete(player)) {
+      jumpGap(player, true);
+      return;
+    }
+    if (quest.getStage(player) < STAGE_GIVEN_RELIC) {
+      player.sendMessage("Nothing interesting happens.");
+      return;
+    }
+    startTranscript(api, player, BRIDGE_GUARD_ID, PAGE, "entering-gu-tanoth-crossing-the-bridge");
+  }
+
   function handleObjectInteraction(event) {
     const { player, objectId } = event;
     if (!player) return;
+    if (objectId === BATTLEMENT_ID) {
+      climbBattlement(event);
+      return;
+    }
+    if (objectId === GAP_NORTH_ID || objectId === GAP_SOUTH_ID) {
+      jumpOverGap(event);
+      return;
+    }
+    if (objectId === ObjectIdentifiers.ROPESWING_9 && (event.option === "Swing-on" || event.clickType === 1)) {
+      crossGrewRiver(event, false);
+      return;
+    }
     if (BUSH_IDS.has(objectId)) {
       event.handled = true;
       searchBush(player, objectId);
@@ -1322,7 +1631,12 @@ module.exports = function registerWatchtowerQuest(api) {
     }
     if (objectId === ENCLAVE_ENTRANCE_ID) {
       event.handled = true;
-      player.moveTo(new Location(ENCLAVE_ENTRANCE_DESTINATION.x, ENCLAVE_ENTRANCE_DESTINATION.y, 0));
+      if (!quest.isComplete(player) && !enclaveDistracted.has(player)) {
+        startTranscript(api, player, ENCLAVE_GUARD_ID, PAGE,
+          "entering-the-enclave-attempting-to-enter-the-ogre-enclave-before-distracting-the-guards");
+        return;
+      }
+      enterEnclave(player);
       return;
     }
     if (objectId === TOBAN_CAVE_ID) {
@@ -1330,6 +1644,24 @@ module.exports = function registerWatchtowerQuest(api) {
       player.sendMessage("You enter the cave.");
       player.sendMessage("Wow! That tunnel went a long way.");
       player.moveTo(new Location(TOBAN_CAVE_DESTINATION.x, TOBAN_CAVE_DESTINATION.y, 0));
+      return;
+    }
+    if (objectId === TOBAN_LADDER_ID) {
+      event.handled = true;
+      player.sendMessage("You climb down the ladder.");
+      player.moveTo(new Location(2500, 2988, 0));
+      return;
+    }
+    if (objectId === YANILLE_HOLE_ID) {
+      event.handled = true;
+      player.sendMessage("You enter the tunnel.");
+      player.sendMessage("So that's how the skavids are getting into Yanille!");
+      player.moveTo(new Location(2585, 3108, 0));
+      return;
+    }
+    if (objectId === ENCLAVE_EXIT_ID) {
+      event.handled = true;
+      player.moveTo(new Location(2540, 3054, 0));
       return;
     }
     if (objectId === ROCK_CAKE_COUNTER_ID) {
@@ -1385,6 +1717,15 @@ module.exports = function registerWatchtowerQuest(api) {
     const { player, itemId } = event;
     const targetId = event.npcId ?? event.target?.getId?.();
     if (!player || !targetId) return;
+
+    // Wiki: "Use the rock cake on the guard to get by" - the guard's hand-in conversation.
+    if (MARKET_GUARD_IDS.has(targetId) && itemId === ROCK_CAKE && quest.getStage(player) >= STAGE_GIVEN_RELIC
+        && !hasBit(player, BIT_MARKET_GIVEN)) {
+      event.handled = true;
+      setBit(player, BIT_MARKET_WANTS);
+      startTranscript(api, player, BATTLEMENT_GUARD_ID, PAGE, "entering-gu-tanoth-ogre-guard-talking-to-the-ogre-guard-again");
+      return;
+    }
 
     if (EAST_GATE_GUARD_IDS.has(targetId) && itemId === GOLD_BAR) {
       event.handled = true;
@@ -1478,6 +1819,7 @@ module.exports = function registerWatchtowerQuest(api) {
       }
       remove(player, CAVE_NIGHTSHADE);
       if (stage === STAGE_SKAVID_CRYSTAL) quest.setStage(player, STAGE_FED_NIGHTSHADE);
+      enclaveDistracted.add(player);
       startTranscript(
         api,
         player,
@@ -1587,6 +1929,10 @@ module.exports = function registerWatchtowerQuest(api) {
   function handleItemOnObject(event) {
     const { player, itemId, objectId } = event;
     if (!player) return;
+    if (objectId === ObjectIdentifiers.BRANCH && itemId === ItemIdentifiers.ROPE) {
+      crossGrewRiver(event, true);
+      return;
+    }
     if (objectId === CHEST_ID && itemId === TOBANS_KEY) {
       event.handled = true;
       startTranscript(api, player, TOBAN_ID, PAGE, "ogre-investigations-toban-looting-toban-s-chest");
@@ -1636,36 +1982,6 @@ module.exports = function registerWatchtowerQuest(api) {
   }
 
   /**
-   * The wiki's static item sources are not in ground-items.json and this plugin
-   * owns no data file, so they are registered once (first login) and marked as
-   * never-despawn static spawns that respawn after a pick-up.
-   */
-  function ensureGroundSpawn(player, itemId, spawn, respawnTicks) {
-    const exists = api.core.World.getItems().some(
-      (item) =>
-        !item.isPendingRemoval() &&
-        item.getItem().getId() === itemId &&
-        item.getPosition().getX() === spawn.x &&
-        item.getPosition().getY() === spawn.y
-    );
-    if (exists) return;
-    const ground = itemOnGroundManager.registerLocation(
-      player,
-      new api.core.Item(itemId, 1),
-      new Location(spawn.x, spawn.y, 0)
-    );
-    ground.staticSpawn = true;
-    ground.respawnTimer = respawnTicks;
-  }
-
-  function ensureWorldSpawns(player) {
-    ensureGroundSpawn(player, DEATH_RUNE, DEATH_RUNE_SPAWN, DEATH_RUNE_RESPAWN_TICKS);
-    for (const spawn of NIGHTSHADE_SPAWNS) {
-      ensureGroundSpawn(player, CAVE_NIGHTSHADE, spawn, NIGHTSHADE_RESPAWN_TICKS);
-    }
-  }
-
-  /**
    * The north-west gate's relic guards must be talkable from outside the closed
    * gate. Called on login so the move happens before anyone can walk up, and
    * idempotent: once on the outer tiles they are only pinned in place.
@@ -1690,7 +2006,6 @@ module.exports = function registerWatchtowerQuest(api) {
 
   function handleLogin({ player }) {
     refreshQuestList(player);
-    ensureWorldSpawns(player);
     placeNorthWestGateGuards();
   }
 
@@ -1700,6 +2015,8 @@ module.exports = function registerWatchtowerQuest(api) {
     varpId: VARP_WATCHTOWER,
     startedValue: STAGE_STARTED,
     completionValue: STAGE_COMPLETE,
+    // The saved completion is 12; cache state 13 is complete, and 14 keeps the scroll-read phase.
+    varpValue: stage => stage === STAGE_COMPLETE ? 13 : stage,
     questPoints: 4,
     xpRewards: [{ skillId: Skill.MAGIC.getIndex(), amount: 15250, label: "Magic" }],
     rewardItemId: SPELL_SCROLL,
@@ -1710,14 +2027,17 @@ module.exports = function registerWatchtowerQuest(api) {
   });
 
   api.persistAttribute(BITS_ATTRIBUTE);
-  itemOnGroundManager = api.getItemOnGroundManager();
+  api.persistAttribute(ENCLAVE_SCENE_SEEN_ATTRIBUTE, false);
 
   api.onNpcDialogueVariant(selectVariant);
   api.onNpcDialogueCondition(answerCondition);
+  api.onCanTeleport(canCastWatchtowerTeleport);
+  api.onCustomEvent("magic:teleport-quest-lock", watchtowerPortalLock);
   api.onCustomEvent("npc-dialogue:hook", handleStartHook);
   api.onCustomEvent("npc-dialogue:action", handleAction);
   api.onCustomEvent("npc-dialogue:condition", handleCondition);
   api.onCustomEvent("npc-dialogue:choice", handleChoice);
+  api.onCustomEvent("ladders:climb", claimTobanLadder);
   api.onItemOnNpc(handleItemOnNpc);
   api.onItemOnItem(handleItemOnItem);
   api.onItemOnObject(handleItemOnObject, { noted: false });
@@ -1726,4 +2046,6 @@ module.exports = function registerWatchtowerQuest(api) {
   api.onObjectInteraction(handleObjectInteraction);
   api.onNpcDeath(handleNpcDeath);
   api.onPlayerLogin(handleLogin);
+  api.onPlayerLogout(cancelScene);
+  api.onPlayerDeath(cancelScene);
 };

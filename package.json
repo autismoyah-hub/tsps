@@ -7,13 +7,13 @@
   },
   "scripts": {
     "setup": "npm exec --yes --package @yarnpkg/cli-dist@4.12.0 -- yarn install --immutable && npm exec --yes --package @yarnpkg/cli-dist@4.12.0 -- yarn --cwd server install --immutable && npm exec --yes --package @yarnpkg/cli-dist@4.12.0 -- yarn --cwd client install --immutable",
-    "start": "yarn --cwd server ensure-cache && yarn concurrently --kill-others --names server,client \"yarn --cwd server dev\" \"yarn --cwd client start\"",
+    "start": "yarn --cwd server ensure-cache && yarn concurrently --kill-others --names server,client \"yarn --cwd server dev:panel\" \"yarn --cwd client start\"",
     "start:prod": "yarn --cwd server ensure-cache && yarn concurrently --kill-others --names server,client \"yarn --cwd server start:prod\" \"yarn --cwd client serve\"",
     "server": "yarn --cwd server dev",
     "client": "yarn --cwd client start",
     "bridge": "node scripts/run-with-env.mjs - scripts/quest-helper-bridge.mjs",
-    "gateway": "gateway/gradlew -p gateway run --console=plain",
-    "gateway:test": "gateway/gradlew -p gateway test --console=plain",
+    "gateway": "runelite-gateway/gradlew -p runelite-gateway run --console=plain",
+    "gateway:test": "runelite-gateway/gradlew -p runelite-gateway test --console=plain",
     "docs:quests": "node scripts/quest-docs.mjs"
   },
   "devDependencies": {

@@ -9,6 +9,7 @@ let api = null;
 let core = null;
 let cookablesByRaw = null;
 let recipesByIngredient = null;
+let recipesByProduct = null;
 let doughs = null;
 let wines = null;
 
@@ -25,26 +26,33 @@ function gameval(kind, name) {
   return id;
 }
 
-const obj = (name) => gameval("obj", name);
+/** An obj gameval name, or a numeric item id for items the cache names ambiguously. */
+const obj = (nameOrId) => typeof nameOrId === "number" ? nameOrId : gameval("obj", nameOrId);
+const ingredient = (entry) => Array.isArray(entry)
+  ? { id: obj(entry[0]), count: entry[1] }
+  : { id: obj(entry), count: 1 };
 
 function index() {
   if (cookablesByRaw) return;
   cookablesByRaw = new Map();
   for (const row of DATA.cookables) {
     if (!cookablesByRaw.has(obj(row.raw))) {
-      cookablesByRaw.set(obj(row.raw), { ...row, raw: obj(row.raw), cooked: obj(row.cooked), burnt: obj(row.burnt) });
+      cookablesByRaw.set(obj(row.raw), { ...row, raw: obj(row.raw), cooked: obj(row.cooked), burnt: obj(row.burnt),
+        returnItem: row.returnItem === undefined ? undefined : obj(row.returnItem) });
     }
   }
   recipesByIngredient = new Map();
+  recipesByProduct = new Map();
   for (const row of DATA.recipes) {
     const recipe = {
       ...row,
       productId: obj(row.product),
-      ingredients: row.ingredients.map((name) => ({ id: obj(name), count: 1 })),
-      returns: (row.returns ?? []).map((name) => ({ id: obj(name), count: 1 })),
+      ingredients: row.ingredients.map(ingredient),
+      returns: (row.returns ?? []).map(ingredient),
       xp: row.xp ?? 0,
-      timing: [1, 2],
+      timing: row.timing ?? [1, 2],
     };
+    recipesByProduct.set(recipe.productId, recipe);
     for (const { id } of recipe.ingredients) {
       if (!recipesByIngredient.has(id)) recipesByIngredient.set(id, []);
       recipesByIngredient.get(id).push(recipe);
@@ -62,7 +70,11 @@ function index() {
   }));
 }
 
-/** Every food a fire or range cooks, by its raw item ({ raw, cooked, burnt, level, xp, stopBurn, ... }); none before init. */
+/**
+ * Every food a fire or range cooks, by its raw item ({ raw, cooked, burnt, level, xp, chance, ... });
+ * none before init. `chance` is the Wiki's low and high values by cooker ({ fire, range,
+ * lumbridge, gauntlets }); a food without a Wiki chart has `stopBurn` instead.
+ */
 function cookables() {
   if (!core) return new Map();
   index();
@@ -76,6 +88,12 @@ function recipeWith(firstId, secondId) {
     recipe.ingredients.some(({ id }) => id === secondId) && firstId !== secondId) ?? null;
 }
 
+/** The item-on-item recipe that makes `productId`, or null. */
+function recipeForProduct(productId) {
+  index();
+  return recipesByProduct.get(productId) ?? null;
+}
+
 /** Flour, the waters it mixes with and the doughs they make ({ flourId, potId, waters, products }). */
 function doughData() {
   index();
@@ -86,6 +104,17 @@ function doughData() {
 function wineData() {
   index();
   return wines;
+}
+
+/**
+ * The chance of cooking a food at `level`, from its low and high values out of 256
+ * (Wiki: Module:Skilling success chart, `interp`): a straight line from `low` at level 1 to
+ * `high` at 99. It keeps rising past 99, so levels up to 150 keep lowering the burn chance,
+ * and a food that still burns at 99 stops at a higher level.
+ */
+function successChance(low, high, level) {
+  const value = Math.floor((low * (99 - level)) / 98 + (high * (level - 1)) / 98 + 0.5) + 1;
+  return Math.min(Math.max(value / 256, 0), 1);
 }
 
 /** The Cooking level the skill checks: the current level, raised by content ("skills:level-boost", a league relic's invisible +12). */
@@ -128,6 +157,13 @@ function sendVarbit(player, name, value) {
   if (Number.isInteger(id)) player.getPacketSender().sendVarbit(id, value);
 }
 
+/** Every knife a knife-on-item cut accepts (the cache's plain "Knife" objs). */
+const KNIFE_NAMES = ["KNIFE", "KNIFE_2", "KNIFE_3", "KNIFE_4", "KNIFE_5"];
+
+function knives() {
+  return new Set(KNIFE_NAMES.map((name) => core.ItemIds[name]).filter(Number.isInteger));
+}
+
 function addXp(player, xp) {
   if (xp > 0) player.getSkillManager().addExperiences(core.Skill.COOKING, xp);
 }
@@ -149,8 +185,8 @@ function run(player, step) {
 }
 
 module.exports = {
-  init, gameval, cookables, recipeWith, doughData, wineData, level, actionsPerCycle, wearsCookingCape, withArticle,
-  spam, mesbox, sendVarbit, addXp, run,
+  init, gameval, cookables, recipeWith, recipeForProduct, doughData, wineData, successChance, level, actionsPerCycle, wearsCookingCape, withArticle,
+  spam, mesbox, sendVarbit, knives, addXp, run,
   get api() { return api; },
   get core() { return core; },
 };

@@ -3,6 +3,7 @@ const { Appearance } = require("../../../../src/main/typescript/elvarg/game/mode
 const { Player } = require("../../../../src/main/typescript/elvarg/game/entity/impl/player/Player");
 const { BotPlayerSession } = require("../../../../src/main/typescript/elvarg/net/BotPlayerSession");
 const { GameConstants } = require("../../../../src/main/typescript/elvarg/game/GameConstants");
+const { PlayerSave } = require("../../../../src/main/typescript/elvarg/game/entity/impl/player/persistence/PlayerSave");
 const { Misc } = require("../../../../src/main/typescript/elvarg/util/Misc");
 
 const COLOR_RANGES = [
@@ -25,9 +26,7 @@ const MALE_RANGES = {
 
 const FEMALE_RANGES = {
   head: [45, 54],
-  // The server's own female sheet uses jaw 57; the old 292-306 range rendered a head that
-  // popped off the body during attack and block animations.
-  beard: [57, 57],
+  beard: [-1, -1], // No beard; kit 57 is a torso, not a jaw.
   chest: [56, 60],
   arms: [61, 65],
   hands: [67, 68],
@@ -105,6 +104,9 @@ function createBotPlayer(username, spawn, options = {}) {
       console.error(`[PlayerBots] Failed to load persistence for ${username}`, err);
     }
   }
+
+  // A bot with no save starts every persisted attribute at its default, as a new human account does at login.
+  if (!appliedPersistence) PlayerSave.applyAttributeDefaults(bot);
 
   // Apply after persistence so older walking-only saves also start with run enabled.
   bot.setRunning(true);
