@@ -1,0 +1,992 @@
+{
+  "schema": 1,
+  "status": "EXACT_SOURCE_RUNTIME_INDEPENDENTLY_QUALIFIED_PUBLICATION_BASE_SEPARATE",
+  "scope": "Maggot King local-ahead plain kill-count restore contract only; not full boss/conditional CA/rewards/producer chain",
+  "testedSource": "c32764087f65259541376b2818fe3e42fea25169",
+  "testedTree": "83f96212e3a358e7455e7f07a0a212b8b7873aa8",
+  "providerTerminal": "COMPLETED",
+  "retry": 0,
+  "raw": {
+    "path": "maggot-king-ca-restore-after016.log",
+    "bytes": 796726,
+    "sha256": "79423e1c0962c0b362432b1ae84307f49553a709bd265219cae226bf2914bac6"
+  },
+  "literalNodeArgument": {
+    "path": "maggot-king-ca-restore-after016-command.cjs",
+    "bytes": 37479,
+    "sha256": "5bd04ec9912c453205a130607cf272729c71d6a002255b01807187945c787275",
+    "equivalence": "Byte-identical JS argument passed to actual node -e command, file form reproduces same code"
+  },
+  "inputManifest": {
+    "schema": 1,
+    "repository": "autismoyah-hub/tsps",
+    "artifactCommit": "c02ab60caf8874fe1faea146f0fc6bc0bee4aa93",
+    "path": "docs/evidence/maggot-king-ca-restore-integrated-v001-input-manifest.json",
+    "sha256": "d677c3c0af765b0754c38ddd77344488acc599777bf9dd938aac7eded8f8fc41",
+    "bytes": 1322341,
+    "source": "c32764087f65259541376b2818fe3e42fea25169",
+    "count": 5797
+  },
+  "actualInputs": {
+    "count": 5797,
+    "allEqualManifest": true,
+    "expectedRowsInserted": 0,
+    "retainedEventBytes": 696356,
+    "contiguousReturnedFragments": 43,
+    "perFrameDigest": "computed from retained returned bytes; not emitter signatures",
+    "runtimeGitblob": "hardfail computed per-row guard precedes input event, not printed Gitblob telemetry"
+  },
+  "tests": {
+    "total": 135,
+    "pass": 135,
+    "fail": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "testGroups": [
+    {
+      "event": "stage-result",
+      "name": "test:maggot-king-combat.test.cjs",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": 66,
+      "passes": 66,
+      "durationMs": 33024,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "2566332416",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "test:maggot-king.test.cjs",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": 6,
+      "passes": 6,
+      "durationMs": 2798,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "2566332416",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "test:shared-poison-counter.test.cjs",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": 32,
+      "passes": 32,
+      "durationMs": 2508,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "2566332416",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "test:serpentine-helm.test.cjs",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": 21,
+      "passes": 21,
+      "durationMs": 764,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "2566332416",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    },
+    {
+      "event": "stage-result",
+      "name": "test:poison-orb.test.cjs",
+      "code": 0,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false,
+      "tapValid": true,
+      "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+      "tests": 10,
+      "passes": 10,
+      "durationMs": 886,
+      "resources": {
+        "memory.max": "32000000000",
+        "memory.peak": "2566332416",
+        "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+        "pids.current": "11"
+      }
+    }
+  ],
+  "actualTopLevelPassRows": [
+    {
+      "line1": 734,
+      "text": "ok 1 - native Maggot count query rejects malformed coercions and only answers without changing player state"
+    },
+    {
+      "line1": 740,
+      "text": "ok 2 - registered Maggot save attributes restore plain count thresholds silently by max and remain idempotent"
+    },
+    {
+      "line1": 746,
+      "text": "ok 3 - one genuine owned Maggot death advances both counts once after local-ahead login catch-up"
+    },
+    {
+      "line1": 752,
+      "text": "ok 4 - active cache identifies the separated lair floor, bone wall, head definition and projectile LOS"
+    },
+    {
+      "line1": 758,
+      "text": "ok 5 - registered quest-gated entry reaches the separated combat arena without admitting another player"
+    },
+    {
+      "line1": 764,
+      "text": "ok 6 - ordinary ranged Attack starts boss combat and publishes the first ranged animation through native world ticks"
+    },
+    {
+      "line1": 770,
+      "text": "ok 7 - ranged impact reads current prayer and lays consumed bile on the impact tile"
+    },
+    {
+      "line1": 776,
+      "text": "ok 8 - screech reacts to prayer changes each tick, restores defence and alternates to magic"
+    },
+    {
+      "line1": 782,
+      "text": "ok 9 - sticky contact follows native walking, consumes the pool, drains a combat stat and delays attacks"
+    },
+    {
+      "line1": 788,
+      "text": "ok 10 - airborne standard bow Attack kills the owned larva and overwrites an existing cooldown"
+    },
+    {
+      "line1": 794,
+      "text": "ok 11 - landed larvae traverse their row, eat carrion, heal actual contact loss and reset after stepping off"
+    },
+    {
+      "line1": 800,
+      "text": "ok 12 - edge slams keep body footprints clear; fresh same-tick melee input grants one punish"
+    },
+    {
+      "line1": 806,
+      "text": "ok 13 - whole1500HP encounter traverses rotations and thresholds through real ranged hits, then cleans up and retries"
+    },
+    {
+      "line1": 812,
+      "text": "ok 14 - ordinary owned Escape removes all encounter actors and pending effects; a fresh entry works"
+    },
+    {
+      "line1": 818,
+      "text": "ok 15 - native paid ammunition lands in the player arena and delayed drops cannot survive a destroyed room"
+    },
+    {
+      "line1": 824,
+      "text": "ok 16 - dangerous native death leaves the grave outside, returns to Vampyrium and permits retry"
+    },
+    {
+      "line1": 830,
+      "text": "ok 17 - native Cave menu input walks to the eastern recovery prop and escapes"
+    },
+    {
+      "line1": 836,
+      "text": "ok 18 - poisonous-bile walking contact removes45seconds from a nonboundary dose without moving the status pulse"
+    },
+    {
+      "line1": 842,
+      "text": "ok 19 - unrelated ordinary shots keep their target snapshot and original surviving private scene after the owner leaves"
+    },
+    {
+      "line1": 848,
+      "text": "ok 20 - the existing Dizana quiver decrement handler retains one payment and its own delayed scheduling"
+    },
+    {
+      "line1": 854,
+      "text": "ok 21 - real twin crush attacks boost only the first splat and first defence roll; other actors remain ordinary"
+    },
+    {
+      "line1": 860,
+      "text": "ok 22 - native object lookup rejects another session cave and a retracted head"
+    },
+    {
+      "line1": 866,
+      "text": "ok 23 - native incoming-hit auto-retaliation and a held target never mint a fresh extension punish"
+    },
+    {
+      "line1": 872,
+      "text": "ok 24 - native encounter death claims deferred generic loot after session markers clear, while another same-ID NPC still drops"
+    },
+    {
+      "line1": 878,
+      "text": "ok 25 - native poisonous-bile walking exhaustion delivers one end line through the real Effect"
+    },
+    {
+      "line1": 884,
+      "text": "ok 26 - native base egg Pop consumes one unit on each side of the published 1/3000 threshold"
+    },
+    {
+      "line1": 890,
+      "text": "ok 27 - native sickly egg Pop consumes one unit on each side of the published 1/2500 threshold"
+    },
+    {
+      "line1": 896,
+      "text": "ok 28 - native warm egg Pop consumes one unit on each side of the published 1/1250 threshold"
+    },
+    {
+      "line1": 902,
+      "text": "ok 29 - native pulsating egg Pop consumes one unit on each side of the published 1/500 threshold"
+    },
+    {
+      "line1": 908,
+      "text": "ok 30 - native wriggling egg Pop consumes one unit on each side of the published 1/10 threshold"
+    },
+    {
+      "line1": 914,
+      "text": "ok 31 - native writhing egg Pop consumes one unit on each side of the published 1/2 threshold"
+    },
+    {
+      "line1": 920,
+      "text": "ok 32 - native egg Pop refuses stale slots, another container and placeholder copies without consuming an egg"
+    },
+    {
+      "line1": 926,
+      "text": "ok 33 - native pet duplicate refusal consumes a successful egg roll without refund or duplicate delivery"
+    },
+    {
+      "line1": 932,
+      "text": "ok 34 - egg Pop with another native follower and a full pack preserves the freed-slot pet item outcome"
+    },
+    {
+      "line1": 938,
+      "text": "ok 35 - egg Pop with another native follower and a full pack preserves the insured full-pack recovery outcome"
+    },
+    {
+      "line1": 944,
+      "text": "ok 36 - decoded native backpack base egg Pop crosses the published threshold through the real turn dispatcher"
+    },
+    {
+      "line1": 950,
+      "text": "ok 37 - decoded native backpack sickly egg Pop crosses the published threshold through the real turn dispatcher"
+    },
+    {
+      "line1": 956,
+      "text": "ok 38 - decoded native backpack warm egg Pop crosses the published threshold through the real turn dispatcher"
+    },
+    {
+      "line1": 962,
+      "text": "ok 39 - decoded native backpack pulsating egg Pop crosses the published threshold through the real turn dispatcher"
+    },
+    {
+      "line1": 968,
+      "text": "ok 40 - decoded native backpack wriggling egg Pop crosses the published threshold through the real turn dispatcher"
+    },
+    {
+      "line1": 974,
+      "text": "ok 41 - decoded native backpack writhing egg Pop crosses the published threshold through the real turn dispatcher"
+    },
+    {
+      "line1": 980,
+      "text": "ok 42 - decoded native FIRE_STRIKE impact adds a shared five-damage burn after manual-cast selection clears"
+    },
+    {
+      "line1": 986,
+      "text": "ok 43 - decoded native FIRE_BOLT impact adds a shared five-damage burn after manual-cast selection clears"
+    },
+    {
+      "line1": 992,
+      "text": "ok 44 - decoded native FIRE_BLAST impact adds a shared five-damage burn after manual-cast selection clears"
+    },
+    {
+      "line1": 998,
+      "text": "ok 45 - decoded native FIRE_WAVE impact adds a shared five-damage burn after manual-cast selection clears"
+    },
+    {
+      "line1": 1004,
+      "text": "ok 46 - decoded native FIRE_SURGE impact adds a shared five-damage burn after manual-cast selection clears"
+    },
+    {
+      "line1": 1010,
+      "text": "ok 47 - decoded fire splash and accurate nonfire spell do not create encounter burn stacks"
+    },
+    {
+      "line1": 1016,
+      "text": "ok 48 - native shared stack queries preserve cap, cadence, expiry and owner credit without refreshing burns"
+    },
+    {
+      "line1": 1022,
+      "text": "ok 49 - encounter magic rolls compose live stack reduction and near stance without overwriting bonus drains or screech levels"
+    },
+    {
+      "line1": 1028,
+      "text": "ok 50 - closing an owner encounter clears its native burns before removal and a fresh retry inherits none"
+    },
+    {
+      "line1": 1034,
+      "text": "ok 51 - real paid Soul Rend keeps its permanent magic bonus drain while encounter burns compose and expire"
+    },
+    {
+      "line1": 1040,
+      "text": "ok 52 - the shared read-only count distinguishes mixed burn durations on an unrelated native player"
+    },
+    {
+      "line1": 1046,
+      "text": "ok 53 - off-phase expiry removes only unexpired shared stacks from the actual magic roll (10+5 damage)"
+    },
+    {
+      "line1": 1052,
+      "text": "ok 54 - off-phase expiry removes only unexpired shared stacks from the actual magic roll (5+5 damage)"
+    },
+    {
+      "line1": 1058,
+      "text": "ok 55 - decoded fresh anti-venom+ plus a natively charged and equipped Serp helm prevents poisonous contact effects"
+    },
+    {
+      "line1": 1064,
+      "text": "ok 56 - a charged helm brief venom flag alone cannot impersonate a consumed plus dose"
+    },
+    {
+      "line1": 1070,
+      "text": "ok 57 - decoded anti-venom+ alone does not provide the charged-helm half of poisonous-bile protection"
+    },
+    {
+      "line1": 1076,
+      "text": "ok 58 - decoded ordinary anti-venom with a charged helm is not the anti-venom+ source family"
+    },
+    {
+      "line1": 1082,
+      "text": "ok 59 - real combat upkeep depletes the last helm scales before poisonous-bile eligibility is queried"
+    },
+    {
+      "line1": 1088,
+      "text": "ok 60 - a charged helm left in the backpack does not satisfy the worn-item predicate"
+    },
+    {
+      "line1": 1094,
+      "text": "ok 61 - a cache placeholder in a supplied invalid equipment checkpoint cannot provide helm protection"
+    },
+    {
+      "line1": 1100,
+      "text": "ok 62 - the native dose cutoff excludes the poison-only tail even while a charged helm refreshes brief venom protection"
+    },
+    {
+      "line1": 1106,
+      "text": "ok 63 - a decoded plus drink ignored by a longer legacy-unknown dose does not fabricate saved provenance"
+    },
+    {
+      "line1": 1112,
+      "text": "ok 64 - another session walking its own floor cannot consume an owner pool or inherit owner protection"
+    },
+    {
+      "line1": 1118,
+      "text": "ok 65 - Camping the King completes once on the twelfth native owner death in one session"
+    },
+    {
+      "line1": 1124,
+      "text": "ok 66 - Camping resets on native Escape and owned logout/teleport retirement boundaries"
+    },
+    {
+      "line1": 1312,
+      "text": "ok 1 - the entrance, exit and exact options match the live cache"
+    },
+    {
+      "line1": 1318,
+      "text": "ok 2 - Blood Moon access opens a private solo lair and cleans it up on escape and logout"
+    },
+    {
+      "line1": 1324,
+      "text": "ok 3 - a killed Maggot King respawns in its private lair and closing the session cancels the next respawn"
+    },
+    {
+      "line1": 1330,
+      "text": "ok 4 - Camping callback negatives preserve death cleanup for wrong and missing killers"
+    },
+    {
+      "line1": 1336,
+      "text": "ok 5 - Camping completion failure occurs after authoritative death retirement and scheduled respawn"
+    },
+    {
+      "line1": 1342,
+      "text": "ok 6 - Camping shutdown callback retires the run instead of saving it for a new entry"
+    },
+    {
+      "line1": 1362,
+      "text": "ok 1 - anti-venom+ retains an existing poison pulse instead of starting an independent stopwatch"
+    },
+    {
+      "line1": 1368,
+      "text": "ok 2 - actual anti-venom+ and the captured modal schedule reproduce all observed protection counters"
+    },
+    {
+      "line1": 1374,
+      "text": "ok 3 - a protection-only player owns one task; renewal and weaker doses never reset the phase"
+    },
+    {
+      "line1": 1380,
+      "text": "ok 4 - the final due counter stays protective while modal and releases once when closed"
+    },
+    {
+      "line1": 1386,
+      "text": "ok 5 - ordinary antipoison downgrades venom first, then a second dose cures and protects"
+    },
+    {
+      "line1": 1392,
+      "text": "ok 6 - ordinary poison protection does not block venom, whereas -39 does and -38 does not"
+    },
+    {
+      "line1": 1398,
+      "text": "ok 7 - short poison/venom flags coexist with a stronger dose and do not cure existing affliction"
+    },
+    {
+      "line1": 1404,
+      "text": "ok 8 - actual JSON save codec preserves a held counter and its phase through logout/load"
+    },
+    {
+      "line1": 1410,
+      "text": "ok 9 - positive poison also resumes its saved phase and unaffected saves omit the optional snapshot"
+    },
+    {
+      "line1": 1416,
+      "text": "ok 10 - death reset synchronously resets the phase even if a new dose arrives before old task cleanup"
+    },
+    {
+      "line1": 1422,
+      "text": "ok 11 - canonical extended anti-venom and supermix dose chains apply their proper protection tiers"
+    },
+    {
+      "line1": 1428,
+      "text": "ok 12 - snapshot restoration retains independent brief durations and rejects malformed counter/phase state"
+    },
+    {
+      "line1": 1434,
+      "text": "ok 13 - the resistance lines come one pulse before and at each end, once each"
+    },
+    {
+      "line1": 1440,
+      "text": "ok 14 - protection duration reduction retains the shared nonboundary pulse and roundtrips its fractional dose"
+    },
+    {
+      "line1": 1446,
+      "text": "ok 15 - duration reduction safely exhausts a dose, preserves no-dose phase and independently reduces brief protection"
+    },
+    {
+      "line1": 1452,
+      "text": "ok 16 - reduced protection emits warning and expiry through the actual Effect between status pulses"
+    },
+    {
+      "line1": 1458,
+      "text": "ok 17 - a reduced final dose holds its due transition while modal and releases once on close"
+    },
+    {
+      "line1": 1464,
+      "text": "ok 18 - reduced venom-tier transitions use the Effect feedback path between unchanged status pulses"
+    },
+    {
+      "line1": 1470,
+      "text": "ok 19 - duration reduction leaves the existing affliction on its native Effect pulse"
+    },
+    {
+      "line1": 1476,
+      "text": "ok 20 - synchronous reduction 3->1 delivers native feedback before the next status pulse"
+    },
+    {
+      "line1": 1482,
+      "text": "ok 21 - synchronous reduction 2->0 delivers native feedback before the next status pulse"
+    },
+    {
+      "line1": 1488,
+      "text": "ok 22 - synchronous reduction 41->39 delivers native feedback before the next status pulse"
+    },
+    {
+      "line1": 1494,
+      "text": "ok 23 - synchronous reduction 40->38 delivers native feedback before the next status pulse"
+    },
+    {
+      "line1": 1500,
+      "text": "ok 24 - synchronous reduction 39->37 delivers native feedback before the next status pulse"
+    },
+    {
+      "line1": 1506,
+      "text": "ok 25 - modal synchronous exhaustion retains one pending end until close, including repeated subtraction"
+    },
+    {
+      "line1": 1512,
+      "text": "ok 26 - new dose, stop and restore discard stale pending reduction lines; repeated reductions coalesce"
+    },
+    {
+      "line1": 1518,
+      "text": "ok 27 - synchronous protection exhaustion keeps an existing affliction on its original pulse without resistance lines"
+    },
+    {
+      "line1": 1524,
+      "text": "ok 28 - known dose provenance follows a real stronger potion and ignored weaker doses keep it without moving phase"
+    },
+    {
+      "line1": 1530,
+      "text": "ok 29 - read-only dose provenance and dose-only venom queries expire with the native counter, not brief flags"
+    },
+    {
+      "line1": 1536,
+      "text": "ok 30 - actual JSON save codec preserves dose provenance and its held phase"
+    },
+    {
+      "line1": 1542,
+      "text": "ok 31 - missing or invalid saved provenance stays unknown without discarding otherwise valid numeric protection"
+    },
+    {
+      "line1": 1548,
+      "text": "ok 32 - legacy unknown origin is not fabricated by an ignored plus drink but a later actual extension establishes it"
+    },
+    {
+      "line1": 1567,
+      "text": "ok 1 - the charged helm grants poison/venom immunity and spends scales in combat"
+    },
+    {
+      "line1": 1573,
+      "text": "ok 2 - the envenom chance depends on the weapon: 1/6 plain, 1/2 poisoned, 100% toxic"
+    },
+    {
+      "line1": 1579,
+      "text": "ok 3 - a successful hit on a monster can envenom it, but never a player"
+    },
+    {
+      "line1": 1585,
+      "text": "ok 4 - scales charge the helm and uncharging returns them"
+    },
+    {
+      "line1": 1591,
+      "text": "ok 5 - charging leaves unrelated target items and their materials untouched"
+    },
+    {
+      "line1": 1597,
+      "text": "ok 6 - ordinary ranged and magic hits cannot use the helm's basic melee venom chance"
+    },
+    {
+      "line1": 1603,
+      "text": "ok 7 - the noxious halberd's helm roll is 1/4, making 1/2 with its own 1/3"
+    },
+    {
+      "line1": 1609,
+      "text": "ok 8 - poisonous melee weapon 12006 has a 50% helm chance"
+    },
+    {
+      "line1": 1615,
+      "text": "ok 9 - poisonous melee weapon 26484 has a 50% helm chance"
+    },
+    {
+      "line1": 1621,
+      "text": "ok 10 - toxic trident variant 22292 guarantees venom"
+    },
+    {
+      "line1": 1627,
+      "text": "ok 11 - toxic trident variant 33314 guarantees venom"
+    },
+    {
+      "line1": 1633,
+      "text": "ok 12 - toxic trident variant 33318 guarantees venom"
+    },
+    {
+      "line1": 1639,
+      "text": "ok 13 - recoloured helm 13197 provides immunity and venom and keeps its colour when depleted"
+    },
+    {
+      "line1": 1645,
+      "text": "ok 14 - recoloured helm 13199 provides immunity and venom and keeps its colour when depleted"
+    },
+    {
+      "line1": 1651,
+      "text": "ok 15 - selected poisoned ammunition gets 50%, but enchanted emerald bolts do not"
+    },
+    {
+      "line1": 1657,
+      "text": "ok 16 - helm procs require damage and never affect players"
+    },
+    {
+      "line1": 1663,
+      "text": "ok 17 - being attacked with retaliation off still consumes scales"
+    },
+    {
+      "line1": 1669,
+      "text": "ok 18 - uncharging can return scales to an existing stack in a full inventory"
+    },
+    {
+      "line1": 1675,
+      "text": "ok 19 - uncharging without room preserves the helmet and all scales"
+    },
+    {
+      "line1": 1681,
+      "text": "ok 20 - charging reports total scales and percentage as in recording 1074"
+    },
+    {
+      "line1": 1687,
+      "text": "ok 21 - the registered protection query observes positive worn charges without upkeep or a timer refresh"
+    },
+    {
+      "line1": 1707,
+      "text": "ok 1 - charged helmet protects without curing existing poison"
+    },
+    {
+      "line1": 1713,
+      "text": "ok 2 - bare protection preserves the existing poison clock"
+    },
+    {
+      "line1": 1719,
+      "text": "ok 3 - an explicit cure stops damage but retains the protection clock for poison"
+    },
+    {
+      "line1": 1725,
+      "text": "ok 4 - protection rejects new poison while an unprotected player is afflicted"
+    },
+    {
+      "line1": 1731,
+      "text": "ok 5 - charged helmet protects without curing existing venom"
+    },
+    {
+      "line1": 1737,
+      "text": "ok 6 - bare protection preserves the existing venom clock"
+    },
+    {
+      "line1": 1743,
+      "text": "ok 7 - an explicit cure stops damage but retains the protection clock for venom"
+    },
+    {
+      "line1": 1749,
+      "text": "ok 8 - protection rejects new venom while an unprotected player is afflicted"
+    },
+    {
+      "line1": 1755,
+      "text": "ok 9 - poison shows its severity, venom 1,000,000 plus its hits, immunity its 18-second steps"
+    },
+    {
+      "line1": 1761,
+      "text": "ok 10 - the orb's Cure says so when nothing in the pack can cure, and does nothing unpoisoned"
+    }
+  ],
+  "stages": [
+    {
+      "line1": 3,
+      "value": {
+        "event": "stage-result",
+        "name": "extract",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 1377,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "456474624",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    },
+    {
+      "line1": 58,
+      "value": {
+        "event": "stage-result",
+        "name": "install-server",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 4234,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "1724657664",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    },
+    {
+      "line1": 67,
+      "value": {
+        "event": "stage-result",
+        "name": "ldd",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 29,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "1724657664",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    },
+    {
+      "line1": 70,
+      "value": {
+        "event": "stage-result",
+        "name": "native-load",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 49,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "1724657664",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    },
+    {
+      "line1": 72,
+      "value": {
+        "event": "stage-result",
+        "name": "build",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 10132,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "1724657664",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    },
+    {
+      "line1": 82,
+      "value": {
+        "event": "stage-result",
+        "name": "cache",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": null,
+        "passes": null,
+        "durationMs": 33010,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2202607616",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    },
+    {
+      "line1": 1305,
+      "value": {
+        "event": "stage-result",
+        "name": "test:maggot-king-combat.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 66,
+        "passes": 66,
+        "durationMs": 33024,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2566332416",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    },
+    {
+      "line1": 1356,
+      "value": {
+        "event": "stage-result",
+        "name": "test:maggot-king.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 6,
+        "passes": 6,
+        "durationMs": 2798,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2566332416",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    },
+    {
+      "line1": 1562,
+      "value": {
+        "event": "stage-result",
+        "name": "test:shared-poison-counter.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 32,
+        "passes": 32,
+        "durationMs": 2508,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2566332416",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    },
+    {
+      "line1": 1701,
+      "value": {
+        "event": "stage-result",
+        "name": "test:serpentine-helm.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 21,
+        "passes": 21,
+        "durationMs": 764,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2566332416",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    },
+    {
+      "line1": 1775,
+      "value": {
+        "event": "stage-result",
+        "name": "test:poison-orb.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 10,
+        "passes": 10,
+        "durationMs": 886,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2566332416",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    }
+  ],
+  "contentClosure": {
+    "event": "source-closure",
+    "afterFailure": false,
+    "available": true,
+    "sourceManifestHash": "61ca2a26914b5e8c85cc88b74e7d287879673c5dfac7859fbb061694cd634451",
+    "postSourceHash": "61ca2a26914b5e8c85cc88b74e7d287879673c5dfac7859fbb061694cd634451",
+    "originalSourceFiles": 8915,
+    "distManifestHash": "f9b7253298d8f4587178b398274d8fc357f081f1bf770f445787f3b6eecce5e7",
+    "postDistHash": "f9b7253298d8f4587178b398274d8fc357f081f1bf770f445787f3b6eecce5e7",
+    "postCacheFilesChecked": 28,
+    "sourceStatus": "PASS",
+    "distStatus": "PASS",
+    "cacheStatus": "PASS",
+    "complete": true,
+    "cacheMismatches": [],
+    "errors": [],
+    "sealsUnchanged": true,
+    "limitation": "Content identities only; no process or sandbox-wide closure inference"
+  },
+  "processClosureLimit": "own stage process groups noleftovers; provider COMPLETED retained; no global reparented-setsid descendant inference",
+  "nativeOutcome": {
+    "event": "native-qualification-result",
+    "source": "c32764087f65259541376b2818fe3e42fea25169",
+    "status": "TESTS_PASS_AWAIT_SANDBOX_TERMINAL",
+    "resources": {
+      "memory.max": "32000000000",
+      "memory.peak": "2566332416",
+      "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+      "pids.current": "11"
+    },
+    "closureScope": "process groups checked; full descendant closure requires platform containment and terminal receipt",
+    "scope": "Linux fresh dependency/build/cache/test route; no Windows equivalence, client rendering or concurrent capacity claim"
+  },
+  "historicalFailure": {
+    "source": "1d8aaecb8bf3bd6d0c74c266e45e668428370c31",
+    "terminal": "ERROR",
+    "native": {
+      "pass": 63,
+      "fail": 1
+    },
+    "newBridgeCases": 3,
+    "laterTestsUnexecuted": 66,
+    "failedControl": "Twin-crush joint melee phase precondition; before its bonus assertions",
+    "cause": "UNKNOWN; later controlled pass does not diagnose old failure",
+    "raw": {
+      "path": "maggot-king-ca-restore-historical-error003.log",
+      "bytes": 763661,
+      "sha256": "2e3a40a539c51912689cbced0f4ee664bb9ad212cdd4c3d650e63bdd965a8958"
+    },
+    "cleanCausalBeforeAfter": "NOT_ESTABLISHED"
+  },
+  "baseline": "Source observation: earlier Recovery did not answer shared kill-count query. No clean baseline failing assertion or causal before/after runtime claimed.",
+  "independentReview": "Original independent reviewer accepted exact source/profile135, full actual raw/inputs/content closure and bounded owned-group plus terminal scope. Final publication-base/public evidence review remains separate.",
+  "bounds": [
+    "Registered PlayerSave attribute JSON/apply/login hooks, not disk/backend/socket/fullfile-login.",
+    "Supplied lethal PendingHit/NPCDeathTask after local24/shared0 restore, not natural1500HP/decoded attack/supply acquisition.",
+    "Native twincrush selected RNG and all existing setup/survival limits retained; no old failure-cause inference.",
+    "Callback missingkiller/shutdown is callback scope, not native/socket.",
+    "Generic count already ahead remains ahead, local count is not rewritten and announcement discrepancy remains.",
+    "Exact c327 only; no135pass projection onto later main or different merge tree.",
+    "No generatedJSON changes/producer regeneration/adoption/corpse-reward-chain/wholeboss completion."
+  ]
+}
