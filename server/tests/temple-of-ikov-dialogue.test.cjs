@@ -1073,15 +1073,83 @@ test('an earned Guardian ending survives PlayerSave and a fresh owned house acto
 });
 test('delivered staff recovery survives PlayerSave without a second physical debit',async t=>{
   const f=actor(t,3122,3482,70),npc=f.own(HOUSE),staff=core.ItemIdentifiers.STAFF_OF_ARMADYL;f.add(staff);
-  stageMessage(f,npc,'VBn1hb',HANDOVER);await f.next();assert.equal(f.p.getInventory().getAmount(staff),0);
+  // Supplied stage70/staff checkpoint; the two handovers below enter by real decoded Talk-to/menu/Continue.
+  const interactions=[],events=[],tracked=[{label:'handover',who:f,npc,index:npc.getIndex(),contentId:npc.getContentId(f.p)}];let order=0;
+  const state=player=>({stage:quest.getStage(player),staff:player.getInventory().getAmount(staff),
+    delivered:Number(player.getAttribute('temple-of-ikov:staff-delivered'))||0,
+    ranged:player.getSkillManager().getExperience(core.Skill.RANGED),fletching:player.getSkillManager().getExperience(core.Skill.FLETCHING),
+    points:Number(player.getAttribute('quest.points'))||0,complete:quest.isComplete(player)});
+  const npcInteraction=PM.emitNpcInteraction,custom=PM.emitCustomEvent;
+  t.mock.method(PM,'emitNpcInteraction',function(event,...args){
+    const owned=tracked.find(row=>row.who.p===event.player);
+    const row=owned?{label:owned.label,order:++order,sameSpeaker:event.npc===owned.npc,npcId:event.npcId,index:event.npc?.getIndex(),
+      registered:event.npc?.isRegistered()===true,ownerSame:event.npc?.getOwner()===event.player,
+      option:event.definition?.getActions?.()[event.clickType-1]?.toLowerCase(),clickType:event.clickType}:null;
+    if(row)interactions.push(row);
+    const result=Reflect.apply(npcInteraction,this,[event,...args]);
+    if(row){row.handled=event.handled;row.result=result;row.returnOrder=++order;assert.ok(interactions.length<=2);}
+    return result;
+  });
+  t.mock.method(PM,'emitCustomEvent',function(name,event,...args){
+    const owned=tracked.find(row=>row.who.p===event?.player);
+    const watched=owned&&((name==='npc-dialogue:action'&&['VBn1hb','f8loKo'].includes(event.stepId))
+      ||(name==='quest:completed'&&event.key===quest.key));
+    const row=watched?{label:owned.label,name,order:++order,stepId:event.stepId??null,kind:event.kind??event.step?.type??null,
+      sameSpeaker:name==='npc-dialogue:action'?event.npc===owned.npc:null,npcId:event.npcId??null,
+      index:event.npc?.getIndex()??null,sameQuest:name==='quest:completed'?event.quest===quest:null,before:state(event.player)}:null;
+    if(row)events.push(row);
+    const result=Reflect.apply(custom,this,[name,event,...args]);
+    if(row){row.after=state(event.player);row.returnOrder=++order;assert.ok(events.length<=4);}
+    return result;
+  });
+  assert.equal(quest.getStage(f.p),70,'supplied checkpoint, not an earned stage');assert.equal(quest.isComplete(f.p),false);
+  await f.talk(npc);assert.match(f.p.getDialogueManager().getCurrent().getText(),/Have you got the Staff of Armadyl yet/);
+  await f.choose('Yes! Here it is.');await f.next();assert.equal(f.p.getInventory().getAmount(staff),0);
+  const firstHandover=events.find(row=>row.name==='npc-dialogue:action'&&row.stepId==='VBn1hb');
+  assert.equal(interactions.length,1);assert.equal(interactions[0].sameSpeaker,true);assert.equal(interactions[0].handled,true);assert.equal(interactions[0].result,true);
+  assert.ok(firstHandover);assert.equal(firstHandover.sameSpeaker,true);assert.equal(firstHandover.kind,'message');
+  assert.equal(firstHandover.npcId,tracked[0].contentId);assert.equal(firstHandover.index,tracked[0].index);
+  assert.equal(firstHandover.before.staff,1);assert.equal(firstHandover.before.delivered,0);assert.equal(firstHandover.after.staff,0);assert.equal(firstHandover.after.delivered,1);
+  assert.equal(firstHandover.after.stage,70);assert.equal(firstHandover.after.complete,false);
+  assert.equal(firstHandover.after.ranged,firstHandover.before.ranged);assert.equal(firstHandover.after.fletching,firstHandover.before.fletching);assert.equal(firstHandover.after.points,firstHandover.before.points);
+  console.log('IKOV_LUCIEN_NATIVE_HANDOVER',JSON.stringify({scope:'supplied70/staff checkpoint; actual first Talk-to/menu/Continue physical debit, not completed quest or earned70',
+    username:f.p.getUsername(),interaction:interactions[0],action:firstHandover}));
   const username=f.p.getUsername(),save=snapshotAndLogout(f,{side:0,delivered:1,defeated:0});assert.equal(save.attributes['temple-of-ikov:staff-delivered'],1);
   const fresh=actor(t,3122,3482,0,{save,username}),replacement=fresh.own(HOUSE);
+  assert.notEqual(fresh.p,f.p);assert.notEqual(replacement,npc);tracked.push({label:'fresh-load',who:fresh,npc:replacement,index:replacement.getIndex(),contentId:replacement.getContentId(fresh.p)});
+  const rewardBefore=state(fresh.p);
   assert.equal(quest.getStage(fresh.p),70);assert.equal(fresh.p.getAttribute('temple-of-ikov:state-version'),1);
   assert.equal(fresh.p.getAttribute('temple-of-ikov:side'),0);assert.equal(fresh.p.getAttribute('temple-of-ikov:staff-delivered'),1);
   assert.equal(fresh.p.getAttribute('temple-of-ikov:lucien-defeated'),0);assert.equal(fresh.p.getAttribute('bot-skip-persistence'),true);
   assert.deepEqual(fresh.p.getInventory().getItems(),save.inventory);assert.deepEqual(fresh.p.getEquipment().getItems(),save.equipment);
-  stageMessage(fresh,replacement,'VBn1hb',HANDOVER);await fresh.next();await fresh.drain();
+  await fresh.talk(replacement);assert.match(fresh.p.getDialogueManager().getCurrent().getText(),/Have you got the Staff of Armadyl yet/);
+  await fresh.choose('Yes! Here it is.');await fresh.next();await fresh.drain();
   assert.equal(fresh.p.getInventory().getAmount(staff),0);assert.equal(quest.isComplete(fresh.p),true);assert.ok(fresh.text.some(s=>s.includes('already given Lucien')));
+  assert.equal(interactions.length,2);
+  for(let i=0;i<tracked.length;i++){
+    const row=interactions[i];assert.equal(row.label,tracked[i].label);assert.equal(row.sameSpeaker,true);assert.equal(row.npcId,tracked[i].contentId);
+    assert.equal(row.index,tracked[i].index);assert.equal(row.registered,true);assert.equal(row.ownerSame,true);
+    assert.equal(row.option,'talk-to');assert.equal(row.handled,true);assert.equal(row.result,true);
+  }
+  const handovers=events.filter(row=>row.name==='npc-dialogue:action'&&row.stepId==='VBn1hb');
+  const endings=events.filter(row=>row.name==='npc-dialogue:action'&&row.stepId==='f8loKo');
+  const completions=events.filter(row=>row.name==='quest:completed');
+  assert.equal(handovers.length,2);assert.equal(endings.length,1);assert.equal(completions.length,1);
+  assert.equal(handovers[0].label,'handover');assert.equal(handovers[1].label,'fresh-load');
+  for(let i=0;i<2;i++){
+    const row=handovers[i];assert.equal(row.kind,'message');assert.equal(row.sameSpeaker,true);assert.equal(row.npcId,tracked[i].contentId);assert.equal(row.index,tracked[i].index);
+  }
+  assert.equal(handovers[0].before.staff,1);assert.equal(handovers[0].before.delivered,0);assert.equal(handovers[0].after.staff,0);assert.equal(handovers[0].after.delivered,1);
+  assert.equal(handovers[1].before.staff,0);assert.equal(handovers[1].after.staff,0);assert.equal(handovers[1].before.delivered,1);assert.equal(handovers[1].after.delivered,1);
+  assert.equal(endings[0].label,'fresh-load');assert.equal(endings[0].kind,'action');assert.equal(endings[0].sameSpeaker,true);
+  assert.equal(endings[0].npcId,tracked[1].contentId);assert.equal(endings[0].index,tracked[1].index);assert.equal(endings[0].before.delivered,1);
+  assert.equal(completions[0].label,'fresh-load');assert.equal(completions[0].sameQuest,true);
+  assert.ok(handovers[1].returnOrder<endings[0].order&&endings[0].order<completions[0].order&&completions[0].returnOrder<endings[0].returnOrder);
+  assert.equal(completions[0].before.stage,80);assert.equal(completions[0].before.complete,true);
+  const rewardAfter=state(fresh.p);
+  assert.equal(rewardAfter.ranged-rewardBefore.ranged,10500);assert.equal(rewardAfter.fletching-rewardBefore.fletching,8000);assert.equal(rewardAfter.points-rewardBefore.points,1);
+  console.log('IKOV_LUCIEN_NATIVE_ENDING',JSON.stringify({scope:'supplied70/staff checkpoint, ordinary owned Talk-to/menu/Continue before and after fresh fixture load; not earned70/natural quest/account auth',
+    username,distinctPlayers:f.p!==fresh.p,distinctSpeakers:npc!==replacement,interactions,events,rewardBefore,rewardAfter}));
 });
 test('preset completion with experience disabled grants neither quest XP nor extra boots',t=>{
   const f=actor(t,3122,3482,70);f.add(core.ItemIdentifiers.BOOTS_OF_LIGHTNESS);
