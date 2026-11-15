@@ -1007,7 +1007,6 @@ module.exports = function registerInSearchOfTheMyrequeQuest(api) {
   });
 
   api.onNpcDialogueVariant(selectVariant);
-  api.onNpcInteraction("Curpile Fyod", { "Talk-to": talkToCurpile });
   api.onNpcDialogueCondition(answerCondition);
   api.onCustomEvent("npc-dialogue:hook", handleStartHook);
   api.onCustomEvent("npc-dialogue:condition", handleCondition);
