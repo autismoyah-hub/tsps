@@ -2169,6 +2169,8 @@ function resupplyActor(t, level = 70, saw = core.ItemIdentifiers.SAW) {
 function resupplySnapshot(p) {
   return { items: p.getInventory().getCopiedItems().map(i => [i.getId(), i.getAmount(), i.getMeta()]),
     xp: p.getSkillManager().getExperience(core.Skill.CONSTRUCTION),
+    // Preserve stored tenths as well as the whole-XP display projection.
+    storedXp: p.getSkillManager().getSkills().experience[core.Skill.CONSTRUCTION.getIndex()],
     charge: p.getAttribute('crystal-saw:charges-used'), built: p.getAttribute(resupplyModule().BUILT_ATTRIBUTE) };
 }
 function observeResupply(t, p) {
@@ -2218,6 +2220,7 @@ function resupplyAssertNoCost(f, before) {
   const after = resupplySnapshot(f.p);
   assert.deepEqual(after.items, before.items);
   assert.equal(after.xp, before.xp);
+  assert.equal(after.storedXp, before.storedXp, 'no fractional Construction XP leaked');
   assert.equal(after.charge, before.charge);
 }
 
@@ -2384,8 +2387,13 @@ test('optional Maggot chest carried Ironwood sack, bounded material discount and
   resupplyClick(t, g); ticks(3); resupplyAssertBuilt(g.p);
   assert.equal(materialCalls, 1); assert.equal(outfitCalls, 1);
   assert.equal(g.p.getInventory().getAmount(core.ItemIdentifiers.IRONWOOD_PLANK), 4);
-  assert.equal(g.p.getSkillManager().getExperience(core.Skill.CONSTRUCTION) - before.xp,
+  // SkillManager stores tenths; getExperience() is the whole-XP display accessor.
+  // Match the existing Carpenter outfit test's stored-delta measurement, retaining the fractional award.
+  assert.equal(Math.round((g.p.getSkillManager().getSkills().experience[core.Skill.CONSTRUCTION.getIndex()] - before.storedXp) * 10) / 10,
     Math.floor(1787 * 1.025 * core.GameConstants.EXPERIENCE_MULTIPLIER * 10 + 1e-6) / 10);
+  assert.equal(g.p.getSkillManager().getExperience(core.Skill.CONSTRUCTION),
+    Math.floor(before.storedXp + Math.floor(1787 * 1.025 * core.GameConstants.EXPERIENCE_MULTIPLIER * 10 + 1e-6) / 10),
+    'whole-XP display is projected from the complete stored total');
   // The discount/outfit are supplied hook controls, not an actual equipped league fragment/outfit integration claim.
 });
 
