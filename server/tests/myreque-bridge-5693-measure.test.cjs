@@ -56,39 +56,45 @@ test('the wall passes from the south side to the north side (rotation 3 wall on 
 
 const { ObjectDefinition } = require('../dist/game/definition/ObjectDefinition');
 const { MapObjects } = require('../dist/game/entity/impl/object/MapObjects');
-const RUNGS = [[26245, 3428], [26246, 3429], [26247, 3430]];
+const { RegionManager } = require('../dist/game/collision/RegionManager');
+const { CacheDefinitions } = require('../dist/game/cache/CacheDefinitions');
 
-function routed(p, id, y, clickType) {
-  const object = new core.GameObject(id, new core.Location(3502, y, 0), 22, 3, null);
-  p.getMovementQueue().walkToObject(object, { execute: () => {
-    const event = { player: p, object, objectId: id, location: object.getLocation(), clickType, definition: ObjectDefinition.forId(id), handled: false };
-    PM.emitObjectInteraction(event);
-  } }, clickType);
-}
+function objectsAt(x, y) { return MapObjects.getObjectsAt(new core.Location(x, y, 0), null); }
 
-test('M0 real rung object facts', () => {
-  for (let y = 3424; y <= 3432; y++) {
-    for (const o of MapObjects.getObjectsAt(new core.Location(3502, y, 0), null)) {
-      const d = ObjectDefinition.forId(o.getId());
-      console.log(`MEASURE obj (3502,${y}) id=${o.getId()} name=${d?.getName?.()} type=${o.getType?.()} face=${o.getFace?.()} acts=${JSON.stringify(d?.getActions?.())} solid=${d?.isSolid?.()}`);
+test('M0 real objects around the bridge (placed ids, cache transforms)', (t) => {
+  RegionManager.init();
+  const p = actor(t, REACHED_HOLLOWS, 3502, 3427);
+  for (let x = 3500; x <= 3505; x++) for (let y = 3422; y <= 3434; y++) {
+    for (const o of objectsAt(x, y)) {
+      const raw = CacheDefinitions.getObject(o.getId());
+      const d = ObjectDefinition.forPlayer(o.getId(), p);
+      console.log(`MEASURE obj (${x},${y}) placed=${o.getId()} type=${o.getType()} face=${o.getFace?.()} rawName=${raw?.name} varbit=${raw?.transformVarbit} transforms=${JSON.stringify(raw?.transforms)} resolved=${d?.getId?.()}/${d?.getName?.()} acts=${JSON.stringify(d?.getActions?.())}`);
     }
-  }
-  for (const [id] of RUNGS) {
-    const d = ObjectDefinition.forId(id);
-    console.log(`MEASURE def ${id} name=${d?.getName?.()} acts=${JSON.stringify(d?.getActions?.())} solid=${d?.isSolid?.()}`);
   }
 });
 
-test('M1 repair the three rungs through the real walk-to-object route from the landing', (t) => {
+function routedObject(p, object) {
+  const d = () => ObjectDefinition.forPlayer(object.getId(), p);
+  const acts = d()?.getActions?.() ?? [];
+  const clickType = Math.max(1, acts.findIndex(a => a === 'Repair') + 1);
+  p.getMovementQueue().walkToObject(object, { execute: () => {
+    const event = { player: p, object, objectId: object.getId(), location: object.getLocation(), clickType, definition: d(), handled: false };
+    PM.emitObjectInteraction(event);
+    console.log(`MEASURE dispatch placed=${object.getId()} resolved=${d()?.getId?.()} clickType=${clickType} handled=${event.handled}`);
+  } }, clickType);
+}
+
+test('M1 repair the rungs through the real walk-to-object route from the landing', (t) => {
+  RegionManager.init();
   const p = actor(t, REACHED_HOLLOWS, 3502, 3427);
   const { ItemIdentifiers: I } = core;
   p.getInventory().adds(I.PLANK, 3); p.getInventory().adds(I.STEEL_NAILS, 225); p.getInventory().adds(I.HAMMER, 1);
-  const acts = ObjectDefinition.forId(26245)?.getActions?.() ?? [];
-  const clickType = Math.max(1, acts.findIndex(a => a === 'Repair') + 1);
-  console.log('MEASURE repair clickType', clickType);
-  for (const [id, y] of RUNGS) {
-    routed(p, id, y, clickType);
+  for (const y of [3428, 3429, 3430]) {
+    const object = objectsAt(3502, y).find(o => /26|50/.test(String(o.getId())));
+    console.log(`MEASURE pick (3502,${y}) ->`, object?.getId?.());
+    if (!object) continue;
+    routedObject(p, object);
     tick(12);
-    console.log(`MEASURE after rung ${id}@${y}: at=${JSON.stringify(at(p))} bridge=${p.getAttribute(BRIDGE)} msgs=${JSON.stringify(p.messages.slice(-2))}`);
+    console.log(`MEASURE after (3502,${y}): at=${JSON.stringify(at(p))} bridge=${p.getAttribute(BRIDGE)} msgs=${JSON.stringify(p.messages.slice(-2))}`);
   }
 });
