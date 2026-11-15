@@ -98,3 +98,22 @@ test('M1 repair the rungs through the real walk-to-object route from the landing
     console.log(`MEASURE after (3502,${y}): at=${JSON.stringify(at(p))} bridge=${p.getAttribute(BRIDGE)} msgs=${JSON.stringify(p.messages.slice(-2))}`);
   }
 });
+
+test('M2 control and route diagnostics', (t) => {
+  RegionManager.init();
+  const p = actor(t, REACHED_HOLLOWS, 3502, 3427);
+  const q = p.getMovementQueue();
+  const run = (label, object, clickType) => {
+    let executed = 0;
+    q.walkToObject(object, { execute: () => { executed++; } }, clickType);
+    const info = [`route=${q.hasRoute?.()}`, `path=${q.pathX},${q.pathY}`, `pending=${q.hasPendingWork?.()}`];
+    for (let i = 0; i < 10; i++) { core.TaskManager.process(); if (q.hasPendingWork?.()) q.process(); }
+    console.log(`MEASURE diag ${label}: ${info.join(' ')} executed=${executed} at=${JSON.stringify(at(p))}`);
+  };
+  const tree = objectsAt(3502, 3426).find(o => o.getId() === 5003);
+  run('control tree 5003 (3502,3426) Climb', tree, 2);
+  const rung1 = objectsAt(3502, 3428).find(o => o.getId() === 26245);
+  run('rung 26245 (3502,3428) Repair', rung1, 1);
+  const bridge = objectsAt(3502, 3427).find(o => o.getId() === 5002);
+  run('bridge 5002 (3502,3427) Cross', bridge, 1);
+});
