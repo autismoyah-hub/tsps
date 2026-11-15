@@ -1975,7 +1975,14 @@ test('Ikov ordinary crossing and registered lever Take conserve the same item th
   // "Walk across the bridge and take the lever on the other side" requires walking through.
   const doorLeaves = [[1521, 2645, 9828], [1524, 2645, 9829]].map(([id, x, y]) => core.MapObjects.get(id, new core.Location(x, y, 0), null));
   assert.ok(doorLeaves.every(Boolean), 'the real closed Large door leaves stand at the bridge\'s west end');
+  const doorStep = () => core.RegionManager.canMovestart(new core.Location(2645, 9828, 0), new core.Location(2644, 9828, 0), 1, 1, null);
+  assert.equal(doorStep(), false, 'closed: the wall on 2645,9828 stops a step west');
   await h.operate(f, doorLeaves[0], 'Open');
+  assert.equal(doorStep(), true, 'the door actually opened: the step west from 2645,9828 is now free (not just a handled click)');
+  const atDoor = ikovAt(f.player);
+  assert.equal(f.player.isNeedsPlacement(), false); assert.equal(atDoor[2], 0);
+  assert.ok(atDoor[0] >= 2645 && atDoor[0] <= 2647 && [9828, 9829].includes(atDoor[1]),
+    `opening walked the player to the door and did not carry it across: ${JSON.stringify(atDoor)}`);
   const ikovChat = [], sendMessage = f.player.sendMessage;
   t.mock.method(f.player, 'sendMessage', function(...args) { ikovChat.push(args[0]); return Reflect.apply(sendMessage, this, args); });
   const beforeTake = ikovAt(f.player), takeTurn = h.now();
