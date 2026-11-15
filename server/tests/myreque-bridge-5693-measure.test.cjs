@@ -64,7 +64,7 @@ function objectsAt(x, y) { return MapObjects.getObjectsAt(new core.Location(x, y
 test('M0 real objects around the bridge (placed ids, cache transforms)', (t) => {
   RegionManager.init();
   const p = actor(t, REACHED_HOLLOWS, 3502, 3427);
-  for (let x = 3500; x <= 3505; x++) for (let y = 3422; y <= 3434; y++) {
+  for (let x = 3502; x <= 3503; x++) for (let y = 3424; y <= 3432; y++) {
     for (const o of objectsAt(x, y)) {
       const raw = CacheDefinitions.getObject(o.getId());
       const d = ObjectDefinition.forPlayer(o.getId(), p);
@@ -94,7 +94,7 @@ test('M1 repair the rungs through the real walk-to-object route from the landing
     console.log(`MEASURE pick (3502,${y}) ->`, object?.getId?.());
     if (!object) continue;
     routedObject(p, object);
-    tick(12);
+    for (let i = 0; i < 12; i++) { core.TaskManager.process(); const q = p.getMovementQueue(); if (q.hasPendingWork?.()) q.process(); }
     console.log(`MEASURE after (3502,${y}): at=${JSON.stringify(at(p))} bridge=${p.getAttribute(BRIDGE)} msgs=${JSON.stringify(p.messages.slice(-2))}`);
   }
 });
