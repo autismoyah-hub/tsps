@@ -1970,6 +1970,12 @@ test('Ikov ordinary crossing and registered lever Take conserve the same item th
   assert.deepEqual(ikovItems(f.player), startItems);
   assert.ok(h.walks.some(row => row.player === f.player && row.handled && row.destination.x === h.west));
   assert.equal(core.ItemOnGroundManager.canOperate(f.player, stock, takeOp), true, 'same-floor shared stock is genuinely operable');
+  // The lever room is behind the bridge's west end: closed Large doors 1521 and 1524 (a wall on 2645,9828 and
+  // 2645,9829, found by the reachability probe of the failed Take). A player opens them first, as the Wiki's
+  // "Walk across the bridge and take the lever on the other side" requires walking through.
+  const doorLeaves = [[1521, 2645, 9828], [1524, 2645, 9829]].map(([id, x, y]) => core.MapObjects.get(id, new core.Location(x, y, 0), null));
+  assert.ok(doorLeaves.every(Boolean), 'the real closed Large door leaves stand at the bridge\'s west end');
+  await h.operate(f, doorLeaves[0], 'Open');
   const ikovChat = [], sendMessage = f.player.sendMessage;
   t.mock.method(f.player, 'sendMessage', function(...args) { ikovChat.push(args[0]); return Reflect.apply(sendMessage, this, args); });
   const beforeTake = ikovAt(f.player), takeTurn = h.now();
