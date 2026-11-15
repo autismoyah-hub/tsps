@@ -2165,8 +2165,10 @@ function resupplyClick(t, f, action = 'Build', observer = observeResupply(t, f.p
   const row = observer.rows.at(-1);
   assert.equal(row.option, action.toLowerCase());
   assert.equal(row.before, false);
-  assert.equal(row.returned, true);
-  assert.equal(row.after, true);
+  // Bank is deliberately unanswered by plugins; the listener opens it afterwards.
+  const handledByPlugin = action.toLowerCase() !== 'bank';
+  assert.equal(row.returned, handledByPlugin);
+  assert.equal(row.after, handledByPlugin);
   return observer;
 }
 function resupplyAssertBuilt(p, value = true) {
@@ -2207,6 +2209,7 @@ test('optional Maggot trip banking uses real route/dispatch then commits once on
   const after = resupplySnapshot(p); ticks(5); assert.deepEqual(resupplySnapshot(p), after);
   resupplyClick(t, f, 'Bank', witness);
   assert.equal(core.Bank.isOpen(p), true, 'unchanged generic Bank fallback');
+  assert.deepEqual(witness.operated, ['build', 'bank'], 'generic Bank fallback reports the actual operated action');
   console.log(JSON.stringify({ event: 'maggot-resupply-native-after', witness: witness.rows,
     standing: resupplyStanding, baseXP: 1787, taskTicks: 3, scope: 'supplied access/player; actual map, visible listener, route, tasks and Bank; no socket/client/scout traversal' }));
 });
