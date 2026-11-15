@@ -59,6 +59,7 @@ const { MapObjects } = require('../dist/game/entity/impl/object/MapObjects');
 const { RegionManager } = require('../dist/game/collision/RegionManager');
 const { CacheDefinitions } = require('../dist/game/cache/CacheDefinitions');
 
+function step(p) { core.World.processCycle++; core.TaskManager.process(); const q = p.getMovementQueue(); q.beginCycle?.(); if (q.hasPendingWork?.()) q.process(); core.TaskManager.processWalkTo(p.getIndex()); }
 function objectsAt(x, y) { return MapObjects.getObjectsAt(new core.Location(x, y, 0), null); }
 
 test('M0 real objects around the bridge (placed ids, cache transforms)', (t) => {
@@ -94,7 +95,7 @@ test('M1 repair the rungs through the real walk-to-object route from the landing
     console.log(`MEASURE pick (3502,${y}) ->`, object?.getId?.());
     if (!object) continue;
     routedObject(p, object);
-    for (let i = 0; i < 12; i++) { core.TaskManager.process(); const q = p.getMovementQueue(); if (q.hasPendingWork?.()) q.process(); }
+    for (let i = 0; i < 12; i++) step(p);
     console.log(`MEASURE after (3502,${y}): at=${JSON.stringify(at(p))} bridge=${p.getAttribute(BRIDGE)} msgs=${JSON.stringify(p.messages.slice(-2))}`);
   }
 });
@@ -107,7 +108,7 @@ test('M2 control and route diagnostics', (t) => {
     let executed = 0;
     q.walkToObject(object, { execute: () => { executed++; } }, clickType);
     const info = [`route=${q.hasRoute?.()}`, `path=${q.pathX},${q.pathY}`, `pending=${q.hasPendingWork?.()}`];
-    for (let i = 0; i < 10; i++) { core.TaskManager.process(); if (q.hasPendingWork?.()) q.process(); }
+    for (let i = 0; i < 10; i++) step(p);
     console.log(`MEASURE diag ${label}: ${info.join(' ')} executed=${executed} at=${JSON.stringify(at(p))}`);
   };
   const tree = objectsAt(3502, 3426).find(o => o.getId() === 5003);
