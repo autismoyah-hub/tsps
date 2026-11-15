@@ -5,7 +5,6 @@
 const BUILT_ATTRIBUTE = "maggot-king:resupply-chest-built";
 const CHEST = Object.freeze({ root: 62185, unbuilt: 62186, built: 62187,
   varbit: 15621, x: 2576, y: 7833, z: 0, shape: 10, face: 1 });
-const BUILDABLE = Object.freeze({ key: "maggot-resupply-chest", level: 70, tool: "saw" });
 const BUILD_TICKS = 3;
 const BASE_XP = 1787;
 // These presentation lines are repository-owned; no retail message/animation capture is claimed.
@@ -16,10 +15,13 @@ const pending = new Map();
 // House destructures Core.Construction at load time: only load it during an operation,
 // after normal plugin startup initialized Construction. Maggot never initializes that Core.
 function house() { return require("../../skills/construction/House.Construction"); }
-function recipe() {
+function buildable() {
   const ids = core.ItemIdentifiers;
-  return new Map([[ids.MAGIC_STONE, 1], [ids.CUPRONICKEL_BAR, 2],
-    [ids.ADAMANTITE_BAR, 2], [ids.IRONWOOD_PLANK, 4]]);
+  // Match Construction's material_cost descriptor, including GardenPlants' itemId check.
+  return Object.freeze({ key: "maggot-resupply-chest", level: 70, tool: "saw",
+    materials: Object.freeze([[ids.MAGIC_STONE, 1], [ids.CUPRONICKEL_BAR, 2],
+      [ids.ADAMANTITE_BAR, 2], [ids.IRONWOOD_PLANK, 4]]
+      .map(([itemId, amount]) => Object.freeze({ itemId, amount }))) });
 }
 function built(player) { return player.getAttribute(BUILT_ATTRIBUTE) === true; }
 function sync({ player }) {
@@ -43,10 +45,10 @@ function reached(player, object) {
   return !!base && !!shown && core.PathFinder.reachedObject(player, CHEST.x, CHEST.y,
     base.getSizeX(), base.getSizeY(), object.getFace(), CHEST.shape, shown.getBlockingMask());
 }
-function eligible(player, materials) {
+function eligible(player, descriptor, materials) {
   const helpers = house();
   return helpers.hasHammer(player) && helpers.hasSaw(player)
-    && helpers.furnitureLevel(player, BUILDABLE) >= BUILDABLE.level
+    && helpers.furnitureLevel(player, descriptor) >= descriptor.level
     && [...materials].every(([id, amount]) => player.getInventory().getAmount(id) + helpers.storedAmount(player, id) >= amount);
 }
 function cancel({ player }) {
@@ -68,8 +70,9 @@ function build({ player, object }) {
   if (pending.has(player)) return true;
   if (built(player)) { sync({ player }); return true; }
   if (!unbuiltTarget(player, object) || !reached(player, object)) return true;
-  const materials = recipe();
-  if (!eligible(player, materials)) { player.sendMessage(REQUIREMENTS); return true; }
+  const descriptor = buildable();
+  const materials = new Map(descriptor.materials.map(({ itemId, amount }) => [itemId, amount]));
+  if (!eligible(player, descriptor, materials)) { player.sendMessage(REQUIREMENTS); return true; }
   const work = { phase: "waiting", origin: player.getLocation().clone(), area: player.getPrivateArea(), task: null };
   let elapsed = 0;
   work.task = new (class extends core.Task {
@@ -85,14 +88,14 @@ function build({ player, object }) {
       if (++elapsed < BUILD_TICKS) return;
       // All costs are deferred to this valid reached-operation's third task tick.
       // This commit/cancellation order is repository policy, not a retail tick capture.
-      if (!eligible(player, materials) || pending.get(player) !== work
+      if (!eligible(player, descriptor, materials) || pending.get(player) !== work
         || !unbuiltTarget(player, object) || !reached(player, object)
         || !player.getLocation().equals(work.origin) || player.getPrivateArea() !== work.area) { this.stop(); return; }
       work.phase = "committing";
       try {
         // Existing helper owns needed crystal charge, bounded material discounts,
         // inventory-first and carried storage remainder. No second charge or stale snapshot.
-        house().useMaterials(player, BUILDABLE, materials);
+        house().useMaterials(player, descriptor, materials);
         player.setAttribute(BUILT_ATTRIBUTE, true);
         sync({ player });
         const outfit = { player, multiplier: 1 };
@@ -123,4 +126,4 @@ function attach(pluginApi) {
   api.onCustomEvent("player:interaction-cleared", cancel);
   api.onServerShutdown(shutdown);
 }
-module.exports = { attach, BUILT_ATTRIBUTE, CHEST, BUILDABLE, BUILD_TICKS, BASE_XP };
+module.exports = { attach, BUILT_ATTRIBUTE, CHEST, BUILD_TICKS, BASE_XP };
