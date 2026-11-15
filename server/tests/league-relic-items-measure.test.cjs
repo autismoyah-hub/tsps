@@ -30,6 +30,7 @@ function leaguer(t) {
   const p = new Player(new PlayerSession(channel));
   p.setIndex(next++); p.setUsername("relic" + p.getIndex()); p.setRegistered(true);
   p.setAttribute("bot-skip-persistence", true);
+  p.setProfile("league"); // the league character profile (Common.isLeagueProfile); leagueOf also reads league:type
   p.setAttribute("league:type", 5);
   p.setLocation(new core.Location(3222, 3218, 0)); p.needsPlacement = false;
   const messages = [];
