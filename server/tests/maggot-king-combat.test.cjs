@@ -2063,3 +2063,109 @@ test('Camping resets on native Escape and owned logout/teleport retirement bound
   assert.equal(Instance.sessionOf(p), null);
   assert.equal(enter(p).campingKills, 0, 'a new lair does not restore the old run');
 });
+
+
+// Proposed optional Maggot trip-resupply BASELINE addition; UNEXECUTED.
+// Expected missing Build handling applies only to pinned c5fc source, not a future implementation.
+const RESUPPLY = Object.freeze({ root: 62185, unbuilt: 62186, built: 62187,
+  varbit: 15621, varp: 4968, bit: 1 << 28, x: 2576, y: 7833, z: 0 });
+function resupplyRoot(p) {
+  const at = new core.Location(RESUPPLY.x, RESUPPLY.y, RESUPPLY.z);
+  core.RegionManager.loadMapFiles(RESUPPLY.x, RESUPPLY.y);
+  const object = core.World.findCacheObject(p, RESUPPLY.root, at);
+  assert.ok(object, 'actual static root is loaded; no synthetic replacement');
+  assert.equal(object.getId(), RESUPPLY.root);
+  assert.equal(object.getType(), 10);
+  assert.equal(object.getFace(), 1);
+  return object;
+}
+function resupplyReached(p, object) {
+  const base = core.ObjectDefinition.forId(object.getId());
+  const shown = core.ObjectDefinition.forPlayer(object.getId(), p);
+  return core.PathFinder.reachedObject(p, RESUPPLY.x, RESUPPLY.y,
+    base.getSizeX(), base.getSizeY(), object.getFace(), 10, shown.getBlockingMask());
+}
+
+test('optional Maggot resupply static root resolves two players independently and preserves other varp bits', t => {
+  const a = player(t), b = player(t);
+  const root = resupplyRoot(a);
+  const sentinelA = (1 << 2) | (1 << 29), sentinelB = (1 << 7) | (1 << 30);
+  a.getPacketSender().sendConfig(RESUPPLY.varp, sentinelA);
+  b.getPacketSender().sendConfig(RESUPPLY.varp, sentinelB);
+  assert.equal(core.ObjectDefinition.forPlayer(root.getId(), a).id, RESUPPLY.unbuilt);
+  assert.equal(core.ObjectDefinition.forPlayer(root.getId(), b).id, RESUPPLY.unbuilt);
+  // Supplied varbit state probes the maintained transform only: this is NOT a Build or saved-state result.
+  a.getPacketSender().sendVarbit(RESUPPLY.varbit, 1);
+  assert.equal(a.getPacketSender().getVarp(RESUPPLY.varp), sentinelA | RESUPPLY.bit);
+  assert.equal(b.getPacketSender().getVarp(RESUPPLY.varp), sentinelB);
+  assert.equal(core.ObjectDefinition.forPlayer(root.getId(), a).id, RESUPPLY.built);
+  assert.equal(core.ObjectDefinition.forPlayer(root.getId(), b).id, RESUPPLY.unbuilt);
+  a.getPacketSender().sendVarbit(RESUPPLY.varbit, 0);
+  assert.equal(a.getPacketSender().getVarp(RESUPPLY.varp), sentinelA);
+  assert.equal(root.getId(), RESUPPLY.root, 'the shared physical root was never replaced');
+  console.log(JSON.stringify({ event: 'maggot-resupply-native-transform-probe', supplied: true,
+    root: root.getId(), sentinelA, sentinelB, scope: 'per-player native cache/PacketSender transform only; no persistence/build proof' }));
+});
+
+test('optional Maggot resupply baseline routes an ordinary visible Build click but has no build outcome on pinned c5fc', t => {
+  const p = player(t);
+  p.getSkillManager().setMaxLevels(core.Skill.CONSTRUCTION, 70, false).setCurrentLevels(core.Skill.CONSTRUCTION, 70, false);
+  for (const [id, amount] of [[core.ItemIdentifiers.HAMMER, 1], [core.ItemIdentifiers.SAW, 1],
+    [core.ItemIdentifiers.MAGIC_STONE, 1], [core.ItemIdentifiers.CUPRONICKEL_BAR, 2],
+    [core.ItemIdentifiers.ADAMANTITE_BAR, 2], [core.ItemIdentifiers.IRONWOOD_PLANK, 4]]) {
+    assert.ok(Number.isInteger(id), 'recipe/tool uses existing named cache identifier');
+    p.getInventory().adds(id, amount);
+    assert.ok(p.getInventory().getAmount(id) >= amount);
+  }
+  const root = resupplyRoot(p);
+  p.getPacketSender().sendVarbit(RESUPPLY.varbit, 0);
+  const start = new core.Location(2577, 7818, 0); // supplied primary scout travel point, not scout traversal proof
+  p.moveTo(start); p.setNeedsPlacement(false);
+  ticks(1);
+  const shown = core.ObjectDefinition.forPlayer(root.getId(), p);
+  assert.equal(shown.id, RESUPPLY.unbuilt);
+  const click = shown.getInteractions().findIndex(v => v?.toLowerCase() === 'build') + 1;
+  assert.equal(click, 1);
+  const inventoryBefore = p.getInventory().getCopiedItems().map(i => [i.getId(), i.getAmount(), i.getMeta()]);
+  const xpBefore = p.getSkillManager().getExperience(core.Skill.CONSTRUCTION);
+  let operated = 0;
+  const originalCustomEvent = PM.emitCustomEvent;
+  const operatedObserver = t.mock.method(PM, 'emitCustomEvent', function(name, event) {
+    if (name === 'object:operated' && event.player === p && event.objectId === RESUPPLY.root) operated++;
+    return Reflect.apply(originalCustomEvent, this, [name, event]);
+  });
+  t.after(() => operatedObserver.mock.restore());
+  // Pass through the real dispatch unchanged: reaching the tile alone cannot prove the callback ran.
+  const dispatches = [];
+  const originalDispatch = PM.emitObjectInteraction;
+  const dispatchObserver = t.mock.method(PM, 'emitObjectInteraction', function(event) {
+    const matches = event.player === p && event.object === root && event.objectId === RESUPPLY.root
+      && event.definition?.id === RESUPPLY.unbuilt && event.clickType === click && event.option === 'build'
+      && event.location?.x === RESUPPLY.x && event.location?.y === RESUPPLY.y && event.location?.z === RESUPPLY.z;
+    const row = matches ? { beforeHandled: event.handled, result: undefined, afterHandled: undefined } : null;
+    if (row) dispatches.push(row);
+    const result = Reflect.apply(originalDispatch, this, [event]);
+    if (row) { row.result = result; row.afterHandled = event.handled; }
+    return result;
+  });
+  t.after(() => dispatchObserver.mock.restore());
+  // Exact native listener receives the player's visible ID; source maps it to the shared root.
+  input(p, () => new ObjectActionPacketListener().executeAction(p, shown.id, RESUPPLY.x, RESUPPLY.y, click, 'Build'));
+  ticks(80); // bounded ordinary route budget; no moveTo/route override after the click
+  assert.equal(p.isRegistered(), true);
+  assert.ok(p.getHitpoints() > 0);
+  assert.equal(p.getLocation().equals(start), false, 'ordinary walk actually moved from supplied route start');
+  assert.equal(resupplyReached(p, root), true, 'maintained reach respects rotated child access mask/root footprint');
+  assert.deepEqual(dispatches, [{ beforeHandled: false, result: false, afterHandled: false }],
+    'exactly one real matching Build dispatch ran and returned unanswered without the witness handling it');
+  assert.equal(p.getPacketSender().getVarbit(RESUPPLY.varbit), 0, 'current missing-handler symptom');
+  assert.equal(core.ObjectDefinition.forPlayer(root.getId(), p).id, RESUPPLY.unbuilt);
+  assert.deepEqual(p.getInventory().getCopiedItems().map(i => [i.getId(), i.getAmount(), i.getMeta()]), inventoryBefore);
+  assert.equal(p.getSkillManager().getExperience(core.Skill.CONSTRUCTION), xpBefore);
+  assert.equal(operated, 0, 'no handled operation reported for current unanswered Build');
+  console.log(JSON.stringify({ event: 'maggot-resupply-native-before', source: 'c5fc7e49e09ab2a01e8c5d0909c24de3e5bc4db1',
+    root: root.getId(), visibleClick: shown.id, from: [start.getX(), start.getY(), start.getZ()],
+    to: [p.getLocation().getX(), p.getLocation().getY(), p.getLocation().getZ()],
+    reachable: resupplyReached(p, root), dispatches, operated, built: p.getPacketSender().getVarbit(RESUPPLY.varbit),
+    scope: 'supplied eligible player/scout-point standing; actual map+listener+world route; no decoded socket/client/scout travel or build-success proof' }));
+});
