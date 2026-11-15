@@ -41,8 +41,9 @@ const center = (f) => L((f.x0 + f.x1) >> 1, (f.y0 + f.y1) >> 1, f.z);
 
 /**
  * A straight run as moveTowards(oneTile) makes it (one sign-step at a time, size-`size` NPC): the first refused step, classed
- * 'endpoint' when either tile is itself blocked (a pit tile, a rock) and 'fence' when both tiles are free but the step is refused
- * (a fence or wall between them).
+ * 'endpoint' when either tile is itself blocked (a pit tile, a rock) and 'corner' when a diagonal step is refused by a blocked orthogonal neighbour,
+ * and 'fence' when both tiles are free, the step is not a blocked corner, and it is refused (a fence or wall between them). Only the catch's run to the pit coord
+ * is covered: the leap's first step towards r.edge (EDGE_TICK) is NOT.
  */
 function run(from, to, size) {
   let at = from, steps = 0;
@@ -50,7 +51,10 @@ function run(from, to, size) {
     const next = L(at.getX() + Math.sign(to.getX() - at.getX()), at.getY() + Math.sign(to.getY() - at.getY()), at.getZ());
     if (!core.RegionManager.canMovestart(at, next, size, size, null)) {
       const endpoint = core.RegionManager.blocked(at, null) || core.RegionManager.blocked(next, null);
-      return { kind: endpoint ? "endpoint" : "fence", at: [at.getX(), at.getY()], next: [next.getX(), next.getY()] };
+      const dx = next.getX() - at.getX(), dy = next.getY() - at.getY();
+      // A diagonal step is refused when an orthogonal neighbour is blocked: a corner, not a fence between the two tiles.
+      const corner = dx !== 0 && dy !== 0 && (core.RegionManager.blocked(L(at.getX() + dx, at.getY(), at.getZ()), null) || core.RegionManager.blocked(L(at.getX(), at.getY() + dy, at.getZ()), null));
+      return { kind: endpoint ? "endpoint" : corner ? "corner" : "fence", at: [at.getX(), at.getY()], next: [next.getX(), next.getY()] };
     }
     at = next;
   }
@@ -58,10 +62,12 @@ function run(from, to, size) {
 }
 
 test("scan: pits of the Feldip Hills larupia area, and every creature tile the plugin would accept", () => {
-  // Spined larupia spawns in npc-spawns.json: x 2544..2573, y 2883..2910 (regions 39,45 and 40,45).
-  for (const [rx, ry] of [[39, 45], [40, 45]]) core.RegionManager.loadMapFiles(rx * 64 + 8, ry * 64 + 8, false);
+  // Spined larupia spawns in npc-spawns.json: x 2544..2573, y 2883..2910 (regions 39,45 and 40,45; 39,44 and 40,44 too for the area's south edge).
+  for (const [rx, ry] of [[39, 45], [40, 45], [39, 44], [40, 44]]) core.RegionManager.loadMapFiles(rx * 64 + 8, ry * 64 + 8, false);
   const collapsed = new Set(Object.keys(core.ObjectIdentifiers).filter(k => k.startsWith("COLLAPSED_TRAP")).map(k => core.ObjectIdentifiers[k]));
-  const larupiaSize = guarded(() => core.CacheDefinitions.getNpc(core.NpcIdentifiers.SPINED_LARUPIA).size) ?? "?";
+  const rawSize = guarded(() => core.CacheDefinitions.getNpc(core.NpcIdentifiers.SPINED_LARUPIA).size);
+  const larupiaSize = Number.isInteger(rawSize) && rawSize > 0 ? rawSize : 2;
+  const sizeSource = larupiaSize === rawSize ? "read" : `defaulted (raw ${JSON.stringify(rawSize)})`;
   let objects = 0; const bases = [];
   for (let x = 2530; x <= 2590; x++) for (let y = 2870; y <= 2925; y++) {
     for (const object of core.MapObjects.getObjectsAt(L(x, y), null)) {
@@ -70,7 +76,7 @@ test("scan: pits of the Feldip Hills larupia area, and every creature tile the p
       if (def && Array.isArray(def.transforms) && def.transforms.some(t => collapsed.has(t))) bases.push(object);
     }
   }
-  console.log(`PITSCAN collapsed-trap ids ${JSON.stringify([...collapsed])} larupia size ${larupiaSize} objects scanned ${objects} pit base locs ${bases.length}`);
+  console.log(`PITSCAN collapsed-trap ids ${JSON.stringify([...collapsed])} larupia size ${larupiaSize} (${sizeSource}) objects scanned ${objects} pit base locs ${bases.length}`);
   console.log(`PITSCAN pits ${JSON.stringify(bases.map(b => [b.getId(), guarded(() => core.CacheDefinitions.getObject(b.getId()).name), b.getLocation().getX(), b.getLocation().getY(), b.getFace()]))}`);
   assert.ok(objects > 0, "the scan loaded no objects: the map did not load");
   assert.ok(bases.length > 0, `no pit base loc found among ${objects} objects: the pit id predicate or the area is wrong, nothing can be said about fences`);
@@ -78,8 +84,8 @@ test("scan: pits of the Feldip Hills larupia area, and every creature tile the p
     const f = footprint(base), c = center(f), at = base.getLocation();
     // The pit's own tiles, apart from the fence question.
     const pitTiles = []; for (let x = f.x0; x <= f.x1; x++) for (let y = f.y0; y <= f.y1; y++) pitTiles.push(guarded(() => core.RegionManager.blocked(L(x, y), null)));
-    for (const size of [1, larupiaSize === "?" ? 2 : larupiaSize]) {
-      const counts = { tiles: 0, blockedTile: 0, clear: 0, endpoint: 0, fence: 0 }, samples = [];
+    for (const size of [...new Set([1, larupiaSize])]) {
+      const counts = { tiles: 0, blockedTile: 0, clear: 0, endpoint: 0, corner: 0, fence: 0 }, samples = [];
       // Every tile within the plugin's own near() reach (distance <= 5 from the pit centre) a creature could stand on.
       for (let x = c.getX() - 5; x <= c.getX() + 5; x++) for (let y = c.getY() - 5; y <= c.getY() + 5; y++) {
         const t = L(x, y, f.z);
@@ -88,7 +94,10 @@ test("scan: pits of the Feldip Hills larupia area, and every creature tile the p
         if (core.RegionManager.blocked(t, null)) { counts.blockedTile++; continue; }
         const r = run(t, L(f.x0, f.y0, f.z), size);
         counts[r.kind]++;
-        if (r.kind === "fence" && samples.length < 6) samples.push([[x, y], r.at, r.next]);
+        if (r.kind === "fence" && samples.length < 6) {
+          const on = (p) => guarded(() => core.MapObjects.getObjectsAt(L(p[0], p[1], f.z), null).map(o => [o.getId(), core.CacheDefinitions.getObject(o.getId()).name, o.getType(), o.getFace()]));
+          samples.push(samples.length < 2 ? [[x, y], r.at, r.next, { onFrom: on(r.at), onNext: on(r.next) }] : [[x, y], r.at, r.next]);
+        }
       }
       console.log(`PIT ${JSON.stringify({ id: base.getId(), at: [at.getX(), at.getY()], face: base.getFace(), fp: [f.x0, f.y0, f.x1, f.y1], centre: [c.getX(), c.getY()], pitTilesBlocked: pitTiles, size, counts, fenceSamples_from_step_next: samples })}`);
     }
