@@ -765,6 +765,85 @@ test('encountering the Warrior cannot knock the owner through the unearned door'
       hpBefore,hpAfter:player.getHitpoints(),inventoryBefore:inventory,inventoryAfter:items(player.getInventory()),
       equipmentBefore:equipment,equipmentAfter:items(player.getEquipment())}));
   }
+  {
+    // Same controlled-death/passage actor; 20 roots and the local Winelda NPC are explicit fixture resources.
+    // Stored60 is NOT payment: require the independent current flags before any Winelda interaction.
+    const player=a.p,area=player.getPrivateArea(),root=core.ItemIdentifiers.LIMPWURT_ROOT;
+    const items=container=>structuredClone(container.getItems().map(item=>({id:item.getId(),amount:item.getAmount(),meta:item.getMeta()})));
+    const progress=()=>({storedStage:quest.getStage(player),version:Number(player.getAttribute('temple-of-ikov:state-version'))||0,
+      killed:Number(player.getAttribute('temple-of-ikov:warrior-killed'))||0,
+      met:Number(player.getAttribute('temple-of-ikov:met-winelda'))||0,
+      paid:Number(player.getAttribute('temple-of-ikov:paid-winelda'))||0,complete:quest.isComplete(player)});
+    const before=progress(),inventoryBefore=items(player.getInventory()),equipmentBefore=items(player.getEquipment()),route=[];
+    assert.deepEqual(before,{storedStage:60,version:1,killed:1,met:0,paid:0,complete:false});
+    assert.deepEqual(where(player),[2646,9872,0]);assert.equal(player.getInventory().getAmount(root),0);
+    const stable=()=>{
+      assert.equal(player.isRegistered(),true);assert.equal(player.isNeedsPlacement(),false);assert.ok(player.getHitpoints()>0);
+      assert.equal(player.getPrivateArea(),area);assert.equal(player.getLocation().getZ(),0);
+      assert.equal(player.hasFlag('movement:ignore-clipping'),false);
+      assert.deepEqual(items(player.getEquipment()),equipmentBefore);
+    };
+    stable();route.push({at:where(player),hp:player.getHitpoints()});
+    await a.input({type:'move',worldX:2654,worldY:9876,modifierFlags:0,run:false},0);
+    for(let i=1;i<=16;i++){
+      turns();stable();assert.deepEqual(progress(),before);assert.deepEqual(items(player.getInventory()),inventoryBefore);
+      route.push({at:where(player),hp:player.getHitpoints()});
+      if(player.getLocation().equals(new core.Location(2654,9876,0)))break;
+    }
+    assert.deepEqual(where(player),[2654,9876,0],'same earned-kill actor reaches the existing Winelda fixture approach by decoded walking');
+    // This is supplied payment stock, not naturally acquired roots or an earned whole quest.
+    a.add(root,20);const suppliedInventory=items(player.getInventory()),interactions=[],payments=[];
+    const interact=PM.emitNpcInteraction,custom=PM.emitCustomEvent;
+    t.mock.method(PM,'emitNpcInteraction',function(event,...args){
+      const row=event.player===player&&event.npcId===core.NpcIdentifiers.WINELDA?
+        {npc:event.npc,npcId:event.npcId,index:event.npc?.getIndex(),contentId:event.npc?.getContentId(player),
+          ownerSame:event.npc?.getOwner()===player,registered:event.npc?.isRegistered()===true,
+          sameArea:event.npc?.getPrivateArea()===area,at:where(event.npc),clickType:event.clickType,
+          option:event.definition?.getActions?.()[event.clickType-1]?.toLowerCase(),before:progress(),rootsBefore:player.getInventory().getAmount(root)}:null;
+      if(row)interactions.push(row);
+      const result=Reflect.apply(interact,this,[event,...args]);
+      if(row){row.after=progress();row.rootsAfter=player.getInventory().getAmount(root);row.handled=event.handled;row.result=result;assert.equal(interactions.length,1);}
+      return result;
+    });
+    t.mock.method(PM,'emitCustomEvent',function(name,event,...args){
+      const row=name==='npc-dialogue:action'&&event.player===player&&event.stepId==='UB9hSI'?
+        {npc:event.npc,npcId:event.npcId,index:event.npc?.getIndex(),kind:event.kind??event.step?.type??null,
+          before:progress(),rootsBefore:player.getInventory().getAmount(root),atBefore:where(player)}:null;
+      if(row)payments.push(row);
+      const result=Reflect.apply(custom,this,[name,event,...args]);
+      if(row){row.after=progress();row.rootsAfter=player.getInventory().getAmount(root);row.atAfter=where(player);assert.equal(payments.length,1);}
+      return result;
+    });
+    const npc=await a.talk(core.NpcIdentifiers.WINELDA,2655,9876);
+    stable();assert.equal(npc.getOwner(),player);assert.equal(npc.getPrivateArea(),area);
+    assert.equal(core.World.getNpcs().get(npc.getIndex()),npc);assert.ok(player.getLocalNpcs().includes(npc));
+    assert.equal(interactions.length,1);const interaction=interactions[0];
+    assert.equal(interaction.npc,npc);assert.equal(interaction.npcId,npc.getContentId(player));assert.equal(interaction.index,npc.getIndex());
+    assert.equal(interaction.contentId,npc.getContentId(player));assert.equal(interaction.ownerSame,true);assert.equal(interaction.sameArea,true);
+    assert.equal(interaction.registered,true);assert.equal(interaction.option,'talk-to');assert.equal(interaction.handled,true);assert.equal(interaction.result,true);
+    assert.deepEqual(interaction.before,before);assert.equal(interaction.after.met,1);assert.equal(interaction.after.paid,0);
+    assert.equal(interaction.rootsBefore,20);assert.equal(interaction.rootsAfter,20);
+    const ranged=player.getSkillManager().getExperience(core.Skill.RANGED),fletching=player.getSkillManager().getExperience(core.Skill.FLETCHING),
+      points=Number(player.getAttribute('quest.points'))||0;
+    for(let i=0;i<20&&!player.getAttribute('temple-of-ikov:paid-winelda')&&player.getDialogueManager().getCurrent();i++){await a.resume();stable();}
+    assert.equal(payments.length,1);const payment=payments[0];
+    assert.equal(payment.npc,npc);assert.equal(payment.npcId,npc.getContentId(player));assert.equal(payment.index,npc.getIndex());assert.equal(payment.kind,'action');
+    assert.deepEqual(payment.before,{storedStage:60,version:1,killed:1,met:1,paid:0,complete:false});
+    assert.deepEqual(payment.after,{storedStage:60,version:1,killed:1,met:1,paid:1,complete:false});
+    assert.equal(payment.rootsBefore,20);assert.equal(payment.rootsAfter,0);assert.deepEqual(payment.atAfter,[2644,9890,0]);
+    assert.deepEqual(progress(),payment.after);assert.deepEqual(where(player),[2644,9890,0]);assert.equal(player.getInventory().getAmount(root),0);
+    assert.deepEqual(items(player.getInventory()),inventoryBefore,'payment removes exactly the supplied roots and preserves all original item metadata');
+    assert.deepEqual(items(player.getEquipment()),equipmentBefore);
+    assert.equal(player.getSkillManager().getExperience(core.Skill.RANGED),ranged);assert.equal(player.getSkillManager().getExperience(core.Skill.FLETCHING),fletching);
+    assert.equal(Number(player.getAttribute('quest.points'))||0,points);
+    const {npc:interactionNpc,...interactionFact}=interaction,{npc:paymentNpc,...paymentFact}=payment;
+    console.log('IKOV_WARRIOR_WINELDA_PAYMENT',JSON.stringify({
+      scope:'same controlled-death/passage actor; supplied20roots and local fixture Winelda; ordinary decoded walk/Talk-to/Continue payment, not natural resource acquisition/fight/full quest/account',
+      username:player.getUsername(),before,route,suppliedRoots:20,suppliedInventory,interaction:{...interactionFact,sameActualSpeaker:interactionNpc===npc},
+      payment:{...paymentFact,sameActualSpeaker:paymentNpc===npc},after:progress(),inventoryBefore,inventoryAfter:items(player.getInventory()),
+      equipmentBefore,equipmentAfter:items(player.getEquipment()),rangedBefore:ranged,rangedAfter:player.getSkillManager().getExperience(core.Skill.RANGED),
+      fletchingBefore:fletching,fletchingAfter:player.getSkillManager().getExperience(core.Skill.FLETCHING),pointsBefore:points,pointsAfter:Number(player.getAttribute('quest.points'))||0}));
+  }
 });
 test('a character credited with the Warrior kill can cross the same door from its south approach',async t=>{
   restoreEncounterDoor(t);const a=actor(t,2646,9869,60);
