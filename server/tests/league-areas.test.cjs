@@ -480,8 +480,55 @@ test("a pick needs the next slot's tasks, then plays the captured unlock; at mos
   assert.equal(main.getAttribute("league:areas"), undefined);
 });
 
-test("the details' Teleport casts to an unlocked area's hub (the cache's coord), never to a locked one", () => {
+test("the details' Teleport casts to an unlocked area's hub (the cache's coord), never to a locked one", t => {
+  const owned = new Set();
+  const submitted = [];
+  const previousCombat = inCombat, previousLeague = worldLeague;
+  t.after(() => { inCombat = previousCombat; worldLeague = previousLeague; });
+  const submit = core.TaskManager.submit;
+  t.mock.method(core.TaskManager, "submit", function (...args) {
+    if (owned.has(args[0].key)) submitted.push(args[0]);
+    return Reflect.apply(submit, this, args);
+  });
+  const cleanup = player => {
+    owned.add(player);
+    t.after(() => {
+      const errors = [];
+      const failures = [];
+      const describe = error => ({
+        name: error?.name ?? typeof error, message: error?.message ?? String(error),
+        stack: error?.stack ?? null, detail: String(error),
+      });
+      const failed = (operation, error, task = null) => {
+        errors.push(error);
+        failures.push({
+          operation, task: task === null ? null : { submittedIndex: submitted.indexOf(task), ownedKey: task.key === player },
+          error: { ...describe(error), details: Array.isArray(error?.errors) ? error.errors.map(describe) : null },
+        });
+      };
+      try { player.setRegistered(false); } catch (error) { failed("setRegistered(false)", error); }
+      try { core.TaskManager.cancelTasks(player); } catch (error) { failed("cancelTasks(actor)", error); }
+      for (const task of submitted.filter(task => task.key === player)) {
+        let operation = "task.isRunning";
+        try {
+          if (task.isRunning()) { operation = "task.stop"; task.stop(); }
+          operation = "task-stopped-check";
+          assert.equal(task.isRunning(), false, "LEAGUE5386_TELEPORT_PREREQUISITE: owned task stopped");
+        } catch (error) { failed(operation, error, task); }
+      }
+      try {
+        assert.equal(player.isRegistered(), false, "LEAGUE5386_TELEPORT_PREREQUISITE: isolated actor flag cleared");
+      } catch (error) { failed("actor-flag-cleared-check", error); }
+      if (errors.length) {
+        console.log("LEAGUE5386_TELEPORT_CLEANUP_FAILURE", JSON.stringify({
+          actor: { username: player.getUsername(), profile: player.getProfile() }, failures,
+        }));
+        throw new AggregateError(errors, "LEAGUE5386_TELEPORT_PREREQUISITE: fixture cleanup failed");
+      }
+    });
+  };
   const league = character("traveller");
+  cleanup(league);
   league.setRegistered(true);
   openAreas(league);
   viewArea(league, ASGARNIA);
@@ -507,20 +554,81 @@ test("the details' Teleport casts to an unlocked area's hub (the cache's coord),
   // Raging Echoes plays its captured cast: the first echoes animation a tick in, landing at +21.
   worldLeague = 5;
   const echoes = character("echoestraveller");
+  cleanup(echoes);
   worldLeague = 4;
   echoes.setRegistered(true);
+  // Supplied legal unit-fixture start: keep all possible real random hub landings distinct.
+  echoes.setLocation(at(3263, 3260));
+  const xyz = location => location === null ? null : [location.getX(), location.getY(), location.getZ()];
+  const areaCommon = require("../plugins/modes/leagueareas/Common.LeagueAreaUnlocks");
+  const hub = areaCommon.area(MISTHALIN).teleport;
+  const spread = areaCommon.data.interface.teleportSpread;
+  const suppliedStart = echoes.getLocation().clone();
+  const castSerial = echoes.getTeleportSerial();
+  const targets = [], arrivals = [];
+  const state = () => ({
+    location: xyz(echoes.getLocation()), serial: echoes.getTeleportSerial(),
+    tasks: submitted.filter(task => task.key === echoes).map(task => ({
+      running: task.isRunning(), delay: task.getDelay(), remainingTicks: task.getRemainingTicks(),
+    })),
+  });
+  console.log("LEAGUE5386_ECHOES_SETUP", JSON.stringify({
+    start: xyz(suppliedStart), profile: echoes.getProfile(), league: echoes.getAttribute("league:type"),
+    unlocked: echoes.getAttribute("league:areas"), hub: [hub.x, hub.y, hub.z], spread, serial: castSerial,
+  }));
+  assert.equal(echoes.getProfile(), "league", "LEAGUE5386_TELEPORT_PREREQUISITE: league profile");
+  assert.equal(echoes.getAttribute("league:type"), 5, "LEAGUE5386_TELEPORT_PREREQUISITE: type5");
+  assert.ok(echoes.getAttribute("league:areas").includes(MISTHALIN), "LEAGUE5386_TELEPORT_PREREQUISITE: Misthalin unlocked");
+  assert.deepEqual(xyz(suppliedStart), [3263, 3260, 0], "LEAGUE5386_TELEPORT_PREREQUISITE: supplied legal start");
+  assert.equal(areaAt(suppliedStart.getX(), suppliedStart.getY(), { league: 5 }), MISTHALIN,
+    "LEAGUE5386_TELEPORT_PREREQUISITE: sourced type5 start ownership");
+  assert.ok(Number.isInteger(spread) && spread >= 0, "LEAGUE5386_TELEPORT_PREREQUISITE: real landing spread");
+  assert.equal(suppliedStart.getZ(), hub.z, "LEAGUE5386_TELEPORT_PREREQUISITE: hub plane");
+  assert.ok(Math.abs(suppliedStart.getX() - hub.x) > spread || Math.abs(suppliedStart.getY() - hub.y) > spread,
+    "LEAGUE5386_TELEPORT_PREREQUISITE: start outside entire hub landing spread");
+  const confirm = core.TeleportHandler.confirm;
+  t.mock.method(core.TeleportHandler, "confirm", function (...args) {
+    if (args[0] === echoes) {
+      targets.push(xyz(args[1]));
+      console.log("LEAGUE5386_ECHOES_TARGET", JSON.stringify({ target: xyz(args[1]), ...state() }));
+    }
+    return Reflect.apply(confirm, this, args);
+  });
+  const emit = core.PluginManager.emitCustomEvent;
+  t.mock.method(core.PluginManager, "emitCustomEvent", function (...args) {
+    if (args[0] === "teleport:landed" && args[1]?.player === echoes) {
+      const arrival = { from: xyz(args[1].from), to: xyz(args[1].to), ...state() };
+      arrivals.push(arrival);
+      console.log("LEAGUE5386_ECHOES_LANDED_EVENT", JSON.stringify(arrival));
+    }
+    return Reflect.apply(emit, this, args);
+  });
   openAreas(echoes);
   viewArea(echoes, MISTHALIN);
   assert.equal(hooks[`button:${uid(AREAS, 84)}`]({ player: echoes }), true);
   const from = echoes.getLocation().clone();
+  assert.ok(from.equals(suppliedStart), "LEAGUE5386_TELEPORT_PREREQUISITE: cast begins at supplied start");
+  assert.equal(targets.length, 1, "LEAGUE5386_TELEPORT_PREREQUISITE: one actual target");
+  assert.equal(targets[0][2], hub.z, "LEAGUE5386_TELEPORT_PREREQUISITE: actual target plane");
+  assert.ok(Math.abs(targets[0][0] - hub.x) <= spread && Math.abs(targets[0][1] - hub.y) <= spread,
+    "LEAGUE5386_TELEPORT_PREREQUISITE: actual random target within real spread");
   core.TaskManager.process();
   core.TaskManager.process();
   assert.equal(echoes.getAnimation()?.getId(), 11875, "home_teleport_human_echoes_1");
   assert.equal(echoes.getGraphic()?.getId(), 3180, "vfx_league_5_home_teleport_01");
   for (let tick = 2; tick < 21; tick++) core.TaskManager.process();
+  console.log("LEAGUE5386_ECHOES_AT_20", JSON.stringify({ ...state(), targets, arrivals }));
   assert.ok(echoes.getLocation().equals(from), "still casting at +20");
+  assert.equal(echoes.getTeleportSerial(), castSerial, "no teleport before +21");
+  assert.equal(arrivals.length, 0, "no landed event before +21");
   core.TaskManager.process();
+  console.log("LEAGUE5386_ECHOES_AT_21", JSON.stringify({ ...state(), targets, arrivals }));
   assert.ok(!echoes.getLocation().equals(from), "landed at +21");
+  assert.equal(echoes.getTeleportSerial(), castSerial + 1, "one actual teleport at +21");
+  assert.equal(arrivals.length, 1, "one actual landed event at +21");
+  assert.deepEqual(arrivals[0].from, xyz(from), "actual arrival origin");
+  assert.deepEqual(arrivals[0].to, targets[0], "actual arrival target");
+  assert.deepEqual(xyz(echoes.getLocation()), targets[0], "authoritative actual target at +21");
   echoes.setRegistered(false);
 });
 
@@ -1126,13 +1234,13 @@ test("same-coordinate teleport serial stops the queued run; legal running still 
   step(p, 3243, 3218);
   assert.equal(p.getTeleportSerial(), serial + 1);
   assertPlacement(p, 3241, 3218);
-  const legal = movingCharacter(t, "legal-run-control", 3240, 3220);
+  const legal = movingCharacter(t, "legal-run-control", 3240, 3218);
   legal.setRunning(true);
   const energy = legal.getRunEnergyUnits();
   const movement = legal.getMovementQueue();
   const xyz = location => location === null ? null : [location.getX(), location.getY(), location.getZ()];
   const start = legal.getLocation().clone();
-  const edges = [[start, at(3241, 3220)], [at(3241, 3220), at(3242, 3220)]].map(([source, target]) => ({
+  const edges = [[start, at(3241, 3218)], [at(3241, 3218), at(3242, 3218)]].map(([source, target]) => ({
     source: xyz(source), target: xyz(target),
     staticPass: core.RegionManager.canMovestart(source, target, legal.getSize(), legal.getSize(), legal.getPrivateArea()),
     dynamicBlocked: core.World.isPlayerBlockingNpcOnTile(target, legal.getSize(), legal.getPrivateArea()),
@@ -1144,7 +1252,7 @@ test("same-coordinate teleport serial stops the queued run; legal running still 
     mobilityCanMove: movement.getMobility().canMove(), combinedCanWalkEast: movement.canWalk(1, 0), edges,
   };
   console.log("LEAGUE5386_LEGAL_RUN_PREREQUISITES", JSON.stringify(prerequisites));
-  assert.deepEqual(prerequisites.start, [3240, 3220, 0], "LEAGUE5386_LEGAL_RUN_PREREQUISITE: supplied start");
+  assert.deepEqual(prerequisites.start, [3240, 3218, 0], "LEAGUE5386_LEGAL_RUN_PREREQUISITE: supplied start");
   assert.ok(prerequisites.health > 0, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: living actor");
   assert.equal(prerequisites.needsPlacement, false, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: no pending placement");
   assert.equal(prerequisites.mobilityCanMove, true, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: mobility");
@@ -1154,7 +1262,7 @@ test("same-coordinate teleport serial stops the queued run; legal running still 
     assert.equal(edge.dynamicBlocked, false, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: dynamic edge");
     assert.equal(edge.staticAndDynamicPass, true, "LEAGUE5386_LEGAL_RUN_PREREQUISITE: static/dynamic edge");
   }
-  movement.requestWalk(at(3243, 3220));
+  movement.requestWalk(at(3243, 3218));
   console.log("LEAGUE5386_LEGAL_RUN_ROUTE", JSON.stringify({
     evaluated: movement.wasRouteEvaluated(), found: movement.hasRoute(), alternative: movement.usedAlternativeRoute(),
     destination: xyz(movement.getDestination()), queue: movement.size(),
@@ -1167,7 +1275,7 @@ test("same-coordinate teleport serial stops the queued run; legal running still 
     evaluated: movement.wasRouteEvaluated(), found: movement.hasRoute(), alternative: movement.usedAlternativeRoute(),
     destination: xyz(movement.getDestination()), queue: movement.size(),
   }));
-  assert.ok(legal.getLocation().equals(at(3242, 3220)));
+  assert.ok(legal.getLocation().equals(at(3242, 3218)));
   assert.notEqual(legal.getWalkingDirection(), Direction.NONE);
   assert.notEqual(legal.getRunningDirection(), Direction.NONE);
   assert.equal(legal.isNeedsPlacement(), false);
