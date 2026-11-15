@@ -1676,7 +1676,38 @@ test('real paid Soul Rend keeps its permanent magic bonus drain while encounter 
   npc.setDefenceBonusOverrides([null, 7, null, 150, null]); // supplied positive starting bonus, not this definition's native zero
   assert.equal(npc.getDefenceBonus(3), 150);
   assert.equal(suppliedBurn(f), true); // supplied live shared stack; fire producer is proved separately
-  const random = t.mock.method(Math, 'random', () => 0.5);
+  // DISTINCT DIAGNOSTIC PROPOSAL ONLY: unchanged RNG value, assertions and turn counts.
+  let diagnoseExpiry = false, diagnosticPhase = null, diagnosticRandomCalls = 0;
+  let nextRandomReport = 1024, diagnosticErrors = 0;
+  const random = t.mock.method(Math, 'random', () => {
+    if (diagnoseExpiry && ++diagnosticRandomCalls === nextRandomReport) {
+      console.log(JSON.stringify({ event: 'maggot-ayak-expiry-random-growth',
+        cycle: core.World.getProcessCycle(), phase: diagnosticPhase,
+        callsSinceExpiryStart: diagnosticRandomCalls, heapUsed: process.memoryUsage().heapUsed }));
+      nextRandomReport *= 2;
+    }
+    return 0.5;
+  });
+  const { ServerPerf } = require('../dist/util/ServerPerf');
+  const originalMeasurePhase = ServerPerf.measurePhase, originalConsoleError = console.error;
+  ServerPerf.measurePhase = function(phase, fn) {
+    if (!diagnoseExpiry) return Reflect.apply(originalMeasurePhase, this, [phase, fn]);
+    const previous = diagnosticPhase; diagnosticPhase = phase;
+    console.log(JSON.stringify({ event: 'maggot-ayak-expiry-phase', edge: 'enter',
+      phase, cycle: core.World.getProcessCycle(), randomCalls: random.mock.callCount() }));
+    try { return Reflect.apply(originalMeasurePhase, this, [phase, fn]); }
+    finally {
+      console.log(JSON.stringify({ event: 'maggot-ayak-expiry-phase', edge: 'leave',
+        phase, cycle: core.World.getProcessCycle(), randomCalls: random.mock.callCount() }));
+      diagnosticPhase = previous;
+    }
+  };
+  console.error = function(...args) {
+    if (diagnoseExpiry) console.log(JSON.stringify({ event: 'maggot-ayak-expiry-console-error',
+      ordinal: ++diagnosticErrors, phase: diagnosticPhase, cycle: core.World.getProcessCycle(),
+      argTypes: args.map(value => typeof value) }));
+    return Reflect.apply(originalConsoleError, this, args);
+  };
   // AFTER012 aborted without per-case TAP. Emit only scalars to locate the missing boundary;
   // these observations do not replace assertions, change RNG, or change native turn counts.
   const checkpoint = label => console.log(JSON.stringify({ event: 'maggot-native-ayak-boundary', label,
@@ -1709,17 +1740,24 @@ test('real paid Soul Rend keeps its permanent magic bonus drain while encounter 
     checkpoint('before-defence-query');
     assert.equal(magicRoll(f), 209 * (Math.max(0, drained - 20) + 64));
     checkpoint('after-defence-query');
+    diagnoseExpiry = true;
     for (let turn = 0; turn < 26; turn++) {
       ticks(1);
       checkpoint(`expiry-turn-${turn + 1}`);
     }
+    diagnoseExpiry = false;
     assert.equal(nativeBurnState(npc).stacks, 0);
     assert.equal(npc.getDefenceBonus(3), drained);
     assert.equal(magicRoll(f), 209 * (drained + 64), 'burn expiry restores no part of the permanent Soul Rend drain');
     assert.equal(f.resolved.length, 1);
     assert.equal(staff.getMetaValue(CHARGES_KEY), 99);
     checkpoint('assertions-complete');
-  } finally { checkpoint('finally'); random.mock.restore(); }
+  } finally {
+    diagnoseExpiry = false;
+    ServerPerf.measurePhase = originalMeasurePhase;
+    console.error = originalConsoleError;
+    checkpoint('finally'); random.mock.restore();
+  }
 });
 
 test('the shared read-only count distinguishes mixed burn durations on an unrelated native player', t => {
