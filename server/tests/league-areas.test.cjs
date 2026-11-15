@@ -1382,11 +1382,20 @@ test("league correction retains an already owned private Area and does not regis
 
 
 test("real league two-step run stops at the sourced intra-square Misthalin edge", t => {
-  const p = movingCharacter(t, "league-edge-run", 3265, 3260, "league");
+  const p = movingCharacter(t, "league-edge-run", 3266, 3256, "league");
   const movement = p.getMovementQueue();
   const xyz = location => [location.getX(), location.getY(), location.getZ()];
   const start = p.getLocation().clone();
-  const edges = [[start, at(3266, 3260)], [at(3266, 3260), at(3267, 3260)]].map(([source, target]) => ({
+  // Geometry changed from interior/nonvertex/east to boundary/vertex/south. The MAIN
+  // static catalog establishes suitability only; these are sequential LEAGUE-scene checks.
+  const first = at(3266, 3255), denied = at(3266, 3254);
+  assert.equal(areaAt(start.getX(), start.getY()), MISTHALIN, "LEAGUE5386_RUN_PREREQUISITE: start ownership");
+  assert.deepEqual([start, first, denied].map(location => [location.getX() >> 6, location.getY() >> 6, location.getZ()]),
+    [[51, 50, 0], [51, 50, 0], [51, 50, 0]], "LEAGUE5386_RUN_PREREQUISITE: same square and plane");
+  const startClip = core.RegionManager.getClipping(start.getX(), start.getY(), start.getZ(), p.getPrivateArea());
+  assert.equal(Number.isInteger(startClip), true, "LEAGUE5386_RUN_PREREQUISITE: numeric standing clip");
+  assert.equal(startClip & 0x12c0100, 0, "LEAGUE5386_RUN_PREREQUISITE: conservative standing mask clear");
+  const edges = [[start, at(3266, 3255)], [at(3266, 3255), at(3266, 3254)]].map(([source, target]) => ({
     source: xyz(source), target: xyz(target),
     staticPass: core.RegionManager.canMovestart(source, target, p.getSize(), p.getSize(), p.getPrivateArea()),
     dynamicBlocked: core.World.isPlayerBlockingNpcOnTile(target, p.getSize(), p.getPrivateArea()),
@@ -1395,24 +1404,66 @@ test("real league two-step run stops at the sourced intra-square Misthalin edge"
   console.log("LEAGUE5386_EDGE_RUN_PREREQUISITES", JSON.stringify({
     start: xyz(start), health: p.getHitpoints(), needsPlacement: p.isNeedsPlacement(),
     running: p.isRunningReturn(), runToggled: movement.isRunToggled(), energyUnits: p.getRunEnergyUnits(),
-    mobilityCanMove: movement.getMobility().canMove(), combinedCanWalkEast: movement.canWalk(1, 0), edges,
+    mobilityCanMove: movement.getMobility().canMove(), combinedCanWalkSouth: movement.canWalk(0, -1), edges,
     league: p.getAttribute("league:type"), unlocked: p.getAttribute("league:areas"),
   }));
   assert.equal(p.getAttribute("league:type"), 4, "LEAGUE5386_RUN_PREREQUISITE: type4");
   assert.deepEqual(p.getAttribute("league:areas"), [MISTHALIN, KARAMJA]);
-  assert.equal(movement.canWalk(1, 0), true, "LEAGUE5386_RUN_PREREQUISITE: mobility/first static step");
-  assert.equal(movement.canWalkTo(at(3266, 3260)), true, "LEAGUE5386_RUN_PREREQUISITE: first static/dynamic step");
-  assert.equal(movement.canWalkTo(at(3267, 3260), at(3266, 3260)), true,
-    "LEAGUE5386_RUN_PREREQUISITE: second static/dynamic step; no route fallback");
-  assert.equal(areaAt(3266, 3260), MISTHALIN, "Wiki outline includes the edge");
-  assert.equal(areaAt(3267, 3260), DESERT, "east of this edge stays Desert");
+  assert.equal(movement.canWalk(0, -1), true, "LEAGUE5386_RUN_PREREQUISITE: mobility/first static step");
+  assert.equal(movement.canWalkTo(at(3266, 3255)), true, "LEAGUE5386_RUN_PREREQUISITE: first static/dynamic step");
+  assert.equal(movement.canWalkTo(at(3266, 3254), at(3266, 3255)), true,
+    "LEAGUE5386_RUN_PREREQUISITE: second static/dynamic edge prerequisite");
+  assert.equal(areaAt(3266, 3255), MISTHALIN, "Wiki outline includes the edge");
+  assert.equal(areaAt(3266, 3254), DESERT, "south of this edge stays Desert");
   const messages = p.sent.messages.length;
   const energy = p.getRunEnergyUnits();
   p.setRunning(true);
-  step(p, 3267, 3260);
-  assertPlacement(p, 3266, 3260);
+  assert.equal(p.isRunningReturn(), true, "LEAGUE5386_RUN_PREREQUISITE: running after toggle");
+  assert.equal(movement.isRunToggled(), true, "LEAGUE5386_RUN_PREREQUISITE: effective running after toggle");
+  const routeEvents = [];
+  const emitWalkRoute = PluginManager.emitWalkRoute;
+  const routeObserver = t.mock.method(PluginManager, "emitWalkRoute", function (...args) {
+    const event = args[0];
+    const before = { player: event.player, destination: { ...event.destination }, handled: event.handled };
+    const result = Reflect.apply(emitWalkRoute, this, args);
+    routeEvents.push({ before, after: { player: event.player, destination: { ...event.destination }, handled: event.handled }, result });
+    return result;
+  });
+  try {
+    movement.requestWalk(denied);
+  } finally {
+    routeObserver.mock.restore();
+  }
+  assert.equal(routeEvents.length, 1, "LEAGUE5386_RUN_PREREQUISITE: one ordinary walk request");
+  for (const event of [routeEvents[0].before, routeEvents[0].after]) {
+    assert.equal(event.player, p);
+    assert.deepEqual(event.destination, { x: 3266, y: 3254, z: 0 });
+    assert.equal(event.handled, false, "LEAGUE5386_RUN_PREREQUISITE: walk hook did not handle/substitute request");
+  }
+  assert.equal(routeEvents[0].result, false);
+  assert.equal(movement.wasRouteEvaluated(), true);
+  assert.equal(movement.hasRoute(), true);
+  assert.equal(movement.usedAlternativeRoute(), false);
+  assert.deepEqual(xyz(movement.getDestination()), xyz(denied), "LEAGUE5386_RUN_PREREQUISITE: requested endpoint retained");
+  const checkpoints = movement.pointsReturn().map(point => xyz(point.position));
+  assert.ok(checkpoints.length > 0 && checkpoints.length <= 2);
+  let previousY = start.getY();
+  for (const [x, y, z] of checkpoints) {
+    assert.equal(x, 3266);
+    assert.equal(z, 0);
+    assert.ok(y < previousY && y >= 3254, "LEAGUE5386_RUN_PREREQUISITE: direct south route through first tile");
+    previousY = y;
+  }
+  console.log("LEAGUE5386_EDGE_RUN_ROUTE", JSON.stringify({
+    requested: xyz(denied), evaluated: movement.wasRouteEvaluated(), success: movement.hasRoute(),
+    alternative: movement.usedAlternativeRoute(), destination: xyz(movement.getDestination()), checkpoints,
+    running: p.isRunningReturn(), runToggled: movement.isRunToggled(), hookHandled: routeEvents[0].after.handled,
+  }));
+  // Route/edge observations precede process; they do not seal the scene against later mutation.
+  movement.process();
+  assertPlacement(p, 3266, 3255);
   assert.deepEqual(p.sent.messages.slice(messages), ["You haven't unlocked that area yet."], "one actual policy correction");
-  assert.equal(core.World.isPlayerOccupyingTile(at(3267, 3260), null, 1, p.getPrivateArea()), false);
+  assert.equal(core.World.isPlayerOccupyingTile(at(3266, 3254), null, 1, p.getPrivateArea()), false);
   assert.equal(p.getRunEnergyUnits(), energy, "one legal step and one denied step do not consume run energy");
   const actual = p.getLocation().clone();
   p.setNeedsPlacement(false);
