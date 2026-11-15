@@ -668,7 +668,7 @@ module.exports = function registerInSearchOfTheMyrequeQuest(api) {
     const { player, stepId } = event;
     if (!player) return;
     const punch = event.npcId === CURPILE_NPC_ID ? CURPILE_PUNCH_TEXT.exec(String(event.text ?? "")) : null;
-    if (punch) {
+    if (false && punch) {
       player.getCombat().getHitQueue().addPendingDamage([new api.core.HitDamage(Number(punch[1]), api.core.HitMask.RED)]);
       return;
     }
