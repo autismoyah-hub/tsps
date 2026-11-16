@@ -1,4 +1,4 @@
-// Successor fixture candidate, UNRUN; original d0ca ERROR70/six failures are retained. Supplied stage120 and waiting NPC are setup, not a
+// Corrected fixture candidate, UNRUN; original d0ca six failures and 075's seven failures are retained. Supplied stage120 and waiting NPC are setup, not a
 // full quest playthrough. No combat-roll/HP/damage/cache/route override.
 process.env.DISABLE_PLAYER_BOTS = '1';
 const assert = require('node:assert/strict');
@@ -60,8 +60,16 @@ function until(fn, n, message, state) {
 function describe(actor){
   if(!actor)return null;
   const at=actor.getLocation(), target=actor.getCombat().getTarget();
+  const npc=actor.isNpc(), movement=actor.getMovementQueue(), spawn=npc?actor.getSpawnPosition():null;
   return {id:actor.getId?.()??null,index:actor.getIndex(),registered:actor.isRegistered(),hp:actor.getHitpoints(),
-    dying:actor.isDyingFunction(),x:at.getX(),y:at.getY(),z:at.getZ(),target:target?.getIndex()??null,
+    type:npc?'npc':'player',dying:npc?actor.isDyingFunction():actor.isDyingReturn(),
+    x:at.getX(),y:at.getY(),z:at.getZ(),target:target?.getIndex()??null,
+    targetType:target?(target.isNpc()?'npc':'player'):null,
+    following:actor.getFollowing()?.getIndex()??null,combatFollowing:actor.getCombatFollowing()?.getIndex()??null,
+    canMove:movement.getMobility().canMove(),queuedSteps:movement.size(),
+    spawn:spawn?{x:spawn.getX(),y:spawn.getY(),z:spawn.getZ()}:null,
+    coordinateState:npc?actor.getMovementCoordinator().getCoordinateState():null,
+    area:actor.getArea()?.constructor?.name??null,
     privateArea:actor.getPrivateArea()?.constructor?.name??null};
 }
 function snapshot(f,...npcs){return {owner:describe(f.p),stage:quest.getStage(f.p),

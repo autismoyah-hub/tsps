@@ -1,4 +1,4 @@
-// Successor fixture candidate UNRUN. Original d0ca six failures/282UNREACHED stay immutable.
+// Corrected fixture candidate UNRUN. Original d0ca six failures and 075's seven failures/282UNREACHED stay immutable.
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
 const h=require('./helpers/mmii-nieve-native.cjs');
@@ -351,7 +351,7 @@ test('generic area.leave revival revokes old cleanup before later mutations',t=>
 });
 
 test('Nieve legitimate owner kill after ordinary chase outside assistance envelope retains one slot progress',async t=>{
-  const f=h.actor(t);await h.recruit(f);await h.protectMelee(f);
+  const f=h.actor(t),helper=await h.recruit(f);await h.protectMelee(f);
   const enemy=[...h.core.World.getNpcs()].find(n=>n?.getOwner?.()===f.p&&n.getId()===7097);assert.ok(enemy);
   const clickType=enemy.getCurrentDefinition(f.p).getActions().indexOf('Attack')+1;
   await h.input(f,{type:'npc_option',index:enemy.getIndex(),clickType},4);
@@ -359,12 +359,18 @@ test('Nieve legitimate owner kill after ordinary chase outside assistance envelo
   // enemy pursuit follow the ordinary owner/helper movement out of the envelope.
   const id=h.core.CacheDefinitions.getComponentId('wornitems:call_follower');
   await h.input(f,{type:'widget_action',widgetId:id,groupId:id>>>16,childId:id&65535,slot:-1,buttonNum:1});
+  assert.ok(enemy.isRegistered()&&enemy.getHitpoints()>0&&!enemy.isDyingFunction(),
+    JSON.stringify({message:'living registered enemy before pursuit',state:h.snapshot(f,helper,enemy)}));
+  const pursued=enemy.getCombat().getTarget();
+  assert.ok((pursued===f.p||pursued===helper)&&pursued.isRegistered()&&pursued.getHitpoints()>0,
+    JSON.stringify({message:'ordinary enemy engagement before pursuit',state:h.snapshot(f,helper,enemy)}));
   const dest=h.outsideRoute(f,enemy);
   assert.ok(dest,'positive loaded ordinary route outside source envelope');
+  const pursuitState=()=>({destination:{x:dest.getX(),y:dest.getY(),z:dest.getZ()},state:h.snapshot(f,helper,enemy)});
   await h.input(f,{type:'move',worldX:dest.getX(),worldY:dest.getY(),modifierFlags:0,run:false});
-  h.until(()=>f.p.getLocation().equals(dest),80,'owner walked outside by ordinary packet');
+  h.until(()=>f.p.getLocation().equals(dest),80,'owner walked outside by ordinary packet',pursuitState);
   const outside=()=>{const at=enemy.getLocation();return at.getX()<2431||at.getX()>2440||at.getY()<3509||at.getY()>3519;};
-  h.until(outside,160,'actual enemy pursuit crosses assistance-only envelope');
+  h.until(outside,160,'actual enemy pursuit crosses assistance-only envelope',pursuitState);
   assert.ok(enemy.getHitpoints()>0,'ordinary chase positive precedes kill');
   await h.input(f,{type:'npc_option',index:enemy.getIndex(),clickType});
   await h.combatWait(f,enemy,()=>h.completed.some(e=>e.npc===enemy),800,'real owner combat kills outside envelope');
