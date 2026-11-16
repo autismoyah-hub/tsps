@@ -4563,6 +4563,7 @@
     "server/tests/helpers/duke-sucellus.cjs": "140ac1c7cc24d319f5cc9b4232484e910f6e68118a3af31654ae99e43879384f",
     "server/tests/helpers/event-window.cjs": "4289045eee82fff855e591e36bbd3f527a4c874137e70506b4ac1d5c72953a9c",
     "server/tests/helpers/leviathan.cjs": "758d9fb535a8b20f9f72302daad291b66ce1645180ff501e7bdb829a41469838",
+    "server/tests/helpers/mmii-nieve-native.cjs": "a823505bcba661f96dea9c7d87ebefcb6c976a1ecbd8221c196a69eb22f98547",
     "server/tests/helpers/pvp-mode-on.cjs": "8f6eef090e17e8cc1676c51323af34b78ad423a3187f76e4261d26dd7eb5e106",
     "server/tests/helpers/quest-requirements-on.cjs": "99cb0e12e5c11e8754c26fa4e8dd760ffd5b8aee902ca1e42bdb2b1988a68b64",
     "server/tests/helpers/rogue-trader-replay.cjs": "767b513e6e11d330e6eb975f3ad75deedee33bf5b1d14ac3aee5ba19d8e006d0",
@@ -4821,6 +4822,7 @@
     "server/tests/monkey-madness-greegrees-native.test.cjs": "1fa24f2788b6d663065e269a86b850daa1bce69e5e6bf481080799029f3dbd5e",
     "server/tests/monkey-madness-hangar-puzzle.test.cjs": "4ef34614ac90f3f12e0934a0356538222ecc39cbe5ea95f8b1f091998f3910f4",
     "server/tests/monkey-madness-ii-glough-native.test.cjs": "c9b853459f7fb6684bbe7b14439ff229c92a536954870589cbc892c654da3fee",
+    "server/tests/monkey-madness-ii-nieve-baseline.test.cjs": "2dc5f71cfa20ae53b74ed4a969f345e4d0e15a8ffd5f2adf17f6ea1d6a8c8369",
     "server/tests/moons-of-peril-scoreboard.test.cjs": "5fd44b96a80c290d7118f24aab7b6a26f131b028ade7de9da7a4cd589b8f75d9",
     "server/tests/mor-ul-rek-cape-on-guard.test.cjs": "1346e18c46772d6d5e81eebe8ef0247e99ef12acbd6d4dbc7585014cb7222a3b",
     "server/tests/mor-ul-rek-vent-doors.test.cjs": "8649f85b4119e934fa3610de751cf2421fa77b70c52a2bc34ddcb243e6cb70ac",
@@ -5693,15 +5695,10 @@
     "yarn.lock": "059000cc76652b9d740b583fc88f11ce9eed0383e4115334d8619776fe5b85f2"
   },
   "expectedTestCounts": {
-    "monkey-madness-ii-glough-native.test.cjs": 16,
-    "movement-stopping.test.cjs": 9,
-    "pet-stuck-follow.test.cjs": 11,
-    "player-follow.test.cjs": 10,
-    "qh728-q076.test.cjs": 14,
-    "templated-instance.test.cjs": 12
+    "monkey-madness-ii-nieve-baseline.test.cjs": 1
   },
   "schema": 1,
-  "source": "0dd27457763fa69e6193ccaf0ec2c5407a4f7035",
+  "source": "2ba64485c6e1aca9dcea6847369eed0a21881eb7",
   "sourceBlobs": {
     ".yarnrc.yml": "3186f3f0795ab612d5508593672dc9ad94bccca0",
     "package.json": "62a2d14d0fd6258416abf0599552f9088db195d0",
@@ -10266,6 +10263,7 @@
     "server/tests/helpers/duke-sucellus.cjs": "24fc6f650f041c7571b50f1e4278fd0ec0219913",
     "server/tests/helpers/event-window.cjs": "2c32a515ce4b020dbc73c347285c101e74d381b9",
     "server/tests/helpers/leviathan.cjs": "5b654a0cc42cb6e189e3a3325771628dc37a3966",
+    "server/tests/helpers/mmii-nieve-native.cjs": "b026f1983b2b0c4bb4103d30451cf403b937a7f9",
     "server/tests/helpers/pvp-mode-on.cjs": "41c1bafed16af1e01df0d43adee2904b14626809",
     "server/tests/helpers/quest-requirements-on.cjs": "32b97f2a14764a09bfc1ca0f36e96010e23b6630",
     "server/tests/helpers/rogue-trader-replay.cjs": "906f3bab97837f454d137dc43caeaa7b79781fbb",
@@ -10524,6 +10522,7 @@
     "server/tests/monkey-madness-greegrees-native.test.cjs": "813c604b1b89899f188a63fc8b5aa43699eeb9a7",
     "server/tests/monkey-madness-hangar-puzzle.test.cjs": "98c0f9257d03cbc20ac112c4e8891d067fa095b5",
     "server/tests/monkey-madness-ii-glough-native.test.cjs": "282da518a6da0910cd9dac11cf237fab3f7a92d2",
+    "server/tests/monkey-madness-ii-nieve-baseline.test.cjs": "266184cf9222f2ef2362ed19f956a545ee92ff48",
     "server/tests/moons-of-peril-scoreboard.test.cjs": "6c08ccf4ec28d43b1eb2b360d857c8f52d2abba4",
     "server/tests/mor-ul-rek-cape-on-guard.test.cjs": "7b2b9668321bb71b4cfee2530071b3c73d7236f3",
     "server/tests/mor-ul-rek-vent-doors.test.cjs": "c7ff5e9cf08c5ec23ee84bd094592bfd9ada715c",
@@ -11396,11 +11395,6 @@
     "yarn.lock": "cf0fc620cd766f6dede48e859017a4727bfd2d62"
   },
   "tests": [
-    "monkey-madness-ii-glough-native.test.cjs",
-    "movement-stopping.test.cjs",
-    "player-follow.test.cjs",
-    "pet-stuck-follow.test.cjs",
-    "templated-instance.test.cjs",
-    "qh728-q076.test.cjs"
+    "monkey-madness-ii-nieve-baseline.test.cjs"
   ]
 }
