@@ -1,4 +1,4 @@
-// Native candidate, UNRUN. Supplied stage120 and waiting NPC are setup, not a
+// Successor fixture candidate, UNRUN; original d0ca ERROR70/six failures are retained. Supplied stage120 and waiting NPC are setup, not a
 // full quest playthrough. No combat-roll/HP/damage/cache/route override.
 process.env.DISABLE_PLAYER_BOTS = '1';
 const assert = require('node:assert/strict');
@@ -22,7 +22,8 @@ before(async () => {
   core = PM.getCoreApi(); core.RegionManager.init();
   const { NpcDefinitionLoader } = require('../../dist/game/definition/loader/impl/NpcDefinitionLoader');
   assert.equal(new NpcDefinitionLoader().load(), true);
-  core.RegionManager.loadMapFiles(2435, 3517, 0);
+  // Third argument is loadSurroundings, not the floor. Keep real nearby routes loaded.
+  core.RegionManager.loadMapFiles(2435, 3517);
   PM.emitServerStartup({});
   oldSubmit=core.TaskManager.submit;
   core.TaskManager.submit=function(task,...args){tasks.add(task);return oldSubmit.call(this,task,...args);};
@@ -50,17 +51,94 @@ after(() => {
   assert.deepEqual(errors, [], 'no swallowed engine/plugin exception');
 });
 function tick(n = 1) { for (let i = 0; i < n; i++) core.World.process(); }
-function until(fn, n, message) { for (let i=0; i<n && !fn(); i++) tick(); assert.ok(fn(), message); }
+function until(fn, n, message, state) {
+  for (let i=0; i<n && !fn(); i++) tick();
+  const result=fn();
+  if(!result&&state)console.log(JSON.stringify({event:'nieve-fixture-prerequisite',message,state:state()}));
+  assert.ok(result, message);
+}
+function describe(actor){
+  if(!actor)return null;
+  const at=actor.getLocation(), target=actor.getCombat().getTarget();
+  return {id:actor.getId?.()??null,index:actor.getIndex(),registered:actor.isRegistered(),hp:actor.getHitpoints(),
+    dying:actor.isDyingFunction(),x:at.getX(),y:at.getY(),z:at.getZ(),target:target?.getIndex()??null,
+    privateArea:actor.getPrivateArea()?.constructor?.name??null};
+}
+function snapshot(f,...npcs){return {owner:describe(f.p),stage:quest.getStage(f.p),
+  legacy:f.p.getAttribute('quest.monkey_madness_ii.stronghold-kills'),
+  migrated:f.p.getAttribute('monkey-madness-ii:nieve-legacy-migrated'),
+  legacyCredit:f.p.getAttribute('monkey-madness-ii:nieve-legacy-credit'),
+  mask:f.p.getAttribute('monkey-madness-ii:nieve-stronghold-mask'),
+  pet:!!f.p.getAttribute('pets:current'),actors:npcs.map(describe),
+  companionTasks:[...tasks].filter(t=>t.constructor.name==='CompanionTask'&&t.key===f.p).map(t=>({running:t.isRunning()}))};}
+async function protectMelee(f){
+  const group=core.CacheDefinitions.getInterfaceId('prayer');assert.ok(Number.isInteger(group),'actual cache prayer interface');
+  const child=Array.from({length:64},(_,i)=>i).find(i=>core.PrayerHandler.prayerIdForChild(i)===core.PrayerHandler.PROTECT_FROM_MELEE);
+  assert.ok(Number.isInteger(child),'existing canonical prayer producer maps protection');
+  if(!core.PrayerHandler.isActivated(f.p,core.PrayerHandler.PROTECT_FROM_MELEE))
+    await input(f,{type:'widget_action',groupId:group,childId:child,widgetId:(group<<16)|child,buttonNum:1});
+  assert.equal(core.PrayerHandler.isActivated(f.p,core.PrayerHandler.PROTECT_FROM_MELEE),true,'real prayer widget activates protection');
+  if(!f.prayerSupplied){
+    const id=core.ItemIdentifiers.PRAYER_POTION_4_;assert.ok(Number.isInteger(id),'canonical prayer potion identifier');
+    f.p.getInventory().adds(id,8);f.prayerSupplied=true;
+  }
+}
+async function combatWait(f,target,fn,n,message){
+  const start=core.World.getProcessCycle(),deadline=start+n;
+  // ALL actual World cycles count, including inventory and re-engagement inputs.
+  for(let i=0;i<n&&core.World.getProcessCycle()<deadline&&!fn();i++){
+    assert.ok(f.p.isRegistered()&&f.p.getHitpoints()>0,JSON.stringify({message:'living owner prerequisite',state:snapshot(f,target)}));
+    if(f.p.getSkillManager().getCurrentLevel(core.Skill.PRAYER)<20){
+      const id=[4,3,2,1].map(d=>core.ItemIdentifiers[`PRAYER_POTION_${d}_`]).find(id=>Number.isInteger(id)&&f.p.getInventory().getAmount(id)>0);
+      assert.ok(id,'supplied ordinary potion remains available');
+      const old=f.p.getCombat().getTarget(),before=f.p.getSkillManager().getCurrentLevel(core.Skill.PRAYER);
+      await input(f,{type:'inventory_action',widgetId:3214,itemId:id,slot:f.p.getInventory().getSlotForItemId(id),option:'Drink',optionIndex:1});
+      assert.ok(f.p.getSkillManager().getCurrentLevel(core.Skill.PRAYER)>before,'real drink restores prayer');
+      if(core.World.getProcessCycle()<deadline&&old===target&&target.getHitpoints()>0&&f.p.getCombat().getTarget()!==target){
+        const clickType=target.getCurrentDefinition(f.p).getActions().indexOf('Attack')+1;
+        await input(f,{type:'npc_option',index:target.getIndex(),clickType});
+      }
+    }
+    if(core.World.getProcessCycle()<deadline&&!fn())tick();
+  }
+  const actualTicks=core.World.getProcessCycle()-start;
+  assert.ok(actualTicks<=n,JSON.stringify({message:'actual observation tick cap',allowed:n,actualTicks}));
+  const result=fn();if(!result)console.log(JSON.stringify({event:'nieve-fixture-prerequisite',message,state:snapshot(f,target)}));
+  assert.ok(result,message);
+}
+function outsideRoute(f,enemy){
+  const here=f.p.getLocation(),finder=new core.RsmodRouteFinding();
+  for(let radius=1;radius<=12;radius++)for(const [dx,dy]of [[1,0],[0,1],[-1,0],[0,-1],[1,1],[-1,1],[-1,-1],[1,-1]]){
+    const x=here.getX()+dx*radius,y=here.getY()+dy*radius;
+    if(x>=2431&&x<=2440&&y>=3509&&y<=3519)continue;
+    const at=new core.Location(x,y,here.getZ());if(core.RegionManager.blocked(at,f.p.getPrivateArea()))continue;
+    const route=finder.findRoute({level:here.getZ(),srcX:here.getX(),srcY:here.getY(),srcSize:1,destX:x,destY:y,
+      destWidth:1,destLength:1,locShape:-1,moveNear:false,privateArea:f.p.getPrivateArea()});
+    if(!route.success||route.alternative||route.endX!==x||route.endY!==y)continue;
+    // The positive also needs a real two-tile gorilla approach, not merely a
+    // one-tile player path through an unusable gap. Query; never inject a route.
+    if(enemy){
+      const e=enemy.getLocation(),approach=finder.findRoute({level:e.getZ(),srcX:e.getX(),srcY:e.getY(),srcSize:enemy.getSize(),
+        destX:x,destY:y,destWidth:1,destLength:1,locShape:-2,moveNear:false,privateArea:enemy.getPrivateArea()});
+      if(!approach.success||approach.alternative)continue;
+      if(approach.endX>=2431&&approach.endX<=2440&&approach.endY>=3509&&approach.endY<=3519)continue;
+    }
+    return at;
+  }
+  return null;
+}
 function owned(p, id) { return [...core.World.getNpcs()].filter(n => n?.getOwner?.()===p && n.getId()===id); }
-function actor(t, stage = 120) {
+function actor(t, stage = 120, loadedAttributes = {}) {
   const channel = { kind:'test', remoteAddress:'127.0.0.1', isOpen:()=>true, send:()=>true,
     close(){},onData(){},onError(){},onClose(){} };
   const session = new PlayerSession(channel), p = new Player(session), c = new ClientConnection(channel);
   c.player=p;session.setPlayer(p);session.setTurnPacketProcessor(()=>c.processTurnPackets());
   p.setUsername(`nieve${++serial}`);p.setLongUsername(core.Misc.stringToLongBigInt(p.getUsername()));
   p.setAttribute('bot-skip-persistence',true);p.setAutoRetaliate(false);
+  // Supplied old-save state precedes first eligible placement/recovery; no disk-roundtrip claim.
+  for(const [key,value]of Object.entries(loadedAttributes))p.setAttribute(key,value);
   assert.equal(core.World.getPlayers().add(p),true);
-  for (const skill of [core.Skill.ATTACK,core.Skill.STRENGTH,core.Skill.DEFENCE,core.Skill.HITPOINTS])
+  for (const skill of [core.Skill.ATTACK,core.Skill.STRENGTH,core.Skill.DEFENCE,core.Skill.HITPOINTS,core.Skill.PRAYER])
     p.getSkillManager().setMaxLevels(skill,99,false).setCurrentLevels(skill,99,false);
   quest.setStage(p,stage);p.moveTo(new core.Location(2435,3517,0));
   until(()=>!p.isNeedsPlacement(),5,'native owner placement');
@@ -141,7 +219,7 @@ async function assistancePositive(t){
   const f=actor(t), helper=await recruit(f);
   const from=helper.getLocation().clone();
   // Use ordinary queued player walking to an adjacent collision-valid route.
-  const here=f.p.getLocation();
+  const here=f.p.getLocation().clone();
   const candidates=[[4,0],[-4,0],[0,4],[0,-4]].map(([x,y])=>here.transform(x,y))
     .filter(at=>!core.RegionManager.blocked(at,null)&&core.RegionManager.canMovestart(here,at,1,1,null));
   assert.ok(candidates.length,'loaded Stronghold supplies a valid four-tile travel route');
@@ -150,6 +228,11 @@ async function assistancePositive(t){
   until(()=>helper.getLocation().getDistance(from)>0,20,'helper follows by actual steps BEFORE combat');
   assert.equal(helper.getFollowing(),f.p,'ordinary follower pointer belongs to owner');
   assert.equal(started.some(e=>e.attacker===helper),false,'travel steps came before any helper attack');
+  // Preserve the real precombat travel positive, then return through the real walk producer.
+  await input(f,{type:'move',worldX:here.getX(),worldY:here.getY(),modifierFlags:0,run:false});
+  until(()=>f.p.getLocation().equals(here),20,'ordinary return to interior before sustained combat');
+  await protectMelee(f);
+  assert.ok(helper.isRegistered()&&helper.getHitpoints()>0,'live companion before combat');
   // Source-backed owned Stronghold id, discovered by spawned location/owner rather
   // than a new-module import. No forced attack roll or direct HP damage.
   const gorillas=[...core.World.getNpcs()].filter(n=>n?.getOwner?.()===f.p&&n.getId()===7097);
@@ -167,4 +250,4 @@ async function assistancePositive(t){
   return {f,helper,target};
 }
 module.exports={actor,recruit,offerRecruitment,selectOfferedYes,transcriptEvents,assistancePositive,tick,until,input,owned,applied,completed,
-  started,ownerHits,tasks,get core(){return core;},get quest(){return quest;},PM};
+  started,ownerHits,tasks,snapshot,protectMelee,combatWait,outsideRoute,get core(){return core;},get quest(){return quest;},PM};

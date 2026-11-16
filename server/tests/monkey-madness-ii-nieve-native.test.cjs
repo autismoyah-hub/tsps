@@ -1,4 +1,4 @@
-// Candidate UNRUN; baseline is separate unchanged-source overlay, not a result.
+// Successor fixture candidate UNRUN. Original d0ca six failures/282UNREACHED stay immutable.
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
 const h=require('./helpers/mmii-nieve-native.cjs');
@@ -17,17 +17,39 @@ test('Nieve airship-only action cannot recruit or spawn helper; earned145 surviv
 test('Nieve recall suppresses several automatic swings until observed break and a new real engagement',async t=>{
   const {f,helper,target}=await h.assistancePositive(t);
   const component=h.core.CacheDefinitions.getComponentId('wornitems:call_follower');
-  const e={player:f.p,packet:{widgetId:component,buttonNum:1},handled:false};
-  h.PM.emitCustomEvent('player:widget-action',e);assert.equal(e.handled,true);
+  const samples=[],task=[...h.tasks].find(t=>t.constructor.name==='CompanionTask'&&t.key===f.p&&t.isRunning());
+  assert.ok(task,'actual companion task is running');
+  const execute=task.execute;
+  task.execute=function(){samples.push({cycle:h.core.World.getProcessCycle(),target:f.p.getCombat().getTarget()});return execute.call(this);};
+  t.after(()=>{task.execute=execute;});
+  const observer=h.PM.createApi('NieveRecallRequestObservation');let request=null;
+  observer.onCustomEvent('followers:recall-request',e=>{if(e.player===f.p)request=e;});
   const before=h.started.length;
+  await h.input(f,{type:'widget_action',widgetId:component,groupId:component>>>16,childId:component&65535,slot:-1,buttonNum:1});
+  assert.equal(request?.handled,true,'actual in-handler quest recall consumes the request');
+  assert.deepEqual(h.owned(f.p,7109),[helper],'live recall preserves this helper identity');
+  assert.equal(h.started.slice(before).some(x=>x.attacker===helper),false,'recall and its next actual tick start no helper attack');
   h.tick(32);
   assert.equal(h.started.slice(before).some(x=>x.attacker===helper&&x.target===target),false,
     'several auto swings at the continuing owner target cannot restart helper');
-  f.p.getCombat().reset();h.tick(2);
-  const clickType=target.getCurrentDefinition(f.p).getActions().indexOf('Attack')+1;
-  await h.input(f,{type:'npc_option',index:target.getIndex(),clickType});
-  h.until(()=>h.started.slice(before).some(x=>x.attacker===helper&&x.target===target),240,
-    'observed null then new ordinary owner attack can rearm');
+  const sampleStart=samples.length;f.p.getCombat().reset();h.tick(2);
+  assert.equal(f.p.getCombat().getTarget(),null,'real reset remains null across the sampling interval');
+  assert.ok(task.isRunning()&&samples.slice(sampleStart).some(x=>x.target===null),'real scheduled companion task ran across null');
+  assert.equal(h.quest.getStage(f.p),140);assert.ok(f.p.isRegistered()&&f.p.getHitpoints()>0);
+  assert.equal(f.p.getPrivateArea(),helper.getPrivateArea());
+  assert.ok(helper.isRegistered()&&helper.getHitpoints()>0,JSON.stringify(h.snapshot(f,helper,target)));
+  // The old opponent may naturally die during owner auto swings. A subsequent
+  // eligible living slot is a new-engagement positive, never a corpse re-click.
+  const eligible=h.owned(f.p,7097).find(n=>n.isRegistered()&&n.getHitpoints()>0
+    &&n.getLocation().getX()>=2431&&n.getLocation().getX()<=2440
+    &&n.getLocation().getY()>=3509&&n.getLocation().getY()<=3519);
+  assert.ok(eligible,JSON.stringify(h.snapshot(f,helper,target)));
+  const queued=h.ownerHits.length,clickType=eligible.getCurrentDefinition(f.p).getActions().indexOf('Attack')+1;
+  await h.input(f,{type:'npc_option',index:eligible.getIndex(),clickType});
+  h.until(()=>h.ownerHits.slice(queued).some(e=>e.player===f.p&&e.target===eligible),80,
+    'subsequent real eligible owner hit',()=>h.snapshot(f,helper,eligible));
+  h.until(()=>h.started.slice(before).some(x=>x.attacker===helper&&x.target===eligible),240,
+    'observed null then new ordinary owner attack can rearm',()=>h.snapshot(f,helper,eligible));
 });
 test('Nieve forged widget op and foreign completion cannot change durable progress',async t=>{
   const f=h.actor(t),helper=await h.recruit(f);
@@ -106,13 +128,25 @@ test('generic positive HP recovery restores a living actor without external dyin
   assert.equal(h.completed.some(e=>e.npc===npc&&e.occurrence===old),false);
 });
 
-test('Nieve actual helper-only lethal combat has empty Player credit, then four distinct slots progress once',async t=>{
-  const f=h.actor(t);await h.recruit(f);
+test('Nieve prepared-target helper lethal combat after natural Player-credit expiry has no new XP and four distinct slots',async t=>{
+  const f=h.actor(t);await h.recruit(f);await h.protectMelee(f);
+  // Disclosed prepared-target slice, NOT the unresolved full-HP solo claim.
+  // Ordinary Player damage lowers HP, the real damage ledger later expires.
+  // No NPC stat/HP/roll/credit override; final lethal damage must still be Nieve.
+  let preparing=null,prepared=false;
+  const prepApi=h.PM.createApi('NievePreparedTargetObservation');
+  prepApi.onCustomEvent('combat:damage-applied',({target,hit})=>{
+    if(target!==preparing||hit.getSource()!==f.p||hit.getHealthLost()<=0)return;
+    if(target.getHitpoints()>0&&target.getHitpoints()<=Math.floor(target.getMaxHitpoints()/2)){
+      f.p.getCombat().reset();prepared=true;
+    }
+  });
   // A genuine low-level owner may miss. Observe ordinary rolls; never force one.
   f.p.getSkillManager().setMaxLevels(h.core.Skill.ATTACK,1,false).setCurrentLevels(h.core.Skill.ATTACK,1,false);
   const api=h.PM.createApi('NieveMissObservation');let next=null;
+  let observingMiss=false;
   api.onPlayerDealtDamage(e=>{
-    if(e.player!==f.p||next)return;
+    if(!observingMiss||e.player!==f.p||next)return;
     next={target:e.target,damage:e.hit.getTotalDamage()};
     // Stop repeated owner attacks by an ordinary combat reset, after actual source engagement.
     f.p.getCombat().reset();
@@ -150,9 +184,16 @@ test('Nieve actual helper-only lethal combat has empty Player credit, then four 
     next=null;
     const enemy=[...h.core.World.getNpcs()].find(n=>n?.getOwner?.()===f.p&&n.getId()===7097);
     assert.ok(enemy);helper=h.owned(f.p,7109)[0];
+    preparing=enemy;prepared=false;observingMiss=false;
+    f.p.getSkillManager().setMaxLevels(h.core.Skill.ATTACK,99,false).setCurrentLevels(h.core.Skill.ATTACK,99,false);
     const clickType=enemy.getCurrentDefinition(f.p).getActions().indexOf('Attack')+1;
     await h.input(f,{type:'npc_option',index:enemy.getIndex(),clickType});
-    h.until(()=>next!==null,80,'real owner attack reaches ordinary queued-hit boundary');
+    await h.combatWait(f,enemy,()=>prepared,800,'actual ordinary preparation damages a living target');
+    assert.ok(enemy.getHitpoints()>0&&enemy.getCombat().getRecentDamagers().includes(f.p),'actual recent Player preparation is recorded');
+    f.p.getSkillManager().setMaxLevels(h.core.Skill.ATTACK,1,false).setCurrentLevels(h.core.Skill.ATTACK,1,false);
+    observingMiss=true;next=null;
+    await h.input(f,{type:'npc_option',index:enemy.getIndex(),clickType});
+    await h.combatWait(f,enemy,()=>next!==null,80,'real owner attack reaches ordinary queued-hit boundary');
     if(next.damage===0){target=enemy;break;}
     // A damaging attempt is genuine but cannot prove empty Player credit. Fresh
     // encounter recovery replaces its actors; never erase a living damage map.
@@ -160,11 +201,17 @@ test('Nieve actual helper-only lethal combat has empty Player credit, then four 
     h.PM.emitPlayerLogin({player:f.p});h.tick(2);
   }
   assert.ok(target,'bounded genuine owner miss supplies an empty-credit assistance attempt');
+  // Both predicates are required: at exactly60000ms the recent list may be
+  // empty while getKiller(false) still admits the old Player. No map clearing.
+  await h.combatWait(f,target,()=>target.getCombat().getRecentDamagers().length===0
+    &&target.getCombat().getKiller(false)===null,200,'natural credit expiry strictly beyond the killer boundary');
+  assert.ok(target.isRegistered()&&target.getHitpoints()>0,'living target after actual ledger expiry');
   assert.deepEqual(target.getCombat().getRecentDamagers(),[]);
+  assert.equal(target.getCombat().getKiller(false),null);
   const before=h.applied.length;
   const skills=[h.core.Skill.ATTACK,h.core.Skill.STRENGTH,h.core.Skill.DEFENCE,h.core.Skill.HITPOINTS,h.core.Skill.SLAYER];
   const xp=skills.map(skill=>f.p.getSkillManager().getExperience(skill));
-  h.until(()=>h.completed.some(e=>e.npc===target),1600,'actual canonical helper-only HP0 reaches natural completion');
+  await h.combatWait(f,target,()=>h.completed.some(e=>e.npc===target),1600,'actual canonical helper-only HP0 reaches natural completion');
   const death=h.completed.find(e=>e.npc===target);
   assert.equal(death.killer,null,'no fabricated Player killer');
   assert.equal(legacyForTarget,0,'Player-only death/reward event not manufactured');
@@ -186,7 +233,7 @@ test('Nieve actual helper-only lethal combat has empty Player credit, then four 
     killed.add(enemy);killedSlots.add(anchor(enemy));next={};
     const clickType=enemy.getCurrentDefinition(f.p).getActions().indexOf('Attack')+1;
     await h.input(f,{type:'npc_option',index:enemy.getIndex(),clickType});
-    h.until(()=>h.completed.some(e=>e.npc===enemy),800,'ordinary player/ally combat completes another real slot');
+    await h.combatWait(f,enemy,()=>h.completed.some(e=>e.npc===enemy),800,'ordinary player/ally combat completes another real slot');
     assert.equal(f.p.getAttribute('quest.monkey_madness_ii.stronghold-kills'),slot+1);
   }
   assert.ok(duplicatePlayerDeaths.size>0,'actual Player death route exercised live-slot duplicate guard');
@@ -200,8 +247,11 @@ test('Nieve actual helper-only lethal combat has empty Player credit, then four 
 });
 
 test('Nieve legacy count is capped and migrated once across login; earned145 is not regressed',t=>{
-  const f=h.actor(t,140);f.p.setAttribute('quest.monkey_madness_ii.stronghold-kills',9);
+  const f=h.actor(t,140,{'quest.monkey_madness_ii.stronghold-kills':9,
+    'monkey-madness-ii:nieve-legacy-migrated':false});
+  console.log(JSON.stringify({event:'nieve-legacy-before-login',state:h.snapshot(f)}));
   h.PM.emitPlayerLogin({player:f.p});h.tick(2);
+  console.log(JSON.stringify({event:'nieve-legacy-after-login',state:h.snapshot(f)}));
   assert.equal(f.p.getAttribute('quest.monkey_madness_ii.stronghold-kills'),4);
   assert.equal(f.p.getAttribute('monkey-madness-ii:nieve-legacy-credit'),4);
   assert.equal(h.quest.getStage(f.p),145);
@@ -242,7 +292,8 @@ for(const phase of ['before-case1','after-case1-with-prior-block'])test(`generic
 });
 
 async function playerKillWithRemains(t,revive){
-  const f=h.actor(t),preexisting=new Set(h.core.World.getNpcs()),key=`nieve-native-remains:${f.p.getUsername()}`;
+  const f=h.actor(t);await h.protectMelee(f);
+  const preexisting=new Set(h.core.World.getNpcs()),key=`nieve-native-remains:${f.p.getUsername()}`;
   const npc=h.PM.spawnNpc({id:7097,x:2436,y:3518,z:0,wanderRadius:0,unique:key});
   const spawn=npc.getSpawnPosition().clone(),derived=new Set([npc]),added=[];
   // Ordinary unowned spawns naturally respawn; owner-scoped quest spawns deliberately do not.
@@ -262,7 +313,7 @@ async function playerKillWithRemains(t,revive){
   api.onNpcDeath(e=>{if(e.npc===npc){legacy++;e.remains={ticks:4,respawnTicks:3};}});
   const clickType=npc.getCurrentDefinition(f.p).getActions().indexOf('Attack')+1;
   await h.input(f,{type:'npc_option',index:npc.getIndex(),clickType});
-  h.until(()=>h.completed.some(e=>e.npc===npc),800,'real owner combat and legacy remains negotiation');
+  await h.combatWait(f,npc,()=>h.completed.some(e=>e.npc===npc),800,'real owner combat and legacy remains negotiation');
   assert.equal(legacy,1);assert.equal(npc.isRegistered(),true);assert.equal(npc.isDyingFunction(),false);
   assert.equal(npc.getHitpoints(),0);assert.equal(npc.getDeathOccurrence(),null);
   f.p.getCombat().reset();
@@ -300,7 +351,7 @@ test('generic area.leave revival revokes old cleanup before later mutations',t=>
 });
 
 test('Nieve legitimate owner kill after ordinary chase outside assistance envelope retains one slot progress',async t=>{
-  const f=h.actor(t);await h.recruit(f);
+  const f=h.actor(t);await h.recruit(f);await h.protectMelee(f);
   const enemy=[...h.core.World.getNpcs()].find(n=>n?.getOwner?.()===f.p&&n.getId()===7097);assert.ok(enemy);
   const clickType=enemy.getCurrentDefinition(f.p).getActions().indexOf('Attack')+1;
   await h.input(f,{type:'npc_option',index:enemy.getIndex(),clickType},4);
@@ -308,8 +359,7 @@ test('Nieve legitimate owner kill after ordinary chase outside assistance envelo
   // enemy pursuit follow the ordinary owner/helper movement out of the envelope.
   const id=h.core.CacheDefinitions.getComponentId('wornitems:call_follower');
   await h.input(f,{type:'widget_action',widgetId:id,groupId:id>>>16,childId:id&65535,slot:-1,buttonNum:1});
-  const here=f.p.getLocation(),destinations=[[2444,3516],[2427,3513],[2436,3523]].map(([x,y])=>new h.core.Location(x,y,0));
-  const dest=destinations.find(at=>!h.core.RegionManager.blocked(at,null)&&h.core.RegionManager.canMovestart(here,at,1,1,null));
+  const dest=h.outsideRoute(f,enemy);
   assert.ok(dest,'positive loaded ordinary route outside source envelope');
   await h.input(f,{type:'move',worldX:dest.getX(),worldY:dest.getY(),modifierFlags:0,run:false});
   h.until(()=>f.p.getLocation().equals(dest),80,'owner walked outside by ordinary packet');
@@ -317,7 +367,7 @@ test('Nieve legitimate owner kill after ordinary chase outside assistance envelo
   h.until(outside,160,'actual enemy pursuit crosses assistance-only envelope');
   assert.ok(enemy.getHitpoints()>0,'ordinary chase positive precedes kill');
   await h.input(f,{type:'npc_option',index:enemy.getIndex(),clickType});
-  h.until(()=>h.completed.some(e=>e.npc===enemy),800,'real owner combat kills outside envelope');
+  await h.combatWait(f,enemy,()=>h.completed.some(e=>e.npc===enemy),800,'real owner combat kills outside envelope');
   const event=h.completed.find(e=>e.npc===enemy);assert.equal(event.killer,f.p);
   assert.equal(f.p.getAttribute('quest.monkey_madness_ii.stronghold-kills'),1);
   h.PM.emitCustomEvent('npc:death-completed',event);
@@ -382,8 +432,11 @@ test('Nieve actual owned enemy occurrence rejects foreign killer and stale repla
 });
 
 test('Nieve capped legacy migration survives actual JSON persistence hydration without inventing historical slots',t=>{
-  const f=h.actor(t,140);f.p.setAttribute('quest.monkey_madness_ii.stronghold-kills',9);
+  const f=h.actor(t,140,{'quest.monkey_madness_ii.stronghold-kills':9,
+    'monkey-madness-ii:nieve-legacy-migrated':false});
+  console.log(JSON.stringify({event:'nieve-legacy-before-login',state:h.snapshot(f)}));
   h.PM.emitPlayerLogin({player:f.p});h.tick(2);
+  console.log(JSON.stringify({event:'nieve-legacy-after-login',state:h.snapshot(f)}));
   const {PlayerSave}=require('../dist/game/entity/impl/player/persistence/PlayerSave');
   const codec=new(require('../plugins/persistence/JsonPlayerPersistence.plugin').JsonPlayerPersistence)();
   const raw=JSON.stringify(PlayerSave.fromPlayer(f.p),codec.replacer.bind(codec));
