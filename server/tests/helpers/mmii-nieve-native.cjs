@@ -72,7 +72,7 @@ function snapshot(f,...npcs){return {owner:describe(f.p),stage:quest.getStage(f.
   pet:!!f.p.getAttribute('pets:current'),actors:npcs.map(describe),
   companionTasks:[...tasks].filter(t=>t.constructor.name==='CompanionTask'&&t.key===f.p).map(t=>({running:t.isRunning()}))};}
 async function protectMelee(f){
-  const group=core.CacheDefinitions.getInterfaceId('prayer');assert.ok(Number.isInteger(group),'actual cache prayer interface');
+  const group=core.CacheDefinitions.getInterfaceId('prayerbook');assert.ok(Number.isInteger(group),'actual cache prayer interface');
   const child=Array.from({length:64},(_,i)=>i).find(i=>core.PrayerHandler.prayerIdForChild(i)===core.PrayerHandler.PROTECT_FROM_MELEE);
   assert.ok(Number.isInteger(child),'existing canonical prayer producer maps protection');
   if(!core.PrayerHandler.isActivated(f.p,core.PrayerHandler.PROTECT_FROM_MELEE))
