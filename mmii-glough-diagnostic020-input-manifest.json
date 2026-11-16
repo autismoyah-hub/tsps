@@ -4834,7 +4834,7 @@
     "server/tests/mounted-xerics-honour.test.cjs": "3b6b56e1f5891c09f791b857aa5bc2582805af8511c11cd45ec4efca86369e84",
     "server/tests/mourning-device-hint.test.cjs": "acb6984ed6ef349ff569ea16166fb8c106cb23aa8f1173b04e72d91705a0ff62",
     "server/tests/mourning-device-state.test.cjs": "69afe7e78ce359e9b249563c10b320b016d67f22a6012bfae4e4d3cfcf3cf5cf",
-    "server/tests/movement-stopping.test.cjs": "3df8e012f5450b896351fd0d4866888feb9d5f5c058e2486bb7f557946fbd67a",
+    "server/tests/movement-stopping.test.cjs": "43406da6b95ee6403c549e5c95b1fc39d8cb4880094eb8c1900785be308204e2",
     "server/tests/multi-combat-api.test.cjs": "52ed957440df92935b06562a5a07f7f19bc93df1fd8aa41d701b85ff47267133",
     "server/tests/multi-hit-weapons.test.cjs": "4f33b8488e8824a110af3cdf903a5c86c5e3b10158511ac15c9c2e7dd11eeb14",
     "server/tests/multiloc-parent-handlers.test.cjs": "e937ac1f00bf7fbb455cee058aa213669b2abc9f1049936a07a7b04604613be4",
@@ -5701,7 +5701,7 @@
     "templated-instance.test.cjs": 12
   },
   "schema": 1,
-  "source": "ea5b904b801fd7cb8e13b1cce1645122d6c5f190",
+  "source": "0dd27457763fa69e6193ccaf0ec2c5407a4f7035",
   "sourceBlobs": {
     ".yarnrc.yml": "3186f3f0795ab612d5508593672dc9ad94bccca0",
     "package.json": "62a2d14d0fd6258416abf0599552f9088db195d0",
@@ -10537,7 +10537,7 @@
     "server/tests/mounted-xerics-honour.test.cjs": "d7ae044807fed30e7d4bcb70e578138e4b287dd9",
     "server/tests/mourning-device-hint.test.cjs": "7ca6fc44845cf4e69f0129856c1e2f21e9296330",
     "server/tests/mourning-device-state.test.cjs": "65e21e297b13b62619b8da62fca55743bc2d9425",
-    "server/tests/movement-stopping.test.cjs": "51b47ec92382e53ea4253dd4439e7bdf5d32ffe2",
+    "server/tests/movement-stopping.test.cjs": "0441e60837033f86a3b11196e3e39fa0527fd840",
     "server/tests/multi-combat-api.test.cjs": "4a50f01d5e098fd552a46f73a37d388a3c71be67",
     "server/tests/multi-hit-weapons.test.cjs": "f865ced28369f8a275341f986cb3549e8da35e48",
     "server/tests/multiloc-parent-handlers.test.cjs": "7b6b457b43df825e6d71feeadf37e1b9725a30f0",
