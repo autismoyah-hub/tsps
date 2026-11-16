@@ -1,0 +1,662 @@
+{
+  "schema": 1,
+  "feature": "Optional Sangvesti resupply bank-chest construction between Maggot King trips",
+  "publicationState": "EXACT_INTEGRATION_DRAFT_FINAL_PUBLICATION_READY_REVIEW_PENDING",
+  "PR": "https://github.com/RSPSApp/tsps/pull/5944",
+  "claim": "https://github.com/RSPSApp/tsps/issues/153#issuecomment-6907569700",
+  "testedSource": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba",
+  "testedTree": "83305eeeb6ab952076fa826b50266362b74e69ac",
+  "intendedPRHead": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba",
+  "orderedParents": [
+    "083eb11d406c9ea99b2de53074554289339317ac",
+    "fdec1c12aa7e1c4341eb30c690dffa3d70e46141"
+  ],
+  "featurePatch": {
+    "mergeBase": "083eb11d406c9ea99b2de53074554289339317ac",
+    "paths": [
+      "docs/maggot-king-resupply.md",
+      "server/plugins/bosses/MaggotKing.plugin.js",
+      "server/plugins/bosses/maggotking/Resupply.MaggotKing.js",
+      "server/tests/maggot-king-combat.test.cjs",
+      "server/tests/maggot-king.test.cjs"
+    ],
+    "sha256": "d417128b60846130856f7095603f311f9c4eddb8eefefaa19e1938acf697c69f",
+    "byteEqualEarlierQualifiedFdecFeaturePatch": true
+  },
+  "sourceInputData": {
+    "publicOrigin": "030",
+    "sourceRef": "evidence/maggot-resupply-intended030",
+    "artifactCommit": "275db743fd5c8a66f0bc7248db59051bed3cc4e9",
+    "manifestPath": "docs/evidence/maggot-resupply-intended030-input-manifest.json",
+    "manifestBytes": 1380351,
+    "manifestSHA256": "8a2a64a372d73a053a8bae28025e7a0e3f9e319d1676a64e909dbaa46bfaf3a7",
+    "eligibleInputs": 6056,
+    "archiveBytes": 46174069,
+    "archiveSHA256": "6d3b6d5b3fc03e5f4834bfadf365ced95e8a41685cbc480e326b4f32c25c75ea",
+    "publicAssets": [
+      {
+        "url": "https://raw.githubusercontent.com/autismoyah-hub/tsps/275db743fd5c8a66f0bc7248db59051bed3cc4e9/docs/evidence/maggot-resupply-intended030-input-manifest.json",
+        "finalURL": "https://raw.githubusercontent.com/autismoyah-hub/tsps/275db743fd5c8a66f0bc7248db59051bed3cc4e9/docs/evidence/maggot-resupply-intended030-input-manifest.json",
+        "status": 200,
+        "bytes": 1380351,
+        "sha256": "8a2a64a372d73a053a8bae28025e7a0e3f9e319d1676a64e909dbaa46bfaf3a7",
+        "capturedUTC": "2026-11-16T05:09:27.857632+00:00",
+        "authentication": "NONE_NO_AUTH_HEADERS_COOKIES_OR_CUSTOM_HEADERS",
+        "file": "public-assets/after-manifest.json",
+        "byteEqualStaged": true
+      },
+      {
+        "url": "https://raw.githubusercontent.com/autismoyah-hub/tsps/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba/server/tests/maggot-king-combat.test.cjs",
+        "finalURL": "https://raw.githubusercontent.com/autismoyah-hub/tsps/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba/server/tests/maggot-king-combat.test.cjs",
+        "status": 200,
+        "bytes": 151421,
+        "sha256": "2926929299690f9bb5115491cd51dc389d9b7d4c866d3b1e72593d7d5e1855cc",
+        "capturedUTC": "2026-11-16T05:09:28.192464+00:00",
+        "authentication": "NONE_NO_AUTH_HEADERS_COOKIES_OR_CUSTOM_HEADERS",
+        "file": "public-assets/after-maggot-king-combat.test.cjs",
+        "byteEqualStaged": true,
+        "gitBlob": "5e620e0f7d5692291e2b8bbf8aff9e877813cc1a",
+        "path": "server/tests/maggot-king-combat.test.cjs",
+        "source": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/autismoyah-hub/tsps/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba/server/tests/maggot-king.test.cjs",
+        "finalURL": "https://raw.githubusercontent.com/autismoyah-hub/tsps/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba/server/tests/maggot-king.test.cjs",
+        "status": 200,
+        "bytes": 16169,
+        "sha256": "9e2b469bedace97e37ec7027f9ab4ac786053428fb770269ff252e18e126a793",
+        "capturedUTC": "2026-11-16T05:09:28.364635+00:00",
+        "authentication": "NONE_NO_AUTH_HEADERS_COOKIES_OR_CUSTOM_HEADERS",
+        "file": "public-assets/after-maggot-king.test.cjs",
+        "byteEqualStaged": true,
+        "gitBlob": "4ae92d2658a3a69c24fad526891bee73060f1e90",
+        "path": "server/tests/maggot-king.test.cjs",
+        "source": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/autismoyah-hub/tsps/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba/server/plugins/bosses/MaggotKing.plugin.js",
+        "finalURL": "https://raw.githubusercontent.com/autismoyah-hub/tsps/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba/server/plugins/bosses/MaggotKing.plugin.js",
+        "status": 200,
+        "bytes": 740,
+        "sha256": "9935f9617c4a1e43de78c98cded19bdf94a342cc54652e341a0c2690b3ac2bb5",
+        "capturedUTC": "2026-11-16T05:09:28.492964+00:00",
+        "authentication": "NONE_NO_AUTH_HEADERS_COOKIES_OR_CUSTOM_HEADERS",
+        "file": "public-assets/after-MaggotKing.plugin.js",
+        "byteEqualStaged": true,
+        "gitBlob": "721e2c56368a9438af9bbe56ae943c0815180b74",
+        "path": "server/plugins/bosses/MaggotKing.plugin.js",
+        "source": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/autismoyah-hub/tsps/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba/server/plugins/bosses/maggotking/Resupply.MaggotKing.js",
+        "finalURL": "https://raw.githubusercontent.com/autismoyah-hub/tsps/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba/server/plugins/bosses/maggotking/Resupply.MaggotKing.js",
+        "status": 200,
+        "bytes": 6656,
+        "sha256": "4e6f3322360b002098bea4ecc3afcfb916035ced39349a71a167f2966ebbb504",
+        "capturedUTC": "2026-11-16T05:09:28.659505+00:00",
+        "authentication": "NONE_NO_AUTH_HEADERS_COOKIES_OR_CUSTOM_HEADERS",
+        "file": "public-assets/after-Resupply.MaggotKing.js",
+        "byteEqualStaged": true,
+        "gitBlob": "e46dae01dd586953070896500d660bf42504f48a",
+        "path": "server/plugins/bosses/maggotking/Resupply.MaggotKing.js",
+        "source": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/autismoyah-hub/tsps/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba/docs/maggot-king-resupply.md",
+        "finalURL": "https://raw.githubusercontent.com/autismoyah-hub/tsps/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba/docs/maggot-king-resupply.md",
+        "status": 200,
+        "bytes": 2541,
+        "sha256": "852e838549d79d7a6588ea93be0cafa317dcd259adf64a2dd9e82753d031ea8d",
+        "capturedUTC": "2026-11-16T05:09:28.805045+00:00",
+        "authentication": "NONE_NO_AUTH_HEADERS_COOKIES_OR_CUSTOM_HEADERS",
+        "file": "public-assets/after-maggot-king-resupply.md",
+        "byteEqualStaged": true,
+        "gitBlob": "fe924da410c20c76d7ffa15ab730a53de9af800a",
+        "path": "docs/maggot-king-resupply.md",
+        "source": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba"
+      },
+      {
+        "url": "https://codeload.github.com/autismoyah-hub/tsps/tar.gz/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba",
+        "finalURL": "https://codeload.github.com/autismoyah-hub/tsps/tar.gz/1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba",
+        "status": 200,
+        "bytes": 46174069,
+        "sha256": "6d3b6d5b3fc03e5f4834bfadf365ced95e8a41685cbc480e326b4f32c25c75ea",
+        "capturedUTC": "2026-11-16T05:09:29.005385+00:00",
+        "authentication": "NONE_NO_AUTH_HEADERS_COOKIES_OR_CUSTOM_HEADERS",
+        "file": "source-archives/after.tar.gz",
+        "fullInputSetByteSHAAndGitblobModeMatch": true,
+        "inputCount": 6056,
+        "archiveMembers": 10194,
+        "noExtractionOrExecution": true
+      }
+    ],
+    "runtimeActualCount": 6056,
+    "expectedRowsInserted": 0,
+    "returnedFragments": 45,
+    "retainedInputEventBytes": 726915,
+    "fragmentReceipt": {
+      "startLine1": 4,
+      "endLine1": 48,
+      "fragmentLengths": [
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        16384,
+        6019
+      ],
+      "rawLogSHA256": "d391d316cbe799b51fc9982a53165401a37c2f28fbe9705bf50e7b906581c9a7",
+      "retainedEventSHA256": "7ff2065f528a893cd93c0497f0c7e263321b6c2ec58b6a33cad1c44a8ed07113",
+      "retainedEventBytes": 726915,
+      "actualCount": 6056,
+      "source": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba",
+      "expectedRowsInserted": 0,
+      "chunkDigestsOrigin": "COMPUTED_FROM_RETAINED_RETURNED_FRAGMENTS_NOT_RUNTIME_EMITTED",
+      "runtimeGitblobTelemetry": false,
+      "runtimeGitblobQualification": "Reaching input event follows hardfail per-row computed Gitblob guard in pinned successor; distinct from printed SHA telemetry",
+      "limitation": "No runtime per-frame signature/digest in frozen successor. Missing/interleaved/invalid/duplicate/mismatched event HOLD; no repair from manifest.",
+      "jobId": "6afa9d7129dd05ff0369ca5e",
+      "terminal": {
+        "expose_urls": null,
+        "message": null,
+        "ssh_url": null,
+        "stage": "COMPLETED"
+      },
+      "commandBound": true
+    },
+    "meaning": "Immutable public030 DATA, distinct private031 execution; no source/ref/authority retarget"
+  },
+  "runtime": {
+    "jobId": "6afa9d7129dd05ff0369ca5e",
+    "url": "https://huggingface.co/jobs/Autismo-Yah/6afa9d7129dd05ff0369ca5e",
+    "terminal": "COMPLETED",
+    "retry": 0,
+    "createdAt": "2026-11-16 06:06:41.732000+00:00",
+    "startedAt": "2026-11-16 06:06:44.447000+00:00",
+    "finishedAt": "2026-11-16 06:10:00.797000+00:00",
+    "executorAndCollector": "Original author only",
+    "collectionCalls": 3,
+    "logQueries": 1,
+    "profile": {
+      "image": "node@sha256:b04ce4ae4e95b522112c2e5c52f781471a5cbc3b594527bcddedee9bc48c03a0",
+      "flavor": "cpu-upgrade",
+      "timeout": 1800,
+      "attempts": 1,
+      "cacheId": 2757,
+      "cacheTarget": "osrs-242_2026-11-03",
+      "expectedCacheFiles": {
+        "caches/caches.json": "17036487545d06b6b3fa96792b12d96c3f1e60b88591f05967a5b36c28877909",
+        "caches/osrs-242_2026-11-03/info.json": "40dfaae45cea053345ee44375ce6d8e778df47a58bc666f4e97ad3db37bae36e",
+        "caches/osrs-242_2026-11-03/keys.json": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "caches/osrs-242_2026-11-03/main_file_cache.dat2": "4cabf5ce6ee90d925d4e667653f7811a0b32fe6ed849995022b8d420f0975fee",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx0": "d28251e09564793da2daebc46f7d1eadd8c2d83454b9ca9eb9c53f4643bbf74b",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx1": "e04e0d0a79927832a3143a65b2b67346593051ab35efdeb415bc34576de5d17f",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx10": "ac59bbc333a0dc0f069e89ab427b1bdb00d21019c57f79f89fd714d59528ab10",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx11": "a28d76344176fdd9ce4019e2561f339512d16ba2fac375c01f69c3e2aa40cb85",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx12": "201701ad5781a619d59b197c32f1dfb696496b21915703f0106115f2e311b447",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx13": "d3c89293b13ce8f3dd9dc8af2095b673760b321c7457a40e2e02abe0a2e1625f",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx14": "641b4b11d7c37a75de672114d167af159e6b332367303496dbc837a3b3046b87",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx15": "5320aa933e817ff258bf19168b9dd456c43ca99a225fc93006dc3b38d455a0fc",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx17": "c8f11bf679ee83172e162c802caa252c91deaf3dab9993da4515b2cd46ab3749",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx18": "7df1fbd2fd1fca05b41e3b98ba163345dfa3f6adebac155bdac15be52b739fae",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx19": "7f3ffddd233eeb340bf49d3709dcd203208bb9eba5684dc94d48d309d34e9ae4",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx2": "00656b5f84cbd890b9d65787a9af0e913e33e2da2d117a4f5767530d28853d7e",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx20": "076bb052f22bfd86d6b9ded24b105f1539701723ce5b760fc84fb1fd431ff8ce",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx21": "ce97bbb6817bc5b53f4d708937843bb5e2da13508ed78f2c089291d5662a31d7",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx22": "cc58799eca141f42a08f22c1f2c6eccdca3b34f4480f635928f9c47140b773d5",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx24": "baf1c84c9937faca3b583872ac260c46abac429758646863603bf746fb69efd9",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx255": "962b6717326d6e20d11898a03ed2727226f788ef26a46dc0842b898d67e12282",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx3": "225a2b9dae7700fda2889b3f36e4c54f37b2a68f1b3fbfb249fe1d2a52e47c60",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx4": "690172320e3217ad5f37f4c3e65c0590753481285f2a01cff078e4dbf2da7f9d",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx5": "df2413cf13d2e2072e9c5e31abd963d826a014ad4ed54af65b6ab7372a84ad32",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx6": "0b2748aa79f9d780f6e4e9e436426b27fee9476056397de6b017d99251a26c54",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx7": "68bdf7aa52bb0a09e8eda89618018ac3ea807360b2bdbedf71d6f48c143e5a5b",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx8": "1070da0d81921aa07562eb686065657becc538cf71fb48e65be94f7504c75767",
+        "caches/osrs-242_2026-11-03/main_file_cache.idx9": "583b674ead7d0d8c55db88da0a392cd33256cdb220f4bc9ebb24bab7176f339d"
+      }
+    },
+    "heapMiB": 3072,
+    "preparedBindings": {
+      "case": "after",
+      "root": "/workspace/maggot-resupply-after031-runtime",
+      "source": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba",
+      "expectedOwnRef": "refs/heads/evidence/maggot-resupply-intended030",
+      "manifestSHA256": "8a2a64a372d73a053a8bae28025e7a0e3f9e319d1676a64e909dbaa46bfaf3a7",
+      "manifestCount": 6056,
+      "plannedTotal": 152,
+      "payloadSHA256": "8d6d89f0e646ee88112adfbb263fa33db023c8a96597f7ea28c9c32f634cb4e8",
+      "planSHA256": "456060e79c1f8befaae92078d3e36824c47dec07913b10f1fc5945615f8170f0",
+      "previewSHA256": "99b1b71b998b65f0ea77b63e5aa1aa8d5f6ba7eee5806b9bd25ade2581c8078d",
+      "requestSHA256": "c7b64a5d929b9de9f401ffb70e9919ca167534247630600b7432a5a8d70e2c7b",
+      "fitSHA256": "f55f4283c920434fa0de31ecc531f8877a42f151fb64068da399aaaf3b8691e5",
+      "bindingsSHA256": "b91e4e890cb62c0438f354faeb614b33b53636914ceab5ee406a2d93886e9913",
+      "executorSHA256": "d0bc90945ab65553654f60b3d300031534ee4045eecf053fafb42eb672c2f8f6",
+      "launcherSHA256": "29f1e36e2c27f355a1a8301ca37087b3b2c855fe25e59be2f1e956b048c41461",
+      "commandBytes": 36269,
+      "proposalMain": "1bf7dd6c3d1d76f54cdcdfc7eedc4d29c6800881",
+      "proposalMainPaths": 5,
+      "proposalProjections": 9,
+      "pairs": 40,
+      "status": "DISTINCT_AFTER031_PUBLIC030_IMMUTABLE_INPUT_DATA_HELD_UNSELECTED_NO_AUTHORITY_OR_PROVIDER"
+    },
+    "selectedSubject": {
+      "owner": "0d23f9b9-0d46-41a8-9851-1bd843bd6247",
+      "executor": "0d23f9b9-0d46-41a8-9851-1bd843bd6247",
+      "collector": "0d23f9b9-0d46-41a8-9851-1bd843bd6247",
+      "source": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba",
+      "manifestSHA256": "8a2a64a372d73a053a8bae28025e7a0e3f9e319d1676a64e909dbaa46bfaf3a7",
+      "selectedPlanSHA256": "03f9d417d8bf8ad79e8f40c6df82993eb3040b7f5de07aed30a2d345fe2dbaf5",
+      "selectionSHA256": "8430b19335733e58d495877779e1f3d7fd99dbbcda0f569d5e3a6f94264b2466",
+      "requestSHA256": "c7b64a5d929b9de9f401ffb70e9919ca167534247630600b7432a5a8d70e2c7b",
+      "payloadSHA256": "8d6d89f0e646ee88112adfbb263fa33db023c8a96597f7ea28c9c32f634cb4e8",
+      "ownerChoiceSHA256": "2fcb7c6db019a559edd30220f84bf6d22de39b76b0baac4a74656fd8f64f764c",
+      "selectionTurnId": "01a1e2eb-8805-7d60-af4f-3ee0ebc731fd",
+      "executorSHA256": "d0bc90945ab65553654f60b3d300031534ee4045eecf053fafb42eb672c2f8f6",
+      "launcherSHA256": "29f1e36e2c27f355a1a8301ca37087b3b2c855fe25e59be2f1e956b048c41461",
+      "bindingsSHA256": "b91e4e890cb62c0438f354faeb614b33b53636914ceab5ee406a2d93886e9913",
+      "fitProposalSHA256": "f55f4283c920434fa0de31ecc531f8877a42f151fb64068da399aaaf3b8691e5",
+      "sdkTreeSHA256": "fb49b8e25eeb12d872cef87102bd37a4204ffaa5dafd3654cd2c7b6e4bf9bf8e"
+    },
+    "bindingMemberHashes": {
+      "admission-window.py": "b054fac36d1f876c94d82b91f94ef98c7ccdf14d4cf8a4c16f94349abbf7a448",
+      "after/manifest.json": "8a2a64a372d73a053a8bae28025e7a0e3f9e319d1676a64e909dbaa46bfaf3a7",
+      "after/native-payload.cjs": "8d6d89f0e646ee88112adfbb263fa33db023c8a96597f7ea28c9c32f634cb4e8",
+      "after/pilot.json": "456060e79c1f8befaae92078d3e36824c47dec07913b10f1fc5945615f8170f0",
+      "after/preview.json": "99b1b71b998b65f0ea77b63e5aa1aa8d5f6ba7eee5806b9bd25ade2581c8078d",
+      "bootstrap-sdk-explicit-B.py": "6c156a20e33b77d1857acb32eadd9e633d4a6515aa90fc33d9dd5ebb79829b45",
+      "case-guard-v6.py": "1e8e44d1c3ecf94da04de10740137def24db1ee0ca46413bac675477ba542898",
+      "case-preflight-v4.py": "b3c1af869faa1a91d270031e8546be44d4d103a5996c081e06add9a8d03bbb9b",
+      "choice-verifier-v6.py": "0c0bca1beebdf5e2871b1fcdc22cc14c5c4644528d463c4236540cb663b1207e",
+      "corrected-authority.py": "d4e592c59f3c21d20f75d59f3adaae57fd1dfa174c01f35ab699649d28407cb5",
+      "corrected-review-capture.py": "299ecd339bc4c8bb31a449eb8b71e6be22e8f0097685679656efb082476a2cac",
+      "current-fit-v4.py": "a10c239e874232f90ae0702a49f98c87c44c2648d9aa7728e9b655eab752d5d5",
+      "durable.py": "860b3a0d9242b299ff72f5cc693c051e34b9ce27b7bc9835193f90fd9fd8f0ba",
+      "fit-proposal-v4.json": "f55f4283c920434fa0de31ecc531f8877a42f151fb64068da399aaaf3b8691e5",
+      "frame_transport.py": "f53689d4f2389af93ad8f6a43fe0de94caf8dcaabde3eacbd13b1c957b129a76",
+      "hf-project-access-v4.py": "fab4bc92dc8601143ce61e910f8121774c22a0d19be6d2617bba9449f7131326",
+      "identity.py": "80166711d5d5c19a4ca53ed8073b305b2b55ea8a5c3236c0e655335094648a05",
+      "input-manifest-resolver.cjs": "d357e075913184c77f49adc86c8496d045fa58a20fdca59a12d1faf2d284927c",
+      "lifecycle-v2.py": "8d0c4e4f392fbafddc9deae41a9aedd53bad5e259653b3318bd8214bcb311e09",
+      "orchestrator-v2.py": "847161a61fcbb90414730c792ed0f8c724c2c8261fbf881cc1f47c2a15ec8685",
+      "pilot.py": "2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200",
+      "reconcile-v2.py": "616ce59d03e0c2435595130a911b6d98c61f3adf97d41e1a3acb32d01b731305",
+      "retain-contiguous-inputs003.py": "b399ca13e8fbfee6f7633a9d430d85c8204774c2941a2e4d5f74c642820fa690",
+      "retainer-call.py": "939b640f8a4d17e54563f7ab304f304027fd629d644f28863d3aebe9d7d27739",
+      "runtime-binding.py": "6e3b2474b884cfd8992b64c9618646f66e58e204719a60e0b9e997f5eed196d5",
+      "sdk-inventory.py": "657a31de7c3c4bbebcd674d5371eec4ab37bd249a434cdd39da8962de8204348",
+      "sdk-projection.json": "9f96101d9c91472c74bfc8451d81ef95cfdd2c0a120061639e2e0ed0450d5cf5",
+      "sdk-tree.json": "fb49b8e25eeb12d872cef87102bd37a4204ffaa5dafd3654cd2c7b6e4bf9bf8e",
+      "writer-disposition-v4.txt": "7a4a8e4009c5d391c6465be59ba8bede6683c021bc5ff686fdc98660ebb86713"
+    },
+    "nestedPins": {
+      "status": "PASS",
+      "scope": "14actualASTcaller-targetpins plus finalcallback semantics",
+      "checks": [
+        {
+          "caller": "case-guard-v6.py",
+          "constant": "CHOICE",
+          "target": "/workspace/maggot-resupply-after031-runtime/choice-verifier-v6.py",
+          "sha256": "0c0bca1beebdf5e2871b1fcdc22cc14c5c4644528d463c4236540cb663b1207e",
+          "status": "PASS"
+        },
+        {
+          "caller": "case-guard-v6.py",
+          "constant": "PREVIEW",
+          "target": "/workspace/maggot-resupply-after031-runtime/after/preview.json",
+          "sha256": "99b1b71b998b65f0ea77b63e5aa1aa8d5f6ba7eee5806b9bd25ade2581c8078d",
+          "status": "PASS"
+        },
+        {
+          "caller": "case-guard-v6.py",
+          "constant": "MANIFEST",
+          "target": "/workspace/maggot-resupply-after031-runtime/after/manifest.json",
+          "sha256": "8a2a64a372d73a053a8bae28025e7a0e3f9e319d1676a64e909dbaa46bfaf3a7",
+          "status": "PASS"
+        },
+        {
+          "caller": "case-guard-v6.py",
+          "constant": "PAYLOAD",
+          "target": "/workspace/maggot-resupply-after031-runtime/after/native-payload.cjs",
+          "sha256": "8d6d89f0e646ee88112adfbb263fa33db023c8a96597f7ea28c9c32f634cb4e8",
+          "status": "PASS"
+        },
+        {
+          "caller": "case-executor-v6.py",
+          "constant": "BINDING_SHA",
+          "target": "/workspace/maggot-resupply-after031-runtime/bindings-v6.json",
+          "sha256": "b91e4e890cb62c0438f354faeb614b33b53636914ceab5ee406a2d93886e9913",
+          "status": "PASS"
+        },
+        {
+          "caller": "case-executor-v6.py",
+          "constant": "FIT_SHA",
+          "target": "/workspace/maggot-resupply-after031-runtime/fit-proposal-v4.json",
+          "sha256": "f55f4283c920434fa0de31ecc531f8877a42f151fb64068da399aaaf3b8691e5",
+          "status": "PASS"
+        },
+        {
+          "caller": "launcher-v6.py",
+          "constant": "BINDING_SHA",
+          "target": "/workspace/maggot-resupply-after031-runtime/bindings-v6.json",
+          "sha256": "b91e4e890cb62c0438f354faeb614b33b53636914ceab5ee406a2d93886e9913",
+          "status": "PASS"
+        },
+        {
+          "caller": "launcher-v6.py",
+          "constant": "FIT_SHA",
+          "target": "/workspace/maggot-resupply-after031-runtime/fit-proposal-v4.json",
+          "sha256": "f55f4283c920434fa0de31ecc531f8877a42f151fb64068da399aaaf3b8691e5",
+          "status": "PASS"
+        },
+        {
+          "caller": "launcher-v6.py",
+          "constant": "EXECUTOR_SHA",
+          "target": "/workspace/maggot-resupply-after031-runtime/case-executor-v6.py",
+          "sha256": "d0bc90945ab65553654f60b3d300031534ee4045eecf053fafb42eb672c2f8f6",
+          "status": "PASS"
+        },
+        {
+          "caller": "launcher-v6.py",
+          "constant": "SDK_TREE_SHA",
+          "target": "/workspace/maggot-resupply-after031-runtime/sdk-tree.json",
+          "sha256": "fb49b8e25eeb12d872cef87102bd37a4204ffaa5dafd3654cd2c7b6e4bf9bf8e",
+          "status": "PASS"
+        },
+        {
+          "caller": "case-executor-v6.py",
+          "constant": "SDK_SHA",
+          "target": "/workspace/maggot-resupply-after031-runtime/sdk-tree.json",
+          "sha256": "fb49b8e25eeb12d872cef87102bd37a4204ffaa5dafd3654cd2c7b6e4bf9bf8e",
+          "status": "PASS"
+        },
+        {
+          "caller": "corrected-authority.py",
+          "constant": "ADAPTER_SHA",
+          "target": "/workspace/maggot-resupply-after031-runtime/corrected-review-capture.py",
+          "sha256": "299ecd339bc4c8bb31a449eb8b71e6be22e8f0097685679656efb082476a2cac",
+          "status": "PASS"
+        },
+        {
+          "caller": "case-preflight-v4.py",
+          "constant": "PAYLOAD",
+          "target": "/workspace/maggot-resupply-after031-runtime/after/native-payload.cjs",
+          "sha256": "8d6d89f0e646ee88112adfbb263fa33db023c8a96597f7ea28c9c32f634cb4e8",
+          "status": "PASS"
+        },
+        {
+          "caller": "case-preflight-v4.py",
+          "constant": "PILOT",
+          "target": "/workspace/maggot-resupply-after031-runtime/pilot.py",
+          "sha256": "2d7c5e44bb37f3043311962f8c05deee90e83ab6fa5ee5e3b499df238ed98200",
+          "status": "PASS"
+        }
+      ]
+    },
+    "commandSHA256": "6fcdeec2b7852004623be5c61a86a3a3ce4582959564746ff51d2ccf2afb2fe7",
+    "payloadSHA256": "8d6d89f0e646ee88112adfbb263fa33db023c8a96597f7ea28c9c32f634cb4e8"
+  },
+  "results": {
+    "totalTests": 152,
+    "passes": 152,
+    "failures": 0,
+    "selectedFilesUnstarted": 0,
+    "testStageResults": [
+      {
+        "event": "stage-result",
+        "name": "test:maggot-king-combat.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 83,
+        "passes": 83,
+        "durationMs": 75890,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2586439680",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "test:maggot-king.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 6,
+        "passes": 6,
+        "durationMs": 3060,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2586439680",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "test:shared-poison-counter.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 32,
+        "passes": 32,
+        "durationMs": 2507,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2586439680",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "test:serpentine-helm.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 21,
+        "passes": 21,
+        "durationMs": 744,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2586439680",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      },
+      {
+        "event": "stage-result",
+        "name": "test:poison-orb.test.cjs",
+        "code": 0,
+        "signal": null,
+        "timedOut": false,
+        "leftoverGroup": false,
+        "tapValid": true,
+        "closureScope": "process-group only; reparented or setsid descendants not proved absent",
+        "tests": 10,
+        "passes": 10,
+        "durationMs": 996,
+        "resources": {
+          "memory.max": "32000000000",
+          "memory.peak": "2586439680",
+          "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0",
+          "pids.current": "11"
+        }
+      }
+    ],
+    "independentDisposition": "QUALIFIED_TERMINAL_COMPLETED_152_OF_152_SELECTED_FIXTURE_PASS",
+    "reviewFile": "maggot-resupply-after031.review.txt",
+    "reviewSHA256": "a911cad635dabab6701211f69a500bcd6ac1d2ea08a00f0715ba0a6e1ee7f56e",
+    "reviewMeaning": "Original issuer actual result-verdict literal from retained assistant TOOL record; public mirror documentary, not execution contract or Ready/publicationGO"
+  },
+  "raw": {
+    "file": "maggot-resupply-after031.raw.log",
+    "bytes": 1047433,
+    "sha256": "d391d316cbe799b51fc9982a53165401a37c2f28fbe9705bf50e7b906581c9a7",
+    "redactedOrModified": false
+  },
+  "sourceClosure": [
+    {
+      "event": "source-closure",
+      "afterFailure": false,
+      "available": true,
+      "sourceManifestHash": "922df37ff52657fe52444ee1a5170489614972c12913168c596fdb4687136996",
+      "postSourceHash": "922df37ff52657fe52444ee1a5170489614972c12913168c596fdb4687136996",
+      "originalSourceFiles": 9216,
+      "distManifestHash": "8c2be4865dfbd5c507fda06175e1c928d1e27782e0ce35614abf5624ad6a7ad2",
+      "postDistHash": "8c2be4865dfbd5c507fda06175e1c928d1e27782e0ce35614abf5624ad6a7ad2",
+      "postCacheFilesChecked": 28,
+      "sourceStatus": "PASS",
+      "distStatus": "PASS",
+      "cacheStatus": "PASS",
+      "complete": true,
+      "cacheMismatches": [],
+      "errors": [],
+      "sealsUnchanged": true,
+      "limitation": "Content identities only; no process or sandbox-wide closure inference"
+    }
+  ],
+  "generatedData": {
+    "allJSONCount": 408,
+    "source": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba",
+    "inheritedFrom": "083eb11d406c9ea99b2de53074554289339317ac",
+    "pathModeBlobEqual": true,
+    "manualGeneratedEdit": false,
+    "producerImportReproducibility": "NOT_CERTIFIED_BY_NATURAL_INHERITANCE"
+  },
+  "parent029": {
+    "source": "fdec1c12aa7e1c4341eb30c690dffa3d70e46141",
+    "tree": "2eab4e1d14ed4164e1a288cc5bfc205af1f6a30e",
+    "passes": 152,
+    "meaning": "Separate parent proof only;031 is the actual fixedintegration proof",
+    "immutableEvidence": "https://github.com/autismoyah-hub/tsps/blob/7e13698a005642b692ccf62de9b3be7fa7065fc8/docs/evidence/maggot-resupply-after029.md"
+  },
+  "failureHistory": [
+    {
+      "case": "026",
+      "source": "b38f9b0fe08dcf663f7d03062427669ce27ffeba",
+      "terminal": "ERROR",
+      "passes": 82,
+      "failures": 1,
+      "notStarted": 69,
+      "failure": "Combat case82 no-cost refusal; generic Sailing fallback could consume recipe",
+      "failureBlock": "maggot-resupply-parent026.failure.tap.txt",
+      "originalFullRawSHA256": "b55037d066fe77acb2ad9fafe7273a9bb5663c54bf915066a58b3e414be6b49a"
+    },
+    {
+      "case": "027",
+      "source": "08910e0f23e23211c35ff53a278fcdc7531ef63d",
+      "terminal": "ERROR",
+      "passes": 88,
+      "failures": 1,
+      "notStarted": 63,
+      "failure": "Legacy test2 first registry assertion expected two permanent entries; actual had three. Later body was unreached.",
+      "failureBlock": "maggot-resupply-parent027.failure.tap.txt",
+      "originalFullRawSHA256": "8d4bcef1b8c223de8c58236831b3c8de4d3ad8cbd4d8ac84d0aaad67a8f10cb0"
+    },
+    {
+      "case": "020",
+      "terminal": "ERROR",
+      "scope": "Older parent:83 combat passes;6 legacy before-hook failures with zero bodies;63 later tests not started."
+    },
+    {
+      "cases": [
+        "021",
+        "022",
+        "023",
+        "024",
+        "025",
+        "028"
+      ],
+      "scope": "Fatal pre-submission refusals/local operator no-job; no global provider-absence claim. All frozen, no replay or authority reuse."
+    },
+    {
+      "case": "030",
+      "disposition": "QUALIFIED_FATAL_FRESH_MATERIAL_REFUSAL_LOCAL_OPERATOR_NOJOB",
+      "reason": "Same NpcDrops scoped patch moved OPEN5942->MAIN, material category inequality fatal; no job by local controlflow only, frozen/no retry"
+    }
+  ],
+  "newerMainInspection": {
+    "testedSource": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba",
+    "testedTree": "83305eeeb6ab952076fa826b50266362b74e69ac",
+    "orderedParents": [
+      "083eb11d406c9ea99b2de53074554289339317ac",
+      "fdec1c12aa7e1c4341eb30c690dffa3d70e46141"
+    ],
+    "currentMainAtInspection": "99a1dd70b11eda88a01ca4b2340b14c656adcd1d",
+    "PRMergeBase": "083eb11d406c9ea99b2de53074554289339317ac",
+    "featurePaths": [
+      "docs/maggot-king-resupply.md",
+      "server/plugins/bosses/MaggotKing.plugin.js",
+      "server/plugins/bosses/maggotking/Resupply.MaggotKing.js",
+      "server/tests/maggot-king-combat.test.cjs",
+      "server/tests/maggot-king.test.cjs"
+    ],
+    "featurePatchSHA256": "d417128b60846130856f7095603f311f9c4eddb8eefefaa19e1938acf697c69f",
+    "currentMainMerge": "CLEAN_RETAINED_GIT_MERGE_TREE_ONLY_UNEXECUTED",
+    "unexecutedNewerMainMergeTree": "4b8eb426658c43ea6bfd8f760eb536c0fd7fab54",
+    "actual031TestsCertifySource": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba",
+    "testedSourceRetargeted": false
+  },
+  "limits": [
+    "Exact fixed integration1af selected native-engine/fixture result; newer main and its clean merge tree are unexecuted, no future compatibility waiver",
+    "Supplied eligible/quest/player/standing state, hybrid legacy callbacks/Fight.start stubs and direct robustness controls do not prove natural travel/encounter or all native callback paths",
+    "Snapshot/JSON/apply/login-hook persistence is not real backend/disk/socket/full-file relog proof",
+    "No decoded packet/rendered client/retail tick-message-animation-RNG equivalence",
+    "Content seals, stage process groups and provider terminal do not prove PID1/full descendants/reparented/setsid/global sandbox or external-provider absence",
+    "All408 JSON naturally inherited from fixed083, no producer/import reproducibility certification; earlier UNKNOWN/source006/custody limits remain"
+  ],
+  "ready": false
+}
