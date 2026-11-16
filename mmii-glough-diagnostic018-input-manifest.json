@@ -4820,7 +4820,7 @@
     "server/tests/monkey-madness-ardougne-diary.test.cjs": "2e8747384f8f3d889e2ea94c00a7a39158f3f2d00ff4701651c0d0cb20c9e468",
     "server/tests/monkey-madness-greegrees-native.test.cjs": "1fa24f2788b6d663065e269a86b850daa1bce69e5e6bf481080799029f3dbd5e",
     "server/tests/monkey-madness-hangar-puzzle.test.cjs": "4ef34614ac90f3f12e0934a0356538222ecc39cbe5ea95f8b1f091998f3910f4",
-    "server/tests/monkey-madness-ii-glough-native.test.cjs": "74afdedf47ef16f558c406fecb9a6269fe2ef4277162cae19756310a0b70cc0e",
+    "server/tests/monkey-madness-ii-glough-native.test.cjs": "c9b853459f7fb6684bbe7b14439ff229c92a536954870589cbc892c654da3fee",
     "server/tests/moons-of-peril-scoreboard.test.cjs": "5fd44b96a80c290d7118f24aab7b6a26f131b028ade7de9da7a4cd589b8f75d9",
     "server/tests/mor-ul-rek-cape-on-guard.test.cjs": "1346e18c46772d6d5e81eebe8ef0247e99ef12acbd6d4dbc7585014cb7222a3b",
     "server/tests/mor-ul-rek-vent-doors.test.cjs": "8649f85b4119e934fa3610de751cf2421fa77b70c52a2bc34ddcb243e6cb70ac",
@@ -5701,7 +5701,7 @@
     "templated-instance.test.cjs": 12
   },
   "schema": 1,
-  "source": "f35a0ea6cacbcce2e5ceb74d3251180162a3c407",
+  "source": "ea5b904b801fd7cb8e13b1cce1645122d6c5f190",
   "sourceBlobs": {
     ".yarnrc.yml": "3186f3f0795ab612d5508593672dc9ad94bccca0",
     "package.json": "62a2d14d0fd6258416abf0599552f9088db195d0",
@@ -10523,7 +10523,7 @@
     "server/tests/monkey-madness-ardougne-diary.test.cjs": "0b6f10cbbfc36f1cf5f314532bed6c8af0bb4dc0",
     "server/tests/monkey-madness-greegrees-native.test.cjs": "813c604b1b89899f188a63fc8b5aa43699eeb9a7",
     "server/tests/monkey-madness-hangar-puzzle.test.cjs": "98c0f9257d03cbc20ac112c4e8891d067fa095b5",
-    "server/tests/monkey-madness-ii-glough-native.test.cjs": "df8195ed390db23bbfdf65ecee75988eb1163155",
+    "server/tests/monkey-madness-ii-glough-native.test.cjs": "282da518a6da0910cd9dac11cf237fab3f7a92d2",
     "server/tests/moons-of-peril-scoreboard.test.cjs": "6c08ccf4ec28d43b1eb2b360d857c8f52d2abba4",
     "server/tests/mor-ul-rek-cape-on-guard.test.cjs": "7b2b9668321bb71b4cfee2530071b3c73d7236f3",
     "server/tests/mor-ul-rek-vent-doors.test.cjs": "c7ff5e9cf08c5ec23ee84bd094592bfd9ada715c",
