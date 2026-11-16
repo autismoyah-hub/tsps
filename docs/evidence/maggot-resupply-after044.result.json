@@ -1,0 +1,112 @@
+{
+  "qualification": "QUALIFIED_ACTUAL044_RAW_NATIVE_163_PASS_RESULT_SCOPE_ONLY",
+  "source": "724cbb01153e214a082c87d2506f9690a070dee4",
+  "sourceTree": "1e2e99bfb3fee2ade2f474f2af0b002eba3c8857",
+  "previousPRHead": "1af04bd5ef65ee3be1d132c6bfd0e2e863b2b5ba",
+  "jobId": "6afb8c44186b78cad7b6c889",
+  "providerTerminal": "COMPLETED",
+  "selectedFixtures": [
+    {
+      "file": "maggot-king-combat.test.cjs",
+      "tests": 86,
+      "passes": 86,
+      "code": 0,
+      "tapValid": true,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false
+    },
+    {
+      "file": "maggot-king.test.cjs",
+      "tests": 6,
+      "passes": 6,
+      "code": 0,
+      "tapValid": true,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false
+    },
+    {
+      "file": "shared-poison-counter.test.cjs",
+      "tests": 32,
+      "passes": 32,
+      "code": 0,
+      "tapValid": true,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false
+    },
+    {
+      "file": "serpentine-helm.test.cjs",
+      "tests": 21,
+      "passes": 21,
+      "code": 0,
+      "tapValid": true,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false
+    },
+    {
+      "file": "poison-orb.test.cjs",
+      "tests": 10,
+      "passes": 10,
+      "code": 0,
+      "tapValid": true,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false
+    },
+    {
+      "file": "sailing-amenities.test.cjs",
+      "tests": 8,
+      "passes": 8,
+      "code": 0,
+      "tapValid": true,
+      "signal": null,
+      "timedOut": false,
+      "leftoverGroup": false
+    }
+  ],
+  "totalTests": 163,
+  "passes": 163,
+  "failed": 0,
+  "unrun": 0,
+  "hookFailed": 0,
+  "rawLogBytes": 1052151,
+  "rawLogSHA256": "4bebb7be59cc4b879fd41148e95f58ab74271f18a8bc9222b9d74201c26fefd9",
+  "actualInputCount": 6056,
+  "expectedRowsInserted": 0,
+  "sourceManifestPath": "docs/evidence/maggot-resupply-intended042-input-manifest.json",
+  "inputArtifactCommit": "86f7c477006c2eb5f56996b929f9e4dd9ecff207",
+  "inputManifestSHA256": "01c85f2d03b21735addba59282447ed56a4e588a52a1dc6868573f1dfb0f7a61",
+  "contentSeals": [
+    {
+      "event": "source-closure",
+      "afterFailure": false,
+      "available": true,
+      "sourceManifestHash": "3db1e4ae55e7ef40a8c11dbf0cd28e21ae0c8e319a9ab93e180ffd7f4b3ffe8f",
+      "postSourceHash": "3db1e4ae55e7ef40a8c11dbf0cd28e21ae0c8e319a9ab93e180ffd7f4b3ffe8f",
+      "originalSourceFiles": 9216,
+      "distManifestHash": "8c2be4865dfbd5c507fda06175e1c928d1e27782e0ce35614abf5624ad6a7ad2",
+      "postDistHash": "8c2be4865dfbd5c507fda06175e1c928d1e27782e0ce35614abf5624ad6a7ad2",
+      "postCacheFilesChecked": 28,
+      "sourceStatus": "PASS",
+      "distStatus": "PASS",
+      "cacheStatus": "PASS",
+      "complete": true,
+      "cacheMismatches": [],
+      "errors": [],
+      "sealsUnchanged": true,
+      "limitation": "Content identities only; no process or sandbox-wide closure inference"
+    }
+  ],
+  "limits": [
+    "Exact Linux dependency/build/cache/test route only; no Windows equivalence",
+    "Legacy fixture is a setup/respawn hybrid with Fight.start stubbed",
+    "Supplied state/callback/persistence projections do not prove natural travel, disk/backend relog, decoded sockets, rendered client or retail timing/messages",
+    "Content seals/process-group observations do not prove PID1/full-descendant/global containment or concurrent capacity",
+    "No generated producer/import reproducibility, whole-boss completion, PR approval, merge or maintainer acceptance"
+  ],
+  "historicalResultsRemainSeparate": true,
+  "terminalJobFrozenNoFurtherQueries": true
+}
