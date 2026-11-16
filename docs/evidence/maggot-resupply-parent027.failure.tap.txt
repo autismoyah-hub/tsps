@@ -1,0 +1,51 @@
+# Subtest: Blood Moon access opens a private solo lair and cleans it up on escape and logout
+not ok 2 - Blood Moon access opens a private solo lair and cleans it up on escape and logout
+  ---
+  duration_ms: 1.500205
+  type: 'test'
+  location: '/tmp/tsps-native/server/tests/maggot-king.test.cjs:134:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    ... Skipped lines
+    
+      [
+        [
+          'maggot-king:kills',
+          0
+        ],
+    ...
+        ],
+    +   [
+    +     'maggot-king:resupply-chest-built',
+    +     false
+    +   ]
+      ]
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0:
+      0: 'maggot-king:kills'
+      1: 0
+    1:
+      0: 'maggot-king:instance'
+      1: false
+  actual:
+    0:
+      0: 'maggot-king:kills'
+      1: 0
+    1:
+      0: 'maggot-king:instance'
+      1: false
+    2:
+      0: 'maggot-king:resupply-chest-built'
+      1: false
+  operator: 'deepStrictEqual'
+  stack: |-
+    TestContext.<anonymous> (/tmp/tsps-native/server/tests/maggot-king.test.cjs:135:10)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...

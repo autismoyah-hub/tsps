@@ -1,0 +1,321 @@
+# Subtest: optional Maggot chest wrong anchor or supplied private copy cannot start a build
+not ok 82 - optional Maggot chest wrong anchor or supplied private copy cannot start a build
+  ---
+  duration_ms: 73.378103
+  type: 'test'
+  location: '/tmp/tsps-native/server/tests/maggot-king-combat.test.cjs:2461:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+    ... Skipped lines
+    
+      [
+        [
+          2347,
+          1,
+          null
+    ...
+        [
+    +     -1,
+    +     0,
+    -     4703,
+    -     1,
+          null
+        ],
+        [
+    +     -1,
+    +     0,
+    -     32892,
+    -     1,
+          null
+        ],
+        [
+    +     -1,
+    +     0,
+    -     32892,
+    -     1,
+          null
+        ],
+        [
+    +     -1,
+    +     0,
+    -     2361,
+    -     1,
+          null
+        ],
+        [
+    +     -1,
+    +     0,
+    -     2361,
+    -     1,
+          null
+        ],
+        [
+    +     -1,
+    +     0,
+    -     31435,
+    -     1,
+          null
+        ],
+        [
+    +     -1,
+    +     0,
+    -     31435,
+    -     1,
+          null
+        ],
+        [
+    +     -1,
+    +     0,
+    -     31435,
+    -     1,
+          null
+        ],
+        [
+    +     -1,
+    +     0,
+    -     31435,
+    -     1,
+          null
+        ],
+        [
+          -1,
+          0,
+    
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected:
+    0:
+      0: 2347
+      1: 1
+      2: ~
+    1:
+      0: 8794
+      1: 1
+      2: ~
+    2:
+      0: 4703
+      1: 1
+      2: ~
+    3:
+      0: 32892
+      1: 1
+      2: ~
+    4:
+      0: 32892
+      1: 1
+      2: ~
+    5:
+      0: 2361
+      1: 1
+      2: ~
+    6:
+      0: 2361
+      1: 1
+      2: ~
+    7:
+      0: 31435
+      1: 1
+      2: ~
+    8:
+      0: 31435
+      1: 1
+      2: ~
+    9:
+      0: 31435
+      1: 1
+      2: ~
+    10:
+      0: 31435
+      1: 1
+      2: ~
+    11:
+      0: -1
+      1: 0
+      2: ~
+    12:
+      0: -1
+      1: 0
+      2: ~
+    13:
+      0: -1
+      1: 0
+      2: ~
+    14:
+      0: -1
+      1: 0
+      2: ~
+    15:
+      0: -1
+      1: 0
+      2: ~
+    16:
+      0: -1
+      1: 0
+      2: ~
+    17:
+      0: -1
+      1: 0
+      2: ~
+    18:
+      0: -1
+      1: 0
+      2: ~
+    19:
+      0: -1
+      1: 0
+      2: ~
+    20:
+      0: -1
+      1: 0
+      2: ~
+    21:
+      0: -1
+      1: 0
+      2: ~
+    22:
+      0: -1
+      1: 0
+      2: ~
+    23:
+      0: -1
+      1: 0
+      2: ~
+    24:
+      0: -1
+      1: 0
+      2: ~
+    25:
+      0: -1
+      1: 0
+      2: ~
+    26:
+      0: -1
+      1: 0
+      2: ~
+    27:
+      0: -1
+      1: 0
+      2: ~
+  actual:
+    0:
+      0: 2347
+      1: 1
+      2: ~
+    1:
+      0: 8794
+      1: 1
+      2: ~
+    2:
+      0: -1
+      1: 0
+      2: ~
+    3:
+      0: -1
+      1: 0
+      2: ~
+    4:
+      0: -1
+      1: 0
+      2: ~
+    5:
+      0: -1
+      1: 0
+      2: ~
+    6:
+      0: -1
+      1: 0
+      2: ~
+    7:
+      0: -1
+      1: 0
+      2: ~
+    8:
+      0: -1
+      1: 0
+      2: ~
+    9:
+      0: -1
+      1: 0
+      2: ~
+    10:
+      0: -1
+      1: 0
+      2: ~
+    11:
+      0: -1
+      1: 0
+      2: ~
+    12:
+      0: -1
+      1: 0
+      2: ~
+    13:
+      0: -1
+      1: 0
+      2: ~
+    14:
+      0: -1
+      1: 0
+      2: ~
+    15:
+      0: -1
+      1: 0
+      2: ~
+    16:
+      0: -1
+      1: 0
+      2: ~
+    17:
+      0: -1
+      1: 0
+      2: ~
+    18:
+      0: -1
+      1: 0
+      2: ~
+    19:
+      0: -1
+      1: 0
+      2: ~
+    20:
+      0: -1
+      1: 0
+      2: ~
+    21:
+      0: -1
+      1: 0
+      2: ~
+    22:
+      0: -1
+      1: 0
+      2: ~
+    23:
+      0: -1
+      1: 0
+      2: ~
+    24:
+      0: -1
+      1: 0
+      2: ~
+    25:
+      0: -1
+      1: 0
+      2: ~
+    26:
+      0: -1
+      1: 0
+      2: ~
+    27:
+      0: -1
+      1: 0
+      2: ~
+  operator: 'deepStrictEqual'
+  stack: |-
+    resupplyAssertNoCost (/tmp/tsps-native/server/tests/maggot-king-combat.test.cjs:2244:10)
+    TestContext.<anonymous> (/tmp/tsps-native/server/tests/maggot-king-combat.test.cjs:2483:13)
+    Test.runInAsyncScope (node:async_hooks:214:14)
+    Test.run (node:internal/test_runner/test:1047:25)
+    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)
+  ...
