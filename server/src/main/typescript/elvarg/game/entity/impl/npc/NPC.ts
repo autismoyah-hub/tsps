@@ -1,3 +1,4 @@
+import { Task } from "../../../task/Task";
 import { Skill } from "../../../model/Skill";
 import { CacheDefinitions } from "../../../cache/CacheDefinitions";
 import { Mobile } from "../Mobile";
@@ -127,6 +128,68 @@ export class NPC extends Mobile {
     private id: number;
     private movementCoordinator: NPCMovementCoordinator = new NPCMovementCoordinator(this);
     private hitpoints: number;
+    private deathRevision = 0;
+    private deathEntry = false;
+    private pendingDeathEntry: { revision: number; task: Task } | null = null;
+    private deathRecord: { token: object; owner: NPCDeathTask; revision: number; completionEligible: boolean } | null = null;
+
+    /** Opaque identity of this accepted dying occurrence, never a killer attribution. */
+    public getDeathOccurrence(): object | null {
+        return this.deathRecord?.completionEligible ? this.deathRecord.token : null;
+    }
+
+    public bindDeathTask(owner: NPCDeathTask): object {
+        const token = Object.freeze({});
+        this.deathRecord = { token, owner, revision: this.deathRevision, completionEligible: true };
+        return token;
+    }
+
+    public ownsDeathCleanup(owner: NPCDeathTask): boolean {
+        return this.deathRecord?.owner === owner && this.deathRecord.revision === this.deathRevision;
+    }
+
+    public revokeDeathCompletion(owner: NPCDeathTask): void {
+        if (this.ownsDeathCleanup(owner)) this.deathRecord!.completionEligible = false;
+    }
+
+    public releaseDeathTask(owner: NPCDeathTask): void {
+        if (this.ownsDeathCleanup(owner)) this.deathRecord = null;
+    }
+
+    private invalidateDeathLife(): void {
+        this.deathRecord?.owner.restoreDeathMovement();
+        this.isDying = false;
+        this.deathRevision++;
+        this.deathRecord = null;
+        // The queued task may still execute, but cannot clear a replacement request.
+        this.pendingDeathEntry?.task.stop();
+        this.pendingDeathEntry = null;
+    }
+
+    public setRegistered(registered: boolean): void {
+        if (this.isRegistered() && !registered) this.invalidateDeathLife();
+        super.setRegistered(registered);
+    }
+
+    private deferDeathEntry(): void {
+        if (this.pendingDeathEntry?.revision === this.deathRevision) return;
+        const npc = this;
+        const revision = this.deathRevision;
+        const continuation = new class extends Task {
+            constructor() { super(1); }
+            execute(): void {
+                this.stop();
+                if (npc.pendingDeathEntry?.task !== this) return;
+                npc.pendingDeathEntry = null;
+                if (revision !== npc.deathRevision || !npc.isRegistered() || npc.getHitpoints() > 0
+                    || npc.isDyingFunction() || World.getRemoveNPCQueue().includes(npc)) return;
+                npc.appendDeath();
+            }
+        }();
+        this.pendingDeathEntry = { revision, task: continuation };
+        TaskManager.submit(continuation);
+    }
+
     private maxHitpointsOverride = -1;
     private combatOverride: { stats?: number[]; maxHit?: number } | null = null;
     private combatOverrideViews: Map<NpcDefinition, NpcDefinition> | null = null;
@@ -409,16 +472,28 @@ export class NPC extends Mobile {
     }
 
     public appendDeath() {
-        if (!this.isDying) {
-            if (PluginManager.emitNpcBeforeDeath({ npc: this, preventDeath: false })) {
+        if (this.deathEntry) {
+            this.deferDeathEntry();
+            return;
+        }
+        if (this.isDying) return;
+        this.deathEntry = true;
+        const revision = this.deathRevision;
+        try {
+            const prevented = PluginManager.emitNpcBeforeDeath({ npc: this, preventDeath: false });
+            if (revision !== this.deathRevision) {
+                if (this.hitpoints <= 0) this.deferDeathEntry();
                 return;
             }
-            // A transformed or respawned NPC must not reuse rolls cached for its old state.
+            if (prevented || this.hitpoints > 0 || this.isDying
+                || !this.isRegistered() || World.getRemoveNPCQueue().includes(this)) return;
             CombatFactory.clearHitRollCache(this);
-            // Hits still in the air belong to the life that launched them.
             HitQueue.dropHitsFrom(this);
-            TaskManager.submit(new NPCDeathTask(this));
+            const task = new NPCDeathTask(this);
             this.isDying = true;
+            TaskManager.submit(task);
+        } finally {
+            this.deathEntry = false;
         }
     }
 
@@ -427,6 +502,7 @@ export class NPC extends Mobile {
     }
 
     public setHitpoints(hitpoints: number): NPC {
+        if (this.hitpoints <= 0 && hitpoints > 0) this.invalidateDeathLife();
         this.hitpoints = hitpoints;
         if (this.hitpoints <= 0)
             this.appendDeath();
@@ -714,6 +790,7 @@ export class NPC extends Mobile {
     }
 
     public setDying(isDying: boolean): void {
+        if (!isDying && this.deathRecord) this.deathRecord.completionEligible = false;
         this.isDying = isDying;
     }
 

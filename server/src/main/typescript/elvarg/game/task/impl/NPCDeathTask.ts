@@ -16,6 +16,9 @@ import { CombatSpecial } from "../../content/combat/CombatSpecial";
 export class NPCDeathTask extends Task {
     private npc: NPC
     private ticks: number;
+    private readonly occurrence: object;
+    private completionEntered = false;
+    private movementHold: { previous: boolean; generation: number } | null = null;
     private killer: Player | null;
     private damagers: Player[] = [];
     private lastDamager: Player | null = null;
@@ -29,13 +32,18 @@ export class NPCDeathTask extends Task {
     constructor(npc: NPC) {
         super(1);
         this.npc = npc;
+        this.occurrence = npc.bindDeathTask(this);
         this.ticks = 1;
     }
 
     public execute(): void {
+        if (!this.npc.ownsDeathCleanup(this)) { super.stop(); return; }
         switch (this.ticks) {
             case 1:
-                this.npc.getMovementQueue().setBlockMovement(true).reset();
+                const movement = this.npc.getMovementQueue();
+                const previous = movement.isMovementBlocked();
+                movement.setBlockMovement(true).reset();
+                this.movementHold = { previous, generation: movement.getBlockMovementGeneration() };
                 // Every player who damaged it, before getKiller clears the record.
                 this.damagers = this.npc.getCombat().getRecentDamagers();
                 // Wiki (Death Charge): the last player to hit it, not the top damager, gets the restore.
@@ -49,6 +57,8 @@ export class NPCDeathTask extends Task {
                 this.setDelay(Math.max(1, this.npc.getCurrentDefinition().getDeathTicks()));
                 break;
             case 0:
+                if (this.completionEntered) return;
+                this.completionEntered = true;
                 if (this.killer != null) {
                     const event: PluginNpcDeathEvent = {
                         killer: this.killer,
@@ -70,14 +80,33 @@ export class NPCDeathTask extends Task {
                         CombatSpecial.updateBar(charged);
                     }
                 }
+                if (this.npc.ownsDeathCleanup(this) && this.npc.getDeathOccurrence() === this.occurrence
+                    && this.npc.isRegistered() && this.npc.isDyingFunction() && this.npc.getHitpoints() <= 0
+                    && !World.getRemoveNPCQueue().includes(this.npc)) {
+                    PluginManager.emitCustomEvent("npc:death-completed", {
+                        npc: this.npc, occurrence: this.occurrence, killer: this.killer,
+                    });
+                }
                 this.stop();
                 break;
         }
         this.ticks--;
     }
     
+    /** Recovery releases only the hold this death still owns, never a newer one. */
+    public restoreDeathMovement(): void {
+        const hold = this.movementHold;
+        this.movementHold = null;
+        const movement = this.npc.getMovementQueue();
+        if (hold && movement.getBlockMovementGeneration() === hold.generation) {
+            movement.setBlockMovement(hold.previous).reset();
+        }
+    }
+
     public stop(): void {
         super.stop();
+        if (!this.npc.ownsDeathCleanup(this)) return;
+        this.npc.revokeDeathCompletion(this);
         if (this.remains) {
             // Left in the world for a while (a plugin's remains); removed and respawned after.
             const remains = this.remains;
@@ -91,23 +120,28 @@ export class NPCDeathTask extends Task {
 
     /** Takes the npc out of the world and queues its respawn. */
     public remove(respawnTicks?: number): void {
-        const skipDefaultRespawn = (this.npc as any).__skipDefaultRespawn === true;
-        (this.npc as any).__skipDefaultRespawn = false;
-
+        if (!this.npc.ownsDeathCleanup(this) || !this.npc.isRegistered()) return;
+        this.npc.revokeDeathCompletion(this);
         if (this.npc.getArea() !== null) {
             const area = this.npc.getArea();
             area.leave(this.npc, false);
+            if (!this.npc.ownsDeathCleanup(this) || !this.npc.isRegistered()) return;
             if (this.npc.getArea() === area) {
                 this.npc.setArea(null);
             }
         }
+        if (!this.npc.ownsDeathCleanup(this) || !this.npc.isRegistered()) return;
+        const skipDefaultRespawn = (this.npc as any).__skipDefaultRespawn === true;
+        (this.npc as any).__skipDefaultRespawn = false;
         this.npc.setDying(false);
         this.npc.setNpcTransformationId(-1);
         const respawn = respawnTicks ?? this.npc.getDefinition().getRespawn();
         if (!skipDefaultRespawn && respawn > 0) {
             TaskManager.submit(new NPCRespawnTask(this.npc, respawn));
         }
-        World.getRemoveNPCQueue().push(this.npc);
+        this.restoreDeathMovement();
+        this.npc.releaseDeathTask(this);
+        if (!World.getRemoveNPCQueue().includes(this.npc)) World.getRemoveNPCQueue().push(this.npc);
     }
 }
 

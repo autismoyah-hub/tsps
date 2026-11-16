@@ -18,6 +18,9 @@ function callFollower(event) {
     player.sendMessage(BUSY_MESSAGE);
     return;
   }
+  const request = { player, handled: false };
+  api.emitCustomEvent("followers:recall-request", request);
+  if (request.handled) return;
   const npc = player.getAttribute(services.currentAttribute);
   if (!npc || !npc.isRegistered() || !npc.isPet() || npc.getOwner() !== player
       || !services.getPetByNpcId(npc.getId()) || api.core.World.getRemoveNPCQueue().includes(npc)) {

@@ -5,6 +5,11 @@
 // prove a live playthrough, a natural travel route or the Java overlay.
 // The owned Glough scene is stubbed at its module boundary in this contract
 // harness; monkey-madness-ii-glough-native.test.cjs exercises the real encounter.
+// Nieve is likewise stubbed at the NEW parent/module callback boundary. Supplied
+// admitted-slot outputs are SOURCE-contract setup, NOT helper damage, natural
+// death, identity-policy, pathing or pet proof. The real Nieve native suite owns
+// those oracles. Actual NpcDialogues named playback is used with a VM packet/UI
+// adapter; it is not a ClientConnection or rendered-client verification.
 const assert = require('node:assert/strict');
 const { test, before } = require('node:test');
 const path = require('node:path');
@@ -32,9 +37,22 @@ function makePlayer({ items = [], attrs = [], freeSlots = 28, levels = new Map()
   const attributes = new Map(attrs), inventory = new Map(items), bank = new Set(bankItems);
   let location = new core.Location(3210, 3220, 0);
   let equipped = null;
-  let free = freeSlots;
+  let free = freeSlots, interacting = null, presentingOwner, chatboxOwner, chatboxGroup = -1;
   const packet = new Proxy({
+    withChatboxOwner(owner, present) {
+      const previous = presentingOwner; presentingOwner = owner;
+      try { return present(); } finally { presentingOwner = previous; }
+    },
+    sendChatboxInterface(group) { chatboxGroup = group; chatboxOwner = presentingOwner; return packet; },
+    getChatboxOwner: () => chatboxOwner,
+    getChatboxGroupId: () => chatboxGroup,
+    isChatboxInterface: group => group === chatboxGroup,
+    closeChatboxFor(owner) {
+      if (chatboxOwner !== owner || chatboxGroup < 0) return false;
+      packet.sendInterfaceRemoval(); return true;
+    },
     sendInterfaceRemoval() {
+      chatboxGroup = -1; chatboxOwner = undefined;
       p.manager?.reset();
       p.prompt = null;
       return packet;
@@ -94,6 +112,11 @@ function makePlayer({ items = [], attrs = [], freeSlots = 28, levels = new Map()
     isPlayer: () => true,
     isNpc: () => false,
     isRegistered: () => true,
+    getHitpoints: () => 99,
+    getPrivateArea: () => null,
+    getArea: () => null,
+    getInteractingMobile: () => interacting,
+    setMobileInteraction: npc => { interacting = npc; },
     setPositionToFace: noop,
     setEquipment(item) { equipped = item; },
     setFreeSlots(value) { free = value; },
@@ -139,6 +162,8 @@ function register() {
       (hooks[key] ?? []).forEach(fn => fn(event));
     },
     sendMultiChatboxPrompt(p, title, ...pairs) {
+      p.manager.reset();
+      p.getPacketSender().sendChatboxInterface(219);
       p.prompt = { title, options: pairs.filter((_, index) => index % 2 === 0), pairs };
       return true;
     },
@@ -149,6 +174,8 @@ function register() {
         ...definition,
         getId: () => definition.id,
         getLocation: () => new core.Location(definition.x, definition.y, definition.z ?? 0),
+        getSpawnPosition: () => new core.Location(definition.x, definition.y, definition.z ?? 0),
+        getContentId: () => definition.id,
         isRegistered: () => registered,
         getOwner: () => definition.owner ?? null,
         remove() { registered = false; },
@@ -186,13 +213,57 @@ function register() {
       };
     },
   } };
+  const nievePath = path.join(root, 'plugins/quests/monkeymadnessii/Nieve.MonkeyMadnessII.js');
+  const previousNieve = require.cache[nievePath];
+  const sourceNieve = new WeakMap();
+  let nieveCallbacks;
+  const nieveBoundary = {
+    admitSlot(player, slot) {
+      const state = sourceNieve.get(player);
+      assert.ok(state?.active && slot >= 0 && slot < 4, 'SOURCE fixture supplies an admitted module slot');
+      if (state.admitted.has(slot)) return false;
+      state.admitted.add(slot);
+      nieveCallbacks.setKills(player, state.admitted.size);
+      if (state.admitted.size === 4) nieveCallbacks.advance(player, 145);
+      return true;
+    },
+  };
+  require.cache[nievePath] = { id: nievePath, filename: nievePath, loaded: true, exports: (nieveApi, parent) => {
+    nieveCallbacks = parent;
+    function recover(player) {
+      if (parent.stageOf(player) < 140 || parent.stageOf(player) >= 155) return null;
+      let state = sourceNieve.get(player);
+      if (!state?.active) {
+        state = { active: true, admitted: new Set(), slots: parent.slotTiles.map((_,slot) => parent.spawnSlot(player,slot)) };
+        sourceNieve.set(player,state);
+      }
+      return state;
+    }
+    return {
+      recruit(player,id) {
+        if (!parent.isRecruitNpc(id) || parent.stageOf(player) < 120 || parent.stageOf(player) >= 140) return false;
+        parent.advance(player,140); recover(player); return true;
+      },
+      recover,
+      retire(player) {
+        const state=sourceNieve.get(player); if(!state)return;
+        state.active=false; for(const npc of state.slots)nieveApi.removeNpc(npc);
+      },
+      following: player => sourceNieve.get(player)?.active === true,
+      hasPet: () => false, // SOURCE fixture prerequisite, no native pet-service claim.
+    };
+  } };
+  // Use the actual named scoped dialogue producer, not a success-only activation shim.
+  require(root + '/plugins/npcs/NpcDialogues.plugin').register(api);
   try { require(root + '/plugins/quests/quests/MonkeyMadnessII.Quest')(api); }
   finally {
+    if (previousNieve) require.cache[nievePath] = previousNieve;
+    else delete require.cache[nievePath];
     if (previousScene) require.cache[scenePath] = previousScene;
     else delete require.cache[scenePath];
   }
   return {
-    api, hooks, spawned, removed, drops, objects,
+    api, hooks, spawned, removed, drops, objects, nieveBoundary,
     quest: runtime.getRegisteredQuests().findLast(quest => quest.key === 'monkey_madness_ii'),
   };
 }
@@ -223,7 +294,7 @@ function choose(p, text) {
   assert.ok(prompt, 'no menu for ' + text);
   const index = prompt.options.indexOf(text);
   assert.ok(index >= 0, 'missing ' + text + ' in ' + JSON.stringify(prompt.options));
-  p.prompt = null;
+  p.getPacketSender().sendInterfaceRemoval();
   prompt.pairs[index * 2 + 1]();
 }
 
@@ -246,8 +317,13 @@ function drive(p, wanted = [], strict = true) {
 
 function talk(harness, p, npcId) {
   reset(p);
+  // Physical-looking VM interaction identity only; not a registered World NPC.
+  let registered = true;
+  const npc = { getId:()=>npcId, getContentId:()=>npcId, isRegistered:()=>registered,
+    getLocation:()=>p.getLocation(), getOwner:()=>null, remove(){registered=false;} };
+  p.setMobileInteraction(npc);
   const event = {
-    player: p, npcId, handled: false, clickType: 1,
+    player: p, npc, npcId, handled: false, clickType: 1,
     definition: { getActions: () => ['Talk-to'] },
   };
   for (const fn of harness.hooks.onNpcInteraction ?? []) fn(event);
@@ -722,7 +798,9 @@ test('stage 0 to completion through the registered handlers and transcripts', ()
     talk(harness, p, N.NIEVE);
     drive(p, ['Talk about Monkey Madness II.', 'Yes.']);
     expected(140);
-    for (let index = 0; index < 4; index++) npcDeath(harness, p, N.TORTURED_GORILLA_3);
+    // Supplied module-admitted outputs at the parent contract boundary, not
+    // a legacy Player death bypass or evidence of actual companion combat.
+    for (let slot = 0; slot < 4; slot++) harness.nieveBoundary.admitSlot(p, slot);
     expected(145);
 
     talk(harness, p, N.GARKOR_2);
@@ -834,4 +912,29 @@ test('production selector order yields King Narnode from MM1 to active MM2', () 
     PluginManager.npcDialogueVariantHooks.length = hooksBefore;
     PluginManager.customEventHooks.set('quest:get-stage', stageHooksBefore);
   }
+});
+
+
+test('SOURCE parent leaves Stronghold legacy deaths inert and receives only supplied admitted companion outputs', () => {
+  const harness=register(),p=makePlayer();harness.quest.setStage(p,120);
+  talkHandled(harness,p,N.NIEVE,['Talk about Monkey Madness II.','Yes.']);
+  assert.equal(stage(harness,p),140);
+  for(let i=0;i<4;i++)npcDeath(harness,p,N.TORTURED_GORILLA_3);
+  assert.equal(stage(harness,p),140,'removed legacy route cannot double-count the new boundary');
+  assert.equal(p.getAttribute('quest.monkey_madness_ii.stronghold-kills')??0,0);
+  for(let slot=0;slot<3;slot++)harness.nieveBoundary.admitSlot(p,slot);
+  assert.equal(stage(harness,p),140);
+  harness.nieveBoundary.admitSlot(p,3);assert.equal(stage(harness,p),145);
+});
+
+test('SOURCE real named dialogue producer ends a held acceptance whose VM conversation NPC was removed', () => {
+  const harness=register(),p=makePlayer();harness.quest.setStage(p,120);
+  withConditions(harness.hooks,()=>{
+    const event=talk(harness,p,N.NIEVE);
+    drive(p,['Talk about Monkey Madness II.'],false);
+    assert.ok(p.prompt?.options.includes('Yes.'));
+    event.npc.remove();choose(p,'Yes.');
+    assert.equal(stage(harness,p),120);assert.equal(p.prompt,null);assert.equal(p.manager.isActive(),false);
+    assert.equal(harness.spawned.some(n=>n.id===N.TORTURED_GORILLA_3),false);
+  });
 });

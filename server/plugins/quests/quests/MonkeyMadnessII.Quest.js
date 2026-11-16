@@ -95,8 +95,8 @@
  *    Glough (7101). The Crash Site gorillas (7150/7151, 7144-7149) already exist
  *    as static spawns and are counted instead. Glough's owned encounter supplies
  *    its copied cave, room retreats and attempt/final-credit lifecycle.
- *  - Nieve does not follow: being "recruited" is the stage, and the fight credit
- *    is counted on the player's own kills.
+ *  - Nieve now follows/assists the owned Stronghold route using canonical combat.
+ *    Cavern assistance/room and owned-copy setup remain unfinished; no retail DPS parity.
  *  - Zooknock's Kruk-greegree conversation has no MM2 transcript anywhere in the
  *    npc-dialogues dump (his page only has the post-quest variant), so it is a
  *    functional message, as is the device's chisel/replace step (the transcript's
@@ -127,6 +127,8 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
     TeleportHandler,
     TeleportType,
   } = api.core;
+  let nieve;
+  const nieveRecruitmentTalks = new WeakMap();
   const { registerQuest, startTranscript } = require("../QuestRuntime");
 
   // ==========================================================================
@@ -562,6 +564,7 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
   /** Advances the stage and re-sends the side varbits the cache NPCs read. */
   function advance(player, value) {
     if (quest.getStage(player) < value) quest.setStage(player, value);
+    if (value >= STAGE_CRASH_ENTERED) nieve?.retire(player);
     syncSideVarps(player);
     ensureAwowogei(player);
     ensureKrukRemains(player);
@@ -581,8 +584,8 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
     sender.sendVarbit(VARBIT_READ_NOTE, stage >= STAGE_DECRYPTED ? 1 : 0);
   }
 
-  function play(player, npcId, variant, select) {
-    return startTranscript(api, player, npcId, PAGE, variant, select);
+  function play(player, npcId, variant, select, npc = null) {
+    return startTranscript(api, player, npcId, PAGE, variant, select, npc);
   }
 
   // ==========================================================================
@@ -694,15 +697,7 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
   }
 
   function spawnStrongholdGorillas(player) {
-    const state = playerState(player);
-    const kills = attribute(player, STRONGHOLD_KILLS_ATTRIBUTE);
-    const needed = STRONGHOLD_GORILLA_TILES.length - kills;
-    if (needed <= 0 || state.stronghold.filter(alive).length >= needed) return;
-    state.stronghold = STRONGHOLD_GORILLA_TILES.map((tile, index) => {
-      const existing = state.stronghold[index];
-      if (alive(existing)) return existing;
-      return spawnOwnerNpc(player, STRONGHOLD_GORILLA_ID, tile);
-    }).filter(Boolean);
+    nieve.recover(player);
   }
 
   function spawnDemonicGlough(player) {
@@ -1032,26 +1027,59 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
     return true;
   }
 
+  function cancelNieveRecruitment(player, record) {
+    if (!record) return;
+    // Delete only this identity, before cancellation can synchronously open UI.
+    if (nieveRecruitmentTalks.get(player) === record) nieveRecruitmentTalks.delete(player);
+    record.cancel?.();
+  }
+
+  function clearNieveRecruitment({ player }) {
+    cancelNieveRecruitment(player, nieveRecruitmentTalks.get(player));
+  }
+
+  function beginNieveRecruitment(event) {
+    const { player, npc, npcId } = event;
+    if (!npc?.isRegistered?.()) return false;
+    const record = { npc, phase: "offered", cancel: null };
+    nieveRecruitmentTalks.set(player, record);
+    const request = { player, npc, npcId, exact: true, handled: false,
+      variant: { page: PAGE, variant: "chapter-iv-talking-to-nieve" } };
+    // The existing named-playback API supplies a real scoped cancellation handle.
+    api.emitCustomEvent("npc-dialogue:start", request);
+    record.cancel = typeof request.cancel === "function" ? request.cancel : null;
+    if (!request.handled || !record.cancel || nieveRecruitmentTalks.get(player) !== record) {
+      cancelNieveRecruitment(player, record);
+      return false;
+    }
+    return true;
+  }
+
   function handleNieveTalk(event) {
     const { player, npcId } = event;
     const stage = stageOf(player);
     if (stage < STAGE_KING_TOLD_2 || stage >= STAGE_COMPLETE) return false;
     event.handled = true;
+    cancelNieveRecruitment(player, nieveRecruitmentTalks.get(player));
+    // A cancellation hook may already have installed a newer conversation.
+    if (nieveRecruitmentTalks.has(player)) return true;
     if (stage >= STAGE_STRONGHOLD_GORILLAS) {
-      play(player, npcId, "chapter-iv-talking-to-nieve-talking-to-nieve-after-killing-enough-tortured-gorillas");
+      if (stage < STAGE_CRASH_ENTERED) nieve.recover(player);
+      play(player, npcId, "chapter-iv-talking-to-nieve-talking-to-nieve-after-killing-enough-tortured-gorillas", undefined, event.npc);
       return true;
     }
     if (stage >= STAGE_NIEVE_RECRUITED) {
       spawnStrongholdGorillas(player);
-      play(player, npcId, "chapter-iv-talking-to-nieve-talking-to-nieve-while-she-is-following-you");
+      play(player, npcId, "chapter-iv-talking-to-nieve-talking-to-nieve-while-she-is-following-you", undefined, event.npc);
       return true;
     }
-    play(player, npcId, "chapter-iv-talking-to-nieve");
+    beginNieveRecruitment(event);
     return true;
   }
 
   function handleNpcInteraction(event) {
     const { npcId } = event;
+    if (!NIEVE_IDS.has(npcId) && optionOf(event) === "Talk-to") clearNieveRecruitment(event);
     if (npcId === LAB_STUNTED_GORILLA_ID && optionOf(event) === "Climb-on") {
       const player = event.player;
       if (stageOf(player) !== STAGE_GARKOR_LAB) return;
@@ -1156,9 +1184,8 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
       case "zNRRJ4": // the screen fades to black
       case "lX0-oJ": // camera returns to the player and Garkor
         return;
-      case "FWgGzC": // Glough's airship arrives
-        advance(player, STAGE_NIEVE_RECRUITED);
-        spawnStrongholdGorillas(player);
+      case "FWgGzC": // Airship arrival cannot substitute for real Nieve recruitment.
+        if (stageOf(player) >= STAGE_AWOWOGEI_TOLD && stageOf(player) < STAGE_CH3_DONE) advance(player, STAGE_CH3_DONE);
         return;
       case "YIbvbT": // screen fades
       case "-IX1qz": // the camera returns; the screen rumbles
@@ -1251,10 +1278,29 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
       }
       return;
     }
-    if (NIEVE_IDS.has(npcId) && option === "Yes." && stageOf(player) < STAGE_NIEVE_RECRUITED) {
-      advance(player, STAGE_NIEVE_RECRUITED);
-      spawnStrongholdGorillas(player);
-      player.sendMessage("Nieve checks her equipment and nods. Let's defend the Stronghold!");
+    const nieveTalk = nieveRecruitmentTalks.get(player);
+    if (NIEVE_IDS.has(npcId) && nieveTalk && nieveTalk.npc === event.npc
+      && (option === "No." || option === "Talk about something else.")) {
+      event.end = true;
+      cancelNieveRecruitment(player, nieveTalk);
+      return;
+    }
+    const recruitmentStage = stageOf(player) >= STAGE_KING_TOLD_2 && stageOf(player) < STAGE_NIEVE_RECRUITED;
+    if (NIEVE_IDS.has(npcId) && option === "Yes." && (recruitmentStage || (nieveTalk && nieveTalk.npc === event.npc))) {
+      // Every refused acceptance ends the actual producer's option branch.
+      event.end = true;
+      const npc = event.npc;
+      const actualId = npc?.getContentId?.(player) ?? npc?.getId?.();
+      const matching = !!nieveTalk && nieveTalk.npc === npc;
+      if (npc?.isRegistered?.() && NIEVE_IDS.has(actualId) && matching && nieveTalk.phase === "offered"
+        && (!player.getInteractingMobile() || npc === player.getInteractingMobile())
+        && nieve.recruit(player, npcId)) {
+        nieveTalk.phase = "accepted";
+        event.end = false;
+        player.sendMessage("Nieve checks her equipment and nods. Let's defend the Stronghold!");
+      } else if (matching) {
+        cancelNieveRecruitment(player, nieveTalk);
+      }
       return;
     }
     if ((npcId === GLOUGH_CAVERN_ID || ZOOKNOCK_IDS.has(npcId))
@@ -1275,7 +1321,7 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
       }
     }
     if (NIEVE_IDS.has(npcId) && text === "You should pick up your pet first. It would only get in the way.") {
-      event.skip = true;
+      event.skip = !nieve.hasPet(player);
     }
   }
 
@@ -1299,11 +1345,11 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
       case "rftZUo": // disguised as Kruk
         return equippedKrukGreegree(player);
       case "JqE_qU": // a pet is following
-        return false;
+        return nieve.hasPet(event.player);
       case "E5gZen": // no pet following
-        return true;
+        return !nieve.hasPet(event.player);
       case "VEjijh": // Nieve is not following the player
-        return stageOf(player) < STAGE_NIEVE_RECRUITED;
+        return !nieve.following(player);
       default:
         return null;
     }
@@ -1786,13 +1832,8 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
       }
       return;
     }
-    if (npcId === STRONGHOLD_GORILLA_ID) {
-      if (stageOf(player) !== STAGE_NIEVE_RECRUITED) return;
-      const kills = attribute(player, STRONGHOLD_KILLS_ATTRIBUTE) + 1;
-      player.setAttribute(STRONGHOLD_KILLS_ATTRIBUTE, kills);
-      if (kills >= STRONGHOLD_GORILLA_TILES.length) advance(player, STAGE_STRONGHOLD_GORILLAS);
-      return;
-    }
+    // Stronghold player OR helper progress has one natural-completion path.
+    if (npcId === STRONGHOLD_GORILLA_ID) return;
     if (CRASH_TORTURED_IDS.has(npcId) && stageOf(player) === STAGE_CRASH_ENTERED && inCrashSite(player)) {
       player.setAttribute(CRASH_TORTURED_ATTRIBUTE, attribute(player, CRASH_TORTURED_ATTRIBUTE) + 1);
       checkCrashSite(player);
@@ -2189,6 +2230,15 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
 
   gloughEncounter = require("../monkeymadnessii/Scene.MonkeyMadnessII").attach(api, { stageOf });
 
+  nieve = require("../monkeymadnessii/Nieve.MonkeyMadnessII")(api, {
+    stageOf, advance,
+    slotTiles: STRONGHOLD_GORILLA_TILES,
+    isRecruitNpc: id => NIEVE_IDS.has(id),
+    legacyKills: player => attribute(player, STRONGHOLD_KILLS_ATTRIBUTE),
+    setKills: (player, value) => player.setAttribute(STRONGHOLD_KILLS_ATTRIBUTE, value),
+    spawnSlot: (player, slot) => spawnOwnerNpc(player, STRONGHOLD_GORILLA_ID, STRONGHOLD_GORILLA_TILES[slot]),
+  });
+
   api.onCustomEvent("monkey-madness-ii:zooknock-ownership", answerZooknockOwnership);
   api.onNpcDialogueVariant(selectNarnodeVariant);
   api.onNpcInteraction(handleNpcInteraction);
@@ -2206,4 +2256,6 @@ module.exports = function registerMonkeyMadnessIIQuest(api) {
   api.onCustomEvent("npc-dialogue:choice", handleDialogueChoice);
   api.onCustomEvent("npc-dialogue:line", handleDialogueLine);
   api.onPlayerLogin(handleLogin);
+  api.onPlayerLogout(clearNieveRecruitment);
+  api.onPlayerDeath(clearNieveRecruitment);
 };
