@@ -512,3 +512,8 @@ test('BW Standard34 names exact beginner wand without extending other wand or mo
     else assert.doesNotMatch(text,/beginner wand|6908/);
   }
 });
+
+test('AS Standard34 names only the exact real Ancient staff admission',()=>{
+  const fs=require('node:fs'),path=require('node:path'),text=fs.readFileSync(path.join(__dirname,'../plugins/minigames/clanwars/Magic.ClanWars.js'),'utf8');
+  assert.match(text,/exact Ancient staff \(4675\)/);assert.match(text,/exact beginner wand \(6908\)/);assert.match(text,/exact apprentice wand \(6910\)/);assert.match(text,/exact master wand \(6914\)/);
+});
