@@ -155,7 +155,7 @@ test("staff variants open their own list and autocast and cast its special spell
   }
 });
 
-test("Last Man Standing's Ancient staff copy refuses the standard book like the Ancient staff", (t) => {
+test("Last Man Standing's unqualified Ancient staff copy retains its standard-book refusal", (t) => {
   require("../plugins/minigames/lms/Common.LastManStanding").init({ core });
   require("../plugins/minigames/lms/Items.LastManStanding").registerAliases();
   const f = wielding(t, core.CacheDefinitions.getObjId("br_ancient_staff"));
@@ -235,4 +235,10 @@ test("a forged standard slot on the Ancient book sets no autocast", (t) => {
     Autocasting.handleWidgetAction(f.p, 201, 1, 16);
     assert.equal(f.p.getCombat().getAutocastSpell(), null, `${weapon}`);
   }
+});
+
+test("the exact real Ancient staff opens the Normal list while its Ancient list remains available", (t) => {
+  const I=core.ItemIdentifiers,S=core.CombatSpells;
+  const normal=wielding(t,I.ANCIENT_STAFF);assert.equal(choose(normal.p,1),S.WIND_STRIKE);assert.equal(normal.list(),-1);assert.equal(Autocasting.canAutocast(normal.p,S.FIRE_WAVE),true);
+  const ancient=wielding(t,I.ANCIENT_STAFF,core.MagicSpellbook.ANCIENT);assert.equal(choose(ancient.p,34),S.ICE_RUSH);assert.equal(ancient.list(),I.ANCIENT_STAFF);
 });

@@ -1599,3 +1599,36 @@ checkpoints, not natural probability, encoded object-click, full F2P loader,
 acquisition, client or global-startup proof. Source registration alone establishes
 no runtime outcome. Earlier revision/run results retain their original attribution;
 no passes transfer to this source.
+
+### Exact real Ancient staff in Standard
+
+Standard additionally accepts only real Ancient staff 4675. Its ordinary Normal
+selector and elemental autocasts are also available outside Clan Wars; the existing
+Ancient-book list and behavior stay intact. The exact Standard set still preserves
+Master6914, Apprentice6910 and Beginner6908. The 34-spell,29 generic manual,20 Normal
+elemental-autocast boundary, five matching-staff gates, manual god policy and empty
+or elemental-tome offhand boundary remain unchanged.
+
+[Ancient staff revision15350343](https://oldschool.runescape.wiki/w/Ancient_staff?oldid=15350343)
+and [Autocast revision15379930](https://oldschool.runescape.wiki/w/Autocast?oldid=15379930)
+both identify Standard and Ancient autocasting. The real equipment gate remains
+50 Attack,50 Magic and Desert Treasure I, using maximum equipment levels separately
+from current spell levels. Native cache stats remain +15 Magic attack/defence,-1
+Prayer and zero Magic damage bonus: unmodified Fire Wave maximum20 equals plain
+staff20. It supplies no elemental runes and preserves actual offhand aggregation.
+
+This addition does not admit aliases or other families. LMS20431 retains its
+existing Normal refusal and Standard exclusion as unqualified behavior, without
+claiming this is its OSRS Normal policy. Its primary no-wield-requirement versus
+current loaded50/50 gap is separate and unchanged. Note4676,placeholder16476,
+distinct croziers, Teacher6912 and other unadmitted identities remain outside this
+outcome. No quest, loader, cache, alias registry or generated-data repair occurs.
+
+The source fixture exercises real registered Desert Treasure stage14/15 gating,
+native Wield and independent max-level gates, global selector/paid-repeat controls,
+separate global and battle baseline targets, paid manual/autocast resource and
+hit owners, existing effects and lifecycle disposal/rejoin. Quest state, positions,
+levels, ticks, accuracy/max and held Forfeit impact windows are supplied controls,
+not quest playthrough, retail/client/acquisition/probability/full-world proof.
+Registration alone establishes no native outcome. Prior results retain their exact
+source/job attribution and do not transfer to this source or a later merge.

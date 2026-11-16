@@ -233,7 +233,7 @@ export class Autocasting {
     /**
      * Why the wielded weapon can't autocast spells from `spellbook`, or null when it can (wiki: Autocast).
      * Only the ancient staff family autocasts Ancient Magicks (the Staff of the Dead and Staff of Light
-     * don't), and the Ancient staff autocasts nothing else.
+     * don't). The real Ancient staff also autocasts Normal elemental spells (Wiki: Ancient staff/Autocast).
      */
     private static weaponRefusal(player: Player, spellbook: MagicSpellbook): string | null {
         const weapon = player.getEquipment().getWeapon();
@@ -245,8 +245,10 @@ export class Autocasting {
             // rsprox_transcripts/234/00843.txt tick 465 (a bladed staff), 237/01107.txt tick 5739.
             return "You cannot autocast Ancient Magicks with that.";
         }
-        // Its Last Man Standing copy (br_ancient_staff) too.
-        if (spellbook === MagicSpellbook.NORMAL && ItemAliases.same(weaponId, ItemIdentifiers.ANCIENT_STAFF)) {
+        // Preserve the unqualified Last Man Standing copy's current Normal refusal. Only the real staff's
+        // Standard-spellbook behavior is established here; this does not admit its aliases or change LMS rules.
+        if (spellbook === MagicSpellbook.NORMAL && weaponId !== ItemIdentifiers.ANCIENT_STAFF
+            && ItemAliases.same(weaponId, ItemIdentifiers.ANCIENT_STAFF)) {
             return "You can only autocast ancient magicks with that.";
         }
         if (spellbook === MagicSpellbook.ARCEUUS && !this.canAutocastArceuus(weapon.getDefinition().getName())) {

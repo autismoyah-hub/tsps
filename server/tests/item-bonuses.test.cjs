@@ -105,3 +105,10 @@ test("exact beginner wand keeps cache attack-defence bonuses, zero damage bonus 
   assert.equal(definition.getRequirements()[6], 45);
   assert.equal(definition.getWeaponInterface(), require("../dist/game/content/combat/WeaponInterfaces").WeaponInterfaces.STAFF);
 });
+
+test("exact Ancient staff keeps native cache bonuses and loaded Attack50 Magic50 interface", () => {
+  const id=ItemIdentifiers.ANCIENT_STAFF;assert.equal(id,4675);const cached=CacheDefinitions.getItem(id),definition=ItemDefinition.forId(id);
+  assert.equal(cached.params.get(3),15);assert.equal(cached.params.get(8),15);assert.equal(cached.params.get(11),-1);assert.equal(cached.params.has(299),false);
+  assert.equal(definition.hasCacheBonuses(),true);assert.equal(bonuses(id)[3],15);assert.equal(bonuses(id)[8],15);assert.equal(bonuses(id)[12],0);assert.equal(bonuses(id)[13],-1);
+  assert.equal(definition.getRequirements()[0],50);assert.equal(definition.getRequirements()[6],50);assert.equal(definition.getWeaponInterface(),require("../dist/game/content/combat/WeaponInterfaces").WeaponInterfaces.ANCIENT_STAFF);
+});
