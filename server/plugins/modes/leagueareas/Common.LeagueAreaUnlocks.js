@@ -90,6 +90,19 @@ function leagueOf(player) {
   return type !== null && data.leagues[type] && leagues[type] ? Number(type) : null;
 }
 
+/** Affirmative travel policy classification; optional/null profile answers are faults. */
+function travelProfile(player) {
+  const query = { player, profileResolved: false, profileState: "unanswered" };
+  api.emitCustomEvent("league:profile", query);
+  if (query.profileResolved !== true) return { state: "fault" };
+  if (query.profileState === "inactive" && ["main", "hardcore"].includes(query.profile) && query.league === null)
+    return { state: "inactive", profile: query.profile, league: null, reason: "nonleague" };
+  if (query.profileState !== "active" || query.profile !== "league" || !Number.isInteger(query.league)
+      || !leagues?.[query.league] || !data?.leagues) return { state: "fault" };
+  return { state: data.leagues[query.league] ? "active" : "inactive", profile: "league", league: query.league,
+    reason: data.leagues[query.league] ? "area-policy" : "known-nonarea-league" };
+}
+
 /** The league's area rules (defaults, thresholds, areas offered). */
 function league(type) {
   return data.leagues[type] ?? null;
@@ -168,7 +181,7 @@ function uid(group, child) {
 }
 
 module.exports = {
-  init, leagueOf, league, leagueInfo, area, areaByName, spotanim, unlocked, tasks, thresholdFor, nextSlot, available,
+  init, leagueOf, travelProfile, league, leagueInfo, area, areaByName, spotanim, unlocked, tasks, thresholdFor, nextSlot, available,
   colourHex, message, uid, unpackCoord, AREAS_ATTRIBUTE,
   get areas() { return areas; },
   get data() { return data; },

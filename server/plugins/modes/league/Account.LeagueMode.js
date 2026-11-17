@@ -128,7 +128,15 @@ function refuseModeChange(change) {
 
 function profile(query) {
   if (!query?.player) return;
+  query.profileResolved = false;
+  query.profileState = "fault";
+  const profile = query.player.getProfile();
+  if (!["main", "hardcore", "league"].includes(profile)) return;
+  query.profile = profile;
   query.league = Common.leagueOf(query.player);
+  if (profile === "league" && query.league === null) return;
+  query.profileState = profile === "league" ? "active" : "inactive";
+  query.profileResolved = true;
 }
 
 /** The league's XP rate multiplies every gain (the world's own rate still applies first). */

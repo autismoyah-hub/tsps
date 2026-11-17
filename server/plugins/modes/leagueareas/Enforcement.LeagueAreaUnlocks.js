@@ -116,6 +116,38 @@ function respawn(event) {
   }
 }
 
+/**
+ * `league:resolve-travel` chooses a normal-world landing before a scripted scene exit.
+ * A locked destination returns to the caller's open departure tile, else the existing league home.
+ * The transport keeps responsibility for ending its scene and restoring its own controls.
+ */
+function resolveTravel(query) {
+  query.status = "fault";
+  const { player, destination, previous } = query;
+  const policy = Common.travelProfile(player);
+  if (policy.state === "fault") return;
+  query.profile = policy.profile;
+  query.league = policy.league;
+  query.corrected = false;
+  if (policy.state === "inactive") {
+    query.destination = destination.clone();
+    query.recovery = previous.clone();
+    query.inactiveReason = policy.reason;
+    query.status = "inactive";
+    return;
+  }
+  const type = policy.league;
+  const recovery = previous && Regions.isOpenAt(type, player, previous) ? previous.clone() : home(type, player);
+  if (!Regions.isOpenAt(type, player, recovery)) return;
+  query.recovery = recovery;
+  if (!Regions.isOpenAt(type, player, destination)) {
+    query.destination = recovery.clone();
+    query.corrected = true;
+    player.sendMessage(Common.message("locked"));
+  } else query.destination = destination.clone();
+  query.status = "resolved";
+}
+
 /** Asked by Death's Office before its exit portal opens. */
 function officeExit(query) {
   const { player, destination } = query;
@@ -131,6 +163,7 @@ module.exports = function attach(api) {
   api.onPlayerDeath(died);
   api.onCustomEvent("player:respawn", respawn);
   api.onCustomEvent("deaths-office:exit", officeExit);
+  api.onCustomEvent("league:resolve-travel", resolveTravel);
 };
 
 Object.assign(module.exports, { home });

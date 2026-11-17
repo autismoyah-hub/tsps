@@ -18,6 +18,7 @@ const QUEST_KEY = "another_slice_of_ham";
 const DIARY_TASK = { diary: "lumbridge", task: "take-the-train-from-dorgesh-kaan-to-keldagrim" };
 /** Toplevel 161's overlay_atmosphere, where the fade (and the drive-by) mount. */
 const ATMOSPHERE_UID = (161 << 16) | 1;
+const RECOVERY_ATTRIBUTE = "dorgesh-kaan-train:recovery";
 
 let api;
 let core;
@@ -54,10 +55,114 @@ function arrivalTile(at) {
   return new core.Location(sumX - at.getX(), sumY - at.getY(), at.getZ());
 }
 
+/** A source-supported physical anchor is not current policy clearance. */
+function usable(location) {
+  if (!location || typeof location.clone !== "function") return false;
+  const xyz = [location.getX(), location.getY(), location.getZ()];
+  return xyz.every(Number.isInteger) && xyz[0] >= 0 && xyz[0] < 16384 && xyz[1] >= 0 && xyz[1] < 16384 && xyz[2] >= 0 && xyz[2] < 4;
+}
+/** Marker provenance is metadata, never current travel permission. No timestamp/expiry is implied. */
+function recoveryMarker(player) {
+  const saved = player.getAttribute(RECOVERY_ATTRIBUTE);
+  if (!saved || saved.v !== 1 || !["pending", "fault"].includes(saved.state)
+      || !["main", "hardcore", "league", "unknown"].includes(saved.profile)
+      || !Array.isArray(saved.anchor) || saved.anchor.length !== 3 || !saved.anchor.every(Number.isInteger)) return null;
+  if (saved.profile === "league" ? !Number.isInteger(saved.league) || saved.league < 1 || saved.league > 6 : saved.league !== null) return null;
+  const anchor = new core.Location(...saved.anchor);
+  return usable(anchor) ? { ...saved, anchor: [...saved.anchor] } : null;
+}
+function sameRecoveryProfile(player, saved) {
+  try { return saved.profile !== "unknown" && player.getProfile() === saved.profile; }
+  catch { return false; }
+}
+function physicalAnchor(player, token) {
+  if (usable(token?.faultAnchor)) return token.faultAnchor.clone();
+  const saved = recoveryMarker(player);
+  if (saved && sameRecoveryProfile(player, saved)) return new core.Location(...saved.anchor);
+  // Malformed/orphan/cross-profile marker: configured physical fallback, NEVER an area grant.
+  return core.WorldDefinition.WORLD_SPAWN.clone();
+}
+function remember(player, anchor, state, reply = {}) {
+  const previous = recoveryMarker(player);
+  // Preserve the last validated provenance through faults; do not manufacture a current approval.
+  player.setAttribute(RECOVERY_ATTRIBUTE, { v: 1, anchor: [anchor.getX(), anchor.getY(), anchor.getZ()],
+    state, profile: reply.profile ?? previous?.profile ?? "unknown", league: reply.league ?? previous?.league ?? null });
+}
+/** Only the existing NetworkBuilder WORLD_INTERACTIONS gate is covered, not every server action. */
+function holdFaultInput(event) {
+  const saved = event.player.getAttribute(RECOVERY_ATTRIBUTE);
+  if (saved != null && (!riding.has(event.player) || saved.state !== "pending")) event.handled = true;
+}
+/** Death observers run before ordinary respawn placement. Do not turn a normal death into rollback. */
+function died({ player }) {
+  if (riding.has(player)) finish(player, false);
+}
+function travelReply(player, destination, previous) {
+  try {
+    // Public runtime character namespace is authoritative for genuine nonleague characters.
+    const profile = player.getProfile();
+    if (["main", "hardcore"].includes(profile)) return { status: "inactive", profile, league: null,
+      destination: destination.clone(), recovery: previous.clone(), corrected: false };
+    if (profile !== "league") return null;
+    const query = { player, destination, previous, status: "unanswered" };
+    api.emitCustomEvent("league:resolve-travel", query);
+    if (!["resolved", "inactive"].includes(query.status) || query.profile !== "league"
+        || !Number.isInteger(query.league) || typeof query.corrected !== "boolean"
+        || !usable(query.destination) || !usable(query.recovery)) return null;
+    if (query.status === "inactive" && query.inactiveReason !== "known-nonarea-league") return null;
+    return query;
+  } catch { return null; }
+}
+function clearRecovery(player) { player.setAttribute(RECOVERY_ATTRIBUTE, null); }
+function stopForPolicyFault(player, token) {
+  const anchor = physicalAnchor(player, token);
+  remember(player, anchor, "fault");
+  waiting.delete(player);
+  if (!player.isRegistered()) {
+    // Normal removal has no World movement enforcement. Place BEFORE fallible UI cleanup/save.
+    riding.delete(player);
+    player.setLocation(anchor);
+    scenes.controls(player, false);
+    setVar(player, "fov_clamp", 0);
+    return;
+  }
+  try { finish(player, false); }
+  finally {
+    try { scenes.controls(player, true, true); }
+    finally { player.requestLogout(); }
+  }
+}
+function resolvedArrival(player, token) {
+  const reply = travelReply(player, token.to.clone(), token.origin.clone());
+  if (!reply) { stopForPolicyFault(player, token); return null; }
+  token.to = reply.destination;
+  token.faultAnchor = reply.recovery.clone();
+  token.corrected = token.corrected || reply.corrected;
+  return token.to;
+}
+function recover({ player }) {
+  if (player.getAttribute(RECOVERY_ATTRIBUTE) == null) return;
+  const anchor = physicalAnchor(player);
+  const reply = travelReply(player, anchor, anchor);
+  if (!reply) { stopForPolicyFault(player); return; }
+  const token = { faultAnchor: reply.recovery };
+  const serial = player.getTeleportSerial();
+  player.moveTo(reply.destination);
+  if (!player.isRegistered() || !player.getLocation().equals(reply.destination) || player.getTeleportSerial() !== serial + 1) {
+    stopForPolicyFault(player, token); return;
+  }
+  clearRecovery(player); // Only after fresh authority AND checked actual placement.
+  scenes.controls(player, false);
+  setVar(player, "fov_clamp", 0);
+}
+
 function board({ player, zone }) {
   const key = Object.keys(data.stations).find((name) => data.stations[name].zone === zone);
-  if (!key || riding.has(player) || !questComplete(player)) return;
+  if (!key || riding.has(player) || player.getAttribute(RECOVERY_ATTRIBUTE) != null || !questComplete(player)) return;
   const station = data.stations[key];
+  if (!core.TeleportHandler.destinationAllowed(player, arrivalTile(player.getLocation()))) return;
+  const policy = travelReply(player, arrivalTile(player.getLocation()), player.getLocation());
+  if (!policy || policy.corrected) return;
   const token = {};
   waiting.set(player, { station: key, token });
   message(player, "boarded", data.stations[station.to].name);
@@ -79,8 +184,13 @@ function depart(player, key) {
   const station = data.stations[key];
   const destination = data.stations[station.to];
   const ride = data.ride;
+  if (!inside(station.zone, player.getLocation())) return;
   const to = arrivalTile(player.getLocation());
-  const token = { to, from: key };
+  if (!core.TeleportHandler.destinationAllowed(player, to)) return;
+  const policy = travelReply(player, to, player.getLocation());
+  if (!policy || policy.corrected) return;
+  const token = { to, from: key, origin: player.getLocation().clone(), corrected: false, faultAnchor: policy.recovery.clone() };
+  remember(player, token.faultAnchor, "pending", policy);
   riding.set(player, token);
   message(player, "departs", destination.name);
   scenes.fade(player, true);
@@ -116,8 +226,17 @@ function depart(player, key) {
 /** The teleport onto the other train, still held; the rest comes a tick later (see `finish`). */
 function arrive(player) {
   const token = riding.get(player);
+  const destination = resolvedArrival(player, token);
+  if (!destination || riding.get(player) !== token) return;
   if (scenes.get(player)) scenes.end(player, false);
-  player.moveTo(token.to);
+  const serial = player.getTeleportSerial();
+  player.moveTo(destination);
+  if (riding.get(player) !== token) return;
+  if (!player.isRegistered() || !player.getLocation().equals(destination) || player.getTeleportSerial() !== serial + 1) {
+    stopForPolicyFault(player, token); return;
+  }
+  clearRecovery(player);
+  if (token.corrected) { finish(player, false); return; }
   scenes.controls(player, true, true);
 }
 
@@ -130,13 +249,15 @@ function finish(player, arrived) {
   const token = riding.get(player);
   if (!token) return;
   riding.delete(player);
+  // Ordinary HP-zero/death/cancel ends the pending journey. Intentional faults were reclassified first.
+  if (!arrived && player.getAttribute(RECOVERY_ATTRIBUTE)?.state === "pending") clearRecovery(player);
   if (scenes.get(player)) scenes.end(player, false);
   scenes.controls(player, false);
   player.getPacketSender().sendCameraReset();
   setVar(player, "fov_clamp", 0);
   scenes.restoreTabs(player);
   scenes.fade(player, false);
-  if (!arrived) return;
+  if (!arrived || token.corrected) return;
   const destination = data.stations[token.from].to;
   const zone = data.stations[destination].zone;
   if (inside(zone, player.getLocation())) board({ player, zone });
@@ -153,18 +274,31 @@ function sceneEnded(player, scene, logout) {
   const token = riding.get(player);
   if (!logout || !token) return;
   riding.delete(player);
+  const destination = resolvedArrival(player, token);
+  if (!destination) return;
+  player.setLocation(destination);
+  if (player.getLocation().equals(destination)) clearRecovery(player);
+  else { stopForPolicyFault(player, token); return; }
   setVar(player, "fov_clamp", 0);
-  player.setLocation(token.to);
 }
 
 function logout({ player }) {
   waiting.delete(player);
   const token = riding.get(player);
-  if (!token) return;
+  if (!token) {
+    if (player.getAttribute(RECOVERY_ATTRIBUTE) != null) stopForPolicyFault(player);
+    return;
+  }
   if (scenes.get(player)) scenes.end(player, true);
   else {
     riding.delete(player);
-    player.setLocation(token.to);
+    const destination = resolvedArrival(player, token);
+    if (!destination) return;
+    player.setLocation(destination);
+    if (player.getLocation().equals(destination)) clearRecovery(player);
+    else { stopForPolicyFault(player, token); return; }
+    scenes.controls(player, false);
+    setVar(player, "fov_clamp", 0);
   }
 }
 
@@ -186,7 +320,11 @@ module.exports = {
       api.onZoneEnter(station.zone, board);
       api.onZoneExit(station.zone, alight);
     }
+    api.persistAttribute(RECOVERY_ATTRIBUTE, null);
+    api.onPlayerLogin(recover);
     api.onPlayerLogout(logout);
+    api.onCustomEvent("player:world-input", holdFaultInput);
+    api.onCustomEvent("player:died", died);
   },
-  _test: { waiting, riding, arrivalTile, board, alight, depart, finish, logout, get data() { return data; } },
+  _test: { waiting, riding, arrivalTile, board, alight, depart, finish, logout, recover, RECOVERY_ATTRIBUTE, get data() { return data; } },
 };
