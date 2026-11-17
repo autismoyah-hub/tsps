@@ -99,7 +99,7 @@ before(async () => {
   console.error = (...args) => { errors.push(args.map(String).join(' ')); originalError(...args); };
 });
 afterEach(context => {
-  if(magicCase)console.log('MAGIC_FIXTURE '+JSON.stringify({phase:'teardown-start',name:magicCase,clock:C.now(),actors:actors.length,...process.memoryUsage()}));
+  if(magicCase)console.log('MAGIC_FIXTURE '+JSON.stringify({phase:'teardown-start',name:magicCase,clock:C.now(),actors:actors.length,...process.memoryUsage(),...magicRetentionSnapshot()}));
   if(context.name.startsWith('standard-bow'))bowDiagnostic(context,'teardown-start');
   Negotiation.shutdown();
   Match.shutdown();
@@ -113,10 +113,129 @@ afterEach(context => {
   }
   assert.equal(npcQueueFailures.splice(0).length,0,'only the explicit refused-add fixture may consume a failed queue registration');
   assert.deepEqual(errors.splice(0), [], 'production hooks must not swallow errors');
-  if(magicCase)console.log('MAGIC_FIXTURE '+JSON.stringify({phase:'teardown-complete',name:magicCase,clock:C.now(),actors:actors.length,...process.memoryUsage()}));
+  if(magicCase)console.log('MAGIC_FIXTURE '+JSON.stringify({phase:'teardown-complete',name:magicCase,clock:C.now(),actors:actors.length,...process.memoryUsage(),...magicRetentionSnapshot()}));
   magicCase=null;
   if(context.name.startsWith('standard-bow'))bowDiagnostic(context,'teardown-complete');
 });
+
+// Direct named edges only. Temporary identity sets never escape this snapshot.
+// Non-null timer fields count retained handles, including cleared handles.
+function magicRetentionSnapshot() {
+  const result = { diagnosticVersion: 1, serial };
+  const rooted = new Set(), current = new Set();
+  const shape = (ok, name) => assert.equal(ok, true, `retention diagnostic shape: ${name}`);
+  const array = (value, name) => { shape(Array.isArray(value), name); return value; };
+  const map = (value, name) => { shape(value instanceof Map, name); return value; };
+  const set = (value, name) => { shape(value instanceof Set, name); return value; };
+  const fixture = p => p instanceof Player && /^clanqa[0-9]+$/.test(p.getUsername());
+  function edges(name, values) {
+    const unique = new Set(); let entries = 0, players = 0, unregistered = 0;
+    for (const p of values) {
+      entries++;
+      if (!fixture(p)) continue;
+      players++; unique.add(p); rooted.add(p);
+      if (!p.isRegistered()) unregistered++;
+    }
+    result[`${name}Entries`] = entries;
+    result[`${name}PlayerEdges`] = players;
+    result[`${name}UnregisteredEdges`] = unregistered;
+    result[`${name}UniquePlayers`] = unique.size;
+  }
+  const W = core.World, T = core.TaskManager;
+  const slots = array(W.players.characters, 'World.players.characters');
+  result.worldPlayerSlotCapacity = slots.length;
+  let occupied = 0;
+  for (const p of slots) if (p != null) occupied++;
+  result.worldPlayerSlotsOccupied = occupied;
+  edges('worldPlayers', slots);
+  for (const field of ['playerArray', 'playerProcessOrder', 'addPlayerQueue', 'removePlayerQueue']) {
+    edges(`world_${field}`, array(W[field], `World.${field}`));
+  }
+  edges('world_logoutRequests', set(W.logoutRequests, 'World.logoutRequests'));
+  for (const field of ['playerTileOccupants', 'playerUpdateBuckets']) {
+    const buckets = map(W[field], `World.${field}`);
+    result[`world_${field}Buckets`] = buckets.size;
+    // A generator visits direct entries without flattening/copying bucket arrays.
+    edges(`world_${field}`, (function* () {
+      for (const bucket of buckets.values()) yield* array(bucket, `World.${field} bucket`);
+    })());
+  }
+  shape(T.pendingTasks != null && typeof T.pendingTasks.toArray === 'function', 'TaskManager.pendingTasks');
+  for (const [field, tasks] of [
+    ['pendingTasks', array(T.pendingTasks.toArray(), 'pendingTasks.toArray')],
+    ['activeTasks', array(T.activeTasks, 'TaskManager.activeTasks')],
+    ['tasksProcessedThisCycle', array(T.tasksProcessedThisCycle, 'TaskManager.tasksProcessedThisCycle')],
+    ['walkToTickedThisCycle', set(T.walkToTickedThisCycle, 'TaskManager.walkToTickedThisCycle')]
+  ]) {
+    let running = 0, stopped = 0, numericKeys = 0, otherKeys = 0;
+    edges(`task_${field}`, (function* () {
+      for (const task of tasks) {
+        shape(task != null && typeof task.isRunning === 'function', `TaskManager.${field} task`);
+        if (task.isRunning()) running++; else stopped++;
+        if (typeof task.key === 'number') numericKeys++;
+        else if (!fixture(task.key)) otherKeys++;
+        yield task.key;
+      }
+    })());
+    result[`task_${field}Running`] = running;
+    result[`task_${field}Stopped`] = stopped;
+    result[`task_${field}NumericKeys`] = numericKeys;
+    result[`task_${field}OtherKeys`] = otherKeys;
+  }
+  const channels = map(FC.channels, 'FriendsChat.channels');
+  result.socialChannels = channels.size;
+  result.socialMembershipBookkeeping = map(FC.membershipByPlayer, 'FriendsChat.membershipByPlayer').size;
+  edges('socialMembers', (function* () {
+    for (const channel of channels.values()) yield* map(channel.members, 'channel.members').values();
+  })());
+  edges('clanMatches', map(C.matches, 'Common.matches').keys());
+  edges('clanNegotiations', map(C.negotiations, 'Common.negotiations').keys());
+  edges('clanDying', map(Match.dying, 'Match.dying').keys());
+  edges('clanViewing', map(viewingUnit().active, 'Viewing.active').keys());
+  const games = set(Match.active, 'Match.active');
+  result.clanActiveGames = games.size;
+  for (const field of ['members', 'fighters', 'viewers', 'jailed']) {
+    edges(`clanGame_${field}`, (function* () {
+      for (const game of games) {
+        if (field === 'members' || field === 'fighters') yield* map(game[field], `Game.${field}`).keys();
+        else yield* set(game[field], `Game.${field}`);
+      }
+    })());
+  }
+  for (const p of actors) if (fixture(p) && p.isRegistered()) current.add(p);
+  const all = new Set(rooted);
+  for (const p of current) all.add(p);
+  result.rootedUniquePlayers = rooted.size;
+  result.currentRegisteredPlayers = current.size;
+  result.unionUniquePlayers = all.size;
+  // Buckets overlap intentionally: current-only excludes every measured root;
+  // unregistered-rooted includes only unregistered players in measured roots.
+  for (const bucket of ['union', 'currentOnly', 'unregisteredRooted']) {
+    const totals = { Players: 0, NativePlayers: 0, NonNativePlayers: 0, NativeFrames: 0,
+      NativeBytes: 0, PendingFrames: 0, PendingBytes: 0, IdleHandleFields: 0, LoginHandleFields: 0 };
+    for (const p of all) {
+      if (bucket === 'currentOnly' && (!current.has(p) || rooted.has(p))) continue;
+      if (bucket === 'unregisteredRooted' && (!rooted.has(p) || p.isRegistered())) continue;
+      totals.Players++;
+      if (p.nativeProof === true) {
+        totals.NativePlayers++;
+        const frames = array(p.nativePackets, 'native player.nativePackets');
+        totals.NativeFrames += frames.length;
+        for (const frame of frames) { shape(Buffer.isBuffer(frame), 'nativePackets frame'); totals.NativeBytes += frame.byteLength; }
+      } else totals.NonNativePlayers++;
+      const session = p.getSession();
+      shape(session != null, 'player session');
+      totals.PendingFrames += array(session.pendingPackets, 'session.pendingPackets').length;
+      shape(Number.isSafeInteger(session.pendingPacketBytes) && session.pendingPacketBytes >= 0, 'session.pendingPacketBytes');
+      totals.PendingBytes += session.pendingPacketBytes;
+      shape(p.connection instanceof ClientConnection, 'fixture connection');
+      if (p.connection.idleCheck != null) totals.IdleHandleFields++;
+      if (p.connection.pendingLoginTimeout != null) totals.LoginHandleFields++;
+    }
+    for (const [name, value] of Object.entries(totals)) result[`${bucket}${name}`] = value;
+  }
+  return result;
+}
 
 function actor(nativeProof = false) {
   const transport = { kind: nativeProof ? 'tcp' : 'test', remoteAddress: '127.0.0.1', isOpen: () => true,
@@ -5604,7 +5723,7 @@ function mStaffNames(){
   return names;
 }
 function mTest(name,body){test('native M '+name,async t=>{
-  magicCase=name;console.log('MAGIC_FIXTURE '+JSON.stringify({phase:'start',name,clock:C.now(),actors:actors.length,...process.memoryUsage()}));
+  magicCase=name;console.log('MAGIC_FIXTURE '+JSON.stringify({phase:'start',name,clock:C.now(),actors:actors.length,...process.memoryUsage(),...magicRetentionSnapshot()}));
   await body(t);
 });}
 function mInstall(){
