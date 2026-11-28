@@ -1,0 +1,8 @@
+This is a GATE RETURN. Your complete original brief is {ROOT}/prompts/prompt-titan-rebuild-12596-b.txt: read it in full and follow it, with everything it allows and forbids. The first author's work is in {BUILD}/ (REPORT.md, notes.md, build scripts, branda.bin, submission.json): continue from it in the same folder (keep the first version as branda-round1.bin, submission-round1.json and REPORT-round1.md).
+
+The Teacher ran the gate on your submission. Full output: {BUILD}/teacher-gate/gate-round1.txt. Read every line. Overall it is close: 88 lines PASS, 61 BORDERLINE, 6 FAIL; small marks PASS (17.7 of 45 missing at game size, limit 24): keep that. What to close, in order:
+1. Outlines in motion: stand 0.865, walk 0.856, attacks 0.81 to 0.85, death 0.814 (FAIL below 0.82, PASS from 0.90); the label centroid gap 3.8 units (BORDERLINE). Your parts sit or move a little off the real ones: compare each attack and the death frame by frame with the sheet's pose set and phase poses (study the worst cells the gate names: attack:4, attack:10) and correct where parts are placed and which labels they follow, not the paint.
+2. Tone: 8.4 to 9.4 grey levels everywhere (PASS needs less); solid body paint 3.0 to 3.2 and light 5.4 to 5.5: light (shape) is the larger part, so fix planes and folds before paint (research-tone normalfit.py aid), never repair tone with paint.
+You still do not run the gate yourself and may not read the real mesh or the Teacher's private fixtures.
+
+Up to eight more rounds. Report as the original brief says, to {BUILD}/REPORT.md, with a section saying, line by line, what you changed for each failing or borderline gate line, and keep the section "How this boss is built". Do not ask questions; decide and proceed.

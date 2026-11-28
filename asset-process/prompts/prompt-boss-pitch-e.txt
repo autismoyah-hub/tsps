@@ -1,0 +1,8 @@
+Read {ROOT}/author-pack/BRIEF-new-boss-pitch.md completely and follow it. Work at absolute paths on this machine; Python is {PYTHON} -I; write files with your file-writing or patch tool, never shell heredocs; run Blender with --python-exit-code 1 before -P; run shell commands from Git Bash. Nothing leaves this machine. Never kill a process you did not start.
+
+TASK LINE
+- Track: BEYOND.
+- Region seed (where the boss belongs; you shape the theme within it): swamp and ruin: decay, fungus, old stone sinking into marsh.
+- NAME = boss-pitch-e; work in {BUILD}/ and {ROOT}/render/boss-pitch-e-*.
+- Several authors pitch in parallel with other seeds; do not read any other builds/boss-pitch-* folder.
+- Write your report to {BUILD}/REPORT.md (if your file tool refuses a report file, give it as your final answer). Do not ask questions; decide and proceed.

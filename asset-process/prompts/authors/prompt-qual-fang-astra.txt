@@ -1,0 +1,5 @@
+Your complete brief is the file {ROOT}/author-pack/BRIEF-weapon-rebuild.md on this machine. Read it in full first and follow it exactly; it names everything else you must read. Work on this machine at the absolute paths it gives, not in your starting directory. This is a private calibration exercise: the result is scored against a held-out reference and never shipped.
+
+Task line: your weapon is the real item Osmumten's fang, item id 33174 (a long, thin, wavy stabbing sword; about 186 faces). Its sheet is {REFERENCE_ARCHIVE}/items/slot-3/33174.png. NAME = qual-fang-astra (folders {ROOT}/builds/qual-fang-astra/ and {ROOT}/render/qual-fang-astra-*; files qual-fang-astra.blend and qual-fang-astra.bin). In figure.py the real one is item:33174. Export with the exporter's --weapon option as RULES.md describes. Do not read {ROOT}/builds/weapon-fang-33174/ (another author's rebuild of the same item) or anything derived from it.
+
+Write your report to {ROOT}/builds/qual-fang-astra/REPORT.md when you finish, in the brief's report format. Do not ask questions; decide and proceed.

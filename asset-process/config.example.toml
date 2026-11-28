@@ -1,0 +1,21 @@
+# Copy to config.toml beside asset_paths.py. Environment variables of the same names override these.
+# Use forward slashes. Keys left out take the defaults described in SETUP.md.
+
+# ROOT = "X:/assets/asset-process"            # default: this package
+# LEGACY_ROOT = ""                             # an older working folder in the original layout, read-only
+OSRS_CACHE_239 = "X:/osrs/caches/oldschool-239"
+# OSRS_CACHE_242 = "X:/tsps/server/caches/osrs-242_2026-11-03"
+TSPS_CHECKOUT = "X:/tsps"
+# RENDERER_BIN = "client/bin/renderer/authored_scene_snapshot.exe"
+# CLIENT_SRC = "client/rust-client"
+# CLIENT_BIN = "client/bin"
+BLENDER = "C:/Program Files/Blender Foundation/Blender 5.2/blender.exe"
+# PYTHON = "X:/assets/venv/Scripts/python.exe"
+HD_CACHES = "X:/osrs/caches/hd"               # holds r561, r601, r614
+RS3_DIR = "X:/osrs/caches/rs3"
+RS3_CACHE = "X:/osrs/caches/rs3/b951/cache"
+RS3_FLAT = "X:/osrs/caches/rs3/flat/cache"
+REFERENCE_ARCHIVE = "X:/osrs/reference-archive"
+E114_SCENE = "X:/osrs/scenes/base-room"
+# REVIEW_DIR = "X:/assets/review"
+# VERDICTS_DIR = "X:/assets/verdicts"

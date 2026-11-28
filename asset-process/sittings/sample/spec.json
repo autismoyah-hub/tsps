@@ -1,0 +1,47 @@
+{
+ "id": "sample-a",
+ "title": "Sample sitting",
+ "intro": "Three placeholder items showing each kind of question. Replace the pictures with your own boards.",
+ "items": [
+  {
+   "id": "lineup",
+   "kind": "lineup",
+   "title": "Which of these is ours?",
+   "image": "sittings/sample/lineup.png",
+   "count": 4,
+   "ours": [
+    3
+   ],
+   "note": "Four pieces at game size, one of them ours."
+  },
+  {
+   "id": "pair",
+   "kind": "pair",
+   "title": "Which side reads closer to the game?",
+   "image": "sittings/sample/pair.png",
+   "question": "Which side reads closer to the game?",
+   "options": [
+    "Left",
+    "Right",
+    "No real difference"
+   ],
+   "after": "lineup"
+  },
+  {
+   "id": "set",
+   "kind": "pair",
+   "title": "The set beside the game's best of its kind",
+   "image": "sittings/sample/set.png",
+   "question": "How close is it to a genuine asset?",
+   "options": [
+    "Strong",
+    "Usable",
+    "Rework"
+   ],
+   "after": "lineup"
+  }
+ ],
+ "ask": [
+  "Anything else you noticed, in your own words."
+ ]
+}

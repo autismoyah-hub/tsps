@@ -1,0 +1,7 @@
+This is the SECOND and last GATE RETURN. Your complete original brief is {ROOT}/prompts/prompt-titan-rebuild-14147-a.txt: read it in full and follow it, with everything it allows and forbids. The previous work is in {BUILD}/: continue from it there; first copy the current deliverables and report to names ending -prev2.
+
+The Teacher ran the gate on the current version: {BUILD}/teacher-gate/gate-latest.txt. Read every line. Improved from 55 FAIL to 25: now 101 PASS, 29 BORDERLINE, 25 FAIL, every attack FAIL.
+
+What to close: every FAIL line, translucency and tone first (the translucent faces' alpha values and colours against the sheet's translucency layer and alpha bands, region by region), then outlines in motion.
+
+You still do not run the gate yourself and may not read the real mesh or the Teacher's private fixtures. Up to eight more rounds. Report to {BUILD}/REPORT.md with a line-by-line section on what you changed, and keep "How this boss is built". Do not ask questions; decide and proceed.

@@ -1,0 +1,8 @@
+__pycache__/
+config.toml
+render/*
+!render/README.md
+review/
+verdicts/
+builds/
+measure/

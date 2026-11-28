@@ -1,0 +1,2 @@
+# Names specific to this project, one extended regular expression per line.
+# check.sh fails if any appears in SKILL.md, core/ or templates/, which must stay project-independent.

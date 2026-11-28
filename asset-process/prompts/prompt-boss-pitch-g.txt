@@ -1,0 +1,9 @@
+Read {ROOT}/author-pack/BRIEF-new-boss-pitch.md completely and follow it. Work at absolute paths on this machine; Python is {PYTHON} -I; write files with your file-writing or patch tool, never shell heredocs; run Blender with --python-exit-code 1 before -P; run shell commands from Git Bash. Nothing leaves this machine. Never kill a process you did not start.
+
+TASK LINE
+- Track: FAITHFUL.
+- Archetype (what the boss IS; you choose its region, theme and story): a humanoid: a fallen champion, knight, warlord or caster who fights with weapons or spells.
+- Excluded, because an earlier round converged on them: bells, tolls, knells, chimes or any sounding instrument as the central idea; any animal or creature that carries, wears or has grown into an object (a shell, a bell, an arch, a building). Make the boss itself the idea.
+- NAME = boss-pitch-g; work in {BUILD}/ and {ROOT}/render/boss-pitch-g-*.
+- Several authors pitch in parallel; do not read any other builds/boss-pitch-* folder.
+- Write your report to {BUILD}/REPORT.md (if your file tool refuses a report file, give it as your final answer). Do not ask questions; decide and proceed.

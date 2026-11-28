@@ -1,0 +1,12 @@
+[package]
+name = "sheet-render"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+gielinor-client = { path = "../../client/rust-client" }
+
+[[bin]]
+name = "sheet-render"
+path = "sheet_render.rs"

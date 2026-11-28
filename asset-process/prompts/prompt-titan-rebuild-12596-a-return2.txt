@@ -1,0 +1,7 @@
+This is the SECOND and last GATE RETURN. Your complete original brief is {ROOT}/prompts/prompt-titan-rebuild-12596-a.txt: read it in full and follow it, with everything it allows and forbids. The previous work is in {BUILD}/: continue from it there; first copy the current deliverables and report to names ending -prev2.
+
+The Teacher ran the gate on the current version: {BUILD}/teacher-gate/gate-latest.txt. Read every line. 145 lines PASS, 10 BORDERLINE, 0 FAIL; every outline line now PASSES; small marks missing 19.3 of 45 (PASS). Keep all of that.
+
+What to close: ONLY tone: the standing picture 8.6 grey levels and each attack's mean tone 8.1 to 9.1 (PASS needs less). Find where the difference sits (research-tone normalfit.py aid on your own mesh: is it shape, i.e. light, or paint?) and fix shape first: plane orientation and folds where the light falls differently from the sheet's light map; then paint against the sheet's paint map. Never repair tone by repainting a shape error, and do not move the outlines that now pass.
+
+You still do not run the gate yourself and may not read the real mesh or the Teacher's private fixtures. Up to eight more rounds. Report to {BUILD}/REPORT.md with a line-by-line section on what you changed, and keep "How this boss is built". Do not ask questions; decide and proceed.

@@ -1,0 +1,5 @@
+Your complete brief is the file {ROOT}/author-pack/BRIEF-furniture-rebuild.md on this machine. Read it in full first and follow it exactly; it names everything else you must read. Work on this machine at the absolute paths it gives, not in your starting directory.
+
+Task line: your object is the real game object "Drawers", object id 25702: a wooden chest of drawers, 96 x 141 x 116 game units, 356 faces. Its sheet is {REFERENCE_ARCHIVE}/objects/shape-10/25702.png. It covers one tile. Its definition's lighting values are ambient 20, contrast 15: run every line-up with --ambient 20 --contrast 15. NAME = cmp-drawers-sol (folders {ROOT}/builds/cmp-drawers-sol/ and {ROOT}/render/cmp-drawers-sol-*; files cmp-drawers-sol.blend and cmp-drawers-sol.bin).
+
+Write your report to {ROOT}/builds/cmp-drawers-sol/REPORT.md when you finish, as the brief says. Do not ask questions; decide and proceed.

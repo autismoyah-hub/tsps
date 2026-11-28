@@ -1,0 +1,9 @@
+This is a GATE RETURN. Your complete original brief is {ROOT}/prompts/prompt-hd-rebuild-diving.txt: read it in full and follow it, with everything it allows and forbids. The first author's work is in {BUILD}/ (REPORT.md, notes.md, build script, ground.bin, male-worn.bin, female-worn.bin): continue from it in the same folder (keep the first versions as NAME-round1.bin and the report as REPORT-round1.md).
+
+The Teacher ran the gate on all three forms. Full outputs: {BUILD}/teacher-gates/gate-round1-ground.txt, -male-worn.txt, -female-worn.txt, and comparison pictures in teacher-item-ground/, teacher-item-worn/, teacher-item-female/. All three: VERDICT FAIL. Read every line. What to close, in order:
+1. OUTLINES: ground front 0.88, side 0.86, top 0.90 (pass 0.97); male worn side 0.85, top 0.80 (pass 0.93); female worn front 0.90, side 0.85, top 0.76. Measure the sheet's silhouettes again view by view and correct the shape, not the paint.
+2. UNTEXTURED FACES: the gate's region "HD -1" is the set of faces the HD original leaves WITHOUT any texture (plain face colour). Yours textures them. On the sheet's ids.png those faces carry the colour the sheet uses for "no material" (check its legend); make every one of those faces untextured, painted to the sheet's flat colours. This was not stated plainly in your first brief; it is now.
+3. Then the material regions whose colour fails (ground HD 251 placement 0.52, HD 253 and HD 297 colour; female HD 111 colour 43 against 22).
+Do not change what already passes. You still do not run the gate yourself and may not read the HD model or the Teacher's tools beyond the sheet pictures and these gate outputs.
+
+Up to eight more rounds. Report as the original brief says, to {BUILD}/REPORT.md, with a section saying, line by line, what you changed for each failing gate line. Do not ask questions; decide and proceed.

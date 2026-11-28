@@ -1,0 +1,7 @@
+This is a GATE RETURN. Your complete original brief is {ROOT}/prompts/prompt-titan-rebuild-14147-b.txt: read it in full and follow it, with everything it allows and forbids. The previous author's work is in {BUILD}/ (REPORT.md, notes.md, build scripts and deliverables): continue from it in the same folder; first copy the current deliverables and report to names ending -prev (for example REPORT-prev.md), so nothing is lost.
+
+The Teacher ran the gate on the current version. Full output: {BUILD}/teacher-gate/gate-latest.txt (and the gate's comparison pictures beside earlier outputs in that folder). Read every line. VERDICT FAIL: 87 PASS, 32 BORDERLINE, 36 FAIL over five attacks. Colour distance 3.8; tone 12.6 to 16.6 grey levels; outline overlap about 0.81 to 0.82.
+
+What to close, in order: first the colour and TRANSLUCENCY: colour distance 3.8 (compare your colours and your translucent faces' alpha values with the sheet's paint and translucency layers, region by region); then tone in each sequence; then the outlines in walk and attack.
+
+You still do not run the gate yourself and may not read the real mesh, the HD model, or the Teacher's private fixtures and tools beyond the pictures and gate outputs given to you. Up to eight more rounds. Report as the original brief says, to {BUILD}/REPORT.md, with a section saying, line by line, what you changed for each failing or borderline gate line, and keep the "How this ... is built" section. Do not ask questions; decide and proceed.

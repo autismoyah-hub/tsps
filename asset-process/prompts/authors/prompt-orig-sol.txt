@@ -1,0 +1,5 @@
+Your complete brief is the file {ROOT}/author-pack/BRIEF-original-set-piece.md on this machine. Read it in full first and follow it exactly; it names everything else you must read. Work on this machine at the absolute paths it gives, not in your starting directory. This is an ORIGINAL design of your own, not a recreation of any existing object.
+
+Task line: your piece is a MAP TABLE for the scribes' hall: a large table for laying out charts, with one or two large props (for example a spread map and a pair of dividers, or a rolled chart). Footprint two tiles by one: about 190 to 230 units wide, 80 to 96 tall, 100 to 122 deep. Faces: about 350 to 700, every one earning its place. NAME = maptable-sol (folders {ROOT}/builds/original-maptable-sol/ and {ROOT}/render/original-maptable-sol-*; files maptable-sol.blend and maptable-sol.bin). Run line-ups with --ambient 30 --contrast 0 --size 2. Do not read any other author's maptable folder.
+
+Write your report to {ROOT}/builds/original-maptable-sol/REPORT.md when you finish, as the brief's "Report back" section lists. Do not ask questions; decide and proceed.
