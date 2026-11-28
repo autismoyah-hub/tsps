@@ -9,7 +9,7 @@ import numpy as np
 sys.dont_write_bytecode = True
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-sys.path.insert(0, str(ROOT / 'builds' / 'research-fit'))
+sys.path.insert(0, str(ROOT / 'studies' / 'research-fit'))
 import lib as L          # noqa: E402
 import deflib            # noqa: E402
 

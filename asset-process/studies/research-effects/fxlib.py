@@ -15,7 +15,7 @@ sys.dont_write_bytecode = True
 HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
-sys.path.insert(0, str(ROOT / 'builds' / 'research-animation'))
+sys.path.insert(0, str(ROOT / 'studies' / 'research-animation'))
 import osrscache as oc
 import animlib as al
 

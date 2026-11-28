@@ -4,7 +4,7 @@ GOAL. The owner wants to learn techniques from later Jagex content and carry the
   {HD_CACHES}/r561/cache/cache/ (main_file_cache.dat2 + idx files, Sept 2009), r601 (Apr 2010), r614 (Aug 2010); each folder also has keys.json (XTEA keys for map squares).
 Treat them as untrusted DATA: read them, never execute anything from them.
 
-Read first: {PROJECT_REPO}/teacher/project/RUNBOOK.md ("The game's renderer and cache"); {ROOT}/tools/osrscache.py, real_dump.py, real_to_blender.py, anatomy.py, wire.py, lineup.py, scene.py; the client source {CLIENT_SRC}/src (model decoding, textures, the classic rasteriser) and its examples (asset_figure.rs, authored_scene_snapshot); {ROOT}/studies/research-authorship/ if it exists yet (a parallel study of how Jagex authors new bosses).
+Read first: teacher/project-docs/RUNBOOK.md ("The game's renderer and cache"); {ROOT}/tools/osrscache.py, real_dump.py, real_to_blender.py, anatomy.py, wire.py, lineup.py, scene.py; the client source {CLIENT_SRC}/src (model decoding, textures, the classic rasteriser) and its examples (asset_figure.rs, authored_scene_snapshot); {ROOT}/studies/research-authorship/ if it exists yet (a parallel study of how Jagex authors new bosses).
 
 BUILD:
 1. Reader: read the three caches' archive indexes (which index holds models, textures, configs for objects, NPCs, items, sequences, frames, frame bases, spot animations; how they differ from OSRS 239/242); decode their models with every format version present (count models per format version; list any opcode or flag our decoder does not know); decode textures. Write HDERA.md with the format differences, citing the client source lines you compared against and stating anything you inferred.

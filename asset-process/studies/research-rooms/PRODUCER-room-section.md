@@ -1,4 +1,4 @@
-# Section proposed for `teacher/project/PRODUCER.md` (not applied; for the Teacher or a Fable review to place)
+# Section proposed for `teacher/project-docs/PRODUCER.md` (not applied; for the Teacher or a Fable review to place)
 
 Proposed position: a new section after "One order, start to finish", titled as below, and one line added to step 6 of
 that list ("For a room, also follow 'Composing a room' below"). Evidence: the research report of 2026-11-29 (returned to the Teacher), `studies/research-rooms/SCORES.md` and

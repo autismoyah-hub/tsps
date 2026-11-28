@@ -1,0 +1,101 @@
+//! Isolated-account login followed by a local long-distance actor visibility replay.
+//! No synthetic world state or interactions are sent to the server.
+use gielinor_client::{
+    client_state::ClientState,
+    disk_cache::DiskCache,
+    live_runtime::Connection,
+};
+use std::time::{Duration, Instant};
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = ClientState::load(DiskCache::open(
+        "work/kotlin-world/.data/cache/js5",
+        64 << 20,
+    )?)?;
+    let mut live = Connection::connect(
+        &mut client,
+        "127.0.0.1:43617",
+        "rustclient239",
+        "work/kotlin-world/test-account.password",
+        "work/kotlin-world/.data/client.key",
+    )?;
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        live.poll(&mut client)?;
+        client.tick_actor_sequences()?;
+        if live.world.is_some()
+            && live.session.is_established()
+            && !live.scripts_busy()
+            && client
+                .interfaces
+                .widgets
+                .values()
+                .any(|w| w.content == 1337)
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "login/scene timeout");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // Freeze network polling so server state cannot overwrite the local scenario.
+    client.canvas = [765, 503];
+    // This fixture isolates child picking from the root building's upper floors.
+    client.preferences.device.roofs_hidden = true;
+    // Settle the real login, then isolate one real-cache NPC in an empty root scene.
+    live.paint(&mut client, 765, 503)?;
+    let mut npc = client.npc_state.npcs.values().next().unwrap().clone();
+    npc.id = 16299;
+    npc.path.teleport([50, 80], 1);
+    npc.path.position = [6464, 10240];
+    npc.path.fine = [6464., 10240.];
+    npc.position = [50, 80];
+    npc.sequence = Default::default();
+    npc.pose = Default::default();
+    npc.spots.clear();
+    npc.animations = client.npcs[&16299].animations;
+    client.npc_state.indices = vec![1];
+    client.npc_state.npcs.clear();
+    client.npc_state.npcs.insert(1, npc);
+    client.player_state = None;
+    client.world_entities.clear();
+    client.world_spots.clear();
+    client.projectiles.clear();
+    client.world_base = [0, 0];
+    client.data.position = [0, 50, 50];
+    client.input.pointer = [-100, -100];
+    let scene = gielinor_client::scene::Scene::empty(0, 0)?;
+    let mesh =
+        gielinor_client::world_mesh::WorldMesh::build(&scene, &mut client.scripts.source.cache, 3)?;
+    live.world = Some((scene, mesh));
+    client.camera.locked = true;
+    client.camera.eye = [6464, -60, 2240];
+    client.camera.rendered_angles = [0, 0];
+    client.camera.shake = Default::default();
+    use gielinor_client::vm::Host;
+    let mut stack = gielinor_client::vm::Stacks::default();
+    for value in [25, 90, 25] {
+        stack.push_int(14)?;
+        stack.push_int(value)?;
+        client.extended(3212, false, &mut stack)?;
+        let image = live.paint(&mut client, 765, 503)?;
+        let hit = live.pick_where_view(|view, tag| view == 0 && tag == 0x4000000000000001);
+        assert_eq!(
+            hit.is_some(),
+            value == 90,
+            "NPC visibility at8000 depth, distance{value}"
+        );
+        if let Some((point, _)) = hit {
+            let menu = live.menu_entries(&mut client, point)?;
+            assert!(
+                menu.iter().any(|e| matches!(
+                    e.action,
+                    gielinor_client::context_menu::Action::Npc { index: 1, .. }
+                        | gielinor_client::context_menu::Action::ExamineNpc(1)
+                )),
+                "far model picking menu"
+            );
+            std::fs::write("work/draw-distance-live.bmp", image.bmp()?)?;
+        }
+    }
+    println!("Live draw-distance3212 preference: NPC at8000 depth hidden25/visible90/hidden25; long-range model menu picking passed");
+    Ok(())
+}

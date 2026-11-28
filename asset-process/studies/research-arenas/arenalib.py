@@ -13,7 +13,7 @@ with interact type 1, and terrain flag 1 blocks the tile. Objects the SERVER spa
 import sys, json, pathlib, colorsys, collections
 HERE = pathlib.Path(__file__).resolve().parent
 TF = HERE.parents[1]
-sys.path.insert(0, str(TF / 'builds' / 'research-rooms'))
+sys.path.insert(0, str(TF / 'studies' / 'research-rooms'))
 import rlib as R
 
 DIRS = [(-1, 0), (0, 1), (1, 0), (0, -1)]   # west, north, east, south = wall rotation order
@@ -128,7 +128,7 @@ def npcs():
     global _NPC
     if _NPC is None:
         _NPC = {}
-        for f in [TF / 'builds' / 'research-npc' / 'census' / 'npcs.jsonl']:
+        for f in [TF / 'studies' / 'research-npc' / 'census' / 'npcs.jsonl']:
             for l in f.read_text(encoding='utf-8').splitlines():
                 try: d = json.loads(l)
                 except Exception: continue

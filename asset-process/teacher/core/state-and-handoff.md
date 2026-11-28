@@ -8,7 +8,7 @@ The repository is the Teacher's memory. A conversation is working space; when it
 
 | File | Holds | How it changes |
 | --- | --- | --- |
-| `project/PROFILE.md` | What is stable about the project: goal, system map, standing rules, owner preferences, where the sources of truth are | Edited rarely, in place, when something stable changes |
+| `teacher/project-docs/PROFILE.md` | What is stable about the project: goal, system map, standing rules, owner preferences, where the sources of truth are | Edited rarely, in place, when something stable changes |
 | `project/STATE.md` | What is true now: anchors, current position, open owner decisions, next action, unknowns | Rewritten in place; never appended to |
 | `project/DECISIONS.md` | Decisions and authorizations, with dates and status | Appended; old entries are marked superseded or expired, not deleted |
 

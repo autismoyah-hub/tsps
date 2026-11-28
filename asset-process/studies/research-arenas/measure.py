@@ -11,7 +11,7 @@ sys.path.insert(0, str(HERE))
 import arenalib as A, arenamodel as AM, draw, palette
 from arenas import ARENAS, BY
 R = A.R
-sys.path.insert(0, str(A.TF / 'builds' / 'research-rooms'))
+sys.path.insert(0, str(A.TF / 'studies' / 'research-rooms'))
 import roomcheck, roommeasure
 
 LIGHT = re.compile(r'torch|candle|lamp|lantern|brazier|chandelier|fire|flame|sconce|candelab|beacon|glow|lightorb|lava_?fall|burn', re.I)

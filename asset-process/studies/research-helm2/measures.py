@@ -13,7 +13,7 @@ from scipy import ndimage
 from PIL import Image, ImageDraw
 import h2
 from h2 import L, deflib
-sys.path.insert(0, str(h2.ROOT / 'builds' / 'research-fit'))
+sys.path.insert(0, str(h2.ROOT / 'studies' / 'research-fit'))
 import fit as FIT, fitlib
 
 YAWS = (0, 256, 512, 1024, 1536)

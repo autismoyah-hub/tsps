@@ -1,0 +1,21 @@
+[package]
+name="getrandom"
+version="0.2.16"
+edition="2018"
+build=false
+[lib]
+path="src/lib.rs"
+[features]
+std = []
+custom = []
+linux_disable_fallback = []
+rdrand = []
+[dependencies.cfg-if]
+path = "../cfg-if-1.0.0"
+[target.'cfg(unix)'.dependencies.libc]
+path = "../libc-0.2.172"
+default-features = false
+
+[lints.rust]
+unexpected_cfgs="allow"
+deprecated="allow"

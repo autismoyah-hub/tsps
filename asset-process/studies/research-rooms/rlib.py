@@ -11,7 +11,7 @@ import sys, re, json, pickle, pathlib
 HERE = pathlib.Path(__file__).resolve().parent
 TF = HERE.parents[1]
 sys.path.insert(0, str(TF / 'tools'))
-sys.path.insert(0, str(TF / 'builds' / 'research-animation'))
+sys.path.insert(0, str(TF / 'studies' / 'research-animation'))
 import animlib as A
 import osrscache as O
 

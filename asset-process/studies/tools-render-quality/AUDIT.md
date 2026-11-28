@@ -42,7 +42,7 @@ The pitch-board values use the nominal resize factor. Integer rounding in boundi
 
 ## What reaches the screen
 
-The publisher copies images directly (`{PROJECT_REPO}/tools/make_sitting.py:40–43`). All four pages set body max-width 1500, body padding 24, section padding 18 with a 1 px border, and image width 100%. A click sets width auto (`{REVIEW_DIR}/sittings/2026-11-30-d/index.html:3–6`). Starting with one CSS pixel per display pixel, available widths of 765 and 1920 CSS px give image widths of 679 and 1462 px, respectively, before any scrollbar deduction. Browser zoom or UI scaling changes those numbers. The CSS leaves image-rendering at the browser default, so non-integer enlargement uses browser interpolation. Its precise kernel is implementation-dependent. No new raster detail is generated.
+The publisher copies images directly (`{ROOT}/sittings/make_sitting.py:40–43`). All four pages set body max-width 1500, body padding 24, section padding 18 with a 1 px border, and image width 100%. A click sets width auto (`{REVIEW_DIR}/sittings/2026-11-30-d/index.html:3–6`). Starting with one CSS pixel per display pixel, available widths of 765 and 1920 CSS px give image widths of 679 and 1462 px, respectively, before any scrollbar deduction. Browser zoom or UI scaling changes those numbers. The CSS leaves image-rendering at the browser default, so non-integer enlargement uses browser interpolation. Its precise kernel is implementation-dependent. No new raster detail is generated.
 
 | Picture | Browser scale, 765 / 1920 | Display px/tile, 765 / 1920 | Compared with native fixed / resizable |
 |---|---:|---:|---|

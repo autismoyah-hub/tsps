@@ -20,6 +20,6 @@ working folder and what was left out, and why.
 | `prompts/` | the agent prompts as templates (`{ROOT}`, `{BUILD}`, `{PYTHON}` ...); `authors/` and `producers/` examples |
 | `teacher/` | the Teacher role (`SKILL.md`, `core/`, `templates/`, `playbooks/`, `exam/`, `check.sh`) and a project template |
 | `examples/barrel/` | the worked example of a model written by script |
-| `client/` | not in this branch yet: the Rust client source the harness is built on, its prebuilt executables and build notes are held back pending a licence check (it is a port of the game client). Until then, supply your own renderer executables: `SETUP.md` lists each one the tools call and its arguments |
+| `client/` | the Rust client source the harness is built on, the reference-sheet program and how to build them; the prebuilt executables are a release download (`client/BUILD.md`) |
 
 Nothing here is game data: no cache files, keys, real models, pictures or sheets of real assets.

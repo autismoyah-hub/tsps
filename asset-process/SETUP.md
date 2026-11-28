@@ -1,7 +1,5 @@
 # Setting up the asset process
 
-> **Note.** The `client/` folder this guide refers to (the Rust client source, its prebuilt executables and `client/BUILD.md`) is not in this branch yet: it is held back pending a licence check, because the client is a port of the game client. Until it is added, supply your own renderer executables at the config keys below; each tool names the executable and arguments it calls.
-
 
 Everything here was used on one Windows 11 machine. The tools are Python scripts plus a Rust game client that
 draws what the game draws. Nothing in this folder comes from the game's caches: you supply the caches yourself,
@@ -14,7 +12,7 @@ and every picture, sheet, measurement file and model the process makes is made o
 | Windows 10 or 11, x86-64 | Windows 11 | The client builds and runs on Windows (Win32 window, GNU toolchain). A GPU is not needed: the "classic" look is drawn in software. |
 | Python | 3.13 | With `numpy`, `pillow`, `scipy`, `shapely`, `opencv-python-headless`, `trimesh` (and `pytest` for the tests): `python -m pip install numpy pillow scipy shapely opencv-python-headless trimesh pytest`. Run scripts with `python -I` (isolated mode; every script finds `asset_paths.py` itself). |
 | Blender | 5.2 LTS | Authors build in Blender; `tools/blender_export.py` and `tools/real_to_blender.py` run inside it (`blender -b FILE.blend -P tools/blender_export.py -- OUT.bin`). |
-| Rust | stable, `stable-x86_64-pc-windows-gnu` (rustc 1.100 used) | Only to rebuild the client and the study renderers from source; prebuilt copies are in `client/bin/`. Install with rustup from rustup.rs. |
+| Rust | stable, `stable-x86_64-pc-windows-gnu` (rustc 1.100 used) | Only to rebuild the client and the study renderers from source; prebuilt copies are a release download (section 3). Install with rustup from rustup.rs. |
 | Git for Windows | any | Its bash runs the few `.sh` helpers. |
 | Node.js | any recent | Only for `studies/tools-hd-era` (HD texture bridge) and the browser checks of `studies/research-interfaces` and `studies/tools-render-quality`. |
 | Microsoft Edge | any | Headless screenshots of review pages and the TSPS web client checks (`EDGE` environment variable may point at `msedge.exe`). |
@@ -41,8 +39,18 @@ None of this is in the package. Download it yourself and keep it private.
   that `studies/tools-hd-era/client_bridge.ts` bundles). Run `npm install` in `client/` once for the Node checks.
 - **The reference archive** (`REFERENCE_ARCHIVE`): for every real object, NPC, item and body kit, a six-view
   sheet and a JSON file (model ids, counts, bounds), in `objects/`, `npcs/`, `items/` (objects by placement
-  shape, e.g. `objects/shape-10/`). It was made by a separate sheet program that is not part of this package.
-  You can make the parts a job needs with the package's own sheet makers (`studies/research-creatures/sheet_npc.py`
+  shape, e.g. `objects/shape-10/`). **You make it yourself** from your revision-239 cache with the
+  reference-sheet program (`client/reference-sheet/`, prebuilt as `client/bin/reference_sheet.exe`):
+
+  ```
+  reference_sheet.exe CACHE OUTPUT TYPE START_ID END_ID
+  ```
+
+  `CACHE` is `OSRS_CACHE_239`, `OUTPUT` the archive folder (`REFERENCE_ARCHIVE`), `TYPE` one of `objects`,
+  `npcs`, `items`, `kits`, and ids run from `START_ID` up to but not including `END_ID`. Run it once per type
+  over the whole id range (or in ranges; it appends to `OUTPUT/events.jsonl` and keeps `progress.json`). It reads
+  the cache only and needs no network or window. No archive output is in this package.
+  The package's own sheet makers make the held-out sheets a blind rebuild needs (`studies/research-creatures/sheet_npc.py`
   for creatures, `studies/research-bosses/sheet_bone.py`, `studies/tools-titan-sheets/`,
   `studies/tools-hd-gate/hdsheet.py`); `tools/contact.py`, `tools/pick.py`, `tools/measure.py`,
   `tools/reencode_item.py` and `studies/research-rooms/rlib.py` expect the archive's layout.
@@ -54,10 +62,17 @@ None of this is in the package. Download it yourself and keep it private.
 
 `client/rust-client/` is the Rust client source with every example the tools call (`asset_figure.rs`,
 `asset_npc.rs`, `asset_pose.rs`, `asset_anim.rs`, `asset_bone.rs`, `asset_skel.rs`, `asset_effect.rs`,
-`asset_arena.rs`, `arena_view.rs`, `authored_scene_snapshot.rs`, `iface_*.rs`, `live_*.rs` ...). `client/bin/`
-holds prebuilt copies of every executable a staged tool calls, with sizes and SHA-256 in `client/BUILD.md`, and
-`client/BUILD.md` gives the cargo and rustc commands that rebuild each one. Read the licence question in
-`client/README.md` before you redistribute any of it.
+`asset_arena.rs`, `arena_view.rs`, `authored_scene_snapshot.rs`, `iface_*.rs`, `live_*.rs` ...).
+
+The executables are not in git. Get them one of two ways:
+
+- **Download** `client-bin.zip` from this branch's GitHub release named `asset-process-client-bin` and unpack it
+  at the package root (its entries are `client/bin/...`, so it lands in `client/bin/`). Check the zip's SHA-256
+  and each file's against `client/BUILD.md`.
+- **Build** them from source with the commands in `client/BUILD.md` and put them in `client/bin/` (or point
+  `CLIENT_BIN` at cargo's `target/release/examples/`).
+
+`client/bin/` is in `.gitignore`. `client/README.md` says what the client is.
 
 ## 4. Configuration
 
@@ -73,7 +88,7 @@ of the same names (they win). `python -I asset_paths.py` prints what every key r
 | `TSPS_CHECKOUT` | TSPS checkout | none (required for definitions, interfaces, HD bridge) |
 | `RENDERER_BIN` | `authored_scene_snapshot.exe`, the scene renderer `tools/scene.py` runs | `client/bin/renderer/authored_scene_snapshot.exe` |
 | `CLIENT_SRC` | the client source | `client/rust-client` |
-| `CLIENT_BIN` | folder of the client's built examples and the study renderers | `client/bin` |
+| `CLIENT_BIN` | folder of the client's built examples, the study renderers and `reference_sheet.exe` (unpacked from the release zip, or built) | `client/bin` |
 | `NATIVE_ASSETS` | the client's Python model codec (`native_codec.py`) | `CLIENT_SRC/tools/native-assets` |
 | `BLENDER` | `blender.exe` | `blender` on PATH |
 | `PYTHON` | the Python above | the interpreter running the tool |
@@ -105,6 +120,7 @@ Large files measured from a cache are not shipped. Regenerate them on your machi
 | `studies/research-npc/census/*.jsonl`, `by-skeleton.json` | `gapcheck.py`, `npc.py`, `census.py`, `research-creatures/find.py` | `client/bin/asset_npc.exe CACHE census studies/research-npc/census/`, then `census.py` |
 | `studies/research-authorship/data/packages.json` | `packagecheck.py` | `studies/research-authorship/pkg_measure.py` |
 | `author-pack/labels/body-kits.json` | `tools/pose.py`, `tools/figure.py`, `label_armour.py` | `studies/tools-gaps/make_body_kits.py` |
+| `examples/barrel/barrel.bin` | `tools/lineup.py` (the model it stands in a line-up of real pieces only) | `python -I examples/barrel/build.py` |
 | `measure/decor-real.json`, `measure/first-measure.json`, `measure/weapon-card.json` | `decor_bands.py`, `measure.py`, `weapon_card.py` | those tools |
 | `studies/research-fights/TABLE.md`, `studies/research-arenas/data/tables.md` | people (reference tables) | `analyze.py`, `table.py` in those studies |
 | `data/merged/` caches in creature studies | `cmesh.py` users | made on first use |

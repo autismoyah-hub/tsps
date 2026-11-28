@@ -18,7 +18,7 @@ import sys, pathlib, json, random, collections
 sys.dont_write_bytecode = True; sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import fx, fxtools, ob, objlib, objcensus, census
 from fxlib import *
-sys.path.insert(1, str(ROOT / 'builds' / 'research-npc'))
+sys.path.insert(1, str(ROOT / 'studies' / 'research-npc'))
 import meshio
 import numpy as np
 from PIL import Image, ImageDraw

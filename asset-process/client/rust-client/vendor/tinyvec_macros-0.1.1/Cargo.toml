@@ -1,0 +1,10 @@
+[package]
+name="tinyvec_macros"
+version="0.1.1"
+edition="2018"
+[lib]
+path="src/lib.rs"
+
+[lints.rust]
+unexpected_cfgs="allow"
+deprecated="allow"

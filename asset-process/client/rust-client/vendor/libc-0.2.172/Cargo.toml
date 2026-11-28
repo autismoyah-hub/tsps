@@ -1,0 +1,18 @@
+[package]
+name="libc"
+version="0.2.172"
+edition="2021"
+build="build.rs"
+[lib]
+path="src/lib.rs"
+[features]
+default = ["std"]
+std = []
+align = []
+const-extern-fn = []
+extra_traits = []
+use_std = ["std"]
+
+[lints.rust]
+unexpected_cfgs="allow"
+deprecated="allow"

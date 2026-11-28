@@ -1,0 +1,19 @@
+[package]
+name="libm"
+version="0.2.15"
+edition="2021"
+build=false
+[lib]
+path="src/lib.rs"
+[features]
+default = []
+arch = []
+force-soft-floats = []
+unstable = ["unstable-intrinsics", "unstable-float"]
+unstable-float = []
+unstable-intrinsics = []
+unstable-public-internals = []
+
+[lints.rust]
+unexpected_cfgs="allow"
+deprecated="allow"

@@ -1,0 +1,17 @@
+[package]
+name="lewton"
+version="0.10.2"
+edition="2015"
+[lib]
+path="src/lib.rs"
+[features]
+default = []
+[dependencies.byteorder]
+path = "../byteorder-1.5.0"
+[dependencies.tinyvec]
+path = "../tinyvec-1.10.0"
+features = ["alloc"]
+
+[lints.rust]
+unexpected_cfgs="allow"
+deprecated="allow"

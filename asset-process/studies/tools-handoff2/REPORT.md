@@ -39,7 +39,7 @@ Open `ROOT/sittings/SPEC-ID/index.html` for the individual page. Both its copied
 If a trial has already repointed the shared shortcut, first identify the newest genuine sitting from the dated specs in `{ROOT}/sittings/`. At inspection it was `2026-11-26-g.json`. To restore the **original automatic redirect**, run the original builder on the genuine spec with the shared root:
 
 ```powershell
-& {PYTHON} -I {PROJECT_REPO}/tools/make_sitting.py {ROOT}/sittings/2026-11-26-g.json --root {REVIEW_DIR}
+& {PYTHON} -I {ROOT}/sittings/make_sitting.py {ROOT}/sittings/2026-11-26-g.json --root {REVIEW_DIR}
 ```
 
 To use the **all-sittings index** on the shared shortcut instead, run this from the handoff directory:

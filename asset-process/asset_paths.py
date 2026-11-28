@@ -19,9 +19,11 @@ Keys (see SETUP.md for where each thing comes from):
   OSRS_CACHE_239    the revision-239 OSRS cache folder (main_file_cache.dat2, .idx*), the cache the tools draw from.
   OSRS_CACHE_242    the revision-242 cache. Default: TSPS_CHECKOUT/server/caches/osrs-242_2026-11-03.
   TSPS_CHECKOUT     a checkout of the TSPS game server (definitions, plugins, its 242 cache).
-  RENDERER_BIN      the scene renderer, authored_scene_snapshot.exe. Default: client/bin/renderer/.
+  RENDERER_BIN      the scene renderer, authored_scene_snapshot.exe. Default: client/bin/renderer/ (from the same zip).
   CLIENT_SRC        the Rust client source. Default: client/rust-client in this package.
-  CLIENT_BIN        folder of the client's built examples (asset_figure.exe, asset_npc.exe ...). Default: client/bin.
+  CLIENT_BIN        folder of the client's built examples (asset_figure.exe, asset_npc.exe ...), the study renderers
+                    and reference_sheet.exe. Default: client/bin, which is not in git: unpack client-bin.zip from
+                    the GitHub release "asset-process-client-bin" at the package root, or build (client/BUILD.md).
   NATIVE_ASSETS     the client's Python model codec folder. Default: CLIENT_SRC/tools/native-assets.
   BLENDER           blender executable (5.2 was used). Default: "blender" on PATH.
   PYTHON            Python 3.13 with Pillow and NumPy. Default: the interpreter running this module.
@@ -171,13 +173,33 @@ def fix(s):
     return _PLACEHOLDER.sub(rep, s)
 
 
+_warned = False
+
+
+def _check_bin():
+    global _warned
+    d = get('CLIENT_BIN')
+    if not _warned and not os.path.isdir(d):
+        _warned = True
+        sys.stderr.write('asset_paths: CLIENT_BIN %s does not exist. Unpack client-bin.zip from the GitHub release '
+                         '"asset-process-client-bin" at the package root, or build the executables (client/BUILD.md).\n' % d)
+    return d
+
+
+def bindir():
+    """CLIENT_BIN as a pathlib.Path: the client's built examples and the study renderers."""
+    from pathlib import Path
+    return Path(_check_bin())
+
+
 def exe(name, *folders):
-    """An executable by file name: the first of the given folders that has it, then CLIENT_BIN."""
+    """An executable by file name (pathlib.Path): the first of the given folders that has it, else CLIENT_BIN."""
+    from pathlib import Path
     for d in list(folders) + [get('CLIENT_BIN')]:
-        p = os.path.join(str(d), name)
-        if os.path.isfile(p):
-            return p.replace('\\', '/')
-    return (get('CLIENT_BIN') + '/' + name)
+        p = Path(str(d)) / name
+        if p.is_file():
+            return p
+    return Path(_check_bin()) / name
 
 
 if __name__ == '__main__':

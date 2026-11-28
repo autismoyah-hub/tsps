@@ -809,3 +809,15 @@ Left out of `client/bin`: client examples no staged tool calls (`iface_compose`,
 `live_ground`, `player_models`), the main `gielinor-client.exe` (build it: `cargo build --release`), the GPU renderer
 `authored_scene_snapshot_gpu.exe` (needs a GPU; not used for judging), one-off previews inside asset builds.
 
+
+## Added in the second commit
+
+| Source | Decision | Rule | In the package |
+|---|---|---|---|
+| `WF/client-build/rust-client` (source, examples, vendor, Cargo files; no `target/`) | included | owner's decision: everything required to run the process | `client/rust-client/` |
+| client executables (25) and `reference_sheet.exe` | released, not in git | release zip `client-bin.zip` (GitHub release `asset-process-client-bin`); `client/bin/` is ignored | `client/BUILD.md` lists sizes and SHA-256 |
+| external drive `jagex-reference-archive/receipts/build-003/reference_sheet.rs` | included | the program that draws the reference archive | `client/reference-sheet/` |
+| same folder: `build-job.txt`, logs, hashes, toolchain notes | excluded (summarised) | build receipts with machine paths and user names; the command and toolchain are in `client/reference-sheet/README.md` | |
+| the reference archive itself (`jagex-reference-archive-PRIVATE`) | excluded | sheets of real assets; the recipient makes it | |
+| `PR/teacher/project/` PRODUCER, RUNBOOK, HANDOFF, PROFILE, CAPABILITIES, AREAS, PLAN, NPC-PLAN | included, sanitized | the role and register documents the prompts tell agents to read; paths to keys, owner quotes withheld, machine and account details removed | `teacher/project-docs/` |
+| `PR/teacher/project/` STATE, DECISIONS, FOR-FABLE, INTERIM, CUTOVER, PROPOSALS, check-terms | excluded | owner's record (decision texts, current state, proposals) | |

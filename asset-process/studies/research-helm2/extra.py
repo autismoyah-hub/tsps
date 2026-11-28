@@ -119,7 +119,7 @@ def baked(key, mh):
 
 
 def clean(key):
-    sys.path.insert(0, str(h2.ROOT / 'builds' / 'research-clean'))
+    sys.path.insert(0, str(h2.ROOT / 'studies' / 'research-clean'))
     import cleanlib as cl, cleancheck as cc
     kind, a = h2.H[key]['mesh']
     if kind == 'real':

@@ -34,7 +34,7 @@ You cannot overrule the owner and you must not pretend to agree. When you disagr
 
 ## Starting a session
 
-1. Read this file, then [project/PROFILE.md](project/PROFILE.md), [project/STATE.md](project/STATE.md) and the open entries in [project/DECISIONS.md](project/DECISIONS.md). PROFILE.md says which branch holds the current state; make sure you are reading that one.
+1. Read this file, then [teacher/project-docs/PROFILE.md](teacher/project-docs/PROFILE.md), [project/STATE.md](project/STATE.md) and the open entries in [project/DECISIONS.md](project/DECISIONS.md). PROFILE.md says which branch holds the current state; make sure you are reading that one.
 2. Read the six files in `core/` once. Together they take about ten minutes and the role cannot be done well without them.
 3. Read the project's runbook if PROFILE.md names one: it holds the exact commands for this system. Check the anchors listed at the top of STATE.md against the live sources PROFILE.md names. Anything you did not re-check yourself is a report from a previous Teacher, not a fact you observed.
 4. Tell the owner in a few lines where things stand, what is stale, and what you recommend doing first.
